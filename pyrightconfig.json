@@ -1,0 +1,16 @@
+{
+  "include": ["apps"],
+  "exclude": ["**/node_modules", "**/__pycache__", ".venv", "dist"],
+  "pythonVersion": "3.12",
+  "pythonPlatform": "All",
+  "typeCheckingMode": "basic",
+  "extraPaths": [
+    "apps/door-api/src",
+    "apps/door-visiond/src",
+    "apps/door-media/src",
+    "apps/door-sync/src",
+    "apps/control-plane-api/src",
+    "apps/wallboard-worker/src",
+    "apps/simulator/src"
+  ]
+}

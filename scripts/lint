@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+pnpm_cmd=(pnpm)
+if ! command -v pnpm >/dev/null 2>&1; then
+  pnpm_cmd=(corepack pnpm)
+fi
+
+uv run ruff format --check .
+uv run ruff check .
+"${pnpm_cmd[@]}" exec eslint .

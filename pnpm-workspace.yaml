@@ -1,0 +1,4 @@
+packages:
+  - "apps/door-ui"
+  - "packages/ui-kit"
+  - "packages/media-client"

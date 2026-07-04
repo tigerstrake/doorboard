@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+pnpm_cmd=(pnpm)
+if ! command -v pnpm >/dev/null 2>&1; then
+  pnpm_cmd=(corepack pnpm)
+fi
+
+uv run pyright --project pyrightconfig.json
+uv run pyright --project packages/pyrightconfig.json
+"${pnpm_cmd[@]}" -r --if-present typecheck
