@@ -1,0 +1,31 @@
+name: Escalation
+description: An implementing agent is blocked on an architecture/contract/privacy decision
+title: "Escalation from T-XXX: <question>"
+labels: ["escalation", "agent:claude"]
+body:
+  - type: input
+    id: task
+    attributes:
+      label: Blocked task
+      placeholder: T-XXX
+    validations:
+      required: true
+  - type: textarea
+    id: conflict
+    attributes:
+      label: What the brief/architecture says vs. what you found
+      description: Quote the conflicting text or describe the gap precisely.
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options considered
+      description: 2-3 options with trade-offs. Do NOT implement any of them yet.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: What is blocked
+      description: Can other parts of the task proceed meanwhile?

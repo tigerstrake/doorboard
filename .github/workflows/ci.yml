@@ -1,0 +1,42 @@
+# Architecture-phase CI: validates repo structure and task briefs.
+# T-000 extends this with real lint/typecheck/test jobs; T-001 replaces the
+# inline checks below with scripts/check-structure.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  structure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Required root documents exist
+        run: |
+          for f in README.md ARCHITECTURE.md CONTRIBUTING.md LICENSE CLAUDE.md AGENTS.md GEMINI.md .env.example; do
+            test -f "$f" || { echo "missing $f"; exit 1; }
+          done
+      - name: Task briefs have required sections
+        run: |
+          fail=0
+          for f in docs/tasks/T-*.md; do
+            # The milestone-review template intentionally deviates from the brief format.
+            [ "$f" = "docs/tasks/T-x90-milestone-review.md" ] && continue
+            for section in "## Context" "## Deliverables" "## Out of scope" "## Acceptance criteria"; do
+              grep -q "^$section" "$f" || { echo "$f: missing '$section'"; fail=1; }
+            done
+            grep -q "\*\*Agent:\*\*" "$f" || { echo "$f: missing Agent header"; fail=1; }
+          done
+          exit $fail
+      - name: No secrets-looking files committed
+        run: |
+          if git ls-files | grep -E '(^|/)\.env$|\.pem$|\.key$'; then
+            echo "potential secret file committed"; exit 1
+          fi
+          echo ok

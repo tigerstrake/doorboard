@@ -1,0 +1,53 @@
+# Secrets — never commit real env files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Node
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+.vite/
+coverage/
+
+# Media and local data — active recordings never belong in git
+*.mp4
+*.mkv
+*.h264
+*.wav
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# Face/enrollment data — biometric data never belongs in git
+enrollment-data/
+embeddings/
+*.hef.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Firmware build artifacts
+firmware/**/build/
+firmware/**/.pio/
+firmware/**/sdkconfig.old

@@ -1,0 +1,19 @@
+# UI spec — Admin (`/admin`, `/diagnostics`)
+
+Authenticated (packages/auth), never linked from public surfaces, usable from a phone/laptop on the room network.
+
+## Sections
+
+| Section | Functions |
+|---|---|
+| Sessions & messages | live session state, video-message inbox (play, delete), visitor log (enrolled/voluntary only) |
+| Enrollment | list enrolled people, consent state, profile (name/color/sound), unenroll (immediate embedding deletion), link to enrollment flow |
+| Status | set/override presence (manual override wins), maintenance mode toggle, privacy mode toggle |
+| Content | guestbook/poll/check-in moderation and deletion, poll creation, scoreboard/mood management |
+| Media | recordings list with sync state, storage/queue gauges, retention settings, manual delete |
+| Config | config bundle version, feature flags view, ESP32 profile table |
+| Diagnostics (`/diagnostics`) | health sweep of all services, latency snapshot vs §4 budgets, ESP32 link stats, camera/stream probe, Hailo status, thermals, sync queue detail |
+
+## Requirements
+
+Owner actions that affect a live session (e.g., "answered") are one tap. Destructive actions confirm once, then act and log. Everything works Pi-local when the NUC is down (control-plane-backed panels show unreachable state honestly — never fake data).

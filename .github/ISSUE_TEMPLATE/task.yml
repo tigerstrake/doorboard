@@ -1,0 +1,32 @@
+name: Task
+description: A unit of work backed by a brief in docs/tasks/
+title: "T-XXX: <title>"
+labels: ["task"]
+body:
+  - type: input
+    id: brief
+    attributes:
+      label: Brief
+      description: Path to the brief file (source of truth for scope)
+      placeholder: docs/tasks/T-XXX-slug.md
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent tier
+      options: [gemini, codex, claude]
+    validations:
+      required: true
+  - type: input
+    id: depends
+    attributes:
+      label: Depends on
+      placeholder: "T-000, T-002 (must be merged first)"
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One paragraph; the brief holds the details.
+    validations:
+      required: true
