@@ -4,7 +4,7 @@
 
 An open-source, self-hosted, door-mounted smart-door and smart-room system. A removable "door backpack" carries a large ambient display, a small visitor touchscreen, two cameras, a physical bell button with LED/audio feedback, and a Raspberry Pi 5 + Hailo AI accelerator — backed by an indoor NUC control plane, a BirdNET Pi, and a NAS archive.
 
-**Status: architecture phase.** This repository currently contains the complete architecture, contracts, and task briefs — no implementation code yet. Implementation happens task-by-task via the multi-agent workflow described below.
+**Status: M0 complete (repository bootstrap).** Tooling, CI, the contracts package, the hardware-free simulator, and the mock UI shells are implemented; M1 (real-time I/O) is next. Implementation happens task-by-task via the multi-agent workflow described below.
 
 ## The one rule
 
@@ -61,7 +61,7 @@ scripts/lint && scripts/typecheck && scripts/test
 make lint typecheck test
 ```
 
-`scripts/dev-up` and `make dev-up` are placeholders until the simulated stack lands in T-003.
+`scripts/dev-up` (or `make dev-up`) serves the simulator control panel on `http://127.0.0.1:8765`; `doorboard-sim run <scenario>` runs headless scenarios (see `apps/simulator/README.md`).
 
 ## Milestones
 
