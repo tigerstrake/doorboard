@@ -1,0 +1,14 @@
+{
+  "door_id": "primary",
+  "event_id": "018f6b2e-7c9a-7000-8000-3f9d2ba41c11",
+  "monotonic_ms": 123456789,
+  "occurred_at": "2026-07-04T12:34:56.123000Z",
+  "payload": {
+    "expires_at_monotonic_ms": 123459280,
+    "priority": "normal",
+    "profile_id": "blue_wave"
+  },
+  "source": "doorboard-contracts-test",
+  "trace_id": "9d1e8a34-52a1-4b0e-9c0f-2a7d1f66b100",
+  "type": "door.profile_update"
+}

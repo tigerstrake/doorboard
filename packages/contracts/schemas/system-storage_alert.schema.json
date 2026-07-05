@@ -1,0 +1,91 @@
+{
+  "$defs": {
+    "SystemStorageAlertPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "free_bytes": {
+          "title": "Free Bytes",
+          "type": "integer"
+        },
+        "host": {
+          "title": "Host",
+          "type": "string"
+        },
+        "mount": {
+          "title": "Mount",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "warning",
+            "critical"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "mount",
+        "free_bytes",
+        "severity"
+      ],
+      "title": "SystemStorageAlertPayload",
+      "type": "object"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UUIDv7": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "door_id": {
+      "title": "Door Id",
+      "type": "string"
+    },
+    "event_id": {
+      "$ref": "#/$defs/UUIDv7"
+    },
+    "monotonic_ms": {
+      "title": "Monotonic Ms",
+      "type": "integer"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "payload": {
+      "$ref": "#/$defs/SystemStorageAlertPayload"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "system.storage_alert",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "source",
+    "occurred_at",
+    "monotonic_ms",
+    "door_id",
+    "trace_id",
+    "type",
+    "payload"
+  ],
+  "title": "SystemStorageAlertEvent",
+  "type": "object"
+}

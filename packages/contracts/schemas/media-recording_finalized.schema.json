@@ -1,0 +1,102 @@
+{
+  "$defs": {
+    "MediaRecordingFinalizedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "consent_context": {
+          "enum": [
+            "visitor_initiated",
+            "bell_event"
+          ],
+          "title": "Consent Context",
+          "type": "string"
+        },
+        "duration_s": {
+          "title": "Duration S",
+          "type": "number"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "recording_id": {
+          "format": "uuid",
+          "title": "Recording Id",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "recording_id",
+        "path",
+        "duration_s",
+        "size_bytes",
+        "sha256",
+        "consent_context"
+      ],
+      "title": "MediaRecordingFinalizedPayload",
+      "type": "object"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UUIDv7": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "door_id": {
+      "title": "Door Id",
+      "type": "string"
+    },
+    "event_id": {
+      "$ref": "#/$defs/UUIDv7"
+    },
+    "monotonic_ms": {
+      "title": "Monotonic Ms",
+      "type": "integer"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "payload": {
+      "$ref": "#/$defs/MediaRecordingFinalizedPayload"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "media.recording_finalized",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "source",
+    "occurred_at",
+    "monotonic_ms",
+    "door_id",
+    "trace_id",
+    "type",
+    "payload"
+  ],
+  "title": "MediaRecordingFinalizedEvent",
+  "type": "object"
+}

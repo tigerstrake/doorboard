@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UUIDv7": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "VisionIdentityStablePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "title": "Confidence",
+          "type": "number"
+        },
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "expires_at_monotonic_ms": {
+          "title": "Expires At Monotonic Ms",
+          "type": "integer"
+        },
+        "person_id": {
+          "title": "Person Id",
+          "type": "string"
+        },
+        "profile_id": {
+          "title": "Profile Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "person_id",
+        "display_name",
+        "confidence",
+        "expires_at",
+        "expires_at_monotonic_ms",
+        "profile_id"
+      ],
+      "title": "VisionIdentityStablePayload",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "door_id": {
+      "title": "Door Id",
+      "type": "string"
+    },
+    "event_id": {
+      "$ref": "#/$defs/UUIDv7"
+    },
+    "monotonic_ms": {
+      "title": "Monotonic Ms",
+      "type": "integer"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "payload": {
+      "$ref": "#/$defs/VisionIdentityStablePayload"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "vision.identity_stable",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "source",
+    "occurred_at",
+    "monotonic_ms",
+    "door_id",
+    "trace_id",
+    "type",
+    "payload"
+  ],
+  "title": "VisionIdentityStableEvent",
+  "type": "object"
+}

@@ -41,6 +41,9 @@ importers:
 
   apps/door-ui:
     dependencies:
+      '@doorboard/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       react:
         specifier: ^19.1.0
         version: 19.2.7
@@ -58,9 +61,15 @@ importers:
         specifier: ^7.0.0
         version: 7.3.6
 
+  packages/contracts: {}
+
   packages/media-client: {}
 
-  packages/ui-kit: {}
+  packages/ui-kit:
+    dependencies:
+      '@doorboard/contracts':
+        specifier: workspace:*
+        version: link:../contracts
 
 packages:
 

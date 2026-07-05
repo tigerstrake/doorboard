@@ -1,0 +1,86 @@
+{
+  "$defs": {
+    "DoorProfileUpdatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "expires_at_monotonic_ms": {
+          "title": "Expires At Monotonic Ms",
+          "type": "integer"
+        },
+        "priority": {
+          "enum": [
+            "normal",
+            "high"
+          ],
+          "title": "Priority",
+          "type": "string"
+        },
+        "profile_id": {
+          "title": "Profile Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile_id",
+        "expires_at_monotonic_ms",
+        "priority"
+      ],
+      "title": "DoorProfileUpdatePayload",
+      "type": "object"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UUIDv7": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "door_id": {
+      "title": "Door Id",
+      "type": "string"
+    },
+    "event_id": {
+      "$ref": "#/$defs/UUIDv7"
+    },
+    "monotonic_ms": {
+      "title": "Monotonic Ms",
+      "type": "integer"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "payload": {
+      "$ref": "#/$defs/DoorProfileUpdatePayload"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "door.profile_update",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "source",
+    "occurred_at",
+    "monotonic_ms",
+    "door_id",
+    "trace_id",
+    "type",
+    "payload"
+  ],
+  "title": "DoorProfileUpdateEvent",
+  "type": "object"
+}

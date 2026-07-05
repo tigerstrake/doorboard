@@ -1,4 +1,5 @@
 packages:
   - "apps/door-ui"
+  - "packages/contracts"
   - "packages/ui-kit"
   - "packages/media-client"

@@ -1,0 +1,105 @@
+{
+  "$defs": {
+    "SessionState": {
+      "enum": [
+        "IDLE",
+        "APPROACH_DETECTED",
+        "IDENTITY_CACHED",
+        "BUTTON_PRESSED",
+        "VISITOR_MODE",
+        "RINGING",
+        "ANSWERED",
+        "UNANSWERED_TIMEOUT",
+        "VIDEO_MESSAGE_OFFERED",
+        "VIDEO_MESSAGE_RECORDING",
+        "VIDEO_MESSAGE_REVIEW",
+        "VIDEO_MESSAGE_SAVED",
+        "SESSION_END"
+      ],
+      "title": "SessionState",
+      "type": "string"
+    },
+    "SessionStateChangedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "from_state": {
+          "$ref": "#/$defs/SessionState"
+        },
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "to_state": {
+          "$ref": "#/$defs/SessionState"
+        },
+        "trigger": {
+          "title": "Trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "from_state",
+        "to_state",
+        "trigger"
+      ],
+      "title": "SessionStateChangedPayload",
+      "type": "object"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UUIDv7": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "door_id": {
+      "title": "Door Id",
+      "type": "string"
+    },
+    "event_id": {
+      "$ref": "#/$defs/UUIDv7"
+    },
+    "monotonic_ms": {
+      "title": "Monotonic Ms",
+      "type": "integer"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "payload": {
+      "$ref": "#/$defs/SessionStateChangedPayload"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "session.state_changed",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "source",
+    "occurred_at",
+    "monotonic_ms",
+    "door_id",
+    "trace_id",
+    "type",
+    "payload"
+  ],
+  "title": "SessionStateChangedEvent",
+  "type": "object"
+}
