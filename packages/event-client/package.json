@@ -1,0 +1,16 @@
+{
+  "name": "@doorboard/event-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@doorboard/contracts": "workspace:*"
+  },
+  "devDependencies": {}
+}

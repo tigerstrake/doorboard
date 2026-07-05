@@ -1,0 +1,357 @@
+:root {
+  /* Core Colors */
+  --db-bg-app: #030712;
+  --db-bg-card: rgba(17, 24, 39, 0.7);
+  --db-bg-card-hover: rgba(31, 41, 55, 0.8);
+  --db-border-color: rgba(255, 255, 255, 0.08);
+  --db-border-hover: rgba(255, 255, 255, 0.15);
+  
+  --db-text-primary: #f9fafb;
+  --db-text-secondary: #9ca3af;
+  --db-text-muted: #6b7280;
+
+  /* Typography */
+  --db-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  /* Presence Colors */
+  --db-presence-available: #10b981;
+  --db-presence-busy: #f97316;
+  --db-presence-dnd: #ef4444;
+  --db-presence-sleeping: #8b5cf6;
+  --db-presence-class: #3b82f6;
+  --db-presence-library: #06b6d4;
+  --db-presence-away: #eab308;
+  --db-presence-unknown: #6b7280;
+
+  /* Profile Gradient Accents */
+  --db-gradient-generic: linear-gradient(135deg, #374151, #1f2937);
+  --db-gradient-owner: linear-gradient(135deg, #2563eb, #1d4ed8);
+  --db-gradient-roommate: linear-gradient(135deg, #7c3aed, #6d28d9);
+  --db-gradient-visitor: linear-gradient(135deg, #059669, #047857);
+
+  /* Shadows & Glassmorphism */
+  --db-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --db-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --db-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --db-shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  --db-backdrop-blur: blur(12px);
+
+  /* Spacing */
+  --db-spacing-xs: 0.25rem;
+  --db-spacing-sm: 0.5rem;
+  --db-spacing-md: 1rem;
+  --db-spacing-lg: 1.5rem;
+  --db-spacing-xl: 2rem;
+}
+
+/* Base Styles */
+.db-app-theme {
+  font-family: var(--db-font-sans);
+  background-color: var(--db-bg-app);
+  color: var(--db-text-primary);
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Glass Tile Component */
+.db-tile {
+  background: var(--db-bg-card);
+  backdrop-filter: var(--db-backdrop-blur);
+  -webkit-backdrop-filter: var(--db-backdrop-blur);
+  border: 1px solid var(--db-border-color);
+  border-radius: 16px;
+  padding: var(--db-spacing-lg);
+  box-shadow: var(--db-shadow-glass);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--db-spacing-sm);
+  position: relative;
+  overflow: hidden;
+}
+
+.db-tile:hover {
+  border-color: var(--db-border-hover);
+  background: var(--db-bg-card-hover);
+  transform: translateY(-2px);
+  box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.5);
+}
+
+.db-tile__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--db-spacing-xs);
+}
+
+.db-tile__title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--db-text-secondary);
+  margin: 0;
+}
+
+.db-tile__staleness {
+  font-size: 0.75rem;
+  color: var(--db-text-muted);
+  font-weight: 500;
+}
+
+.db-tile__content {
+  flex: 1;
+  font-size: 1.125rem;
+  line-height: 1.5;
+}
+
+/* Status Badge Component */
+.db-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--db-spacing-sm);
+  padding: 0.5rem 1rem;
+  border-radius: 9999px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-transform: capitalize;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: var(--db-shadow-sm);
+}
+
+.db-status-badge--available {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: var(--db-presence-available);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.db-status-badge--busy {
+  background-color: rgba(249, 115, 22, 0.15);
+  color: var(--db-presence-busy);
+  border-color: rgba(249, 115, 22, 0.3);
+}
+
+.db-status-badge--do_not_disturb {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: var(--db-presence-dnd);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.db-status-badge--sleeping {
+  background-color: rgba(139, 92, 246, 0.15);
+  color: var(--db-presence-sleeping);
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+.db-status-badge--at_class {
+  background-color: rgba(59, 130, 246, 0.15);
+  color: var(--db-presence-class);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.db-status-badge--at_library {
+  background-color: rgba(6, 182, 212, 0.15);
+  color: var(--db-presence-library);
+  border-color: rgba(6, 182, 212, 0.3);
+}
+
+.db-status-badge--away {
+  background-color: rgba(234, 179, 8, 0.15);
+  color: var(--db-presence-away);
+  border-color: rgba(234, 179, 8, 0.3);
+}
+
+.db-status-badge--unknown {
+  background-color: rgba(107, 114, 128, 0.15);
+  color: var(--db-presence-unknown);
+  border-color: rgba(107, 114, 128, 0.3);
+}
+
+.db-status-badge__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: currentColor;
+  box-shadow: 0 0 8px currentColor;
+}
+
+/* Big Button Component */
+.db-big-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--db-spacing-sm);
+  min-height: 80px;
+  min-width: 120px;
+  padding: var(--db-spacing-md) var(--db-spacing-lg);
+  border-radius: 16px;
+  border: 1px solid var(--db-border-color);
+  background: var(--db-bg-card);
+  color: var(--db-text-primary);
+  font-family: var(--db-font-sans);
+  font-size: 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: var(--db-shadow-md);
+}
+
+/* Kiosk min target requirement */
+@media (pointer: coarse) {
+  .db-big-button {
+    min-height: 96px;
+    padding: var(--db-spacing-lg);
+  }
+}
+
+.db-big-button:hover {
+  background: var(--db-bg-card-hover);
+  border-color: var(--db-border-hover);
+  transform: translateY(-1px);
+}
+
+.db-big-button:active {
+  transform: scale(0.96);
+  background: rgba(31, 41, 55, 0.9);
+}
+
+.db-big-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.db-big-button__icon {
+  font-size: 1.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.db-big-button--primary {
+  background: var(--db-gradient-owner);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.db-big-button--primary:hover {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+}
+.db-big-button--primary:active {
+  background: #1d4ed8;
+}
+
+/* Greeting Banner Component */
+.db-greeting-banner {
+  border-radius: 20px;
+  padding: var(--db-spacing-xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--db-spacing-sm);
+  background: var(--db-gradient-generic);
+  border: 1px solid var(--db-border-color);
+  box-shadow: var(--db-shadow-lg);
+  color: var(--db-text-primary);
+  position: relative;
+  overflow: hidden;
+}
+
+.db-greeting-banner::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: radial-gradient(circle at 10% 20%, rgba(255, 255, 255, 0.05) 0%, transparent 80%);
+  pointer-events: none;
+}
+
+.db-greeting-banner--owner {
+  background: var(--db-gradient-owner);
+}
+
+.db-greeting-banner--roommate {
+  background: var(--db-gradient-roommate);
+}
+
+.db-greeting-banner--visitor {
+  background: var(--db-gradient-visitor);
+}
+
+.db-greeting-banner__title {
+  font-size: 2.25rem;
+  font-weight: 800;
+  margin: 0;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+.db-greeting-banner__subtitle {
+  font-size: 1.125rem;
+  color: rgba(255, 255, 255, 0.8);
+  margin: 0;
+}
+
+/* QR Placeholder Component */
+.db-qr-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--db-spacing-md);
+  padding: var(--db-spacing-lg);
+  background: var(--db-bg-card);
+  border: 1px solid var(--db-border-color);
+  border-radius: 16px;
+  width: fit-content;
+  margin: 0 auto;
+}
+
+.db-qr-placeholder__graphic {
+  width: 160px;
+  height: 160px;
+  background: #ffffff;
+  padding: var(--db-spacing-md);
+  border-radius: 12px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: repeat(4, 1fr);
+  gap: 8px;
+  box-shadow: var(--db-shadow-md);
+}
+
+/* Dummy QR block layouts */
+.db-qr-placeholder__graphic > div {
+  background: #0f172a;
+  border-radius: 4px;
+}
+.db-qr-placeholder__graphic > div:nth-child(2),
+.db-qr-placeholder__graphic > div:nth-child(5),
+.db-qr-placeholder__graphic > div:nth-child(8),
+.db-qr-placeholder__graphic > div:nth-child(11),
+.db-qr-placeholder__graphic > div:nth-child(14) {
+  background: transparent;
+}
+
+.db-qr-placeholder__text {
+  font-size: 0.875rem;
+  color: var(--db-text-secondary);
+  text-align: center;
+  margin: 0;
+  max-width: 180px;
+  line-height: 1.4;
+}
+
+/* Auto Reset Progress Bar */
+.db-auto-reset-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 4px;
+  background-color: var(--db-presence-available);
+  transition: width 1s linear;
+}

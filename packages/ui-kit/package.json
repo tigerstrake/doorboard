@@ -4,13 +4,18 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./index.css": "./src/index.css"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "story": "ladle serve",
+    "story:build": "ladle build"
   },
   "dependencies": {
     "@doorboard/contracts": "workspace:*"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@ladle/react": "^5.1.1"
+  }
 }
