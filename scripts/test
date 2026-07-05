@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-uv run pytest
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="$repo_root/apps/control-plane-api/src:$repo_root/apps/door-api/src:$repo_root/apps/door-media/src:$repo_root/apps/door-sync/src:$repo_root/apps/door-visiond/src:$repo_root/apps/simulator/src:$repo_root/apps/wallboard-worker/src:$repo_root/packages/auth/src:$repo_root/packages/config/src:$repo_root/packages/contracts/src:$repo_root/packages/event-client/src:$repo_root/packages/observability/src${PYTHONPATH:+:$PYTHONPATH}"
+
+uv run pytest "$@"

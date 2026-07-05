@@ -1,0 +1,16 @@
+{
+  "name": "known-visitor",
+  "steps": [
+    {"at_ms": 0, "action": "pi_hello"},
+    {
+      "at_ms": 100,
+      "action": "known_visitor",
+      "person_id": "prs_8f3k2j",
+      "display_name": "Alex",
+      "profile_id": "blue_wave"
+    },
+    {"at_ms": 300, "action": "button"},
+    {"at_ms": 320, "action": "record_bell", "duration_ms": 1000},
+    {"at_ms": 2700, "action": "identity_expired", "person_id": "prs_8f3k2j"}
+  ]
+}

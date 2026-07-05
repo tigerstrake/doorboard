@@ -1,0 +1,63 @@
+{
+  "events": [
+    {
+      "monotonic_ms": 100,
+      "payload": {
+        "face_count": 1,
+        "largest_face_px": 184
+      },
+      "type": "vision.face_visible"
+    },
+    {
+      "monotonic_ms": 100,
+      "payload": {
+        "confidence": 0.93,
+        "display_name": "Alex",
+        "expires_at": "2026-07-04T12:00:02.600000Z",
+        "expires_at_monotonic_ms": 2600,
+        "person_id": "prs_8f3k2j",
+        "profile_id": "blue_wave"
+      },
+      "type": "vision.identity_stable"
+    },
+    {
+      "monotonic_ms": 300,
+      "payload": {
+        "had_cached_profile": true,
+        "press_id": "00000000-0000-0000-0000-000000000001",
+        "profile_id": "blue_wave"
+      },
+      "type": "door.button_pressed"
+    },
+    {
+      "monotonic_ms": 320,
+      "payload": {
+        "kind": "bell_clip",
+        "recording_id": "c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788",
+        "session_id": "0f7e3f6f-6d69-44f7-b2e0-20f520cb04f5",
+        "stream": "visitor-main"
+      },
+      "type": "media.recording_started"
+    },
+    {
+      "monotonic_ms": 1320,
+      "payload": {
+        "consent_context": "bell_event",
+        "duration_s": 1.0,
+        "path": "recordings/c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788.mp4",
+        "recording_id": "c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788",
+        "sha256": "91c8d32599322c2b558a834400d613e7f4107f06bcb63b7bebefb853e6494a3d",
+        "size_bytes": 93
+      },
+      "type": "media.recording_finalized"
+    },
+    {
+      "monotonic_ms": 2700,
+      "payload": {
+        "person_id": "prs_8f3k2j"
+      },
+      "type": "vision.identity_expired"
+    }
+  ],
+  "scenario": "known-visitor"
+}

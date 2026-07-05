@@ -1,0 +1,9 @@
+{
+  "name": "unknown-visitor",
+  "steps": [
+    {"at_ms": 0, "action": "pi_hello"},
+    {"at_ms": 100, "action": "unknown_visitor", "face_count": 1, "largest_face_px": 132},
+    {"at_ms": 500, "action": "button"},
+    {"at_ms": 520, "action": "record_bell", "duration_ms": 800}
+  ]
+}

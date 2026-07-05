@@ -2,7 +2,7 @@
 name = "doorboard-door-visiond"
 version = "0.0.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["doorboard-contracts"]
 
 [build-system]
 requires = ["hatchling"]
