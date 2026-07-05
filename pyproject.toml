@@ -86,4 +86,5 @@ testpaths = [
     "apps/control-plane-api/tests",
     "apps/wallboard-worker/tests",
     "apps/simulator/tests",
+    "tests",
 ]

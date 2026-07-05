@@ -1,0 +1,5 @@
+# Exclusion list for link checking
+# External URLs (http://, https://, mailto:) are automatically skipped by scripts/check-structure.
+# Any additional paths or URLs listed below will also be skipped.
+
+https://docs.pytest.org/en/stable/how-to/cache.html
