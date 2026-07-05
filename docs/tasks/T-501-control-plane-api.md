@@ -17,6 +17,8 @@ Spec: [apps/control-plane-api/README.md](../../apps/control-plane-api/README.md)
 - Notifications: pluggable notifier interface + one concrete channel (HA notify or ntfy — choose, document) for: missed bell, storage alert, sync failing > N hours.
 - MQTT audit fan-out (Mosquitto): publish ingested event summaries to `doorboard/#` topics for HA/monitoring consumption.
 
+- Person-data purge: a person_id-keyed deletion covering archived events and derived rows (ADR-0009 §3.4) — called by door-visiond unenrollment, must be idempotent and queue-safe.
+
 ## Out of scope
 
 HA bridge config/entities (T-503), presence computation (T-504), door-sync itself (T-502), dashboards.
