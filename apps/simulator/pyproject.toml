@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "doorboard-contracts",
     "doorboard-door-api",
+    "doorboard-esp32-link",
     "doorboard-door-media",
     "doorboard-door-visiond",
 ]

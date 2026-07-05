@@ -15,7 +15,7 @@ dev = [
     "doorboard-door-media",
     "doorboard-door-sync",
     "doorboard-door-visiond",
-    "doorboard-event-client",
+    "doorboard-esp32-link",
     "doorboard-observability",
     "doorboard-simulator",
     "doorboard-wallboard-worker",
@@ -34,7 +34,7 @@ members = [
     "packages/config",
     "packages/observability",
     "packages/auth",
-    "packages/event-client",
+    "packages/esp32-link",
     "apps/door-api",
     "apps/door-visiond",
     "apps/door-media",
@@ -53,7 +53,7 @@ doorboard-door-api = { workspace = true }
 doorboard-door-media = { workspace = true }
 doorboard-door-sync = { workspace = true }
 doorboard-door-visiond = { workspace = true }
-doorboard-event-client = { workspace = true }
+doorboard-esp32-link = { workspace = true }
 doorboard-observability = { workspace = true }
 doorboard-simulator = { workspace = true }
 doorboard-wallboard-worker = { workspace = true }
@@ -78,7 +78,7 @@ testpaths = [
     "packages/config/tests",
     "packages/observability/tests",
     "packages/auth/tests",
-    "packages/event-client/tests",
+    "packages/esp32-link/tests",
     "apps/door-api/tests",
     "apps/door-visiond/tests",
     "apps/door-media/tests",
