@@ -7,3 +7,9 @@ export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$HOME/.venvs/doorboard}
 
 
 uv run pytest "$@"
+
+if command -v pnpm &> /dev/null; then
+  pnpm -r --if-present test
+else
+  npx pnpm -r --if-present test
+fi

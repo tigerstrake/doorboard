@@ -3,3 +3,4 @@ packages:
   - "packages/contracts"
   - "packages/ui-kit"
   - "packages/media-client"
+  - "packages/event-client"
