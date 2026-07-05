@@ -1,0 +1,20 @@
+{
+  "include": [
+    "auth",
+    "config",
+    "contracts",
+    "event-client",
+    "observability"
+  ],
+  "exclude": ["**/node_modules", "**/__pycache__", "../.venv", "../dist"],
+  "pythonVersion": "3.12",
+  "pythonPlatform": "All",
+  "typeCheckingMode": "strict",
+  "extraPaths": [
+    "auth/src",
+    "config/src",
+    "contracts/src",
+    "event-client/src",
+    "observability/src"
+  ]
+}

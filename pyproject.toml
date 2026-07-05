@@ -1,0 +1,89 @@
+[project]
+name = "doorboard"
+version = "0.0.0"
+description = "Doorboard monorepo tooling workspace."
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "doorboard-auth",
+    "doorboard-config",
+    "doorboard-contracts",
+    "doorboard-control-plane-api",
+    "doorboard-door-api",
+    "doorboard-door-media",
+    "doorboard-door-sync",
+    "doorboard-door-visiond",
+    "doorboard-event-client",
+    "doorboard-observability",
+    "doorboard-simulator",
+    "doorboard-wallboard-worker",
+    "hatchling>=1.27.0",
+    "pyright>=1.1.403",
+    "pytest>=8.4.1",
+    "ruff>=0.12.1",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+    "packages/contracts",
+    "packages/config",
+    "packages/observability",
+    "packages/auth",
+    "packages/event-client",
+    "apps/door-api",
+    "apps/door-visiond",
+    "apps/door-media",
+    "apps/door-sync",
+    "apps/control-plane-api",
+    "apps/wallboard-worker",
+    "apps/simulator",
+]
+
+[tool.uv.sources]
+doorboard-auth = { workspace = true }
+doorboard-config = { workspace = true }
+doorboard-contracts = { workspace = true }
+doorboard-control-plane-api = { workspace = true }
+doorboard-door-api = { workspace = true }
+doorboard-door-media = { workspace = true }
+doorboard-door-sync = { workspace = true }
+doorboard-door-visiond = { workspace = true }
+doorboard-event-client = { workspace = true }
+doorboard-observability = { workspace = true }
+doorboard-simulator = { workspace = true }
+doorboard-wallboard-worker = { workspace = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["apps", "packages"]
+extend-exclude = [
+    ".venv",
+    "node_modules",
+    "dist",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+addopts = "-q --import-mode=importlib"
+testpaths = [
+    "packages/contracts/tests",
+    "packages/config/tests",
+    "packages/observability/tests",
+    "packages/auth/tests",
+    "packages/event-client/tests",
+    "apps/door-api/tests",
+    "apps/door-visiond/tests",
+    "apps/door-media/tests",
+    "apps/door-sync/tests",
+    "apps/control-plane-api/tests",
+    "apps/wallboard-worker/tests",
+    "apps/simulator/tests",
+]

@@ -1,0 +1,12 @@
+[project]
+name = "doorboard-control-plane-api"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/control_plane_api"]

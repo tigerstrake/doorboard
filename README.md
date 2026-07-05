@@ -41,6 +41,26 @@ Work is split into task briefs in [docs/tasks/](docs/tasks/), each assigned to a
 
 Rules of engagement are in [CONTRIBUTING.md](CONTRIBUTING.md). Agent-specific entry points: [CLAUDE.md](CLAUDE.md), [AGENTS.md](AGENTS.md) (Codex), [GEMINI.md](GEMINI.md).
 
+## Development setup
+
+Required tools: Python 3.12+, [uv](https://docs.astral.sh/uv/), Node.js 20+, and pnpm via Corepack.
+
+From a fresh clone, install from the committed lockfiles:
+
+```sh
+uv sync
+pnpm install
+```
+
+Run the quality gates directly or through the documented `Makefile` aliases:
+
+```sh
+scripts/lint && scripts/typecheck && scripts/test
+make lint typecheck test
+```
+
+`scripts/dev-up` and `make dev-up` are placeholders until the simulated stack lands in T-003.
+
 ## Milestones
 
 | Milestone | Goal |
