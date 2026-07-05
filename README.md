@@ -1,5 +1,7 @@
 # Doorboard
 
+[![CI](https://github.com/tigerstrake/doorboard/actions/workflows/ci.yml/badge.svg)](https://github.com/tigerstrake/doorboard/actions/workflows/ci.yml)
+
 An open-source, self-hosted, door-mounted smart-door and smart-room system. A removable "door backpack" carries a large ambient display, a small visitor touchscreen, two cameras, a physical bell button with LED/audio feedback, and a Raspberry Pi 5 + Hailo AI accelerator — backed by an indoor NUC control plane, a BirdNET Pi, and a NAS archive.
 
 **Status: architecture phase.** This repository currently contains the complete architecture, contracts, and task briefs — no implementation code yet. Implementation happens task-by-task via the multi-agent workflow described below.

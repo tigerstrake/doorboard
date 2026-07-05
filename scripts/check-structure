@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+import os
+import sys
+import re
+import urllib.parse
+import argparse
+
+def load_exclusions(exclusion_file):
+    """
+    Loads external URL / domain exclusions from a file.
+    """
+    exclusions = set()
+    if os.path.exists(exclusion_file):
+        with open(exclusion_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    exclusions.add(line)
+    return exclusions
+
+def check_task_brief(file_path):
+    """
+    Checks if a task brief has the required sections:
+    - Agent/Milestone/Depends-on header
+    - ## Context
+    - ## Deliverables
+    - ## Out of scope
+    - ## Acceptance criteria
+    """
+    errors = []
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    filename = os.path.basename(file_path)
+    is_milestone_review = filename == "T-x90-milestone-review.md"
+
+    # 1. Check Agent/Milestone/Depends-on header
+    # Format typically: **Agent:** ... · **Milestone:** ... · **Depends on:** ...
+    # We strip asterisks and spaces and check for presence of all key phrases.
+    has_header = False
+    for line in content.splitlines():
+        clean_line = line.replace('*', '').replace('_', '')
+        if 'Agent:' in clean_line and 'Milestone:' in clean_line and 'Depends on:' in clean_line:
+            has_header = True
+            break
+
+    if not has_header:
+        errors.append("Missing or malformed Agent/Milestone/Depends-on header")
+
+    # 2. Check for required sections (skip section check for milestone review templates)
+    if not is_milestone_review:
+        required_sections = [
+            "## Context",
+            "## Deliverables",
+            "## Out of scope",
+            "## Acceptance criteria"
+        ]
+        for section in required_sections:
+            # We match the header at the start of a line
+            pattern = re.compile(rf'^{re.escape(section)}\b', re.MULTILINE)
+            if not pattern.search(content):
+                errors.append(f"Missing section: '{section}'")
+
+    return errors
+
+def extract_links(content):
+    """
+    Extracts inline markdown link targets.
+    """
+    # Pattern to match [text](target) inline links
+    inline_pattern = re.compile(r'!?\[([^\]]*)\]\(([^)]+)\)')
+    links = []
+    for match in inline_pattern.finditer(content):
+        target = match.group(2).strip()
+        # Handle trailing titles like [text](target "title") or [text](target 'title')
+        parts = target.split(None, 1)
+        if parts:
+            url_part = parts[0]
+            if (url_part.startswith('"') and url_part.endswith('"')) or (url_part.startswith("'") and url_part.endswith("'")):
+                url_part = url_part[1:-1]
+            links.append(url_part)
+            
+    # Also search for reference-style definitions: [ref]: target
+    ref_pattern = re.compile(r'^\[([^\]]+)\]:\s*([^\s]+)', re.MULTILINE)
+    for match in ref_pattern.finditer(content):
+        links.append(match.group(2).strip())
+        
+    return links
+
+def is_external_link(link):
+    """
+    Checks if a link is external (starts with a schema).
+    """
+    return link.startswith(('http://', 'https://', 'mailto:', 'ftp://'))
+
+def check_file_links(file_path, repo_root, exclusions):
+    """
+    Checks that all relative markdown links in the file resolve on disk.
+    """
+    errors = []
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    links = extract_links(content)
+    file_dir = os.path.dirname(file_path)
+
+    for link in links:
+        # Ignore external links or explicitly excluded links
+        if is_external_link(link) or link in exclusions:
+            continue
+
+        # Ignore internal page anchors (e.g. #context)
+        if link.startswith('#'):
+            continue
+
+        # Split off anchor part (e.g., file.md#anchor -> file.md)
+        link_no_anchor = link.split('#')[0]
+        if not link_no_anchor:
+            continue
+
+        # Decode percent-encoded URLs (e.g. %20 -> space)
+        decoded_link = urllib.parse.unquote(link_no_anchor)
+
+        # Resolve path
+        if decoded_link.startswith('/'):
+            # Path is relative to the repository root
+            resolved_path = os.path.normpath(os.path.join(repo_root, decoded_link.lstrip('/')))
+        else:
+            # Path is relative to the file's containing directory
+            resolved_path = os.path.normpath(os.path.join(file_dir, decoded_link))
+
+        # Check if resolved path exists
+        if not os.path.exists(resolved_path):
+            errors.append(f"Broken link: '{link}' (resolved to '{os.path.relpath(resolved_path, repo_root)}')")
+
+    return errors
+
+def main():
+    parser = argparse.ArgumentParser(description="Check task briefs structure and relative markdown links.")
+    parser.add_argument("root", nargs="?", default=None, help="Root directory of the repository")
+    args = parser.parse_args()
+
+    if args.root:
+        repo_root = os.path.abspath(args.root)
+    else:
+        # Default to parent of scripts/ directory containing this file
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # Find exclusion list
+    exclusion_file = os.path.join(repo_root, "docs", "link-check-exclusion.txt")
+    exclusions = load_exclusions(exclusion_file)
+
+    failed = False
+    
+    # 1. Collect markdown files to check
+    md_files = []
+    
+    # Files directly in repo root
+    for item in os.listdir(repo_root):
+        item_path = os.path.join(repo_root, item)
+        if os.path.isfile(item_path) and item.endswith('.md'):
+            md_files.append(item_path)
+            
+    # Files in docs/ directory
+    docs_dir = os.path.join(repo_root, "docs")
+    if os.path.exists(docs_dir):
+        for root, dirs, files in os.walk(docs_dir):
+            for file in files:
+                if file.endswith('.md'):
+                    md_files.append(os.path.join(root, file))
+
+    # 2. Perform checks
+    for file_path in md_files:
+        rel_path = os.path.relpath(file_path, repo_root)
+        
+        # Check structure for task briefs under docs/tasks/
+        is_task_brief = (
+            "docs/tasks/" in rel_path.replace(os.sep, "/") 
+            and os.path.basename(file_path).startswith("T-")
+        )
+        if is_task_brief:
+            brief_errors = check_task_brief(file_path)
+            if brief_errors:
+                failed = True
+                print(f"FAIL: {rel_path} structure issues:")
+                for err in brief_errors:
+                    print(f"  - {err}")
+                    
+        # Check relative links
+        link_errors = check_file_links(file_path, repo_root, exclusions)
+        if link_errors:
+            failed = True
+            print(f"FAIL: {rel_path} link resolution issues:")
+            for err in link_errors:
+                print(f"  - {err}")
+
+    if failed:
+        sys.exit(1)
+    else:
+        print("All structure and relative link checks passed successfully!")
+        sys.exit(0)
+
+if __name__ == "__main__":
+    main()

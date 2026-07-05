@@ -10,52 +10,108 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  checks:
+  pr-title-check:
+    name: PR Title Check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR Title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "Checking PR Title: $PR_TITLE"
+          if [[ ! "$PR_TITLE" =~ ^(T-[0-9]{3}:|docs:|fix:|chore:) ]]; then
+            echo "FAIL: PR title must start with 'T-XXX:', 'docs:', 'fix:', or 'chore:'"
+            exit 1
+          fi
+          echo "PR title is valid."
+
+  changes:
+    name: Detect Changed Paths
+    runs-on: ubuntu-latest
+    outputs:
+      docs: ${{ steps.filter.outputs.docs }}
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            docs:
+              - 'docs/**'
+              - '*.md'
+              - '.github/workflows/ci.yml'
+            code:
+              - 'apps/**'
+              - 'packages/**'
+              - 'scripts/**'
+              - 'pyproject.toml'
+              - 'tsconfig.base.json'
+              - 'tsconfig.json'
+              - 'pnpm-workspace.yaml'
+              - 'pnpm-lock.yaml'
+              - 'uv.lock'
+              - 'package.json'
+              - '.github/workflows/ci.yml'
+
+  docs-checks:
+    name: Docs & Structure Validation
+    needs: changes
+    if: ${{ needs.changes.outputs.docs == 'true' || github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Enable pnpm
-        run: corepack enable
-      - name: Install Python workspace
-        run: uv sync --locked
-      - name: Install TypeScript workspace
-        run: pnpm install --frozen-lockfile
       - name: Required root documents exist
         run: |
           for f in README.md ARCHITECTURE.md CONTRIBUTING.md LICENSE CLAUDE.md AGENTS.md GEMINI.md .env.example; do
             test -f "$f" || { echo "missing $f"; exit 1; }
           done
-      - name: Task briefs have required sections
-        run: |
-          fail=0
-          for f in docs/tasks/T-*.md; do
-            # The milestone-review template intentionally deviates from the brief format.
-            [ "$f" = "docs/tasks/T-x90-milestone-review.md" ] && continue
-            for section in "## Context" "## Deliverables" "## Out of scope" "## Acceptance criteria"; do
-              grep -q "^$section" "$f" || { echo "$f: missing '$section'"; fail=1; }
-            done
-            grep -q "\*\*Agent:\*\*" "$f" || { echo "$f: missing Agent header"; fail=1; }
-          done
-          exit $fail
+      - name: Run structure and relative link checks
+        run: python scripts/check-structure
+
+  code-checks:
+    name: Code Validation (Lint, Typecheck, Test)
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' || github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Enable pnpm
+        run: corepack enable
+        
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python workspace
+        run: uv sync --locked
+
+      - name: Install TypeScript workspace
+        run: pnpm install --frozen-lockfile
+
       - name: No secrets-looking files committed
         run: |
           if git ls-files | grep -E '(^|/)\.env$|\.pem$|\.key$'; then
             echo "potential secret file committed"; exit 1
           fi
           echo ok
+
       - name: Lint
         run: scripts/lint
+
       - name: Typecheck
         run: scripts/typecheck
+
       - name: Generated contracts are current
         run: scripts/check-generated-contracts
       - name: Test
