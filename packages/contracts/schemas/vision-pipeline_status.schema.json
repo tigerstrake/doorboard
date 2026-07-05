@@ -1,0 +1,94 @@
+{
+  "$defs": {
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UUIDv7": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "VisionPipelineStatusPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "fps": {
+          "title": "Fps",
+          "type": "number"
+        },
+        "hailo_ok": {
+          "title": "Hailo Ok",
+          "type": "boolean"
+        },
+        "inference_ms_p50": {
+          "title": "Inference Ms P50",
+          "type": "number"
+        },
+        "mode": {
+          "enum": [
+            "disabled",
+            "mock",
+            "single-camera",
+            "dual-camera",
+            "hardware"
+          ],
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "hailo_ok",
+        "fps",
+        "inference_ms_p50"
+      ],
+      "title": "VisionPipelineStatusPayload",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "door_id": {
+      "title": "Door Id",
+      "type": "string"
+    },
+    "event_id": {
+      "$ref": "#/$defs/UUIDv7"
+    },
+    "monotonic_ms": {
+      "title": "Monotonic Ms",
+      "type": "integer"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "payload": {
+      "$ref": "#/$defs/VisionPipelineStatusPayload"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "vision.pipeline_status",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "source",
+    "occurred_at",
+    "monotonic_ms",
+    "door_id",
+    "trace_id",
+    "type",
+    "payload"
+  ],
+  "title": "VisionPipelineStatusEvent",
+  "type": "object"
+}

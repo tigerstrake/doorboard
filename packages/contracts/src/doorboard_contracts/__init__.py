@@ -1,0 +1,31 @@
+from doorboard_contracts.events import (
+    EVENT_ADAPTER,
+    EVENT_MODELS,
+    EVENT_TYPE_TO_MODEL,
+    LEGAL_SESSION_TRANSITIONS,
+    BaseEvent,
+    DoorboardEvent,
+    ErrorEnvelope,
+    HealthPayload,
+    HealthStatus,
+    PresenceLabel,
+    SessionState,
+    event_json_schema,
+    parse_event,
+)
+
+__all__ = [
+    "EVENT_ADAPTER",
+    "EVENT_MODELS",
+    "EVENT_TYPE_TO_MODEL",
+    "LEGAL_SESSION_TRANSITIONS",
+    "BaseEvent",
+    "DoorboardEvent",
+    "ErrorEnvelope",
+    "HealthPayload",
+    "HealthStatus",
+    "PresenceLabel",
+    "SessionState",
+    "event_json_schema",
+    "parse_event",
+]

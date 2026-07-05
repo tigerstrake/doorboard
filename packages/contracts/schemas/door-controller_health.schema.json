@@ -1,0 +1,94 @@
+{
+  "$defs": {
+    "DoorControllerHealthPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "cached_profile_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cached Profile Id"
+        },
+        "fallback_active": {
+          "title": "Fallback Active",
+          "type": "boolean"
+        },
+        "fw_version": {
+          "title": "Fw Version",
+          "type": "string"
+        },
+        "uptime_s": {
+          "title": "Uptime S",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "uptime_s",
+        "fw_version",
+        "cached_profile_id",
+        "fallback_active"
+      ],
+      "title": "DoorControllerHealthPayload",
+      "type": "object"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UUIDv7": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "door_id": {
+      "title": "Door Id",
+      "type": "string"
+    },
+    "event_id": {
+      "$ref": "#/$defs/UUIDv7"
+    },
+    "monotonic_ms": {
+      "title": "Monotonic Ms",
+      "type": "integer"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "payload": {
+      "$ref": "#/$defs/DoorControllerHealthPayload"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "door.controller_health",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "source",
+    "occurred_at",
+    "monotonic_ms",
+    "door_id",
+    "trace_id",
+    "type",
+    "payload"
+  ],
+  "title": "DoorControllerHealthEvent",
+  "type": "object"
+}

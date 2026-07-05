@@ -1,0 +1,3184 @@
+{
+  "$defs": {
+    "AmbientAircraftNearby": {
+      "additionalProperties": false,
+      "properties": {
+        "altitude_ft": {
+          "title": "Altitude Ft",
+          "type": "integer"
+        },
+        "callsign": {
+          "title": "Callsign",
+          "type": "string"
+        },
+        "distance_km": {
+          "title": "Distance Km",
+          "type": "number"
+        },
+        "heading": {
+          "title": "Heading",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "callsign",
+        "altitude_ft",
+        "distance_km",
+        "heading"
+      ],
+      "title": "AmbientAircraftNearby",
+      "type": "object"
+    },
+    "AmbientAircraftSummaryEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/AmbientAircraftSummaryPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "ambient.aircraft_summary",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "AmbientAircraftSummaryEvent",
+      "type": "object"
+    },
+    "AmbientAircraftSummaryPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "as_of": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "nearby": {
+          "items": {
+            "$ref": "#/$defs/AmbientAircraftNearby"
+          },
+          "title": "Nearby",
+          "type": "array"
+        }
+      },
+      "required": [
+        "nearby",
+        "as_of"
+      ],
+      "title": "AmbientAircraftSummaryPayload",
+      "type": "object"
+    },
+    "AmbientBirdSpeciesSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence_avg": {
+          "title": "Confidence Avg",
+          "type": "number"
+        },
+        "count": {
+          "title": "Count",
+          "type": "integer"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "count",
+        "confidence_avg"
+      ],
+      "title": "AmbientBirdSpeciesSummary",
+      "type": "object"
+    },
+    "AmbientBirdSummaryEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/AmbientBirdSummaryPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "ambient.bird_summary",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "AmbientBirdSummaryEvent",
+      "type": "object"
+    },
+    "AmbientBirdSummaryPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "top_species": {
+          "items": {
+            "$ref": "#/$defs/AmbientBirdSpeciesSummary"
+          },
+          "title": "Top Species",
+          "type": "array"
+        },
+        "total_detections": {
+          "title": "Total Detections",
+          "type": "integer"
+        },
+        "window": {
+          "const": "today",
+          "title": "Window",
+          "type": "string"
+        }
+      },
+      "required": [
+        "window",
+        "top_species",
+        "total_detections"
+      ],
+      "title": "AmbientBirdSummaryPayload",
+      "type": "object"
+    },
+    "AmbientFoodRecommendationEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/AmbientFoodRecommendationPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "ambient.food_recommendation",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "AmbientFoodRecommendationEvent",
+      "type": "object"
+    },
+    "AmbientFoodRecommendationPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "format": "date",
+          "title": "Date",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Detail"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "date",
+        "title",
+        "detail",
+        "provider"
+      ],
+      "title": "AmbientFoodRecommendationPayload",
+      "type": "object"
+    },
+    "AmbientPrinterStatusEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/AmbientPrinterStatusPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "ambient.printer_status",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "AmbientPrinterStatusEvent",
+      "type": "object"
+    },
+    "AmbientPrinterStatusPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "eta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UTCDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "job_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Job Name"
+        },
+        "progress_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Progress Pct"
+        },
+        "state": {
+          "enum": [
+            "idle",
+            "printing",
+            "paused",
+            "error",
+            "offline"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "job_name",
+        "progress_pct",
+        "eta"
+      ],
+      "title": "AmbientPrinterStatusPayload",
+      "type": "object"
+    },
+    "AmbientSatellitePassEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/AmbientSatellitePassPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "ambient.satellite_pass",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "AmbientSatellitePassEvent",
+      "type": "object"
+    },
+    "AmbientSatellitePassPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "title": "Direction",
+          "type": "string"
+        },
+        "max_elevation_deg": {
+          "title": "Max Elevation Deg",
+          "type": "number"
+        },
+        "rise_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "satellite": {
+          "title": "Satellite",
+          "type": "string"
+        },
+        "visible": {
+          "title": "Visible",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "satellite",
+        "rise_at",
+        "max_elevation_deg",
+        "direction",
+        "visible"
+      ],
+      "title": "AmbientSatellitePassPayload",
+      "type": "object"
+    },
+    "DoorButtonPressedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/DoorButtonPressedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "door.button_pressed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "DoorButtonPressedEvent",
+      "type": "object"
+    },
+    "DoorButtonPressedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "had_cached_profile": {
+          "title": "Had Cached Profile",
+          "type": "boolean"
+        },
+        "press_id": {
+          "format": "uuid",
+          "title": "Press Id",
+          "type": "string"
+        },
+        "profile_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Profile Id"
+        }
+      },
+      "required": [
+        "press_id",
+        "had_cached_profile",
+        "profile_id"
+      ],
+      "title": "DoorButtonPressedPayload",
+      "type": "object"
+    },
+    "DoorContactChangedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/DoorContactChangedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "door.contact_changed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "DoorContactChangedEvent",
+      "type": "object"
+    },
+    "DoorContactChangedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "enum": [
+            "open",
+            "closed"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "DoorContactChangedPayload",
+      "type": "object"
+    },
+    "DoorControllerHealthEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/DoorControllerHealthPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "door.controller_health",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "DoorControllerHealthEvent",
+      "type": "object"
+    },
+    "DoorControllerHealthPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "cached_profile_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cached Profile Id"
+        },
+        "fallback_active": {
+          "title": "Fallback Active",
+          "type": "boolean"
+        },
+        "fw_version": {
+          "title": "Fw Version",
+          "type": "string"
+        },
+        "uptime_s": {
+          "title": "Uptime S",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "uptime_s",
+        "fw_version",
+        "cached_profile_id",
+        "fallback_active"
+      ],
+      "title": "DoorControllerHealthPayload",
+      "type": "object"
+    },
+    "DoorEffectPlayEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/DoorEffectPlayPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "door.effect_play",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "DoorEffectPlayEvent",
+      "type": "object"
+    },
+    "DoorEffectPlayPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "duration_ms": {
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "effect_id": {
+          "title": "Effect Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "effect_id",
+        "duration_ms"
+      ],
+      "title": "DoorEffectPlayPayload",
+      "type": "object"
+    },
+    "DoorKnockDetectedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/DoorKnockDetectedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "door.knock_detected",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "DoorKnockDetectedEvent",
+      "type": "object"
+    },
+    "DoorKnockDetectedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "title": "Confidence",
+          "type": "number"
+        },
+        "pattern_id": {
+          "title": "Pattern Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern_id",
+        "confidence"
+      ],
+      "title": "DoorKnockDetectedPayload",
+      "type": "object"
+    },
+    "DoorProfileClearEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/DoorProfileClearPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "door.profile_clear",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "DoorProfileClearEvent",
+      "type": "object"
+    },
+    "DoorProfileClearPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "enum": [
+            "expired",
+            "privacy_mode",
+            "admin"
+          ],
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "DoorProfileClearPayload",
+      "type": "object"
+    },
+    "DoorProfileUpdateEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/DoorProfileUpdatePayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "door.profile_update",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "DoorProfileUpdateEvent",
+      "type": "object"
+    },
+    "DoorProfileUpdatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "expires_at_monotonic_ms": {
+          "title": "Expires At Monotonic Ms",
+          "type": "integer"
+        },
+        "priority": {
+          "enum": [
+            "normal",
+            "high"
+          ],
+          "title": "Priority",
+          "type": "string"
+        },
+        "profile_id": {
+          "title": "Profile Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile_id",
+        "expires_at_monotonic_ms",
+        "priority"
+      ],
+      "title": "DoorProfileUpdatePayload",
+      "type": "object"
+    },
+    "HealthStatus": {
+      "enum": [
+        "ok",
+        "degraded",
+        "down"
+      ],
+      "title": "HealthStatus",
+      "type": "string"
+    },
+    "MediaRecordingFinalizedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/MediaRecordingFinalizedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "media.recording_finalized",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "MediaRecordingFinalizedEvent",
+      "type": "object"
+    },
+    "MediaRecordingFinalizedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "consent_context": {
+          "enum": [
+            "visitor_initiated",
+            "bell_event"
+          ],
+          "title": "Consent Context",
+          "type": "string"
+        },
+        "duration_s": {
+          "title": "Duration S",
+          "type": "number"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "recording_id": {
+          "format": "uuid",
+          "title": "Recording Id",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "recording_id",
+        "path",
+        "duration_s",
+        "size_bytes",
+        "sha256",
+        "consent_context"
+      ],
+      "title": "MediaRecordingFinalizedPayload",
+      "type": "object"
+    },
+    "MediaRecordingStartedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/MediaRecordingStartedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "media.recording_started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "MediaRecordingStartedEvent",
+      "type": "object"
+    },
+    "MediaRecordingStartedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "bell_clip",
+            "video_message",
+            "photo_booth"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "recording_id": {
+          "format": "uuid",
+          "title": "Recording Id",
+          "type": "string"
+        },
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "stream": {
+          "title": "Stream",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording_id",
+        "session_id",
+        "kind",
+        "stream"
+      ],
+      "title": "MediaRecordingStartedPayload",
+      "type": "object"
+    },
+    "MediaRetentionDeletedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/MediaRetentionDeletedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "media.retention_deleted",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "MediaRetentionDeletedEvent",
+      "type": "object"
+    },
+    "MediaRetentionDeletedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "enum": [
+            "age",
+            "space",
+            "user_request",
+            "synced"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "recording_id": {
+          "format": "uuid",
+          "title": "Recording Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording_id",
+        "reason"
+      ],
+      "title": "MediaRetentionDeletedPayload",
+      "type": "object"
+    },
+    "MediaStorageStatusEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/MediaStorageStatusPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "media.storage_status",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "MediaStorageStatusEvent",
+      "type": "object"
+    },
+    "MediaStorageStatusPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "free_bytes": {
+          "title": "Free Bytes",
+          "type": "integer"
+        },
+        "oldest_unsynced_s": {
+          "title": "Oldest Unsynced S",
+          "type": "integer"
+        },
+        "queue_depth": {
+          "title": "Queue Depth",
+          "type": "integer"
+        },
+        "recording_allowed": {
+          "title": "Recording Allowed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "free_bytes",
+        "queue_depth",
+        "oldest_unsynced_s",
+        "recording_allowed"
+      ],
+      "title": "MediaStorageStatusPayload",
+      "type": "object"
+    },
+    "MediaThumbnailReadyEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/MediaThumbnailReadyPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "media.thumbnail_ready",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "MediaThumbnailReadyEvent",
+      "type": "object"
+    },
+    "MediaThumbnailReadyPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "recording_id": {
+          "format": "uuid",
+          "title": "Recording Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording_id",
+        "path"
+      ],
+      "title": "MediaThumbnailReadyPayload",
+      "type": "object"
+    },
+    "PresenceLabel": {
+      "enum": [
+        "available",
+        "busy",
+        "do_not_disturb",
+        "sleeping",
+        "at_class",
+        "at_library",
+        "away",
+        "unknown"
+      ],
+      "title": "PresenceLabel",
+      "type": "string"
+    },
+    "SessionEndedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SessionEndedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "session.ended",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SessionEndedEvent",
+      "type": "object"
+    },
+    "SessionEndedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {
+          "enum": [
+            "answered",
+            "unanswered_timeout",
+            "message_left",
+            "abandoned",
+            "reset"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "outcome"
+      ],
+      "title": "SessionEndedPayload",
+      "type": "object"
+    },
+    "SessionStartedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SessionStartedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "session.started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SessionStartedEvent",
+      "type": "object"
+    },
+    "SessionStartedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "entry": {
+          "enum": [
+            "button",
+            "touch",
+            "approach"
+          ],
+          "title": "Entry",
+          "type": "string"
+        },
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "entry"
+      ],
+      "title": "SessionStartedPayload",
+      "type": "object"
+    },
+    "SessionState": {
+      "enum": [
+        "IDLE",
+        "APPROACH_DETECTED",
+        "IDENTITY_CACHED",
+        "BUTTON_PRESSED",
+        "VISITOR_MODE",
+        "RINGING",
+        "ANSWERED",
+        "UNANSWERED_TIMEOUT",
+        "VIDEO_MESSAGE_OFFERED",
+        "VIDEO_MESSAGE_RECORDING",
+        "VIDEO_MESSAGE_REVIEW",
+        "VIDEO_MESSAGE_SAVED",
+        "SESSION_END"
+      ],
+      "title": "SessionState",
+      "type": "string"
+    },
+    "SessionStateChangedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SessionStateChangedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "session.state_changed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SessionStateChangedEvent",
+      "type": "object"
+    },
+    "SessionStateChangedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "from_state": {
+          "$ref": "#/$defs/SessionState"
+        },
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "to_state": {
+          "$ref": "#/$defs/SessionState"
+        },
+        "trigger": {
+          "title": "Trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "from_state",
+        "to_state",
+        "trigger"
+      ],
+      "title": "SessionStateChangedPayload",
+      "type": "object"
+    },
+    "SocialCheckinCreatedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SocialCheckinCreatedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "social.checkin_created",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SocialCheckinCreatedEvent",
+      "type": "object"
+    },
+    "SocialCheckinCreatedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "checkin_id": {
+          "format": "uuid",
+          "title": "Checkin Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Label"
+        },
+        "person_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Person Id"
+        }
+      },
+      "required": [
+        "checkin_id",
+        "person_id",
+        "label"
+      ],
+      "title": "SocialCheckinCreatedPayload",
+      "type": "object"
+    },
+    "SocialDeletionRequestedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SocialDeletionRequestedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "social.deletion_requested",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SocialDeletionRequestedEvent",
+      "type": "object"
+    },
+    "SocialDeletionRequestedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "target_kind": {
+          "enum": [
+            "guestbook",
+            "video_message",
+            "photo",
+            "checkin",
+            "enrollment"
+          ],
+          "title": "Target Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_kind",
+        "target_id"
+      ],
+      "title": "SocialDeletionRequestedPayload",
+      "type": "object"
+    },
+    "SocialGuestbookEntryCreatedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SocialGuestbookEntryCreatedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "social.guestbook_entry_created",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SocialGuestbookEntryCreatedEvent",
+      "type": "object"
+    },
+    "SocialGuestbookEntryCreatedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "author_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Author Label"
+        },
+        "entry_id": {
+          "format": "uuid",
+          "title": "Entry Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entry_id",
+        "text",
+        "author_label"
+      ],
+      "title": "SocialGuestbookEntryCreatedPayload",
+      "type": "object"
+    },
+    "SocialMoodUpdatedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SocialMoodUpdatedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "social.mood_updated",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SocialMoodUpdatedEvent",
+      "type": "object"
+    },
+    "SocialMoodUpdatedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "mood": {
+          "title": "Mood",
+          "type": "string"
+        },
+        "subject_id": {
+          "title": "Subject Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject_id",
+        "mood"
+      ],
+      "title": "SocialMoodUpdatedPayload",
+      "type": "object"
+    },
+    "SocialPollVoteCastEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SocialPollVoteCastPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "social.poll_vote_cast",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SocialPollVoteCastEvent",
+      "type": "object"
+    },
+    "SocialPollVoteCastPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "option_id": {
+          "title": "Option Id",
+          "type": "string"
+        },
+        "poll_id": {
+          "title": "Poll Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "poll_id",
+        "option_id"
+      ],
+      "title": "SocialPollVoteCastPayload",
+      "type": "object"
+    },
+    "SocialScoreboardUpdatedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SocialScoreboardUpdatedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "social.scoreboard_updated",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SocialScoreboardUpdatedEvent",
+      "type": "object"
+    },
+    "SocialScoreboardUpdatedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "board_id": {
+          "title": "Board Id",
+          "type": "string"
+        },
+        "delta": {
+          "title": "Delta",
+          "type": "integer"
+        },
+        "entry_id": {
+          "format": "uuid",
+          "title": "Entry Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "board_id",
+        "entry_id",
+        "delta"
+      ],
+      "title": "SocialScoreboardUpdatedPayload",
+      "type": "object"
+    },
+    "StatusPresenceChangedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/StatusPresenceChangedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "status.presence_changed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "StatusPresenceChangedEvent",
+      "type": "object"
+    },
+    "StatusPresenceChangedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "$ref": "#/$defs/PresenceLabel"
+        },
+        "source": {
+          "enum": [
+            "manual",
+            "focus_shortcut",
+            "geofence_label",
+            "calendar",
+            "default"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "subject_id": {
+          "title": "Subject Id",
+          "type": "string"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UTCDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "subject_id",
+        "label",
+        "source",
+        "until"
+      ],
+      "title": "StatusPresenceChangedPayload",
+      "type": "object"
+    },
+    "SyncUploadCompletedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SyncUploadCompletedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "sync.upload_completed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SyncUploadCompletedEvent",
+      "type": "object"
+    },
+    "SyncUploadCompletedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "attempts": {
+          "title": "Attempts",
+          "type": "integer"
+        },
+        "item_id": {
+          "format": "uuid",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "verified_sha256": {
+          "title": "Verified Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "verified_sha256",
+        "attempts"
+      ],
+      "title": "SyncUploadCompletedPayload",
+      "type": "object"
+    },
+    "SyncUploadFailedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SyncUploadFailedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "sync.upload_failed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SyncUploadFailedEvent",
+      "type": "object"
+    },
+    "SyncUploadFailedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "attempts": {
+          "title": "Attempts",
+          "type": "integer"
+        },
+        "error_class": {
+          "title": "Error Class",
+          "type": "string"
+        },
+        "item_id": {
+          "format": "uuid",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "next_retry_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        }
+      },
+      "required": [
+        "item_id",
+        "attempts",
+        "next_retry_at",
+        "error_class"
+      ],
+      "title": "SyncUploadFailedPayload",
+      "type": "object"
+    },
+    "SyncUploadQueuedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SyncUploadQueuedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "sync.upload_queued",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SyncUploadQueuedEvent",
+      "type": "object"
+    },
+    "SyncUploadQueuedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "item_id": {
+          "format": "uuid",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "recording_id": {
+          "format": "uuid",
+          "title": "Recording Id",
+          "type": "string"
+        },
+        "target": {
+          "enum": [
+            "nas",
+            "nuc"
+          ],
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "recording_id",
+        "target"
+      ],
+      "title": "SyncUploadQueuedPayload",
+      "type": "object"
+    },
+    "SystemLatencySampleEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SystemLatencySamplePayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "system.latency_sample",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SystemLatencySampleEvent",
+      "type": "object"
+    },
+    "SystemLatencySamplePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "p50_ms": {
+          "title": "P50 Ms",
+          "type": "number"
+        },
+        "p95_ms": {
+          "title": "P95 Ms",
+          "type": "number"
+        },
+        "p99_ms": {
+          "title": "P99 Ms",
+          "type": "number"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "window_s": {
+          "title": "Window S",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "p50_ms",
+        "p95_ms",
+        "p99_ms",
+        "window_s"
+      ],
+      "title": "SystemLatencySamplePayload",
+      "type": "object"
+    },
+    "SystemServiceHealthEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SystemServiceHealthPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "system.service_health",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SystemServiceHealthEvent",
+      "type": "object"
+    },
+    "SystemServiceHealthPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "service": {
+          "title": "Service",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/HealthStatus"
+        }
+      },
+      "required": [
+        "service",
+        "status"
+      ],
+      "title": "SystemServiceHealthPayload",
+      "type": "object"
+    },
+    "SystemStorageAlertEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/SystemStorageAlertPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "system.storage_alert",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "SystemStorageAlertEvent",
+      "type": "object"
+    },
+    "SystemStorageAlertPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "free_bytes": {
+          "title": "Free Bytes",
+          "type": "integer"
+        },
+        "host": {
+          "title": "Host",
+          "type": "string"
+        },
+        "mount": {
+          "title": "Mount",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "warning",
+            "critical"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "mount",
+        "free_bytes",
+        "severity"
+      ],
+      "title": "SystemStorageAlertPayload",
+      "type": "object"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UUIDv7": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "VisionFaceVisibleEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/VisionFaceVisiblePayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "vision.face_visible",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "VisionFaceVisibleEvent",
+      "type": "object"
+    },
+    "VisionFaceVisiblePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "face_count": {
+          "title": "Face Count",
+          "type": "integer"
+        },
+        "largest_face_px": {
+          "title": "Largest Face Px",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "face_count",
+        "largest_face_px"
+      ],
+      "title": "VisionFaceVisiblePayload",
+      "type": "object"
+    },
+    "VisionIdentityExpiredEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/VisionIdentityExpiredPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "vision.identity_expired",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "VisionIdentityExpiredEvent",
+      "type": "object"
+    },
+    "VisionIdentityExpiredPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "person_id": {
+          "title": "Person Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "person_id"
+      ],
+      "title": "VisionIdentityExpiredPayload",
+      "type": "object"
+    },
+    "VisionIdentityStableEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/VisionIdentityStablePayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "vision.identity_stable",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "VisionIdentityStableEvent",
+      "type": "object"
+    },
+    "VisionIdentityStablePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "title": "Confidence",
+          "type": "number"
+        },
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "expires_at_monotonic_ms": {
+          "title": "Expires At Monotonic Ms",
+          "type": "integer"
+        },
+        "person_id": {
+          "title": "Person Id",
+          "type": "string"
+        },
+        "profile_id": {
+          "title": "Profile Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "person_id",
+        "display_name",
+        "confidence",
+        "expires_at",
+        "expires_at_monotonic_ms",
+        "profile_id"
+      ],
+      "title": "VisionIdentityStablePayload",
+      "type": "object"
+    },
+    "VisionPipelineStatusEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/VisionPipelineStatusPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "vision.pipeline_status",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "VisionPipelineStatusEvent",
+      "type": "object"
+    },
+    "VisionPipelineStatusPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "fps": {
+          "title": "Fps",
+          "type": "number"
+        },
+        "hailo_ok": {
+          "title": "Hailo Ok",
+          "type": "boolean"
+        },
+        "inference_ms_p50": {
+          "title": "Inference Ms P50",
+          "type": "number"
+        },
+        "mode": {
+          "enum": [
+            "disabled",
+            "mock",
+            "single-camera",
+            "dual-camera",
+            "hardware"
+          ],
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "hailo_ok",
+        "fps",
+        "inference_ms_p50"
+      ],
+      "title": "VisionPipelineStatusPayload",
+      "type": "object"
+    },
+    "VisionPrivacyModeChangedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "door_id": {
+          "title": "Door Id",
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/UUIDv7"
+        },
+        "monotonic_ms": {
+          "title": "Monotonic Ms",
+          "type": "integer"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "payload": {
+          "$ref": "#/$defs/VisionPrivacyModeChangedPayload"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "vision.privacy_mode_changed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "source",
+        "occurred_at",
+        "monotonic_ms",
+        "door_id",
+        "trace_id",
+        "type",
+        "payload"
+      ],
+      "title": "VisionPrivacyModeChangedEvent",
+      "type": "object"
+    },
+    "VisionPrivacyModeChangedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "changed_by": {
+          "enum": [
+            "admin",
+            "schedule",
+            "physical"
+          ],
+          "title": "Changed By",
+          "type": "string"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled",
+        "changed_by"
+      ],
+      "title": "VisionPrivacyModeChangedPayload",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "ambient.aircraft_summary": "#/$defs/AmbientAircraftSummaryEvent",
+      "ambient.bird_summary": "#/$defs/AmbientBirdSummaryEvent",
+      "ambient.food_recommendation": "#/$defs/AmbientFoodRecommendationEvent",
+      "ambient.printer_status": "#/$defs/AmbientPrinterStatusEvent",
+      "ambient.satellite_pass": "#/$defs/AmbientSatellitePassEvent",
+      "door.button_pressed": "#/$defs/DoorButtonPressedEvent",
+      "door.contact_changed": "#/$defs/DoorContactChangedEvent",
+      "door.controller_health": "#/$defs/DoorControllerHealthEvent",
+      "door.effect_play": "#/$defs/DoorEffectPlayEvent",
+      "door.knock_detected": "#/$defs/DoorKnockDetectedEvent",
+      "door.profile_clear": "#/$defs/DoorProfileClearEvent",
+      "door.profile_update": "#/$defs/DoorProfileUpdateEvent",
+      "media.recording_finalized": "#/$defs/MediaRecordingFinalizedEvent",
+      "media.recording_started": "#/$defs/MediaRecordingStartedEvent",
+      "media.retention_deleted": "#/$defs/MediaRetentionDeletedEvent",
+      "media.storage_status": "#/$defs/MediaStorageStatusEvent",
+      "media.thumbnail_ready": "#/$defs/MediaThumbnailReadyEvent",
+      "session.ended": "#/$defs/SessionEndedEvent",
+      "session.started": "#/$defs/SessionStartedEvent",
+      "session.state_changed": "#/$defs/SessionStateChangedEvent",
+      "social.checkin_created": "#/$defs/SocialCheckinCreatedEvent",
+      "social.deletion_requested": "#/$defs/SocialDeletionRequestedEvent",
+      "social.guestbook_entry_created": "#/$defs/SocialGuestbookEntryCreatedEvent",
+      "social.mood_updated": "#/$defs/SocialMoodUpdatedEvent",
+      "social.poll_vote_cast": "#/$defs/SocialPollVoteCastEvent",
+      "social.scoreboard_updated": "#/$defs/SocialScoreboardUpdatedEvent",
+      "status.presence_changed": "#/$defs/StatusPresenceChangedEvent",
+      "sync.upload_completed": "#/$defs/SyncUploadCompletedEvent",
+      "sync.upload_failed": "#/$defs/SyncUploadFailedEvent",
+      "sync.upload_queued": "#/$defs/SyncUploadQueuedEvent",
+      "system.latency_sample": "#/$defs/SystemLatencySampleEvent",
+      "system.service_health": "#/$defs/SystemServiceHealthEvent",
+      "system.storage_alert": "#/$defs/SystemStorageAlertEvent",
+      "vision.face_visible": "#/$defs/VisionFaceVisibleEvent",
+      "vision.identity_expired": "#/$defs/VisionIdentityExpiredEvent",
+      "vision.identity_stable": "#/$defs/VisionIdentityStableEvent",
+      "vision.pipeline_status": "#/$defs/VisionPipelineStatusEvent",
+      "vision.privacy_mode_changed": "#/$defs/VisionPrivacyModeChangedEvent"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/DoorButtonPressedEvent"
+    },
+    {
+      "$ref": "#/$defs/DoorKnockDetectedEvent"
+    },
+    {
+      "$ref": "#/$defs/DoorContactChangedEvent"
+    },
+    {
+      "$ref": "#/$defs/DoorProfileUpdateEvent"
+    },
+    {
+      "$ref": "#/$defs/DoorProfileClearEvent"
+    },
+    {
+      "$ref": "#/$defs/DoorEffectPlayEvent"
+    },
+    {
+      "$ref": "#/$defs/DoorControllerHealthEvent"
+    },
+    {
+      "$ref": "#/$defs/VisionFaceVisibleEvent"
+    },
+    {
+      "$ref": "#/$defs/VisionIdentityStableEvent"
+    },
+    {
+      "$ref": "#/$defs/VisionIdentityExpiredEvent"
+    },
+    {
+      "$ref": "#/$defs/VisionPrivacyModeChangedEvent"
+    },
+    {
+      "$ref": "#/$defs/VisionPipelineStatusEvent"
+    },
+    {
+      "$ref": "#/$defs/SessionStateChangedEvent"
+    },
+    {
+      "$ref": "#/$defs/SessionStartedEvent"
+    },
+    {
+      "$ref": "#/$defs/SessionEndedEvent"
+    },
+    {
+      "$ref": "#/$defs/MediaRecordingStartedEvent"
+    },
+    {
+      "$ref": "#/$defs/MediaRecordingFinalizedEvent"
+    },
+    {
+      "$ref": "#/$defs/MediaThumbnailReadyEvent"
+    },
+    {
+      "$ref": "#/$defs/MediaRetentionDeletedEvent"
+    },
+    {
+      "$ref": "#/$defs/MediaStorageStatusEvent"
+    },
+    {
+      "$ref": "#/$defs/SyncUploadQueuedEvent"
+    },
+    {
+      "$ref": "#/$defs/SyncUploadCompletedEvent"
+    },
+    {
+      "$ref": "#/$defs/SyncUploadFailedEvent"
+    },
+    {
+      "$ref": "#/$defs/StatusPresenceChangedEvent"
+    },
+    {
+      "$ref": "#/$defs/SocialGuestbookEntryCreatedEvent"
+    },
+    {
+      "$ref": "#/$defs/SocialPollVoteCastEvent"
+    },
+    {
+      "$ref": "#/$defs/SocialCheckinCreatedEvent"
+    },
+    {
+      "$ref": "#/$defs/SocialMoodUpdatedEvent"
+    },
+    {
+      "$ref": "#/$defs/SocialScoreboardUpdatedEvent"
+    },
+    {
+      "$ref": "#/$defs/SocialDeletionRequestedEvent"
+    },
+    {
+      "$ref": "#/$defs/AmbientBirdSummaryEvent"
+    },
+    {
+      "$ref": "#/$defs/AmbientSatellitePassEvent"
+    },
+    {
+      "$ref": "#/$defs/AmbientAircraftSummaryEvent"
+    },
+    {
+      "$ref": "#/$defs/AmbientPrinterStatusEvent"
+    },
+    {
+      "$ref": "#/$defs/AmbientFoodRecommendationEvent"
+    },
+    {
+      "$ref": "#/$defs/SystemServiceHealthEvent"
+    },
+    {
+      "$ref": "#/$defs/SystemStorageAlertEvent"
+    },
+    {
+      "$ref": "#/$defs/SystemLatencySampleEvent"
+    }
+  ]
+}

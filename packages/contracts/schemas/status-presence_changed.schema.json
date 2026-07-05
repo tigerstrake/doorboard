@@ -1,0 +1,113 @@
+{
+  "$defs": {
+    "PresenceLabel": {
+      "enum": [
+        "available",
+        "busy",
+        "do_not_disturb",
+        "sleeping",
+        "at_class",
+        "at_library",
+        "away",
+        "unknown"
+      ],
+      "title": "PresenceLabel",
+      "type": "string"
+    },
+    "StatusPresenceChangedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "$ref": "#/$defs/PresenceLabel"
+        },
+        "source": {
+          "enum": [
+            "manual",
+            "focus_shortcut",
+            "geofence_label",
+            "calendar",
+            "default"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "subject_id": {
+          "title": "Subject Id",
+          "type": "string"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UTCDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "subject_id",
+        "label",
+        "source",
+        "until"
+      ],
+      "title": "StatusPresenceChangedPayload",
+      "type": "object"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UUIDv7": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "door_id": {
+      "title": "Door Id",
+      "type": "string"
+    },
+    "event_id": {
+      "$ref": "#/$defs/UUIDv7"
+    },
+    "monotonic_ms": {
+      "title": "Monotonic Ms",
+      "type": "integer"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "payload": {
+      "$ref": "#/$defs/StatusPresenceChangedPayload"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "status.presence_changed",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "source",
+    "occurred_at",
+    "monotonic_ms",
+    "door_id",
+    "trace_id",
+    "type",
+    "payload"
+  ],
+  "title": "StatusPresenceChangedEvent",
+  "type": "object"
+}

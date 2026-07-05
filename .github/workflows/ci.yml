@@ -56,5 +56,7 @@ jobs:
         run: scripts/lint
       - name: Typecheck
         run: scripts/typecheck
+      - name: Generated contracts are current
+        run: scripts/check-generated-contracts
       - name: Test
         run: scripts/test

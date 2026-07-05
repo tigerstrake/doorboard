@@ -1,0 +1,110 @@
+{
+  "$defs": {
+    "AmbientBirdSpeciesSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence_avg": {
+          "title": "Confidence Avg",
+          "type": "number"
+        },
+        "count": {
+          "title": "Count",
+          "type": "integer"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "count",
+        "confidence_avg"
+      ],
+      "title": "AmbientBirdSpeciesSummary",
+      "type": "object"
+    },
+    "AmbientBirdSummaryPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "top_species": {
+          "items": {
+            "$ref": "#/$defs/AmbientBirdSpeciesSummary"
+          },
+          "title": "Top Species",
+          "type": "array"
+        },
+        "total_detections": {
+          "title": "Total Detections",
+          "type": "integer"
+        },
+        "window": {
+          "const": "today",
+          "title": "Window",
+          "type": "string"
+        }
+      },
+      "required": [
+        "window",
+        "top_species",
+        "total_detections"
+      ],
+      "title": "AmbientBirdSummaryPayload",
+      "type": "object"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UUIDv7": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "door_id": {
+      "title": "Door Id",
+      "type": "string"
+    },
+    "event_id": {
+      "$ref": "#/$defs/UUIDv7"
+    },
+    "monotonic_ms": {
+      "title": "Monotonic Ms",
+      "type": "integer"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "payload": {
+      "$ref": "#/$defs/AmbientBirdSummaryPayload"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "ambient.bird_summary",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "source",
+    "occurred_at",
+    "monotonic_ms",
+    "door_id",
+    "trace_id",
+    "type",
+    "payload"
+  ],
+  "title": "AmbientBirdSummaryEvent",
+  "type": "object"
+}

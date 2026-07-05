@@ -1,0 +1,15 @@
+{
+  "door_id": "primary",
+  "event_id": "018f6b2e-7c9a-7000-8000-3f9d2ba41c11",
+  "monotonic_ms": 123456789,
+  "occurred_at": "2026-07-04T12:34:56.123000Z",
+  "payload": {
+    "cached_profile_id": "blue_wave",
+    "fallback_active": false,
+    "fw_version": "0.1.0",
+    "uptime_s": 3600
+  },
+  "source": "doorboard-contracts-test",
+  "trace_id": "9d1e8a34-52a1-4b0e-9c0f-2a7d1f66b100",
+  "type": "door.controller_health"
+}

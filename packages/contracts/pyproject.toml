@@ -2,7 +2,12 @@
 name = "doorboard-contracts"
 version = "0.0.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic>=2.8,<3",
+]
+
+[project.scripts]
+contracts = "doorboard_contracts.cli:main"
 
 [build-system]
 requires = ["hatchling"]

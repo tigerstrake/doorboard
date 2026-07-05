@@ -1,0 +1,17 @@
+{
+  "door_id": "primary",
+  "event_id": "018f6b2e-7c9a-7000-8000-3f9d2ba41c11",
+  "monotonic_ms": 123456789,
+  "occurred_at": "2026-07-04T12:34:56.123000Z",
+  "payload": {
+    "consent_context": "bell_event",
+    "duration_s": 12.4,
+    "path": "recordings/2026/07/04/bell.mp4",
+    "recording_id": "c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "size_bytes": 1048576
+  },
+  "source": "doorboard-contracts-test",
+  "trace_id": "9d1e8a34-52a1-4b0e-9c0f-2a7d1f66b100",
+  "type": "media.recording_finalized"
+}

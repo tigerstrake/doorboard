@@ -1,0 +1,77 @@
+{
+  "$defs": {
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UUIDv7": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "VisionFaceVisiblePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "face_count": {
+          "title": "Face Count",
+          "type": "integer"
+        },
+        "largest_face_px": {
+          "title": "Largest Face Px",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "face_count",
+        "largest_face_px"
+      ],
+      "title": "VisionFaceVisiblePayload",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "door_id": {
+      "title": "Door Id",
+      "type": "string"
+    },
+    "event_id": {
+      "$ref": "#/$defs/UUIDv7"
+    },
+    "monotonic_ms": {
+      "title": "Monotonic Ms",
+      "type": "integer"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "payload": {
+      "$ref": "#/$defs/VisionFaceVisiblePayload"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "vision.face_visible",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "source",
+    "occurred_at",
+    "monotonic_ms",
+    "door_id",
+    "trace_id",
+    "type",
+    "payload"
+  ],
+  "title": "VisionFaceVisibleEvent",
+  "type": "object"
+}

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PYTHONPATH="${PWD}/packages/contracts/src${PYTHONPATH:+:${PYTHONPATH}}"
+
+uv run python -m doorboard_contracts.cli export-schemas
+uv run python -m doorboard_contracts.cli generate-ts
+git diff --exit-code -- packages/contracts/schemas packages/contracts/types
