@@ -129,6 +129,12 @@ source = { editable = "apps/door-sync" }
 name = "doorboard-door-visiond"
 version = "0.0.0"
 source = { editable = "apps/door-visiond" }
+dependencies = [
+    { name = "doorboard-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "doorboard-contracts", editable = "packages/contracts" }]
 
 [[package]]
 name = "doorboard-event-client"
@@ -144,6 +150,20 @@ source = { editable = "packages/observability" }
 name = "doorboard-simulator"
 version = "0.0.0"
 source = { editable = "apps/simulator" }
+dependencies = [
+    { name = "doorboard-contracts" },
+    { name = "doorboard-door-api" },
+    { name = "doorboard-door-media" },
+    { name = "doorboard-door-visiond" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "doorboard-door-api", editable = "apps/door-api" },
+    { name = "doorboard-door-media", editable = "apps/door-media" },
+    { name = "doorboard-door-visiond", editable = "apps/door-visiond" },
+]
 
 [[package]]
 name = "doorboard-wallboard-worker"

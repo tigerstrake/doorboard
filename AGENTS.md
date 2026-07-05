@@ -15,6 +15,7 @@ You are the **senior implementer** for this project. You build the correctness- 
 - **Contracts are law.** Use `packages/contracts` types for every message. If you need a new event or field, open an `escalation` issue — do not invent JSON.
 - **Measure, don't assume.** Latency-relevant code paths get metrics (`GET /metrics`) and, where a brief says so, benchmark coverage. Use monotonic clocks for durations and expiries.
 - **Fail into the degraded modes** in ARCHITECTURE.md §10 — never into a crash loop or a lying UI.
+- **Never set `PYTHONPATH` anywhere.** The uv workspace resolves all imports via editable installs. If an import fails, the environment is broken — report it via escalation instead of masking it; this ruling has been enforced in review twice.
 
 ## Workflow
 

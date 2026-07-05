@@ -5,6 +5,7 @@
   "pythonPlatform": "All",
   "typeCheckingMode": "basic",
   "extraPaths": [
+    "packages/contracts/src",
     "apps/door-api/src",
     "apps/door-visiond/src",
     "apps/door-media/src",

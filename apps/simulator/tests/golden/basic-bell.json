@@ -1,0 +1,36 @@
+{
+  "events": [
+    {
+      "monotonic_ms": 100,
+      "payload": {
+        "had_cached_profile": false,
+        "press_id": "00000000-0000-0000-0000-000000000001",
+        "profile_id": null
+      },
+      "type": "door.button_pressed"
+    },
+    {
+      "monotonic_ms": 120,
+      "payload": {
+        "kind": "bell_clip",
+        "recording_id": "c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788",
+        "session_id": "0f7e3f6f-6d69-44f7-b2e0-20f520cb04f5",
+        "stream": "visitor-main"
+      },
+      "type": "media.recording_started"
+    },
+    {
+      "monotonic_ms": 1120,
+      "payload": {
+        "consent_context": "bell_event",
+        "duration_s": 1.0,
+        "path": "recordings/c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788.mp4",
+        "recording_id": "c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788",
+        "sha256": "80e91ef766950f9ebf3aa348e019f0d1c4cf404dec0210e2d0db258dd9a8b3a0",
+        "size_bytes": 93
+      },
+      "type": "media.recording_finalized"
+    }
+  ],
+  "scenario": "basic-bell"
+}

@@ -16,3 +16,23 @@ Makes the entire door experience developable with zero hardware. The simulator s
 ## Rules
 
 The simulator uses `packages/contracts` types and the same adapter interfaces as production — if the simulator needs a hack, the seam is wrong (escalate). CI depends on this app: it must stay fast and dependency-light.
+
+## Usage
+
+Run a deterministic headless scenario:
+
+```bash
+PYTHONPATH=apps/door-api/src:apps/door-media/src:apps/door-visiond/src:apps/simulator/src:packages/contracts/src uv run python -m doorboard_simulator run basic-bell
+```
+
+List scenarios:
+
+```bash
+PYTHONPATH=apps/door-api/src:apps/door-media/src:apps/door-visiond/src:apps/simulator/src:packages/contracts/src uv run python -m doorboard_simulator list
+```
+
+Start the local control panel:
+
+```bash
+scripts/dev-up --host 127.0.0.1 --port 8765
+```
