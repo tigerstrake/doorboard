@@ -40,6 +40,7 @@ Stop and open an issue labeled `escalation` (assigned to `agent:claude`) instead
 - Hardware must be optional: every service runs in mock/simulation mode in dev and CI.
 - All inter-service messages use `packages/contracts` types — no ad hoc JSON.
 - UTC internally; local timezone only at the display boundary; monotonic time for latency/expiry.
+- Never set `PYTHONPATH` in scripts, config, or code (Claude-tier review ruling, twice enforced). The uv workspace's editable installs resolve all imports; if an import fails, the packaging or environment is broken — fix that, don't mask it.
 
 ## Code standards
 

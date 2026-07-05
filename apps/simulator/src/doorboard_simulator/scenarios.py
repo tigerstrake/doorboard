@@ -43,7 +43,7 @@ def load_scenario(path: Path) -> Scenario:
 
 
 def scenario_path(name: str) -> Path:
-    path = SCENARIO_DIR / f"{name}.yaml"
+    path = SCENARIO_DIR / f"{name}.json"
     if not path.exists():
         msg = f"unknown scenario: {name}"
         raise FileNotFoundError(msg)
@@ -51,7 +51,7 @@ def scenario_path(name: str) -> Path:
 
 
 def available_scenarios() -> list[str]:
-    return sorted(path.stem for path in SCENARIO_DIR.glob("*.yaml"))
+    return sorted(path.stem for path in SCENARIO_DIR.glob("*.json"))
 
 
 class ScenarioRunner:
