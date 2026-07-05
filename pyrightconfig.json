@@ -6,7 +6,7 @@
   "typeCheckingMode": "basic",
   "extraPaths": [
     "packages/contracts/src",
-    "packages/event-client/src",
+    "packages/esp32-link/src",
     "apps/door-api/src",
     "apps/door-visiond/src",
     "apps/door-media/src",

@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 from doorboard_contracts import EVENT_ADAPTER, DoorboardEvent
-from doorboard_event_client import (
+from doorboard_esp32_link import (
     Esp32ProtocolTransport,
     Esp32TransportOptions,
     WireMessage,

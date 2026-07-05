@@ -2,7 +2,7 @@
 name = "doorboard-door-api"
 version = "0.0.0"
 requires-python = ">=3.12"
-dependencies = ["doorboard-event-client"]
+dependencies = ["doorboard-esp32-link"]
 
 [build-system]
 requires = ["hatchling"]

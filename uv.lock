@@ -13,7 +13,7 @@ members = [
     "doorboard-door-media",
     "doorboard-door-sync",
     "doorboard-door-visiond",
-    "doorboard-event-client",
+    "doorboard-esp32-link",
     "doorboard-observability",
     "doorboard-simulator",
     "doorboard-wallboard-worker",
@@ -52,7 +52,7 @@ dev = [
     { name = "doorboard-door-media" },
     { name = "doorboard-door-sync" },
     { name = "doorboard-door-visiond" },
-    { name = "doorboard-event-client" },
+    { name = "doorboard-esp32-link" },
     { name = "doorboard-observability" },
     { name = "doorboard-simulator" },
     { name = "doorboard-wallboard-worker" },
@@ -74,7 +74,7 @@ dev = [
     { name = "doorboard-door-media", editable = "apps/door-media" },
     { name = "doorboard-door-sync", editable = "apps/door-sync" },
     { name = "doorboard-door-visiond", editable = "apps/door-visiond" },
-    { name = "doorboard-event-client", editable = "packages/event-client" },
+    { name = "doorboard-esp32-link", editable = "packages/esp32-link" },
     { name = "doorboard-observability", editable = "packages/observability" },
     { name = "doorboard-simulator", editable = "apps/simulator" },
     { name = "doorboard-wallboard-worker", editable = "apps/wallboard-worker" },
@@ -115,11 +115,11 @@ name = "doorboard-door-api"
 version = "0.0.0"
 source = { editable = "apps/door-api" }
 dependencies = [
-    { name = "doorboard-event-client" },
+    { name = "doorboard-esp32-link" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "doorboard-event-client", editable = "packages/event-client" }]
+requires-dist = [{ name = "doorboard-esp32-link", editable = "packages/esp32-link" }]
 
 [[package]]
 name = "doorboard-door-media"
@@ -143,15 +143,19 @@ dependencies = [
 requires-dist = [{ name = "doorboard-contracts", editable = "packages/contracts" }]
 
 [[package]]
-name = "doorboard-event-client"
+name = "doorboard-esp32-link"
 version = "0.0.0"
-source = { editable = "packages/event-client" }
+source = { editable = "packages/esp32-link" }
 dependencies = [
     { name = "doorboard-contracts" },
+    { name = "pydantic" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "doorboard-contracts", editable = "packages/contracts" }]
+requires-dist = [
+    { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "pydantic", specifier = ">=2.8,<3" },
+]
 
 [[package]]
 name = "doorboard-observability"
@@ -167,7 +171,7 @@ dependencies = [
     { name = "doorboard-door-api" },
     { name = "doorboard-door-media" },
     { name = "doorboard-door-visiond" },
-    { name = "doorboard-event-client" },
+    { name = "doorboard-esp32-link" },
 ]
 
 [package.metadata]
@@ -176,7 +180,7 @@ requires-dist = [
     { name = "doorboard-door-api", editable = "apps/door-api" },
     { name = "doorboard-door-media", editable = "apps/door-media" },
     { name = "doorboard-door-visiond", editable = "apps/door-visiond" },
-    { name = "doorboard-event-client", editable = "packages/event-client" },
+    { name = "doorboard-esp32-link", editable = "packages/esp32-link" },
 ]
 
 [[package]]

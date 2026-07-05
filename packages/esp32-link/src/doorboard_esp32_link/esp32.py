@@ -15,9 +15,11 @@ from typing import Literal, Protocol, Self, cast
 from uuid import UUID
 
 from doorboard_contracts import EVENT_ADAPTER, DoorboardEvent, HealthPayload, HealthStatus
+from pydantic import ValidationError
 
 PROTO_V = 1
 MAX_FRAME_BYTES = 512
+DEFAULT_DEDUPE_RECENT_WINDOW = 256
 ACK_REQUIRED = {
     "hello",
     "profile_update",
@@ -219,6 +221,7 @@ class Esp32TransportOptions:
     heartbeat_timeout_ms: int = 5_000
     monitor_interval_ms: int = 250
     auto_start_tasks: bool = True
+    dedupe_recent_window: int = DEFAULT_DEDUPE_RECENT_WINDOW
 
 
 class Esp32ProtocolTransport:
@@ -246,7 +249,9 @@ class Esp32ProtocolTransport:
         self._started = False
         self._line_buffer = bytearray()
         self._discarding_oversize_line = False
-        self._seen_inbound: set[tuple[str, int]] = set()
+        self._dedupe_boot_id: str | None = None
+        self._dedupe_high_water_seq = -1
+        self._dedupe_recent_seqs: set[int] = set()
         self._pending_acks: dict[int, asyncio.Future[WireMessage]] = {}
         self._events: asyncio.Queue[DoorboardEvent] = asyncio.Queue()
         self._link_states: asyncio.Queue[Esp32LinkState] = asyncio.Queue()
@@ -406,6 +411,10 @@ class Esp32ProtocolTransport:
         }
         return "".join(f"{name} {value}\n" for name, value in values.items())
 
+    @property
+    def inbound_dedupe_entries(self) -> int:
+        return len(self._dedupe_recent_seqs)
+
     async def _event_stream(self) -> AsyncIterator[DoorboardEvent]:
         while True:
             yield await self._events.get()
@@ -416,7 +425,12 @@ class Esp32ProtocolTransport:
 
     async def _read_loop(self) -> None:
         while not self._closed:
-            chunk = await self._bytes.read()
+            try:
+                chunk = await self._bytes.read()
+            except OSError as exc:
+                self._protocol_error = f"ESP32 byte transport read failed: {exc}"
+                self._set_connected(False, "byte transport read failed")
+                return
             if chunk == b"":
                 self._set_connected(False, "byte transport closed")
                 return
@@ -498,15 +512,18 @@ class Esp32ProtocolTransport:
             self._last_heartbeat_mono_ms = self._now_mono_ms()
             self._set_connected(True, "heartbeat")
 
-        dedupe_boot_id = peer_boot_id or "unknown"
-        dedupe_key = (dedupe_boot_id, msg.seq)
-        if dedupe_key in self._seen_inbound:
+        if self._is_duplicate_inbound(peer_boot_id or "unknown", msg.seq):
             self._duplicate_rx += 1
             return
-        self._seen_inbound.add(dedupe_key)
 
         if msg.message_type in INBOUND_EVENT_TYPES:
-            await self._events.put(self._to_contract_event(msg))
+            try:
+                event = self._to_contract_event(msg)
+            except (KeyError, Esp32ProtocolError, ValidationError) as exc:
+                self._rx_errors += 1
+                self._protocol_error = f"invalid ESP32 {msg.message_type} payload: {exc}"
+                return
+            await self._events.put(event)
 
     def _handle_ack(self, msg: WireMessage) -> None:
         if msg.ack is None:
@@ -553,6 +570,30 @@ class Esp32ProtocolTransport:
                 "payload": payload,
             }
         )
+
+    def _is_duplicate_inbound(self, boot_id: str, seq: int) -> bool:
+        if boot_id != self._dedupe_boot_id:
+            self._dedupe_boot_id = boot_id
+            self._dedupe_high_water_seq = -1
+            self._dedupe_recent_seqs.clear()
+
+        window = max(1, self._options.dedupe_recent_window)
+        high_water = self._dedupe_high_water_seq
+        if seq <= high_water - window:
+            return True
+        if seq in self._dedupe_recent_seqs:
+            return True
+
+        if seq > high_water:
+            self._dedupe_high_water_seq = seq
+            high_water = seq
+        self._dedupe_recent_seqs.add(seq)
+        cutoff = high_water - window
+        if len(self._dedupe_recent_seqs) > window:
+            self._dedupe_recent_seqs = {
+                recent_seq for recent_seq in self._dedupe_recent_seqs if recent_seq > cutoff
+            }
+        return False
 
     async def _write_message(self, msg: WireMessage) -> None:
         async with self._send_lock:

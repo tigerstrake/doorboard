@@ -1,4 +1,4 @@
-from doorboard_event_client.esp32 import (
+from doorboard_esp32_link import (
     ACK_REQUIRED,
     MAX_FRAME_BYTES,
     PROTO_V,

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 from doorboard_contracts import EVENT_ADAPTER, DoorboardEvent
-from doorboard_event_client import (
+from doorboard_esp32_link import (
     MAX_FRAME_BYTES,
     AckTimeoutError,
     Esp32ProtocolTransport,
@@ -45,6 +45,17 @@ class QueueByteTransport:
 
     async def feed(self, msg: WireMessage) -> None:
         await self.inbound.put(encode_wire_message(msg))
+
+
+class FailingReadTransport:
+    async def read(self) -> bytes:
+        raise OSError("serial device disappeared")
+
+    async def write(self, data: bytes) -> None:
+        raise AssertionError(f"unexpected write: {data!r}")
+
+    async def close(self) -> None:
+        pass
 
 
 def _options(*, max_retries: int = 2) -> Esp32TransportOptions:
@@ -100,6 +111,72 @@ def test_decode_rejects_malformed_and_oversize_frames() -> None:
 
         assert event.type == "door.controller_health"
         assert transport.status().rx_errors == 2
+        assert transport.health_check().status == "degraded"
+        await transport.close()
+
+    asyncio.run(run())
+
+
+def test_malformed_payload_is_counted_and_read_loop_continues() -> None:
+    async def run() -> None:
+        bytes_ = QueueByteTransport()
+        transport = Esp32ProtocolTransport(bytes_, options=_options())
+        await transport.start()
+        events = transport.events()
+        await bytes_.feed(
+            WireMessage(
+                v=1,
+                seq=1,
+                message_type="hello",
+                ack=None,
+                payload={"fw_version": "sim", "proto_v": 1, "boot_id": "esp-boot-1"},
+            )
+        )
+        await bytes_.feed(
+            WireMessage(
+                v=1,
+                seq=2,
+                message_type="button_event",
+                ack=None,
+                payload={
+                    "press_id": "c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788",
+                    "pressed_at_mono_ms": 123,
+                    "profile_id": None,
+                },
+            )
+        )
+        good = WireMessage(
+            v=1,
+            seq=3,
+            message_type="button_event",
+            ack=None,
+            payload={
+                "press_id": "c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7789",
+                "pressed_at_mono_ms": 124,
+                "had_cached_profile": False,
+                "profile_id": None,
+            },
+        )
+        await bytes_.feed(good)
+
+        event = await _next_event(events)
+
+        assert event.type == "door.button_pressed"
+        assert str(event.payload.press_id) == good.payload["press_id"]
+        assert transport.status().rx_errors == 1
+        assert transport.health_check().status == "degraded"
+        await transport.close()
+
+    asyncio.run(run())
+
+
+def test_read_oserror_marks_link_down_without_unhandled_task_failure() -> None:
+    async def run() -> None:
+        transport = Esp32ProtocolTransport(FailingReadTransport(), options=_options())
+        await transport.start()
+        await asyncio.sleep(0)
+
+        assert transport.status().connected is False
         assert transport.health_check().status == "degraded"
         await transport.close()
 
@@ -220,6 +297,57 @@ def test_duplicate_inbound_event_is_acked_but_translated_once() -> None:
         assert second_ack.ack == button.seq
         assert third_ack.ack == button.seq
         assert transport.metrics().duplicate_rx == 1
+        await transport.close()
+
+    asyncio.run(run())
+
+
+def test_inbound_dedupe_state_stays_bounded() -> None:
+    async def run() -> None:
+        bytes_ = QueueByteTransport()
+        transport = Esp32ProtocolTransport(
+            bytes_,
+            options=Esp32TransportOptions(
+                pi_boot_id="pi-test",
+                sw_version="doorboard-test",
+                ack_timeout_ms=5,
+                max_retries=2,
+                heartbeat_timeout_ms=25,
+                monitor_interval_ms=5,
+                auto_start_tasks=False,
+                dedupe_recent_window=8,
+            ),
+        )
+        await transport.start()
+        await bytes_.feed(
+            WireMessage(
+                v=1,
+                seq=1,
+                message_type="hello",
+                ack=None,
+                payload={"fw_version": "sim", "proto_v": 1, "boot_id": "esp-boot-1"},
+            )
+        )
+        for seq in range(2, 102):
+            await bytes_.feed(
+                WireMessage(
+                    v=1,
+                    seq=seq,
+                    message_type="heartbeat",
+                    ack=None,
+                    payload={
+                        "uptime_s": seq,
+                        "fallback_active": False,
+                        "cached_profile_id": None,
+                    },
+                )
+            )
+
+        await _next_event(transport.events())
+        for _ in range(99):
+            await _next_event(transport.events())
+
+        assert transport.inbound_dedupe_entries <= 8
         await transport.close()
 
     asyncio.run(run())

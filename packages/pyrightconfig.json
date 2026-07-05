@@ -3,7 +3,7 @@
     "auth",
     "config",
     "contracts",
-    "event-client",
+    "esp32-link",
     "observability"
   ],
   "exclude": ["**/node_modules", "**/__pycache__", "../.venv", "../dist"],
@@ -14,7 +14,7 @@
     "auth/src",
     "config/src",
     "contracts/src",
-    "event-client/src",
+    "esp32-link/src",
     "observability/src"
   ]
 }
