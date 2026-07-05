@@ -10,6 +10,7 @@
 #include "esp_check.h"
 #include "esp_intr_alloc.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -84,9 +85,24 @@ static void enqueue_effect(effect_id_t effect_id, const char *profile_id)
     (void)xQueueSend(s_effect_queue, &command, 0);
 }
 
-static void make_press_id(uint64_t press_counter, char *out, size_t out_len)
+static bool fill_press_random(uint8_t *buffer, size_t len, void *user)
 {
-    snprintf(out, out_len, "00000000-0000-0000-0000-%012llu", (unsigned long long)press_counter);
+    (void)user;
+    size_t offset = 0;
+
+    while (offset < len) {
+        uint32_t random_word = esp_random();
+        size_t remaining = len - offset;
+        size_t copy_len = remaining < sizeof(random_word) ? remaining : sizeof(random_word);
+        memcpy(&buffer[offset], &random_word, copy_len);
+        offset += copy_len;
+    }
+    return true;
+}
+
+static bool make_press_id(char *out, size_t out_len)
+{
+    return door_protocol_make_uuid_v4(out, out_len, fill_press_random, NULL);
 }
 
 static void input_task(void *arg)
@@ -94,7 +110,6 @@ static void input_task(void *arg)
     (void)arg;
     button_isr_event_t event;
     uint64_t last_press_mono_ms = 0;
-    uint64_t press_counter = 0;
 
     (void)esp_task_wdt_add(NULL);
     for (;;) {
@@ -108,7 +123,6 @@ static void input_task(void *arg)
             continue;
         }
         last_press_mono_ms = event.observed_at_mono_ms;
-        press_counter++;
 
         /*
          * The local effect is scheduled before the link event is queued. This
@@ -131,8 +145,11 @@ static void input_task(void *arg)
         link_button_event_t link_event = {
             .pressed_at_mono_ms = event.observed_at_mono_ms,
         };
-        make_press_id(press_counter, link_event.press_id, sizeof(link_event.press_id));
-        (void)xQueueSend(s_link_queue, &link_event, 0);
+        if (make_press_id(link_event.press_id, sizeof(link_event.press_id))) {
+            (void)xQueueSend(s_link_queue, &link_event, 0);
+        } else {
+            ESP_LOGE(TAG, "button_event dropped because press_id generation failed");
+        }
         esp_task_wdt_reset();
     }
 }
@@ -231,7 +248,7 @@ static void handle_link_button_event(const link_button_event_t *event)
     );
     portEXIT_CRITICAL(&s_protocol_mux);
     if (!queued) {
-        ESP_LOGW(TAG, "button_event dropped because protocol tx slot is busy");
+        ESP_LOGW(TAG, "button_event dropped because protocol tx queue is full");
     }
 }
 

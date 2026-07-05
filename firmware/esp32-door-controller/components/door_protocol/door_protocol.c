@@ -156,6 +156,16 @@ static bool ack_required(message_type_t type)
            type == MSG_CONTACT_EVENT;
 }
 
+static bool next_seq(door_protocol_t *ctx, uint32_t *seq)
+{
+    if (ctx->next_seq == UINT32_MAX) {
+        return false;
+    }
+    ctx->next_seq++;
+    *seq = ctx->next_seq;
+    return true;
+}
+
 static bool parse_message(const char *json, parsed_message_t *msg)
 {
     char type_text[32];
@@ -197,13 +207,18 @@ static bool parse_message(const char *json, parsed_message_t *msg)
     return true;
 }
 
-static bool make_ack(const door_protocol_t *ctx, uint32_t ack_seq, char *out, size_t out_len)
+static bool make_ack(door_protocol_t *ctx, uint32_t ack_seq, char *out, size_t out_len)
 {
+    uint32_t seq = 0;
+
+    if (!next_seq(ctx, &seq)) {
+        return false;
+    }
     int written = snprintf(
         out,
         out_len,
         "{\"v\":1,\"seq\":%u,\"t\":\"ack\",\"ack\":%u,\"p\":{}}\n",
-        ctx->next_seq,
+        seq,
         ack_seq
     );
     return written > 0 && (size_t)written < out_len;
@@ -227,29 +242,71 @@ static bool remember_seen(door_protocol_t *ctx, const char *boot_id, uint32_t se
     return false;
 }
 
+static size_t pending_index(const door_protocol_t *ctx, size_t offset)
+{
+    return (ctx->pending_head + offset) % DOOR_PROTOCOL_PENDING_DEPTH;
+}
+
 static bool start_pending(door_protocol_t *ctx, uint32_t seq, const char *frame)
 {
     size_t frame_len = strlen(frame);
     if (frame_len > DOOR_PROTOCOL_MAX_FRAME_BYTES) {
         return false;
     }
-    ctx->pending.active = true;
-    ctx->pending.sent_once = false;
-    ctx->pending.seq = seq;
-    ctx->pending.retries_sent = 0;
-    ctx->pending.last_tx_mono_ms = 0;
-    copy_text(ctx->pending.frame, sizeof(ctx->pending.frame), frame);
+    if (ctx->pending_count >= DOOR_PROTOCOL_PENDING_DEPTH) {
+        return false;
+    }
+
+    size_t index = pending_index(ctx, ctx->pending_count);
+    ctx->pending[index].active = true;
+    ctx->pending[index].sent_once = false;
+    ctx->pending[index].seq = seq;
+    ctx->pending[index].retries_sent = 0;
+    ctx->pending[index].last_tx_mono_ms = 0;
+    copy_text(ctx->pending[index].frame, sizeof(ctx->pending[index].frame), frame);
+    ctx->pending_count++;
     return true;
 }
 
-static bool next_seq(door_protocol_t *ctx, uint32_t *seq)
+static void remove_pending_at(door_protocol_t *ctx, size_t offset)
 {
-    if (ctx->next_seq == UINT32_MAX) {
-        return false;
+    if (offset >= ctx->pending_count) {
+        return;
     }
-    ctx->next_seq++;
-    *seq = ctx->next_seq;
-    return true;
+
+    if (offset == 0) {
+        memset(&ctx->pending[ctx->pending_head], 0, sizeof(ctx->pending[ctx->pending_head]));
+        ctx->pending_head = (ctx->pending_head + 1U) % DOOR_PROTOCOL_PENDING_DEPTH;
+        ctx->pending_count--;
+        if (ctx->pending_count == 0) {
+            ctx->pending_head = 0;
+        }
+        return;
+    }
+
+    for (size_t current = offset; current + 1U < ctx->pending_count; current++) {
+        size_t dst = pending_index(ctx, current);
+        size_t src = pending_index(ctx, current + 1U);
+        ctx->pending[dst] = ctx->pending[src];
+    }
+
+    size_t tail = pending_index(ctx, ctx->pending_count - 1U);
+    memset(&ctx->pending[tail], 0, sizeof(ctx->pending[tail]));
+    ctx->pending_count--;
+    if (ctx->pending_count == 0) {
+        ctx->pending_head = 0;
+    }
+}
+
+static void ack_pending(door_protocol_t *ctx, uint32_t ack_seq)
+{
+    for (size_t offset = 0; offset < ctx->pending_count; offset++) {
+        size_t index = pending_index(ctx, offset);
+        if (ctx->pending[index].active && ctx->pending[index].seq == ack_seq) {
+            remove_pending_at(ctx, offset);
+            return;
+        }
+    }
 }
 
 static void apply_message_once(door_protocol_t *ctx, const parsed_message_t *msg, uint64_t now_mono_ms)
@@ -312,6 +369,50 @@ void door_protocol_apply_timeouts(door_protocol_t *ctx, uint64_t now_mono_ms)
     }
 }
 
+bool door_protocol_make_uuid_v4(
+    char *out,
+    size_t out_len,
+    door_protocol_random_fill_fn fill_random,
+    void *random_user
+)
+{
+    uint8_t bytes[16];
+    int written = 0;
+
+    if (out == NULL || out_len < DOOR_PROTOCOL_PRESS_ID_BYTES || fill_random == NULL) {
+        return false;
+    }
+    if (!fill_random(bytes, sizeof(bytes), random_user)) {
+        return false;
+    }
+
+    bytes[6] = (uint8_t)((bytes[6] & 0x0FU) | 0x40U);
+    bytes[8] = (uint8_t)((bytes[8] & 0x3FU) | 0x80U);
+
+    written = snprintf(
+        out,
+        out_len,
+        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    );
+    return written == 36;
+}
+
 door_protocol_rx_result_t door_protocol_receive_from_pi(
     door_protocol_t *ctx,
     const char *line,
@@ -353,8 +454,8 @@ door_protocol_rx_result_t door_protocol_receive_from_pi(
     }
 
     if (msg.type == MSG_ACK) {
-        if (msg.has_ack && ctx->pending.active && msg.ack == ctx->pending.seq) {
-            memset(&ctx->pending, 0, sizeof(ctx->pending));
+        if (msg.has_ack) {
+            ack_pending(ctx, msg.ack);
         }
         return DOOR_PROTOCOL_RX_ACCEPTED;
     }
@@ -481,30 +582,36 @@ bool door_protocol_next_tx(
     size_t frame_out_len
 )
 {
-    if (!ctx->pending.active || frame_out_len == 0) {
+    if (ctx->pending_count == 0 || frame_out_len == 0) {
         return false;
     }
 
-    if (!ctx->pending.sent_once) {
-        copy_text(frame_out, frame_out_len, ctx->pending.frame);
-        ctx->pending.sent_once = true;
-        ctx->pending.last_tx_mono_ms = now_mono_ms;
+    size_t index = pending_index(ctx, 0);
+    if (!ctx->pending[index].active) {
+        remove_pending_at(ctx, 0);
+        return false;
+    }
+
+    if (!ctx->pending[index].sent_once) {
+        copy_text(frame_out, frame_out_len, ctx->pending[index].frame);
+        ctx->pending[index].sent_once = true;
+        ctx->pending[index].last_tx_mono_ms = now_mono_ms;
         return true;
     }
 
-    if (now_mono_ms - ctx->pending.last_tx_mono_ms < DOOR_PROTOCOL_RETRY_SPACING_MS) {
+    if (now_mono_ms - ctx->pending[index].last_tx_mono_ms < DOOR_PROTOCOL_RETRY_SPACING_MS) {
         return false;
     }
 
-    if (ctx->pending.retries_sent >= DOOR_PROTOCOL_MAX_RETRIES) {
-        memset(&ctx->pending, 0, sizeof(ctx->pending));
+    if (ctx->pending[index].retries_sent >= DOOR_PROTOCOL_MAX_RETRIES) {
+        remove_pending_at(ctx, 0);
         return false;
     }
 
-    ctx->pending.retries_sent++;
+    ctx->pending[index].retries_sent++;
     ctx->stats.tx_retries++;
-    ctx->pending.last_tx_mono_ms = now_mono_ms;
-    copy_text(frame_out, frame_out_len, ctx->pending.frame);
+    ctx->pending[index].last_tx_mono_ms = now_mono_ms;
+    copy_text(frame_out, frame_out_len, ctx->pending[index].frame);
     return true;
 }
 

@@ -19,6 +19,7 @@ extern "C" {
 #define DOOR_PROTOCOL_VERSION_BYTES 32
 #define DOOR_PROTOCOL_EFFECT_ID_BYTES 64
 #define DOOR_PROTOCOL_PRESS_ID_BYTES 40
+#define DOOR_PROTOCOL_PENDING_DEPTH 8
 
 typedef enum {
     DOOR_PROTOCOL_RX_DROPPED = 0,
@@ -40,6 +41,8 @@ typedef struct {
     uint32_t profile_clears_applied;
     uint32_t effect_plays_applied;
 } door_protocol_stats_t;
+
+typedef bool (*door_protocol_random_fill_fn)(uint8_t *buffer, size_t len, void *user);
 
 typedef struct {
     char boot_id[DOOR_PROTOCOL_BOOT_ID_BYTES];
@@ -67,7 +70,9 @@ typedef struct {
         uint8_t retries_sent;
         uint64_t last_tx_mono_ms;
         char frame[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
-    } pending;
+    } pending[DOOR_PROTOCOL_PENDING_DEPTH];
+    size_t pending_head;
+    size_t pending_count;
 } door_protocol_t;
 
 void door_protocol_init(
@@ -77,6 +82,13 @@ void door_protocol_init(
 );
 
 void door_protocol_apply_timeouts(door_protocol_t *ctx, uint64_t now_mono_ms);
+
+bool door_protocol_make_uuid_v4(
+    char *out,
+    size_t out_len,
+    door_protocol_random_fill_fn fill_random,
+    void *random_user
+);
 
 door_protocol_rx_result_t door_protocol_receive_from_pi(
     door_protocol_t *ctx,
