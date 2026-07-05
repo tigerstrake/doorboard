@@ -1,0 +1,10 @@
+menu "Doorboard ESP32 controller"
+
+config DOORBOARD_ENABLE_KNOCK_DETECTION
+    bool "Enable piezo knock detection stub"
+    default n
+    help
+        Enables the sensors task ADC threshold stub that emits knock_event frames.
+        Pattern matching is intentionally deferred to a later task.
+
+endmenu

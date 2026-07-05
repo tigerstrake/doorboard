@@ -25,3 +25,36 @@ Bell button (debounced GPIO), WS2812B LED ring, speaker via class-D amp (I2S/DAC
 - FreeRTOS tasks: `input` (highest priority, ISR + debounce), `effects` (LED/audio rendering), `link` (UART protocol, acks/retransmit, heartbeats), `sensors` (knock/reed/light).
 - Effects are a pre-flashed table keyed by `effect_id`/`profile_id`; the wire never carries animation data in v1.
 - Wire protocol: [docs/protocols/esp32-pi-protocol.md](../../docs/protocols/esp32-pi-protocol.md). Protocol logic must be host-testable (pure C module + host-side unit tests) — CI has no device; hardware-in-loop tests live in `tests/hardware-in-loop/`.
+
+## T-101 implementation
+
+Pinned build toolchain: ESP-IDF `v5.3.2`.
+
+```sh
+cd firmware/esp32-door-controller
+idf.py set-target esp32s3
+idf.py build
+```
+
+The project skeleton is intentionally split along the required four tasks:
+
+| Task | Responsibility |
+|---|---|
+| `input` | Button GPIO ISR, firmware debounce, immediate local `generic_press` effect scheduling, then link event enqueue |
+| `effects` | Placeholder `generic_press`, `fallback`, `blue_wave`, and `green_pulse` physical effects |
+| `link` | UART framing, ack/retry, inbound profile/effect handling, outbound button/knock/heartbeat frames |
+| `sensors` | Piezo threshold stub behind `CONFIG_DOORBOARD_ENABLE_KNOCK_DETECTION` |
+
+The wire protocol engine lives in `components/door_protocol`. It is pure C and includes only standard library headers, so host-side tests compile it directly without ESP-IDF or FreeRTOS. The module owns:
+
+- newline-delimited JSON framing with a 512-byte maximum;
+- protocol version rejection and `rx_errors`;
+- ack generation for state-bearing Pi messages;
+- outbound retry state, 3 retries at 50 ms spacing;
+- `(boot_id, seq)` dedupe for inbound Pi messages;
+- single cached profile with local monotonic expiry;
+- heartbeat-loss fallback after 5 seconds.
+
+The firmware starts in fallback state after boot. Button feedback is local and is scheduled before any UART frame is queued, preserving the critical path when the Pi, NUC, NAS, or network is unavailable.
+
+Pin assignments are centralized in `main/include/doorboard_pinout.h`. Bench bring-up may adjust that header when the exact ESP32-S3 board is selected.
