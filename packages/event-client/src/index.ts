@@ -1,5 +1,8 @@
 import type { DoorboardEvent } from "@doorboard/contracts";
 
+export { uuidv7 } from "./uuid";
+
+
 export interface EventClientOptions {
   wsUrl?: string;
   mock?: boolean;

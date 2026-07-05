@@ -8,7 +8,7 @@ import {
   QRPlaceholder,
   SessionState,
 } from "@doorboard/ui-kit";
-import { DoorboardEventClient } from "@doorboard/event-client";
+import { DoorboardEventClient, uuidv7 } from "@doorboard/event-client";
 import type { DoorboardEvent } from "@doorboard/contracts";
 import {
   presenceFixture,
@@ -44,6 +44,7 @@ export function App() {
   const [route, setRoute] = useState<string>(window.location.pathname);
   const [sessionState, setSessionState] = useState<SessionState>("IDLE");
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
+  const [mockSessionId, setMockSessionId] = useState<string>(() => crypto.randomUUID());
   const [showSimPanel, setShowSimPanel] = useState<boolean>(true);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
   
@@ -75,26 +76,18 @@ export function App() {
     const client = new DoorboardEventClient({
       // Connect to simulator ws, or fallback to mock BroadcastChannel
       wsUrl: "ws://127.0.0.1:8765/ws",
-      filters: ["session.*"],
-      onStatusChange: (status) => {
-        console.log("WebSocket client status:", status);
-      },
+      filters: ["session.*", "vision.*"],
     });
 
     clientRef.current = client;
 
     // Listen to session state changes
-    const unsubscribe = client.subscribe("session.state_changed", (event: DoorboardEvent) => {
-      console.log("Received session.state_changed event:", event);
+    const unsubscribeSession = client.subscribe("session.state_changed", (event: DoorboardEvent) => {
       if (event && event.type === "session.state_changed" && event.payload) {
         const toState = event.payload.to_state;
         setSessionState(toState);
-        
-        // Extract profile if any
-        const payload = event.payload as unknown as Record<string, unknown>;
-        if (typeof payload.profile_id === "string") {
-          setActiveProfile(payload.profile_id);
-        } else if (toState === "IDLE") {
+
+        if (toState === "IDLE") {
           setActiveProfile(null);
         }
 
@@ -107,8 +100,16 @@ export function App() {
       }
     });
 
+    // Listen to vision identity stable events
+    const unsubscribeVision = client.subscribe("vision.identity_stable", (event: DoorboardEvent) => {
+      if (event && event.type === "vision.identity_stable" && event.payload) {
+        setActiveProfile(event.payload.profile_id);
+      }
+    });
+
     return () => {
-      unsubscribe();
+      unsubscribeSession();
+      unsubscribeVision();
       client.close();
     };
   }, []);
@@ -127,24 +128,51 @@ export function App() {
   const triggerEvent = (toState: SessionState, profileId: string | null = null) => {
     if (!clientRef.current) return;
 
+    let currentSessionId = mockSessionId;
+    if (toState !== "IDLE" && sessionState === "IDLE") {
+      // Start a new mock session with a new UUID when transitioning from IDLE
+      currentSessionId = crypto.randomUUID();
+      setMockSessionId(currentSessionId);
+    }
+
+    const traceId = crypto.randomUUID();
+
+    if (profileId) {
+      const visionEvent: DoorboardEvent = {
+        event_id: uuidv7(),
+        type: "vision.identity_stable",
+        source: "door-ui-mock",
+        occurred_at: new Date().toISOString(),
+        monotonic_ms: performance.now(),
+        door_id: "primary",
+        trace_id: traceId,
+        payload: {
+          person_id: profileId === "owner" ? "prs_taylor" : "prs_alex",
+          display_name: profileId === "owner" ? "Taylor" : "Alex",
+          confidence: 0.98,
+          expires_at: new Date(Date.now() + 60000).toISOString(),
+          expires_at_monotonic_ms: performance.now() + 60000,
+          profile_id: profileId,
+        },
+      };
+      clientRef.current.publish(visionEvent);
+    }
+
     const event: DoorboardEvent = {
-      event_id: `evt_${Math.random().toString(36).substr(2, 9)}`,
+      event_id: uuidv7(),
       type: "session.state_changed",
       source: "door-ui-mock",
       occurred_at: new Date().toISOString(),
       monotonic_ms: performance.now(),
       door_id: "primary",
-      trace_id: `tr_${Math.random().toString(36).substr(2, 9)}`,
+      trace_id: traceId,
       payload: {
-        session_id: "ses_current",
+        session_id: currentSessionId,
         from_state: sessionState,
         to_state: toState,
         trigger: profileId ? "proactive_recognition" : "physical_bell",
       },
     };
-
-    // If there is profile info, attach it to payload
-    (event.payload as unknown as Record<string, unknown>).profile_id = profileId;
 
     clientRef.current.publish(event);
   };

@@ -7,10 +7,13 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
   },
   "dependencies": {
     "@doorboard/contracts": "workspace:*"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "vitest": "^4.1.9"
+  }
 }
