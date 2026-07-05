@@ -1,23 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python_src_paths=(
-  "packages/contracts/src"
-  "packages/config/src"
-  "packages/observability/src"
-  "packages/auth/src"
-  "packages/event-client/src"
-  "apps/door-api/src"
-  "apps/door-visiond/src"
-  "apps/door-media/src"
-  "apps/door-sync/src"
-  "apps/control-plane-api/src"
-  "apps/wallboard-worker/src"
-  "apps/simulator/src"
-)
-
-IFS=:
-export PYTHONPATH="${python_src_paths[*]}${PYTHONPATH:+:${PYTHONPATH}}"
-unset IFS
-
 uv run pytest

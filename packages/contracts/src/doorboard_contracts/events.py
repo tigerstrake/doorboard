@@ -52,10 +52,14 @@ class PresenceLabel(StrEnum):
     UNKNOWN = "unknown"
 
 
+class ErrorDetail(StrictModel):
+    code: str
+    message: str
+    trace_id: UUID
+
+
 class ErrorEnvelope(StrictModel):
-    error: str
-    detail: str | None = None
-    trace_id: UUID | None = None
+    error: ErrorDetail
 
 
 class HealthStatus(StrEnum):
@@ -87,23 +91,54 @@ class SessionState(StrEnum):
 
 
 LEGAL_SESSION_TRANSITIONS: dict[SessionState, tuple[SessionState, ...]] = {
-    SessionState.IDLE: (SessionState.APPROACH_DETECTED,),
+    SessionState.IDLE: (
+        SessionState.APPROACH_DETECTED,
+        SessionState.BUTTON_PRESSED,
+    ),
     SessionState.APPROACH_DETECTED: (
         SessionState.IDENTITY_CACHED,
         SessionState.BUTTON_PRESSED,
+        SessionState.IDLE,
     ),
-    SessionState.IDENTITY_CACHED: (SessionState.BUTTON_PRESSED,),
-    SessionState.BUTTON_PRESSED: (SessionState.VISITOR_MODE,),
-    SessionState.VISITOR_MODE: (SessionState.RINGING,),
+    SessionState.IDENTITY_CACHED: (
+        SessionState.BUTTON_PRESSED,
+        SessionState.IDLE,
+        SessionState.APPROACH_DETECTED,
+    ),
+    SessionState.BUTTON_PRESSED: (
+        SessionState.VISITOR_MODE,
+        SessionState.SESSION_END,
+    ),
+    SessionState.VISITOR_MODE: (
+        SessionState.RINGING,
+        SessionState.SESSION_END,
+    ),
     SessionState.RINGING: (
         SessionState.ANSWERED,
         SessionState.UNANSWERED_TIMEOUT,
+        SessionState.SESSION_END,
     ),
-    SessionState.ANSWERED: (SessionState.SESSION_END,),
-    SessionState.UNANSWERED_TIMEOUT: (SessionState.VIDEO_MESSAGE_OFFERED,),
-    SessionState.VIDEO_MESSAGE_OFFERED: (SessionState.VIDEO_MESSAGE_RECORDING,),
-    SessionState.VIDEO_MESSAGE_RECORDING: (SessionState.VIDEO_MESSAGE_REVIEW,),
-    SessionState.VIDEO_MESSAGE_REVIEW: (SessionState.VIDEO_MESSAGE_SAVED,),
+    SessionState.ANSWERED: (
+        SessionState.VIDEO_MESSAGE_OFFERED,
+        SessionState.SESSION_END,
+    ),
+    SessionState.UNANSWERED_TIMEOUT: (
+        SessionState.VIDEO_MESSAGE_OFFERED,
+        SessionState.SESSION_END,
+    ),
+    SessionState.VIDEO_MESSAGE_OFFERED: (
+        SessionState.VIDEO_MESSAGE_RECORDING,
+        SessionState.SESSION_END,
+    ),
+    SessionState.VIDEO_MESSAGE_RECORDING: (
+        SessionState.VIDEO_MESSAGE_REVIEW,
+        SessionState.SESSION_END,
+    ),
+    SessionState.VIDEO_MESSAGE_REVIEW: (
+        SessionState.VIDEO_MESSAGE_SAVED,
+        SessionState.VIDEO_MESSAGE_RECORDING,
+        SessionState.SESSION_END,
+    ),
     SessionState.VIDEO_MESSAGE_SAVED: (SessionState.SESSION_END,),
     SessionState.SESSION_END: (SessionState.IDLE,),
 }

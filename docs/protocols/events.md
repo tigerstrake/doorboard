@@ -56,6 +56,24 @@ Only enrolled, consenting people ever appear in `identity_stable`. There is no e
 
 Transition requirements: `BUTTON_PRESSED → VISITOR_MODE` is immediate and local; every transition emits `session.state_changed`; sessions auto-expire back to `IDLE`; reloading a kiosk browser must rejoin the current session, not create one.
 
+Legal transition table:
+
+| From state | To states |
+|---|---|
+| `IDLE` | `APPROACH_DETECTED`, `BUTTON_PRESSED` |
+| `APPROACH_DETECTED` | `IDENTITY_CACHED`, `BUTTON_PRESSED`, `IDLE` |
+| `IDENTITY_CACHED` | `BUTTON_PRESSED`, `IDLE`, `APPROACH_DETECTED` |
+| `BUTTON_PRESSED` | `VISITOR_MODE`, `SESSION_END` |
+| `VISITOR_MODE` | `RINGING`, `SESSION_END` |
+| `RINGING` | `ANSWERED`, `UNANSWERED_TIMEOUT`, `SESSION_END` |
+| `ANSWERED` | `VIDEO_MESSAGE_OFFERED`, `SESSION_END` |
+| `UNANSWERED_TIMEOUT` | `VIDEO_MESSAGE_OFFERED`, `SESSION_END` |
+| `VIDEO_MESSAGE_OFFERED` | `VIDEO_MESSAGE_RECORDING`, `SESSION_END` |
+| `VIDEO_MESSAGE_RECORDING` | `VIDEO_MESSAGE_REVIEW`, `SESSION_END` |
+| `VIDEO_MESSAGE_REVIEW` | `VIDEO_MESSAGE_SAVED`, `VIDEO_MESSAGE_RECORDING`, `SESSION_END` |
+| `VIDEO_MESSAGE_SAVED` | `SESSION_END` |
+| `SESSION_END` | `IDLE` |
+
 ## media.* — recording lifecycle (door-media)
 
 | Type | Payload |

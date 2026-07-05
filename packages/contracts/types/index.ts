@@ -4,10 +4,14 @@ export type PresenceLabel = "available" | "busy" | "do_not_disturb" | "sleeping"
 
 export type SessionState = "IDLE" | "APPROACH_DETECTED" | "IDENTITY_CACHED" | "BUTTON_PRESSED" | "VISITOR_MODE" | "RINGING" | "ANSWERED" | "UNANSWERED_TIMEOUT" | "VIDEO_MESSAGE_OFFERED" | "VIDEO_MESSAGE_RECORDING" | "VIDEO_MESSAGE_REVIEW" | "VIDEO_MESSAGE_SAVED" | "SESSION_END";
 
+export interface ErrorDetail {
+  code: string;
+  message: string;
+  trace_id: string;
+}
+
 export interface ErrorEnvelope {
-  error: string;
-  detail?: string | null;
-  trace_id?: string | null;
+  error: ErrorDetail;
 }
 
 export type HealthStatus = "ok" | "degraded" | "down";
