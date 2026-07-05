@@ -21,6 +21,7 @@ Agent tier: <!-- claude / codex / gemini -->
 
 - [ ] No unknown-face embeddings persisted or logged
 - [ ] No biometric data, raw frames, or tokens in logs
+- [ ] No new serialization of embedding/frame data (grep: json.dumps/pickle/tobytes near Embedding; `expose_for_matching` call sites enumerated and justified — ADR-0009 §8)
 - [ ] Public routes (`/wallboard`, `/doorpad`, `/visitor`) show broad/sanitized data only
 - [ ] Deletion flows still work for affected data
 - [ ] N/A — PR touches none of these surfaces

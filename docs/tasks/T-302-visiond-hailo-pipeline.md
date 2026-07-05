@@ -5,7 +5,7 @@
 
 ## Context
 
-Spec: [apps/door-visiond/README.md](../../apps/door-visiond/README.md), ADR-0004 (Hailo ownership), T-301's design (binding). Start from the official Pi/Hailo face-recognition material as *reference only* — wrap or reimplement behind `VisionPipeline`; never couple to the demo's structure (handoff §10, §19-must-not-8).
+Spec: [apps/door-visiond/README.md](../../apps/door-visiond/README.md), ADR-0004 (Hailo ownership), and **ADR-0009 (binding)**: data model §1, unknown-embedding lifecycle §2 (E-1..E-4), deletion §3 (E-5), privacy mode §4 (E-6), API shapes §5, LUKS enrollment volume §6. Start from the official Pi/Hailo face-recognition material as *reference only* — wrap or reimplement behind `VisionPipeline`; never couple to the demo's structure (handoff §10, §19-must-not-8).
 
 ## Deliverables
 
@@ -22,7 +22,7 @@ ESP32 profile push (T-303), enrollment UX (T-304), any second Hailo consumer, re
 
 ## Acceptance criteria
 
-- T-301's full test specification implemented and green (non-persistence proven via disk+log inspection in tests).
+- ADR-0009 §7 tests P-1, P-2, P-3, P-4, P-5, P-7, P-8, P-9, P-10 implemented and green (sentinel-based byte-scan technique as specified; non-persistence proven by inspection, not trust).
 - Bench: face-visible → identity_stable p95 < 600 ms in reasonable light (T-104 harness); pipeline runs 30 min without memory growth or thermal throttling alongside door-media streaming.
 - Hailo unplugged/failing → generic-greeting mode within seconds, button flow unaffected (simulator + bench drill).
 - Version pins documented; startup check demonstrated against a wrong-version fixture.

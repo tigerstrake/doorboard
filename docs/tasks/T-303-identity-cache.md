@@ -5,7 +5,7 @@
 
 ## Context
 
-ARCHITECTURE.md §5 (identity-cache behavior) is the normative sequence. This task wires door-visiond's stable identities to the ESP32 profile cache and the UI greeting path.
+ARCHITECTURE.md §5 (identity-cache behavior) is the normative sequence; ADR-0009 §3 (deletion propagation incl. queued archive purge) and §4 (privacy-mode cache flush + `profile_clear` reasons) are binding. This task wires door-visiond's stable identities to the ESP32 profile cache and the UI greeting path.
 
 ## Deliverables
 
@@ -24,3 +24,4 @@ Vision pipeline internals (T-302), UI visuals (T-404 handles visitor-mode render
 - Bench, T-104-measured: button with warm cache → personalized effect p95 < 100 ms; cold cache → generic < 30 ms with **zero** added latency from recognition machinery.
 - Cache-expiry drill: person leaves, TTL lapses → ESP32 confirmed cleared (heartbeat `cached_profile_id` null) within 1 s of expiry.
 - Race tests: press exactly at expiry boundary, identity arriving mid-session, privacy-mode flip mid-cache — all deterministic, all covered by integration tests against the simulator.
+- ADR-0009 §7 tests P-6, P-7 (cache/ESP32 legs), and P-11 implemented and green.

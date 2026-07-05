@@ -5,13 +5,13 @@
 
 ## Context
 
-Specs: [tools/enrollment-cli/README.md](../../tools/enrollment-cli/README.md), [docs/ui/admin.md](../ui/admin.md) enrollment section, handoff §10 enrollment flow. Everything calls door-visiond's `/enroll`, `/unenroll`, and admin endpoints — no direct DB or file access from this code, ever.
+Specs: [tools/enrollment-cli/README.md](../../tools/enrollment-cli/README.md), [docs/ui/admin.md](../ui/admin.md) enrollment section, handoff §10 enrollment flow, ADR-0009 §5 (API shapes — the CLI/UI call these and nothing else). Everything calls door-visiond's `/enroll`, `/unenroll`, and admin endpoints — no direct DB or file access from this code, ever.
 
 ## Deliverables
 
 - `tools/enrollment-cli`: guided flow — consent confirmation (explicit y/N with recorded consent statement), capture N images with lighting/angle prompts (via door-media snapshot endpoint or documented capture path), submit to `/enroll`, assign profile (name, color from the T-103 effects catalog, optional sound), test-match step, `unenroll` command.
 - Admin UI enrollment section: list enrolled people (name, profile, consent date), enroll flow mirroring the CLI (using existing capture/preview components), unenroll with confirm (states clearly that deletion is immediate and irreversible), privacy-mode toggle.
-- Both surfaces show consent language from a single shared source file (docs-reviewed text, not improvised).
+- Both surfaces render `docs/policies/consent-statement.md` **verbatim** (ADR-0009 E-7) and submit its version tag as `consent_version`; a stale version must surface the server's 409 with the current text.
 - Tests: UI component tests; CLI integration test against door-visiond mock mode.
 
 ## Out of scope
