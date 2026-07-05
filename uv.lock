@@ -114,6 +114,12 @@ source = { editable = "apps/control-plane-api" }
 name = "doorboard-door-api"
 version = "0.0.0"
 source = { editable = "apps/door-api" }
+dependencies = [
+    { name = "doorboard-event-client" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "doorboard-event-client", editable = "packages/event-client" }]
 
 [[package]]
 name = "doorboard-door-media"
@@ -140,6 +146,12 @@ requires-dist = [{ name = "doorboard-contracts", editable = "packages/contracts"
 name = "doorboard-event-client"
 version = "0.0.0"
 source = { editable = "packages/event-client" }
+dependencies = [
+    { name = "doorboard-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "doorboard-contracts", editable = "packages/contracts" }]
 
 [[package]]
 name = "doorboard-observability"
@@ -155,6 +167,7 @@ dependencies = [
     { name = "doorboard-door-api" },
     { name = "doorboard-door-media" },
     { name = "doorboard-door-visiond" },
+    { name = "doorboard-event-client" },
 ]
 
 [package.metadata]
@@ -163,6 +176,7 @@ requires-dist = [
     { name = "doorboard-door-api", editable = "apps/door-api" },
     { name = "doorboard-door-media", editable = "apps/door-media" },
     { name = "doorboard-door-visiond", editable = "apps/door-visiond" },
+    { name = "doorboard-event-client", editable = "packages/event-client" },
 ]
 
 [[package]]
