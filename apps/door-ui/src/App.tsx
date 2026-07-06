@@ -4,6 +4,7 @@ import {
   StatusBadge,
   BigButton,
   CountdownAutoReset,
+  LiveVideoPreview,
   CrossfadeSwitch,
   SessionState,
 } from "@doorboard/ui-kit";
@@ -664,9 +665,7 @@ export function App() {
             <div className="doorpad-sub-content">
               <h2>Leave a Video Message</h2>
               <p className="placeholder-subtext">[Placeholder Flow: Countdown → Record → Save]</p>
-              <div className="video-booth-mock">
-                <div className="mock-camera-lens">🔴 Recording Simulator</div>
-              </div>
+              <LiveVideoPreview title="Message Preview" />
               <div className="action-button-group">
                 <BigButton variant="primary" onClick={() => { triggerToast("Message Saved!"); handleReset(); }}>
                   Save Message
@@ -833,15 +832,31 @@ export function App() {
     );
   };
 
+  // --- LIVE VIEW DEMO ---
+  const renderLiveViewDemo = () => {
+    return (
+      <div className="live-demo-view db-app-theme">
+        <main className="live-demo-panel">
+          <LiveVideoPreview title="Door Camera Preview" showStats />
+          <div className="action-button-group">
+            <BigButton onClick={() => navigateTo("/")}>
+              Back
+            </BigButton>
+          </div>
+        </main>
+      </div>
+    );
+  };
+
   // --- ADMIN SURFACE ---
   const renderAdmin = () => {
     return (
       <div className="placeholder-view db-app-theme">
-        <div className="placeholder-card">
+        <div className="placeholder-card admin-panel-card">
           <h1>Admin Control Panel</h1>
           <p className="subtitle-tag">Route: `/admin` | `/diagnostics`</p>
           <div className="placeholder-badge">Admin Screen Placeholder</div>
-          <p className="desc">System configurations, diagnostic logs, and physical hardware check-ins.</p>
+          <LiveVideoPreview title="Local Live View" showStats />
           <div className="admin-stats-grid">
             <div className="stat-card"><span>Uptime:</span> <strong>3d 12h</strong></div>
             <div className="stat-card"><span>SQLite WAL:</span> <strong>Active</strong></div>
@@ -893,6 +908,13 @@ export function App() {
               <p>Owner administration placeholder</p>
               <span className="route-tag">/admin</span>
             </div>
+
+            <div className="nav-card" onClick={() => navigateTo("/live-view-demo")}>
+              <span className="nav-icon">▣</span>
+              <h3>Live View Demo</h3>
+              <p>Reusable media preview surface</p>
+              <span className="route-tag">/live-view-demo</span>
+            </div>
           </div>
         </div>
       </div>
@@ -905,6 +927,7 @@ export function App() {
       {route === "/wallboard" && renderWallboard()}
       {route === "/doorpad" && renderDoorPad()}
       {route === "/visitor" && renderVisitor()}
+      {route === "/live-view-demo" && renderLiveViewDemo()}
       {(route === "/admin" || route === "/diagnostics") && renderAdmin()}
       {route === "/" && renderNavigation()}
       {(route === "/wallboard" || route === "/doorpad") && renderSimPanel()}
