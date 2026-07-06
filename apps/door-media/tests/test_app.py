@@ -158,7 +158,5 @@ def test_video_message_discard_deletes_finalized_clip(client: TestClient):
     time.sleep(0.1)
 
     assert client.get("/recordings").json() == []
-    missing = client.get(
-        f"/recordings/{recording['recording_id']}/file?session_id={session_id}"
-    )
+    missing = client.get(f"/recordings/{recording['recording_id']}/file?session_id={session_id}")
     assert missing.status_code == 404

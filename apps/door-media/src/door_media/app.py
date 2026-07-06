@@ -299,8 +299,6 @@ async def delete_recording(
     return {"deleted": recording_id}
 
 
-
-
 @app.get("/recordings/{recording_id}/file")
 async def recording_file(
     recording_id: str,
@@ -333,6 +331,8 @@ async def recording_file(
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording file missing")
     return FileResponse(path, media_type="video/mp4")
+
+
 # ---------------------------------------------------------------------------
 # Internal session event endpoint
 # ---------------------------------------------------------------------------
@@ -382,10 +382,7 @@ async def session_event(
         },
     )
 
-    if (
-        to_state == SessionState.BUTTON_PRESSED
-        and body.trigger != "doorpad.video_message_offer"
-    ):
+    if to_state == SessionState.BUTTON_PRESSED and body.trigger != "doorpad.video_message_offer":
         asyncio.create_task(
             svc.start_recording(
                 session_id=session_id,
@@ -396,6 +393,7 @@ async def session_event(
         )
 
     elif to_state == SessionState.VIDEO_MESSAGE_RECORDING:
+
         async def _start_video_message() -> None:
             if from_state == SessionState.VIDEO_MESSAGE_REVIEW:
                 await svc.discard_recordings_for_session(

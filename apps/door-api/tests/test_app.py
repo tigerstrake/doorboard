@@ -77,7 +77,6 @@ def test_websocket_broadcast_smoke() -> None:
         assert delta3["event"]["payload"]["to_state"] == "VISITOR_MODE"
 
 
-
 def _receive_delta(websocket, event_type: str) -> dict:
     while True:
         data = json.loads(websocket.receive_text())

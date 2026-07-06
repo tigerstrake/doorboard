@@ -496,7 +496,6 @@ class SessionMachine:
             return self.transition(SessionState.ANSWERED, trigger)
         return False
 
-
     def handle_video_message_offer(
         self,
         *,
@@ -516,35 +515,50 @@ class SessionMachine:
             SessionState.APPROACH_DETECTED,
             SessionState.IDENTITY_CACHED,
         ):
-            changed = self.handle_button_pressed(
-                trace_id=trace_id,
-                trigger=trigger,
-                entry="touch",
-            ) or changed
+            changed = (
+                self.handle_button_pressed(
+                    trace_id=trace_id,
+                    trigger=trigger,
+                    entry="touch",
+                )
+                or changed
+            )
 
         if self._state == SessionState.BUTTON_PRESSED:
-            changed = self.transition(
-                SessionState.VISITOR_MODE,
-                "auto:touch_to_visitor",
-            ) or changed
+            changed = (
+                self.transition(
+                    SessionState.VISITOR_MODE,
+                    "auto:touch_to_visitor",
+                )
+                or changed
+            )
 
         if self._state == SessionState.VISITOR_MODE:
-            changed = self.transition(
-                SessionState.RINGING,
-                "doorpad:video_offer_ring_skip",
-            ) or changed
+            changed = (
+                self.transition(
+                    SessionState.RINGING,
+                    "doorpad:video_offer_ring_skip",
+                )
+                or changed
+            )
 
         if self._state == SessionState.RINGING:
-            changed = self.transition(
-                SessionState.UNANSWERED_TIMEOUT,
-                "doorpad:video_offer_unanswered",
-            ) or changed
+            changed = (
+                self.transition(
+                    SessionState.UNANSWERED_TIMEOUT,
+                    "doorpad:video_offer_unanswered",
+                )
+                or changed
+            )
 
         if self._state in (SessionState.ANSWERED, SessionState.UNANSWERED_TIMEOUT):
-            changed = self.transition(
-                SessionState.VIDEO_MESSAGE_OFFERED,
-                "doorpad:video_offer",
-            ) or changed
+            changed = (
+                self.transition(
+                    SessionState.VIDEO_MESSAGE_OFFERED,
+                    "doorpad:video_offer",
+                )
+                or changed
+            )
 
         if self._state == SessionState.VIDEO_MESSAGE_OFFERED:
             return True
