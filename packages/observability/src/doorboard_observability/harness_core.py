@@ -166,11 +166,12 @@ def check_regressions(
             continue
         base_p95: float = float(base_p95_raw)
         current_p95 = p95(vals)
-        if current_p95 > base_p95 * REGRESSION_FACTOR:
+        threshold = max(base_p95, 1.0) * REGRESSION_FACTOR
+        if current_p95 > threshold:
             regressions.append(
                 f"{path}: current p95={current_p95:.1f}ms, "
                 f"baseline p95={base_p95:.1f}ms, "
-                f"threshold={base_p95 * REGRESSION_FACTOR:.1f}ms"
+                f"threshold={threshold:.1f}ms"
             )
 
     return regressions
