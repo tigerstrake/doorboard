@@ -124,3 +124,8 @@ jobs:
         run: scripts/check-generated-contracts
       - name: Test
         run: scripts/test
+
+      - name: Performance Regression Check
+        run: |
+          uv run python -m tests.performance.harness --report-out latency-report.txt
+          cat latency-report.txt >> $GITHUB_STEP_SUMMARY
