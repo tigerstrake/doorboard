@@ -58,6 +58,20 @@ class Settings(BaseSettings):
     # ── admin auth (stopgap — see packages/auth README) ──────────────────
     admin_token: str = Field(default="", alias="CONTROL_PLANE_ADMIN_TOKEN")
 
+    # ── presence engine (T-504) ──────────────────────────────────────────
+    # How many `presence_history` rows to retain per subject_id — an
+    # append-only label-change log grows forever otherwise. 500 rows is
+    # generous for a change-only log (years, at plausible change rates)
+    # while staying bounded.
+    presence_history_max_rows: int = Field(
+        default=500, alias="CONTROL_PLANE_PRESENCE_HISTORY_MAX_ROWS"
+    )
+    # Age past which a Pi-cached presence bundle should be shown with a
+    # staleness hint rather than trusted at face value (NUC-outage drill).
+    presence_stale_after_s: float = Field(
+        default=1800.0, alias="CONTROL_PLANE_PRESENCE_STALE_AFTER_S"
+    )
+
     @property
     def host(self) -> str:
         return self.bind.split(":")[0]

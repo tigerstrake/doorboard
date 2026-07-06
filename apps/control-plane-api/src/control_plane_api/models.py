@@ -11,7 +11,17 @@ T-501 brief):
 - `session_mirror` / `media_mirror`: denormalized latest-state views over
   session.*/media.*/sync.* events, for admin/dashboard reads without
   replaying the whole event log.
-- `presence_history`: append-only broad-label presence history.
+- `presence_history`: append-only broad-label presence history (label +
+  source + timestamp only, retention-capped — T-504).
+- `presence_sources`: per-(subject_id, source) registry row — the last
+  known label/until from that source, plus an admin-controlled `enabled`
+  flag. Precedence resolution (`presence.py`) reads this; `calendar` never
+  gets a real row here (it's queried live from a `CalendarProvider`) except
+  to hold its own `enabled` flag.
+- `presence_subjects`: per-subject config — currently just the
+  `tracking_enabled` flag gating the *inferred* sources (focus_shortcut,
+  geofence_label, calendar) for that subject; this is the "config flag per
+  subject" the T-504 brief scopes roommate consent down to.
 - `social_items`: durable, moderatable copies of guestbook/checkin content
   (the only two social.* creation kinds that `social.deletion_requested`
   can target).
@@ -26,7 +36,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from control_plane_api.db import Base
@@ -115,6 +125,25 @@ class PresenceHistoryRow(Base):
     until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PresenceSourceRow(Base):
+    __tablename__ = "presence_sources"
+
+    subject_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source: Mapped[str] = mapped_column(String(32), primary_key=True)
+    label: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PresenceSubjectRow(Base):
+    __tablename__ = "presence_subjects"
+
+    subject_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tracking_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class SocialItemRow(Base):
