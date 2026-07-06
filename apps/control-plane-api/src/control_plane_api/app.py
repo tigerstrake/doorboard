@@ -6,6 +6,16 @@ Routes:
   POST   /ingest                      — batch event ingest (ingest-scoped token)
   GET    /config/door/{door_id}       — versioned config bundle (config-scoped token)
   PUT    /config/door/{door_id}       — update a door's config bundle (admin)
+  GET    /status/presence                          — list current presence, all subjects (admin)
+  GET    /status/presence/bundle                    — Pi-cacheable presence bundle (config-scoped)
+  GET    /status/presence/{subject_id}              — current presence + per-source detail (admin)
+  GET    /status/presence/{subject_id}/history       — label-change history (admin)
+  PATCH  /status/presence/{subject_id}               — set tracking_enabled (admin)
+  POST   /status/presence/{subject_id}/override      — set manual override (admin UI + one-tap)
+  DELETE /status/presence/{subject_id}/override      — clear manual override (admin)
+  PATCH  /status/presence/{subject_id}/sources/{src} — per-source enable/disable (admin)
+  POST   /status/presence/webhook/focus-shortcut     — HA Focus-shortcut ingestion (admin token)
+  POST   /status/presence/webhook/geofence-label      — HA geofence-label ingestion (admin token)
   DELETE /people/{person_id}/events   — person-data purge (ingest-scoped token; ADR-0009 §3.4)
   GET    /admin/social/guestbook      — moderation list (admin)
   DELETE /admin/social/guestbook/{id} — moderation delete (admin)
@@ -18,6 +28,11 @@ Routes:
 Admin auth note: see packages/auth README — session-based admin auth doesn't
 exist yet, so `/admin/*` is gated by a shared bearer secret
 (`CONTROL_PLANE_ADMIN_TOKEN`), same stopgap door-api's social panel uses.
+`/status/presence/*` (except the Pi-facing bundle) reuses the same admin
+token rather than adding a new `ServiceTokenScope` — HA and any phone
+shortcut hitting the webhook/override routes both run/originate on the
+trusted NUC side of ADR-0002's trust boundary, so this is the same stopgap,
+not a new one. Replace when real admin auth lands (see T-501 README note).
 """
 
 from __future__ import annotations
@@ -33,15 +48,19 @@ from typing import Annotated, Any
 
 from doorboard_auth import ServiceTokenRecord, ServiceTokenScope
 from doorboard_config import DoorConfigSettings
+from doorboard_contracts import PresenceLabel
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import Response
-from pydantic import BaseModel, ValidationError
+from pydantic import AwareDatetime, BaseModel, ConfigDict, ValidationError, field_validator
 from sqlalchemy import func, select
 
+from control_plane_api import presence_engine
 from control_plane_api import tokens as token_store
 from control_plane_api.bundles import get_or_create_bundle, update_bundle
 from control_plane_api.db import session_scope
 from control_plane_api.models import EventRow, SocialItemRow
+from control_plane_api.presence import CoordinatePayloadError, reject_coordinate_payload
+from control_plane_api.presence_engine import InvalidSourceError
 from control_plane_api.purge import purge_person
 from control_plane_api.service import ingest_batch
 from control_plane_api.settings import Settings
@@ -197,6 +216,301 @@ async def put_config(door_id: str, body: dict, request: Request, _auth: AdminAut
             session, door_id=door_id, settings=new_settings, now=datetime.now(UTC)
         )
     return bundle.model_dump(mode="json")
+
+
+# ---------------------------------------------------------------------------
+# Presence / Weasley clock (T-504)
+#
+# `/status/presence/bundle` is Pi-facing (config-scoped token, same trust
+# tier as `/config/door/{door_id}`) — it's the "data bundle" the wallboard
+# caches so its presence tile keeps showing a last-known label with a
+# staleness hint through a NUC outage. Everything else here is admin-only
+# (see the module docstring's admin-auth note).
+#
+# Route ordering note: `/status/presence/bundle` must be registered before
+# `/status/presence/{subject_id}` — both are a 3-segment GET, and Starlette
+# matches path templates in registration order, so the dynamic route would
+# otherwise swallow "bundle" as a subject_id.
+# ---------------------------------------------------------------------------
+
+
+def _source_status_to_dict(item: presence_engine.SourceStatus) -> dict:
+    return {
+        "source": item.source,
+        "label": item.label.value if item.label is not None else None,
+        "until": item.until.isoformat() if item.until is not None else None,
+        "enabled": item.enabled,
+        "stored": item.stored,
+    }
+
+
+def _subject_status_to_dict(item: presence_engine.SubjectStatus) -> dict:
+    return {
+        "subject_id": item.subject_id,
+        "tracking_enabled": item.tracking_enabled,
+        "label": item.label.value,
+        "source": item.source,
+        "until": item.until.isoformat() if item.until is not None else None,
+        "sources": [_source_status_to_dict(s) for s in item.sources],
+    }
+
+
+class PresenceOverrideRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: PresenceLabel
+    until: AwareDatetime | None = None
+
+    @field_validator("until")
+    @classmethod
+    def _until_to_utc(cls, value: datetime | None) -> datetime | None:
+        return value.astimezone(UTC) if value is not None else None
+
+
+class PresenceSourceToggleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
+class PresenceSubjectConfigRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tracking_enabled: bool
+
+
+class PresenceWebhookRequest(BaseModel):
+    """HA Focus-shortcut / voluntary-geofence-label webhook body. Label strings only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject_id: str
+    label: PresenceLabel
+    until: AwareDatetime | None = None
+
+    @field_validator("until")
+    @classmethod
+    def _until_to_utc(cls, value: datetime | None) -> datetime | None:
+        return value.astimezone(UTC) if value is not None else None
+
+
+@app.get("/status/presence")
+async def list_presence(request: Request, _auth: AdminAuth) -> dict:
+    state = _state(request)
+    now = datetime.now(UTC)
+    with session_scope(state.session_factory) as session:
+        statuses = presence_engine.list_subject_statuses(
+            session,
+            now=now,
+            door_id=state.settings.door_id,
+            calendar_provider=state.calendar_provider,
+            mqtt_publisher=state.mqtt_publisher,
+            history_max_rows=state.settings.presence_history_max_rows,
+        )
+    return {"subjects": [_subject_status_to_dict(s) for s in statuses]}
+
+
+@app.get("/status/presence/bundle")
+async def get_presence_bundle(
+    request: Request,
+    _token: Annotated[ServiceTokenRecord, Depends(_config_auth)],
+) -> dict:
+    state = _state(request)
+    now = datetime.now(UTC)
+    with session_scope(state.session_factory) as session:
+        statuses = presence_engine.list_subject_statuses(
+            session,
+            now=now,
+            door_id=state.settings.door_id,
+            calendar_provider=state.calendar_provider,
+            mqtt_publisher=state.mqtt_publisher,
+            history_max_rows=state.settings.presence_history_max_rows,
+        )
+    return {
+        "door_id": state.settings.door_id,
+        "generated_at": now.isoformat(),
+        "stale_after_s": state.settings.presence_stale_after_s,
+        "subjects": {
+            s.subject_id: {
+                "label": s.label.value,
+                "source": s.source,
+                "until": s.until.isoformat() if s.until is not None else None,
+            }
+            for s in statuses
+        },
+    }
+
+
+@app.get("/status/presence/{subject_id}")
+async def get_presence(subject_id: str, request: Request, _auth: AdminAuth) -> dict:
+    state = _state(request)
+    with session_scope(state.session_factory) as session:
+        item = presence_engine.get_subject_status(
+            session,
+            subject_id=subject_id,
+            now=datetime.now(UTC),
+            door_id=state.settings.door_id,
+            calendar_provider=state.calendar_provider,
+            mqtt_publisher=state.mqtt_publisher,
+            history_max_rows=state.settings.presence_history_max_rows,
+        )
+    return _subject_status_to_dict(item)
+
+
+@app.get("/status/presence/{subject_id}/history")
+async def get_presence_history(
+    subject_id: str, request: Request, _auth: AdminAuth, limit: int = 100
+) -> dict:
+    state = _state(request)
+    with session_scope(state.session_factory) as session:
+        rows = presence_engine.list_history(session, subject_id=subject_id, limit=limit)
+    return {
+        "subject_id": subject_id,
+        "history": [
+            {
+                "label": row.label,
+                "source": row.source,
+                "until": row.until.isoformat() if row.until is not None else None,
+                "occurred_at": row.occurred_at.isoformat(),
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.patch("/status/presence/{subject_id}")
+async def patch_presence_subject(
+    subject_id: str, body: PresenceSubjectConfigRequest, request: Request, _auth: AdminAuth
+) -> dict:
+    state = _state(request)
+    now = datetime.now(UTC)
+    with session_scope(state.session_factory) as session:
+        presence_engine.set_subject_tracking_enabled(
+            session, subject_id=subject_id, enabled=body.tracking_enabled, now=now
+        )
+        item = presence_engine.get_subject_status(
+            session,
+            subject_id=subject_id,
+            now=now,
+            door_id=state.settings.door_id,
+            calendar_provider=state.calendar_provider,
+            mqtt_publisher=state.mqtt_publisher,
+            history_max_rows=state.settings.presence_history_max_rows,
+        )
+    return _subject_status_to_dict(item)
+
+
+@app.post("/status/presence/{subject_id}/override")
+async def set_presence_override(
+    subject_id: str, body: PresenceOverrideRequest, request: Request, _auth: AdminAuth
+) -> dict:
+    """Manual override endpoint — admin UI and one-tap phone shortcut both hit this."""
+    state = _state(request)
+    now = datetime.now(UTC)
+    with session_scope(state.session_factory) as session:
+        presence_engine.set_manual_override(
+            session, subject_id=subject_id, label=body.label, until=body.until, now=now
+        )
+        item = presence_engine.get_subject_status(
+            session,
+            subject_id=subject_id,
+            now=now,
+            door_id=state.settings.door_id,
+            calendar_provider=state.calendar_provider,
+            mqtt_publisher=state.mqtt_publisher,
+            history_max_rows=state.settings.presence_history_max_rows,
+        )
+    return _subject_status_to_dict(item)
+
+
+@app.delete("/status/presence/{subject_id}/override")
+async def clear_presence_override(subject_id: str, request: Request, _auth: AdminAuth) -> dict:
+    state = _state(request)
+    now = datetime.now(UTC)
+    with session_scope(state.session_factory) as session:
+        presence_engine.clear_manual_override(session, subject_id=subject_id, now=now)
+        item = presence_engine.get_subject_status(
+            session,
+            subject_id=subject_id,
+            now=now,
+            door_id=state.settings.door_id,
+            calendar_provider=state.calendar_provider,
+            mqtt_publisher=state.mqtt_publisher,
+            history_max_rows=state.settings.presence_history_max_rows,
+        )
+    return _subject_status_to_dict(item)
+
+
+@app.patch("/status/presence/{subject_id}/sources/{source}")
+async def patch_presence_source(
+    subject_id: str,
+    source: str,
+    body: PresenceSourceToggleRequest,
+    request: Request,
+    _auth: AdminAuth,
+) -> dict:
+    state = _state(request)
+    now = datetime.now(UTC)
+    try:
+        with session_scope(state.session_factory) as session:
+            presence_engine.set_source_enabled(
+                session, subject_id=subject_id, source=source, enabled=body.enabled, now=now
+            )
+            item = presence_engine.get_subject_status(
+                session,
+                subject_id=subject_id,
+                now=now,
+                door_id=state.settings.door_id,
+                calendar_provider=state.calendar_provider,
+                mqtt_publisher=state.mqtt_publisher,
+                history_max_rows=state.settings.presence_history_max_rows,
+            )
+    except InvalidSourceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _subject_status_to_dict(item)
+
+
+def _handle_presence_webhook(request: Request, raw: dict, *, source: str) -> dict:
+    try:
+        reject_coordinate_payload(raw, context=f"webhook:{source}")
+    except CoordinatePayloadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        payload = PresenceWebhookRequest.model_validate(raw)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    state = _state(request)
+    now = datetime.now(UTC)
+    with session_scope(state.session_factory) as session:
+        presence_engine.set_source_value(
+            session,
+            subject_id=payload.subject_id,
+            source=source,
+            label=payload.label,
+            until=payload.until,
+            now=now,
+        )
+        item = presence_engine.get_subject_status(
+            session,
+            subject_id=payload.subject_id,
+            now=now,
+            door_id=state.settings.door_id,
+            calendar_provider=state.calendar_provider,
+            mqtt_publisher=state.mqtt_publisher,
+            history_max_rows=state.settings.presence_history_max_rows,
+        )
+    return _subject_status_to_dict(item)
+
+
+@app.post("/status/presence/webhook/focus-shortcut")
+async def presence_webhook_focus_shortcut(body: dict, request: Request, _auth: AdminAuth) -> dict:
+    return _handle_presence_webhook(request, body, source="focus_shortcut")
+
+
+@app.post("/status/presence/webhook/geofence-label")
+async def presence_webhook_geofence_label(body: dict, request: Request, _auth: AdminAuth) -> dict:
+    return _handle_presence_webhook(request, body, source="geofence_label")
 
 
 # ---------------------------------------------------------------------------

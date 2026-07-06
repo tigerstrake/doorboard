@@ -39,9 +39,14 @@ def test_upgrade_downgrade_upgrade_cycle_is_clean(alembic_config: Config, engine
     after_upgrade = _table_names(engine)
     assert after_upgrade == set(Base.metadata.tables) | {"alembic_version"}
 
+    # `-1` undoes exactly the latest revision, not the whole chain — as more
+    # migrations accumulate (T-504 added 0002) this is no longer the same as
+    # `base`. What must always hold: something goes away, `alembic_version`
+    # itself never does, and re-upgrading exactly restores `after_upgrade`.
     command.downgrade(alembic_config, "-1")
     after_downgrade = _table_names(engine)
-    assert after_downgrade == {"alembic_version"}
+    assert after_downgrade < after_upgrade
+    assert "alembic_version" in after_downgrade
 
     command.upgrade(alembic_config, "head")
     after_reupgrade = _table_names(engine)
