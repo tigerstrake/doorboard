@@ -17,7 +17,7 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class SessionConfig:
     """Timeouts and durations for the visitor session state machine.
 
@@ -57,12 +57,19 @@ class SessionConfig:
     # SESSION_END lingers briefly before auto-transitioning to IDLE (seconds).
     session_end_linger_s: float = 3.0
 
-    # SQLite database path — defaults to in-memory for tests/dev.
-    db_path: str = ":memory:"
+    # SQLite database path. Must be provided explicitly or loaded via from_env().
+    db_path: str
 
     @staticmethod
     def from_env() -> SessionConfig:
         """Load configuration, applying environment variable overrides."""
+        db_path = os.environ.get("DOOR_API_DB_PATH")
+        if not db_path:
+            ssd_root = os.environ.get("SSD_DATA_ROOT")
+            if not ssd_root:
+                raise RuntimeError("Either DOOR_API_DB_PATH or SSD_DATA_ROOT must be set")
+            db_path = os.path.join(ssd_root, "door-api", "session.sqlite")
+
         return SessionConfig(
             ring_timeout_s=_env_float("DOOR_API_RING_TIMEOUT_S", 30.0),
             visitor_mode_auto_ring_s=_env_float("DOOR_API_VISITOR_MODE_AUTO_RING_S", 2.0),
@@ -74,5 +81,5 @@ class SessionConfig:
             approach_timeout_s=_env_float("DOOR_API_APPROACH_TIMEOUT_S", 10.0),
             greeting_cooldown_s=_env_float("DOOR_API_GREETING_COOLDOWN_S", 30.0),
             session_end_linger_s=_env_float("DOOR_API_SESSION_END_LINGER_S", 3.0),
-            db_path=os.environ.get("DOOR_API_DB_PATH", ":memory:"),
+            db_path=db_path,
         )

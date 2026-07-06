@@ -54,7 +54,7 @@ def make_machine(
     mono_ms: int = 0,
 ) -> tuple[SessionMachine, EventCollector, SessionStore]:
     """Create a fresh state machine with in-memory persistence and a fake clock."""
-    cfg = config or SessionConfig()
+    cfg = config or SessionConfig(db_path=":memory:")
     store = SessionStore(":memory:")
     collector = EventCollector()
     machine = SessionMachine(config=cfg, store=store, on_event=collector)
@@ -313,7 +313,7 @@ class TestRestartMidSession:
 
     def test_kill_9_after_inactivity_timeout_expires_to_idle(self) -> None:
         """If inactivity timeout elapsed during the crash, restore → IDLE."""
-        config = SessionConfig(inactivity_timeout_s=10.0)
+        config = SessionConfig(db_path=":memory:", inactivity_timeout_s=10.0)
         machine, collector, store = make_machine(config=config)
 
         machine.handle_button_pressed()
@@ -724,7 +724,7 @@ class TestTimeoutRaces:
 class TestTimerAsync:
     def test_visitor_mode_auto_rings(self) -> None:
         """VISITOR_MODE auto-transitions to RINGING after the configured delay."""
-        config = SessionConfig(visitor_mode_auto_ring_s=0.05)
+        config = SessionConfig(db_path=":memory:", visitor_mode_auto_ring_s=0.05)
         machine, collector, _ = make_machine(config=config)
 
         async def run() -> None:
@@ -737,7 +737,7 @@ class TestTimerAsync:
 
     def test_session_end_auto_idles(self) -> None:
         """SESSION_END auto-transitions to IDLE after the linger period."""
-        config = SessionConfig(session_end_linger_s=0.05)
+        config = SessionConfig(db_path=":memory:", session_end_linger_s=0.05)
         machine, collector, _ = make_machine(config=config)
 
         async def run() -> None:
@@ -752,6 +752,7 @@ class TestTimerAsync:
     def test_ring_timeout_to_unanswered(self) -> None:
         """RINGING auto-transitions to UNANSWERED_TIMEOUT after ring_timeout_s."""
         config = SessionConfig(
+            db_path=":memory:",
             visitor_mode_auto_ring_s=0.02,
             ring_timeout_s=0.05,
         )
@@ -765,3 +766,54 @@ class TestTimerAsync:
             assert machine.state == SessionState.UNANSWERED_TIMEOUT
 
         asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# §17 — Pairing invariant
+# ---------------------------------------------------------------------------
+
+
+class TestPairingInvariant:
+    def test_started_ended_pairing_across_scenarios(self, tmp_path) -> None:
+        """Every scenario's events fed into SessionMachine must produce equal started/ended counts."""
+        from doorboard_simulator.scenarios import available_scenarios, run_scenario_name
+
+        async def run_invariant():
+            for scenario in available_scenarios():
+                config = SessionConfig(db_path=":memory:")
+                machine, collector, _ = make_machine(config=config)
+
+                result = await run_scenario_name(scenario, artifact_root=tmp_path / scenario)
+
+                for event in result.log:
+                    mono_ms = event["monotonic_ms"]
+                    machine.set_monotonic_fn(lambda m=mono_ms: m)
+
+                    typ = event["type"]
+                    payload = event.get("payload", {})
+
+                    if typ == "door.button_pressed":
+                        machine.handle_button_pressed()
+                    elif typ == "vision.identity_stable":
+                        machine.handle_identity_stable(
+                            person_id=payload["person_id"],
+                            display_name=payload.get("display_name", ""),
+                            profile_id=payload.get("profile_id", ""),
+                        )
+                    elif typ == "vision.identity_expired":
+                        machine.handle_identity_expired(person_id=payload["person_id"])
+                    elif typ == "door.contact_changed":
+                        machine.handle_contact_changed(state=payload["state"])
+
+                # Ensure the machine settles to IDLE (force expiration if needed)
+                if machine.state != SessionState.IDLE:
+                    machine._expire_to_idle("timeout:inactivity")
+
+                started = len(collector.of_type("session.started"))
+                ended = len(collector.of_type("session.ended"))
+                assert started == ended, (
+                    f"Scenario {scenario} failed pairing invariant: "
+                    f"{started} started, {ended} ended"
+                )
+
+        asyncio.run(run_invariant())

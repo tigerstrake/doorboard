@@ -142,9 +142,10 @@ class SessionMachine:
     _started_at_mono_ms: int = field(default=0, init=False)
     _last_transition_mono_ms: int = field(default=0, init=False)
     _timer: _TimerState = field(default_factory=_TimerState, init=False)
-    _monotonic_ms_fn: Callable[[], int] = field(
-        default=lambda: int(time.monotonic() * 1000), init=False
-    )
+    _monotonic_ms_fn: Callable[[], int] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._monotonic_ms_fn = lambda: int(time.monotonic() * 1000)
 
     # ---------------------------------------------------------------------------
     # Lifecycle
@@ -331,8 +332,11 @@ class SessionMachine:
                 }
             )
 
-        # Emit session.ended on transition to SESSION_END.
-        if to_state == SessionState.SESSION_END:
+        # Emit session.ended on transition to SESSION_END, or direct to IDLE from active.
+        if to_state == SessionState.SESSION_END or (
+            to_state == SessionState.IDLE
+            and from_state not in (SessionState.IDLE, SessionState.SESSION_END)
+        ):
             self.metrics.sessions_ended += 1
             outcome = self._outcome_for_trigger(trigger)
             ended_payload = SessionEndedPayload(
@@ -455,6 +459,8 @@ class SessionMachine:
             self._display_name = display_name
         if profile_id is not None:
             self._profile_id = profile_id
+
+        self._persist()
         return False
 
     def handle_identity_expired(self, *, person_id: str) -> bool:
@@ -686,14 +692,30 @@ class SessionMachine:
     @staticmethod
     def _outcome_for_trigger(trigger: str) -> SessionMachine._SessionOutcome:
         """Map a trigger string to a session.ended outcome."""
-        if "answered" in trigger or "contact" in trigger:
-            return "answered"
-        if "unanswered" in trigger or "ring" in trigger.lower():
-            return "unanswered_timeout"
-        if "save" in trigger:
-            return "message_left"
-        if "reset" in trigger or "admin" in trigger:
-            return "reset"
+        mapping: dict[str, SessionMachine._SessionOutcome] = {
+            "auto:saved_to_end": "message_left",
+            "admin:reset": "reset",
+            "timeout:ring": "unanswered_timeout",
+            "door.answered": "answered",
+            "door.contact_changed": "answered",
+            "visitor:discard": "abandoned",
+            "timeout:review": "abandoned",
+            "timeout:max_recording": "abandoned",
+            "timeout:inactivity": "abandoned",
+            "vision.identity_expired": "abandoned",
+        }
+        if trigger in mapping:
+            return mapping[trigger]
+
+        logger.warning(
+            json.dumps(
+                {
+                    "service": "door-api",
+                    "event_id": "unknown_session_end_trigger",
+                    "trigger": trigger,
+                }
+            )
+        )
         return "abandoned"
 
     def close(self) -> None:
