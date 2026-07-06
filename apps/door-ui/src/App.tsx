@@ -3,13 +3,13 @@ import {
   Tile,
   StatusBadge,
   BigButton,
-  GreetingBanner,
   CountdownAutoReset,
-  QRPlaceholder,
+  CrossfadeSwitch,
   SessionState,
 } from "@doorboard/ui-kit";
 import { DoorboardEventClient, uuidv7 } from "@doorboard/event-client";
 import type { DoorboardEvent } from "@doorboard/contracts";
+import { WallboardVisitorMode } from "./wallboard/WallboardVisitorMode";
 import {
   presenceFixture,
   birdFixture,
@@ -71,10 +71,15 @@ const VISITOR_STATES: SessionState[] = [
   "VIDEO_MESSAGE_SAVED",
 ];
 
+// Wallboard keeps rendering its takeover view through SESSION_END so the
+// thank-you screen is visible before the session auto-expires to IDLE.
+const WALLBOARD_TAKEOVER_STATES: SessionState[] = [...VISITOR_STATES, "SESSION_END"];
+
 export function App() {
   const [route, setRoute] = useState<string>(window.location.pathname);
   const [sessionState, setSessionState] = useState<SessionState>("IDLE");
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
+  const [activeDisplayName, setActiveDisplayName] = useState<string | null>(null);
   const [mockSessionId, setMockSessionId] = useState<string>(() => crypto.randomUUID());
   const [showSimPanel, setShowSimPanel] = useState<boolean>(true);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
@@ -130,6 +135,7 @@ export function App() {
 
         if (toState === "IDLE") {
           setActiveProfile(null);
+          setActiveDisplayName(null);
         }
 
         // Keep DoorPad local screen in sync
@@ -145,6 +151,7 @@ export function App() {
     const unsubscribeVision = client.subscribe("vision.identity_stable", (event: DoorboardEvent) => {
       if (event && event.type === "vision.identity_stable" && event.payload) {
         setActiveProfile(event.payload.profile_id);
+        setActiveDisplayName(event.payload.display_name);
       }
     });
 
@@ -353,6 +360,22 @@ export function App() {
     triggerEvent("IDLE");
   };
 
+  // The Wallboard's own "Done" button ends the visitor session properly (VISITOR_MODE
+  // family -> SESSION_END) rather than jumping straight to IDLE, so the session-end
+  // thank-you screen has a moment to show — mirroring door-api's real transition table.
+  const endVisitorSession = () => {
+    triggerEvent("SESSION_END");
+  };
+
+  // door-api auto-expires SESSION_END -> IDLE; this mock mirrors that so the thank-you
+  // screen the Wallboard shows during SESSION_END returns to ambient on its own.
+  useEffect(() => {
+    if (sessionState !== "SESSION_END") return;
+    const timeout = setTimeout(() => triggerEvent("IDLE"), 3000);
+    return () => clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionState]);
+
   // Render Simulator panel overlay (for interactive dev)
   const renderSimPanel = () => {
     if (!showSimPanel) {
@@ -390,206 +413,159 @@ export function App() {
 
   // --- WALLBOARD SURFACE ---
   const renderWallboard = () => {
-    const isVisitorMode = VISITOR_STATES.includes(sessionState);
+    const isVisitorMode = WALLBOARD_TAKEOVER_STATES.includes(sessionState);
+    const visitorUrl = `${window.location.origin}/visitor?token=${mockSessionId}`;
 
-    if (isVisitorMode) {
-      // VISITOR MODE TAKEOVER
-      let greetTitle = "Hello, Visitor!";
-      let greetSubtitle = "Press the bell or leave a video message below.";
-      
-      if (activeProfile === "owner") {
-        greetTitle = "Welcome home, Taylor!";
-        greetSubtitle = "You are currently marked as Available.";
-      } else if (activeProfile === "roommate") {
-        greetTitle = "Welcome home, Alex!";
-        greetSubtitle = "You are currently marked as Busy.";
-      }
+    return (
+      <CrossfadeSwitch activeKey={isVisitorMode ? "visitor" : "ambient"}>
+        {isVisitorMode ? (
+          <WallboardVisitorMode
+            sessionState={sessionState}
+            sessionId={mockSessionId}
+            profileId={activeProfile}
+            displayName={activeDisplayName}
+            presence={presenceFixture}
+            pollQuestion={currentPoll?.question ?? "No poll running right now."}
+            visitorUrl={visitorUrl}
+            onDone={endVisitorSession}
+          />
+        ) : (
+          // AMBIENT MODE - TILE DASHBOARD
+          <div className="wallboard-ambient-view db-app-theme">
+            <header className="ambient-header">
+              <div className="ambient-header-left">
+                <h1 className="ambient-header-title">Room 304 Wallboard</h1>
+                <span className="ambient-header-subtitle">Dorm Hallway Display</span>
+              </div>
+              <div className="ambient-clock">
+                {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </div>
+            </header>
 
-      return (
-        <CountdownAutoReset onReset={handleReset} timeoutMs={30000}>
-          <div className="wallboard-visitor-view db-app-theme fade-in">
-            <GreetingBanner
-              title={greetTitle}
-              subtitle={greetSubtitle}
-              profileId={activeProfile}
-            />
-            
-            <div className="visitor-grid">
-              <Tile title="DoorPad Instructions">
-                <div className="instructions-card">
-                  <p>Touch the <strong>7" DoorPad screen</strong> below to:</p>
-                  <ul>
-                    <li>Ring the doorbell again</li>
-                    <li>Leave a short video message</li>
-                    <li>Sign our digital guestbook</li>
-                    <li>Answer the roommate poll</li>
-                  </ul>
-                </div>
-              </Tile>
-
-              <Tile title="Availability State">
-                <div className="status-display-box">
-                  <div className="status-display-row">
-                    <span className="person-name">Taylor (Owner)</span>
+            <main className="ambient-grid">
+              {/* Tile 1: Presence */}
+              <Tile title="Presence" asOf={presenceFixture.owner.occurred_at}>
+                <div className="presence-tile-content">
+                  <div className="presence-row">
+                    <span>Taylor:</span>
                     <StatusBadge label={presenceFixture.owner.label} />
                   </div>
-                  <div className="status-display-row">
-                    <span className="person-name">Alex (Roommate)</span>
+                  <div className="presence-row">
+                    <span>Alex:</span>
                     <StatusBadge label={presenceFixture.roommate.label} />
                   </div>
                 </div>
               </Tile>
 
-              <Tile title="Scan Visitor QR">
-                <QRPlaceholder url="http://door.local/visitor?token=visitor_kiosk_pass" />
+              {/* Tile 2: Mood */}
+              <Tile title="Current Mood" asOf={moodFixture.occurred_at}>
+                <div className="mood-tile-content">
+                  <span className="mood-emoji">🎯</span>
+                  <span className="mood-text">Taylor is feeling <strong>{moodFixture.mood}</strong></span>
+                </div>
               </Tile>
-            </div>
 
-            <div className="visitor-mode-footer">
-              <BigButton variant="primary" onClick={handleReset}>
-                Done / End Session
-              </BigButton>
-            </div>
-          </div>
-        </CountdownAutoReset>
-      );
-    }
-
-    // AMBIENT MODE - TILE DASHBOARD
-    return (
-      <div className="wallboard-ambient-view db-app-theme">
-        <header className="ambient-header">
-          <div className="ambient-header-left">
-            <h1 className="ambient-header-title">Room 304 Wallboard</h1>
-            <span className="ambient-header-subtitle">Dorm Hallway Display</span>
-          </div>
-          <div className="ambient-clock">
-            {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-          </div>
-        </header>
-
-        <main className="ambient-grid">
-          {/* Tile 1: Presence */}
-          <Tile title="Presence" asOf={presenceFixture.owner.occurred_at}>
-            <div className="presence-tile-content">
-              <div className="presence-row">
-                <span>Taylor:</span>
-                <StatusBadge label={presenceFixture.owner.label} />
-              </div>
-              <div className="presence-row">
-                <span>Alex:</span>
-                <StatusBadge label={presenceFixture.roommate.label} />
-              </div>
-            </div>
-          </Tile>
-
-          {/* Tile 2: Mood */}
-          <Tile title="Current Mood" asOf={moodFixture.occurred_at}>
-            <div className="mood-tile-content">
-              <span className="mood-emoji">🎯</span>
-              <span className="mood-text">Taylor is feeling <strong>{moodFixture.mood}</strong></span>
-            </div>
-          </Tile>
-
-          {/* Tile 3: Birds */}
-          <Tile title="Bird Detections" asOf={birdFixture.occurred_at}>
-            <div className="bird-tile-content">
-              <p className="bird-stat">Total today: <strong>{birdFixture.total_detections}</strong></p>
-              {birdFixture.top_species.map((s, idx) => (
-                <div key={idx} className="bird-row">
-                  <span>{s.name} (x{s.count})</span>
-                  <span className="bird-conf">{(s.confidence_avg * 100).toFixed(0)}% conf</span>
-                </div>
-              ))}
-            </div>
-          </Tile>
-
-          {/* Tile 4: Aircraft */}
-          <Tile title="Overhead Aircraft" asOf={aircraftFixture.occurred_at}>
-            <div className="aircraft-tile-content">
-              {aircraftFixture.nearby.map((a, idx) => (
-                <div key={idx} className="aircraft-row">
-                  <span className="aircraft-call">{a.callsign}</span>
-                  <span>{a.altitude_ft.toLocaleString()} ft</span>
-                  <span>{a.distance_km} km away</span>
-                </div>
-              ))}
-            </div>
-          </Tile>
-
-          {/* Tile 5: Satellite Pass */}
-          <Tile title="Next Satellite Pass" asOf={satelliteFixture.occurred_at}>
-            <div className="satellite-tile-content">
-              <p>🛰️ <strong>{satelliteFixture.satellite}</strong></p>
-              <p>Rise: {new Date(satelliteFixture.rise_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-              <p>Direction: {satelliteFixture.direction} ({satelliteFixture.max_elevation_deg}° max elev)</p>
-            </div>
-          </Tile>
-
-          {/* Tile 6: Printer Status */}
-          <Tile title="3D Printer" asOf={printerFixture.occurred_at}>
-            <div className="printer-tile-content">
-              <p>Job: <strong>{printerFixture.job_name}</strong> ({printerFixture.state})</p>
-              <div className="progress-bar-container">
-                <div className="progress-bar-fill" style={{ width: `${printerFixture.progress_pct}%` }} />
-              </div>
-              <p className="printer-subtext">{printerFixture.progress_pct}% completed · ETA 15m</p>
-            </div>
-          </Tile>
-
-          {/* Tile 7: Roommate Scoreboard */}
-          <Tile title="Scoreboard" asOf={scoreboardFixture.occurred_at}>
-            <div className="scoreboard-tile-content">
-              {scoreboardFixture.scores.map((s, idx) => (
-                <div key={idx} className="score-row">
-                  <span>{s.name}</span>
-                  <span className="score-points"><strong>{s.score}</strong> pts</span>
-                </div>
-              ))}
-            </div>
-          </Tile>
-
-          {/* Tile 8: Daily Food */}
-          <Tile title="Daily Food Recommendation" asOf={foodFixture.occurred_at}>
-            <div className="food-tile-content">
-              <h4>🍜 {foodFixture.title}</h4>
-              <p>{foodFixture.detail}</p>
-            </div>
-          </Tile>
-
-          {/* Tile 9: Room Poll — fed by the real current poll (T-403) */}
-          <Tile title="Active Room Poll">
-            <div className="poll-tile-content">
-              {!currentPoll && <p>No poll running right now.</p>}
-              {currentPoll && (
-                <>
-                  <p className="poll-q"><strong>{currentPoll.question}</strong></p>
-                  {currentPoll.options.map((opt) => (
-                    <PollOptionRow
-                      key={opt.id}
-                      text={opt.text}
-                      votes={pollResults?.find((r) => r.option_id === opt.id)?.votes ?? 0}
-                    />
+              {/* Tile 3: Birds */}
+              <Tile title="Bird Detections" asOf={birdFixture.occurred_at}>
+                <div className="bird-tile-content">
+                  <p className="bird-stat">Total today: <strong>{birdFixture.total_detections}</strong></p>
+                  {birdFixture.top_species.map((s, idx) => (
+                    <div key={idx} className="bird-row">
+                      <span>{s.name} (x{s.count})</span>
+                      <span className="bird-conf">{(s.confidence_avg * 100).toFixed(0)}% conf</span>
+                    </div>
                   ))}
-                </>
-              )}
-            </div>
-          </Tile>
+                </div>
+              </Tile>
 
-          {/* Tile 10: Guestbook Highlights — fed by real approved entries (T-403) */}
-          <Tile
-            title="Guestbook Highlights"
-            asOf={approvedGuestbook[0]?.created_at ?? null}
-          >
-            <div className="guestbook-tile-content">
-              {approvedGuestbook.length === 0 && <p>No guestbook notes yet — be the first!</p>}
-              {approvedGuestbook.map((e) => (
-                <GuestbookQuote key={e.id} text={e.text} authorLabel={e.author_label} />
-              ))}
-            </div>
-          </Tile>
-        </main>
-      </div>
+              {/* Tile 4: Aircraft */}
+              <Tile title="Overhead Aircraft" asOf={aircraftFixture.occurred_at}>
+                <div className="aircraft-tile-content">
+                  {aircraftFixture.nearby.map((a, idx) => (
+                    <div key={idx} className="aircraft-row">
+                      <span className="aircraft-call">{a.callsign}</span>
+                      <span>{a.altitude_ft.toLocaleString()} ft</span>
+                      <span>{a.distance_km} km away</span>
+                    </div>
+                  ))}
+                </div>
+              </Tile>
+
+              {/* Tile 5: Satellite Pass */}
+              <Tile title="Next Satellite Pass" asOf={satelliteFixture.occurred_at}>
+                <div className="satellite-tile-content">
+                  <p>🛰️ <strong>{satelliteFixture.satellite}</strong></p>
+                  <p>Rise: {new Date(satelliteFixture.rise_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                  <p>Direction: {satelliteFixture.direction} ({satelliteFixture.max_elevation_deg}° max elev)</p>
+                </div>
+              </Tile>
+
+              {/* Tile 6: Printer Status */}
+              <Tile title="3D Printer" asOf={printerFixture.occurred_at}>
+                <div className="printer-tile-content">
+                  <p>Job: <strong>{printerFixture.job_name}</strong> ({printerFixture.state})</p>
+                  <div className="progress-bar-container">
+                    <div className="progress-bar-fill" style={{ width: `${printerFixture.progress_pct}%` }} />
+                  </div>
+                  <p className="printer-subtext">{printerFixture.progress_pct}% completed · ETA 15m</p>
+                </div>
+              </Tile>
+
+              {/* Tile 7: Roommate Scoreboard */}
+              <Tile title="Scoreboard" asOf={scoreboardFixture.occurred_at}>
+                <div className="scoreboard-tile-content">
+                  {scoreboardFixture.scores.map((s, idx) => (
+                    <div key={idx} className="score-row">
+                      <span>{s.name}</span>
+                      <span className="score-points"><strong>{s.score}</strong> pts</span>
+                    </div>
+                  ))}
+                </div>
+              </Tile>
+
+              {/* Tile 8: Daily Food */}
+              <Tile title="Daily Food Recommendation" asOf={foodFixture.occurred_at}>
+                <div className="food-tile-content">
+                  <h4>🍜 {foodFixture.title}</h4>
+                  <p>{foodFixture.detail}</p>
+                </div>
+              </Tile>
+
+              {/* Tile 9: Room Poll — fed by the real current poll (T-403) */}
+              <Tile title="Active Room Poll">
+                <div className="poll-tile-content">
+                  {!currentPoll && <p>No poll running right now.</p>}
+                  {currentPoll && (
+                    <>
+                      <p className="poll-q"><strong>{currentPoll.question}</strong></p>
+                      {currentPoll.options.map((opt) => (
+                        <PollOptionRow
+                          key={opt.id}
+                          text={opt.text}
+                          votes={pollResults?.find((r) => r.option_id === opt.id)?.votes ?? 0}
+                        />
+                      ))}
+                    </>
+                  )}
+                </div>
+              </Tile>
+
+              {/* Tile 10: Guestbook Highlights — fed by real approved entries (T-403) */}
+              <Tile
+                title="Guestbook Highlights"
+                asOf={approvedGuestbook[0]?.created_at ?? null}
+              >
+                <div className="guestbook-tile-content">
+                  {approvedGuestbook.length === 0 && <p>No guestbook notes yet — be the first!</p>}
+                  {approvedGuestbook.map((e) => (
+                    <GuestbookQuote key={e.id} text={e.text} authorLabel={e.author_label} />
+                  ))}
+                </div>
+              </Tile>
+            </main>
+          </div>
+        )}
+      </CrossfadeSwitch>
     );
   };
 

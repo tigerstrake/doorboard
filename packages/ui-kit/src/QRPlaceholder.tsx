@@ -33,7 +33,7 @@ export function QRPlaceholder({
         <div />
       </div>
       <p className="db-qr-placeholder__text">{text}</p>
-      <span style={{ fontSize: "0.75rem", color: "var(--db-text-muted)", wordBreak: "break-all" }}>
+      <span className="db-qr-placeholder__url" data-testid="qr-placeholder-url">
         {url}
       </span>
     </div>

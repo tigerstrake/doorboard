@@ -25,6 +25,12 @@ node_modules/
 .vite/
 coverage/
 
+# Playwright — snapshot baselines are committed, run artifacts are not
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
 # Media and local data — active recordings never belong in git
 *.mp4
 *.mkv
