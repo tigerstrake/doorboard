@@ -4,6 +4,7 @@
     "config",
     "contracts",
     "esp32-link",
+    "media-client",
     "observability"
   ],
   "exclude": ["**/node_modules", "**/__pycache__", "../.venv", "../dist"],
@@ -15,6 +16,7 @@
     "config/src",
     "contracts/src",
     "esp32-link/src",
+    "media-client/src",
     "observability/src"
   ]
 }

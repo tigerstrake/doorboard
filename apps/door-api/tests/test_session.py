@@ -819,3 +819,22 @@ class TestPairingInvariant:
                 )
 
         asyncio.run(run_invariant())
+
+
+class TestDoorPadVideoMessageAbandonment:
+    def test_fifty_video_message_abandonments_reset_cleanly(self) -> None:
+        """Repeated offer/start/review/discard cycles leave no stuck session."""
+        machine, _, _ = make_machine()
+
+        for _ in range(50):
+            assert machine.handle_video_message_offer()
+            assert machine.state == SessionState.VIDEO_MESSAGE_OFFERED
+            assert machine.handle_video_message_start()
+            assert machine.state == SessionState.VIDEO_MESSAGE_RECORDING
+            assert machine.handle_video_message_stop()
+            assert machine.state == SessionState.VIDEO_MESSAGE_REVIEW
+            assert machine.handle_video_message_discard()
+            assert machine.state == SessionState.SESSION_END
+            assert machine.transition(SessionState.IDLE, "auto:end_to_idle")
+            assert machine.state == SessionState.IDLE
+            assert machine.session_id is None

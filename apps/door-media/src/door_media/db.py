@@ -15,6 +15,7 @@ Key invariants:
 
 from __future__ import annotations
 
+import base64
 import logging
 import sqlite3
 import threading
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS recordings (
 
 CREATE INDEX IF NOT EXISTS idx_recordings_sync_status ON recordings(sync_status);
 CREATE INDEX IF NOT EXISTS idx_recordings_started_at  ON recordings(started_at_utc);
+CREATE INDEX IF NOT EXISTS idx_recordings_session_kind ON recordings(session_id, kind);
 """
 
 
@@ -73,6 +75,23 @@ class RecordingRow:
     sync_status: str
     synced_sha256: str | None
     deleted_at_utc: str | None
+
+
+_CURSOR_SEP = "\x1f"  # unit separator — never appears in a timestamp or UUID
+
+
+def _encode_recording_cursor(started_at_utc: str, recording_id: str) -> str:
+    raw = f"{started_at_utc}{_CURSOR_SEP}{recording_id}"
+    return base64.b64encode(raw.encode("utf-8")).decode("utf-8")
+
+
+def _decode_recording_cursor(cursor: str) -> tuple[str, str] | None:
+    try:
+        decoded = base64.b64decode(cursor.encode("utf-8")).decode("utf-8")
+        started_at_utc, recording_id = decoded.split(_CURSOR_SEP, 1)
+        return started_at_utc, recording_id
+    except Exception:
+        return None
 
 
 class RecordingDB:
@@ -177,6 +196,28 @@ class RecordingDB:
             )
         return matched
 
+    def delete_unfinalized(self, *, recording_id: UUID) -> bool:
+        """Remove a started row that never produced a durable clip."""
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM recordings WHERE recording_id=? AND path IS NULL",
+                (str(recording_id),),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def rows_for_session(self, *, session_id: UUID, kind: str | None = None) -> list[RecordingRow]:
+        query = "SELECT * FROM recordings WHERE session_id=?"
+        params: list[str] = [str(session_id)]
+        if kind is not None:
+            query += " AND kind=?"
+            params.append(kind)
+        query += " ORDER BY started_at_utc"
+        with self._lock:
+            cur = self._conn.execute(query, params)
+            rows = cur.fetchall()
+        return [RecordingRow(*r) for r in rows]
+
     def mark_deleted(self, *, recording_id: UUID, reason: str) -> bool:
         """Mark a recording deleted.  Only legal if synced or user_request/age/space."""
         now = datetime.now(UTC).isoformat()
@@ -214,6 +255,63 @@ class RecordingDB:
             )
             rows = cur.fetchall()
         return [RecordingRow(*r) for r in rows]
+
+    def list_recordings(
+        self,
+        *,
+        kind: str | None = None,
+        sync_status: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> tuple[list[RecordingRow], str | None]:
+        """List recordings with filtering and cursor-based pagination.
+
+        The cursor encodes ``(started_at_utc, recording_id)`` rather than
+        ``started_at_utc`` alone: two recordings can share a timestamp (the
+        column has microsecond resolution but no uniqueness guarantee), and
+        a cursor keyed on a non-unique column silently drops every row that
+        shares the boundary value with a strict ``>`` comparison. Pairing it
+        with the primary key gives a stable total order.
+        """
+        with self._lock:
+            query = "SELECT * FROM recordings WHERE sync_status != 'deleted'"
+            params: list[object] = []
+
+            if kind:
+                query += " AND kind = ?"
+                params.append(kind)
+
+            if sync_status:
+                query += " AND sync_status = ?"
+                params.append(sync_status)
+
+            if cursor:
+                decoded_cursor = _decode_recording_cursor(cursor)
+                if decoded_cursor is None:
+                    logger.warning("invalid_cursor_ignored", extra={"cursor": cursor})
+                else:
+                    cursor_started_at, cursor_recording_id = decoded_cursor
+                    query += " AND (started_at_utc, recording_id) > (?, ?)"
+                    params.extend([cursor_started_at, cursor_recording_id])
+
+            query += " ORDER BY started_at_utc ASC, recording_id ASC"
+
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(limit + 1)
+
+            cur = self._conn.execute(query, params)
+            rows = cur.fetchall()
+
+        recording_rows = [RecordingRow(*r) for r in rows]
+
+        next_cursor = None
+        if limit is not None and len(recording_rows) > limit:
+            last_item = recording_rows[limit - 1]
+            next_cursor = _encode_recording_cursor(last_item.started_at_utc, last_item.recording_id)
+            recording_rows = recording_rows[:limit]
+
+        return recording_rows, next_cursor
 
     def list_finalized_pending_sync(self) -> list[RecordingRow]:
         """Recordings finalized but not yet synced — for the sync queue depth."""

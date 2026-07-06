@@ -52,7 +52,7 @@ def test_session_event_lifecycle(client: TestClient):
     # Verify in DB
     resp = client.get("/recordings")
     assert resp.status_code == 200
-    recordings = resp.json()
+    recordings = resp.json()["recordings"]
     assert len(recordings) == 1
     assert recordings[0]["session_id"] == session_id
     assert recordings[0]["kind"] == "bell_clip"
@@ -73,7 +73,7 @@ def test_session_event_lifecycle(client: TestClient):
     time.sleep(0.1)
 
     resp = client.get("/recordings")
-    recordings = resp.json()
+    recordings = resp.json()["recordings"]
     assert recordings[0]["path"] is not None
 
     recording_id = recordings[0]["recording_id"]
@@ -92,11 +92,71 @@ def test_session_event_lifecycle(client: TestClient):
     assert resp.status_code == 200
 
     resp = client.get("/recordings")
-    assert resp.json()[0]["sync_status"] == "synced"
+    assert resp.json()["recordings"][0]["sync_status"] == "synced"
 
     # 4. Delete
     resp = client.delete(f"/recordings/{recording_id}")
     assert resp.status_code == 200
 
     resp = client.get("/recordings")
-    assert len(resp.json()) == 0
+    assert len(resp.json()["recordings"]) == 0
+
+
+def test_video_message_discard_deletes_finalized_clip(client: TestClient):
+    session_id = str(uuid.uuid4())
+    trace_id = str(uuid.uuid4())
+    time = __import__("time")
+
+    start = client.post(
+        "/internal/session_event",
+        json={
+            "session_id": session_id,
+            "from_state": SessionState.VIDEO_MESSAGE_OFFERED,
+            "to_state": SessionState.VIDEO_MESSAGE_RECORDING,
+            "trigger": "visitor:record_start",
+            "trace_id": trace_id,
+        },
+    )
+    assert start.status_code == 200
+    time.sleep(0.1)
+
+    review = client.post(
+        "/internal/session_event",
+        json={
+            "session_id": session_id,
+            "from_state": SessionState.VIDEO_MESSAGE_RECORDING,
+            "to_state": SessionState.VIDEO_MESSAGE_REVIEW,
+            "trigger": "visitor:record_stop",
+            "trace_id": trace_id,
+        },
+    )
+    assert review.status_code == 200
+    time.sleep(0.1)
+
+    recordings = client.get("/recordings").json()["recordings"]
+    assert len(recordings) == 1
+    recording = recordings[0]
+    assert recording["kind"] == "video_message"
+    assert recording["consent_context"] == "visitor_initiated"
+    assert recording["thumbnail_path"] is not None
+    file_response = client.get(
+        f"/recordings/{recording['recording_id']}/file?session_id={session_id}"
+    )
+    assert file_response.status_code == 200
+
+    discard = client.post(
+        "/internal/session_event",
+        json={
+            "session_id": session_id,
+            "from_state": SessionState.VIDEO_MESSAGE_REVIEW,
+            "to_state": SessionState.SESSION_END,
+            "trigger": "visitor:discard",
+            "trace_id": trace_id,
+        },
+    )
+    assert discard.status_code == 200
+    time.sleep(0.1)
+
+    assert client.get("/recordings").json()["recordings"] == []
+    missing = client.get(f"/recordings/{recording['recording_id']}/file?session_id={session_id}")
+    assert missing.status_code == 404

@@ -398,6 +398,23 @@
   box-shadow: var(--db-shadow-lg);
 }
 
+.admin-panel-card {
+  max-width: min(920px, 100%);
+}
+
+.live-demo-view {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--db-spacing-xl);
+  box-sizing: border-box;
+}
+
+.live-demo-panel {
+  width: min(920px, 100%);
+}
+
 .placeholder-card h1 {
   font-size: 2rem;
   margin: 0 0 var(--db-spacing-xs) 0;
@@ -444,6 +461,7 @@
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: var(--db-spacing-sm);
+  margin-top: var(--db-spacing-lg);
   margin-bottom: var(--db-spacing-xl);
 }
 
@@ -583,6 +601,356 @@
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Admin Dashboard Styling */
+.admin-view {
+  padding: var(--db-spacing-xl);
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+.admin-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--db-spacing-xl);
+}
+
+.admin-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--db-border-color);
+  padding-bottom: var(--db-spacing-md);
+}
+
+.admin-header h1 {
+  margin: 0 0 var(--db-spacing-xs) 0;
+  font-size: 2.25rem;
+}
+
+.admin-gauges-section, .admin-recordings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--db-spacing-md);
+}
+
+.section-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 0;
+  color: var(--db-text-secondary);
+  border-bottom: 1.5px dashed var(--db-border-color);
+  padding-bottom: var(--db-spacing-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.admin-gauges-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--db-spacing-lg);
+}
+
+.table-controls {
+  display: flex;
+  gap: var(--db-spacing-lg);
+  align-items: center;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--db-border-color);
+  border-radius: 12px;
+  padding: var(--db-spacing-md);
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: var(--db-spacing-sm);
+}
+
+.control-group label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--db-text-secondary);
+}
+
+.control-group select {
+  background: #030712;
+  border: 1px solid var(--db-border-color);
+  color: var(--db-text-primary);
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.loading-state, .empty-state {
+  text-align: center;
+  padding: var(--db-spacing-xl);
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px dashed var(--db-border-color);
+  border-radius: 16px;
+  color: var(--db-text-secondary);
+  font-style: italic;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--db-border-color);
+  border-radius: 16px;
+  background: var(--db-bg-card);
+  backdrop-filter: var(--db-backdrop-blur);
+}
+
+.recordings-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.95rem;
+}
+
+.recordings-table th, .recordings-table td {
+  padding: var(--db-spacing-md);
+  border-bottom: 1px solid var(--db-border-color);
+}
+
+.recordings-table th {
+  font-weight: 600;
+  color: var(--db-text-secondary);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.recording-thumb-preview {
+  width: 80px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: var(--db-shadow-sm);
+}
+
+.no-thumb-badge {
+  width: 80px;
+  height: 60px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px dashed var(--db-border-color);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: var(--db-text-muted);
+}
+
+.mono-text {
+  font-family: monospace;
+  font-size: 0.85rem;
+}
+
+.capitalize {
+  text-transform: capitalize;
+}
+
+.sync-status-tag {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.sync-status-tag.pending {
+  background: rgba(234, 179, 8, 0.15);
+  color: var(--db-presence-away);
+  border: 1px solid rgba(234, 179, 8, 0.3);
+}
+
+.sync-status-tag.synced {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--db-presence-available);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.sync-status-tag.deleted {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--db-presence-dnd);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.delete-recording-btn {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--db-presence-dnd);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.delete-recording-btn:hover {
+  background: var(--db-presence-dnd);
+  color: #fff;
+  border-color: var(--db-presence-dnd);
+}
+
+.pagination-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--db-spacing-lg);
+  margin-top: var(--db-spacing-md);
+}
+
+.pagination-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--db-border-color);
+  color: var(--db-text-primary);
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.pagination-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  font-size: 0.95rem;
+  color: var(--db-text-secondary);
+}
+
+.video-preview-frame {
+  position: relative;
+  width: min(100%, 520px);
+  aspect-ratio: 16 / 9;
+  margin: 12px auto;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(20, 22, 28, 0.92), rgba(47, 55, 64, 0.92)),
+    repeating-linear-gradient(90deg, transparent 0 24px, rgba(255, 255, 255, 0.05) 24px 25px);
+}
+
+.video-preview-frame--unavailable {
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.78);
+  min-height: 210px;
+}
+
+.video-preview-scan {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent, rgba(102, 224, 255, 0.18), transparent);
+  animation: preview-scan 2.4s linear infinite;
+}
+
+.video-preview-label {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.52);
+  font-size: 0.9rem;
+}
+
+@keyframes preview-scan {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(100%); }
+}
+
+.countdown-number {
+  font-size: 6rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.recording-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(155, 24, 35, 0.25);
+  color: #ffd7dc;
+  font-weight: 700;
+}
+
+.recording-status span {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ff3d4f;
+  box-shadow: 0 0 0 6px rgba(255, 61, 79, 0.18);
+}
+
+.review-video {
+  width: min(100%, 520px);
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  background: #000;
+}
+
+.message-meta {
+  margin-top: 8px;
+  color: rgba(255, 255, 255, 0.74);
+  font-size: 0.9rem;
+}
+
+.qr-inline {
+  margin: 10px 0 2px;
+}
+
+.admin-inbox-card {
+  max-width: 860px;
+}
+
+.admin-inbox-section {
+  width: 100%;
+  margin-top: 20px;
+  text-align: left;
+}
+
+.admin-inbox-section h2 {
+  margin: 0 0 12px;
+  font-size: 1.25rem;
+}
+
+.admin-recording-list {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-recording-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.admin-recording-row p {
+  margin: 4px 0 0;
+  color: rgba(255, 255, 255, 0.72);
+  overflow-wrap: anywhere;
 }
 
 /* Social features (T-403): guestbook/poll/checkin/privacy + visitor + admin */

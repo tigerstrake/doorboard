@@ -8,17 +8,22 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:update-snapshots": "playwright test --update-snapshots",
+    "test:e2e:soak": "playwright test e2e/soak.spec.ts --project=1080p-landscape"
   },
   "dependencies": {
     "@doorboard/contracts": "workspace:*",
-    "@doorboard/ui-kit": "workspace:*",
     "@doorboard/event-client": "workspace:*",
+    "@doorboard/ui-kit": "workspace:*",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@testing-library/react": "^16.3.2",
+    "@types/node": "^26.1.0",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",

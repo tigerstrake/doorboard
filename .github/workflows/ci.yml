@@ -126,6 +126,9 @@ jobs:
       - name: Install TypeScript workspace
         run: pnpm install --frozen-lockfile
 
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+
       - name: No secrets-looking files committed
         run: |
           if git ls-files | grep -E '(^|/)\.env$|\.pem$|\.key$'; then

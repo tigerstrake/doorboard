@@ -82,6 +82,10 @@ class MediaRouter(Protocol):
         """Finalize a recording and return durable metadata."""
         ...
 
+    async def discard_recording(self, handle: RecordingHandle) -> None:
+        """Abort an unfinalized recording without creating a clip."""
+        ...
+
     def storage_status(self) -> MediaStorageStatus:
         """Return storage state used by retention and sync logic."""
         ...
