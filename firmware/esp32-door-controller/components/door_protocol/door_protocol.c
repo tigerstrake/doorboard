@@ -347,6 +347,9 @@ static void apply_message_once(door_protocol_t *ctx, const parsed_message_t *msg
 
     if (msg->type == MSG_EFFECT_PLAY) {
         ctx->stats.effect_plays_applied++;
+        if (ctx->effect_play_cb != NULL) {
+            ctx->effect_play_cb(msg->effect_id, msg->duration_ms, ctx->effect_play_cb_user);
+        }
     }
 }
 
