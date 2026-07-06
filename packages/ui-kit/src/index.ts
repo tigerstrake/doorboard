@@ -20,5 +20,19 @@ export type { QRPlaceholderProps } from "./QRPlaceholder";
 
 export { LiveVideoPreview } from "./LiveVideoPreview";
 export type { LiveVideoPreviewProps } from "./LiveVideoPreview";
+export { RingStatus } from "./RingStatus";
+export type { RingStatusProps, RingState } from "./RingStatus";
+
+export { VideoMessageStatus } from "./VideoMessageStatus";
+export type { VideoMessageStatusProps, VideoMessageState } from "./VideoMessageStatus";
+
+export { PollPrompt } from "./PollPrompt";
+export type { PollPromptProps } from "./PollPrompt";
+
+export { SessionEndBanner } from "./SessionEndBanner";
+export type { SessionEndBannerProps } from "./SessionEndBanner";
+
+export { CrossfadeSwitch } from "./CrossfadeSwitch";
+export type { CrossfadeSwitchProps } from "./CrossfadeSwitch";
 
 export type { DoorboardEvent, HealthPayload, SessionState, PresenceLabel } from "@doorboard/contracts";

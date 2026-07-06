@@ -45,6 +45,15 @@
 }
 
 /* Base Styles */
+
+/* Kiosk surfaces never show the browser's default white background — set it at the
+   document root so there is no flash while a view mounts/unmounts or fonts load. */
+html,
+body {
+  background-color: var(--db-bg-app);
+  margin: 0;
+}
+
 .db-app-theme {
   font-family: var(--db-font-sans);
   background-color: var(--db-bg-app);
@@ -469,6 +478,12 @@
   line-height: 1.4;
 }
 
+.db-qr-placeholder__url {
+  font-size: 0.75rem;
+  color: var(--db-text-muted);
+  word-break: break-all;
+}
+
 /* Auto Reset Progress Bar */
 .db-auto-reset-bar {
   position: absolute;
@@ -477,4 +492,224 @@
   height: 4px;
   background-color: var(--db-presence-available);
   transition: width 1s linear;
+}
+
+/* Ring Status Component */
+.db-ring-status {
+  display: flex;
+  align-items: center;
+  gap: var(--db-spacing-md);
+  padding: var(--db-spacing-lg);
+  background: var(--db-bg-card);
+  border: 1px solid var(--db-border-color);
+  border-radius: 16px;
+  box-shadow: var(--db-shadow-md);
+}
+
+.db-ring-status__icon {
+  font-size: 2.5rem;
+  line-height: 1;
+}
+
+.db-ring-status--ringing .db-ring-status__icon {
+  animation: db-pulse 1.2s infinite ease-in-out;
+}
+
+.db-ring-status__title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.db-ring-status__subtitle {
+  color: var(--db-text-secondary);
+  margin: 4px 0 0;
+}
+
+.db-ring-status--answered .db-ring-status__title {
+  color: var(--db-presence-available);
+}
+
+.db-ring-status--unanswered_timeout .db-ring-status__title {
+  color: var(--db-presence-away);
+}
+
+/* Video Message Status Component */
+.db-video-message-status {
+  display: flex;
+  align-items: center;
+  gap: var(--db-spacing-md);
+  padding: var(--db-spacing-lg);
+  background: var(--db-bg-card);
+  border: 1px solid var(--db-border-color);
+  border-radius: 16px;
+  box-shadow: var(--db-shadow-md);
+}
+
+.db-video-message-status__icon {
+  font-size: 2.5rem;
+  line-height: 1;
+}
+
+.db-video-message-status__icon--recording {
+  animation: db-flash 1.5s infinite step-end;
+  color: var(--db-presence-dnd);
+}
+
+.db-video-message-status__title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.db-video-message-status__subtitle {
+  color: var(--db-text-secondary);
+  margin: 4px 0 0;
+}
+
+/* Poll Prompt Component */
+.db-poll-prompt {
+  display: flex;
+  align-items: center;
+  gap: var(--db-spacing-md);
+  padding: var(--db-spacing-md) var(--db-spacing-lg);
+  background: var(--db-bg-card);
+  border: 1px solid var(--db-border-color);
+  border-radius: 16px;
+}
+
+.db-poll-prompt__icon {
+  font-size: 1.75rem;
+}
+
+.db-poll-prompt__question {
+  font-weight: 600;
+  margin: 0;
+}
+
+.db-poll-prompt__cta {
+  color: var(--db-text-secondary);
+  font-size: 0.875rem;
+  margin: 2px 0 0;
+}
+
+/* Session End Banner Component */
+.db-session-end-banner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--db-spacing-sm);
+  padding: var(--db-spacing-xl);
+}
+
+.db-session-end-banner__icon {
+  font-size: 3.5rem;
+}
+
+.db-session-end-banner__title {
+  font-size: 2.25rem;
+  font-weight: 800;
+  margin: 0;
+}
+
+.db-session-end-banner__subtitle {
+  color: var(--db-text-secondary);
+  font-size: 1.125rem;
+  margin: 0;
+}
+
+/* Greeting Banner — celebratory sparkle effect + late-recognition upgrade pulse */
+.db-greeting-banner--upgraded {
+  animation: db-upgrade-glow 1.4s ease-out;
+}
+
+.db-greeting-banner__sparkles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.db-greeting-banner__sparkles span {
+  position: absolute;
+  top: 100%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ffffff;
+  opacity: 0;
+  animation: db-sparkle-rise 1.6s ease-out forwards;
+}
+
+.db-greeting-banner__sparkles span:nth-child(1) { left: 12%; animation-delay: 0ms; }
+.db-greeting-banner__sparkles span:nth-child(2) { left: 30%; animation-delay: 120ms; }
+.db-greeting-banner__sparkles span:nth-child(3) { left: 52%; animation-delay: 60ms; }
+.db-greeting-banner__sparkles span:nth-child(4) { left: 72%; animation-delay: 180ms; }
+.db-greeting-banner__sparkles span:nth-child(5) { left: 88%; animation-delay: 40ms; }
+
+/* Crossfade Switch — ambient<->visitor-mode transitions with no bare/white frame */
+.db-crossfade {
+  position: relative;
+  min-height: 100vh;
+}
+
+.db-crossfade__layer {
+  position: absolute;
+  inset: 0;
+  transition-property: opacity;
+  transition-timing-function: ease-in-out;
+  opacity: 1;
+}
+
+.db-crossfade__layer--out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.db-crossfade__layer--in {
+  opacity: 1;
+}
+
+@keyframes db-pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.8;
+  }
+}
+
+@keyframes db-flash {
+  from, to { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes db-upgrade-glow {
+  0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.6); }
+  100% { box-shadow: 0 0 0 24px rgba(255, 255, 255, 0); }
+}
+
+@keyframes db-sparkle-rise {
+  0% { opacity: 0; transform: translateY(0) scale(0.6); }
+  20% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-140px) scale(1.1); }
+}
+
+/* Kiosk CPU budget: skip continuous animation loops for users/systems that ask for it */
+@media (prefers-reduced-motion: reduce) {
+  .db-ring-status--ringing .db-ring-status__icon,
+  .db-video-message-status__icon--recording,
+  .db-greeting-banner--upgraded,
+  .db-greeting-banner__sparkles span,
+  .fade-in {
+    animation: none !important;
+  }
+
+  .db-crossfade__layer {
+    transition: none !important;
+  }
 }
