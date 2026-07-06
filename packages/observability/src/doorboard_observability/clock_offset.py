@@ -101,7 +101,7 @@ class ClockOffsetEstimator:
     """
 
     max_samples: int = 20
-    _samples: deque[OffsetSample] = field(default_factory=deque, repr=False)
+    _samples: deque[OffsetSample] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._samples = deque(maxlen=self.max_samples)

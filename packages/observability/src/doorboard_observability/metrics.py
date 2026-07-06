@@ -144,13 +144,13 @@ def reset_samples(path: str | None = None) -> None:
 # Prometheus integration (optional; gracefully absent in CI/mock mode)
 # ---------------------------------------------------------------------------
 
-PROMETHEUS_AVAILABLE = False
+PROMETHEUS_AVAILABLE: bool = False
 _histograms: dict[str, object] = {}
 
 try:
-    from prometheus_client import Histogram
+    from prometheus_client import Histogram  # type: ignore
 
-    PROMETHEUS_AVAILABLE = True
+    PROMETHEUS_AVAILABLE = True  # type: ignore
 
     for _path, _spec in LATENCY_PATHS.items():
         _histograms[_path] = Histogram(
