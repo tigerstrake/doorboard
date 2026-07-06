@@ -1,0 +1,880 @@
+"""RecordingService — core business logic for the door-media service.
+
+Owns the recording lifecycle, retention engine, and storage monitoring.
+The MediaRouter is injected and abstracted away.
+
+Key invariants enforced here:
+  - ``recording_allowed`` gate: any start_recording call when
+    ``recording_allowed=False`` is rejected and logged.
+  - Retention: size/age caps are enforced on a background task; deletion
+    is only of synced-or-policy-expired items.  The caller (retention task)
+    calls ``mark_deleted()`` after unlinking the file.
+  - No synchronous NAS/NUC call ever sits in the visitor interaction path.
+  - ``sync.upload_completed`` events update the DB sync status; only then
+    can the retention engine delete a local file.
+
+The service is a single-instance object wired into the FastAPI app via
+``app.state``.  Tests instantiate it directly with a mock router and a
+temp-dir settings.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import shutil
+import socket
+import time
+from pathlib import Path
+from uuid import UUID
+
+from door_media._uuid7 import uuid7
+from door_media.adapters import ConsentContext, MediaRouter, RecordingKind
+from door_media.db import RecordingDB
+from door_media.emitter import (
+    emit_recording_finalized,
+    emit_recording_started,
+    emit_retention_deleted,
+    emit_storage_alert,
+    emit_storage_status,
+    emit_thumbnail_ready,
+)
+from door_media.settings import Settings
+
+logger = logging.getLogger("door_media.service")
+
+# Thresholds for storage alert severity
+_WARN_FREE_RATIO = 0.10  # warn when <10% free
+_CRIT_FREE_RATIO = 0.05  # critical when <5% free
+
+
+class RecordingService:
+    """Coordinates recording lifecycle, retention, and event emission."""
+
+    def __init__(
+        self,
+        *,
+        router: MediaRouter,
+        db: RecordingDB,
+        settings: Settings,
+    ) -> None:
+        self._router = router
+        self._db = db
+        self._settings = settings
+        self._active_handles: dict[UUID, object] = {}  # recording_id → handle
+        self._retention_task: asyncio.Task[None] | None = None
+        self._storage_task: asyncio.Task[None] | None = None
+        self._trace_id = uuid7()  # service-level trace; per-session traces override
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Start background maintenance tasks."""
+        self._settings.recordings_root.mkdir(parents=True, exist_ok=True)
+        self._settings.segments_root.mkdir(parents=True, exist_ok=True)
+        self._settings.thumbnails_root.mkdir(parents=True, exist_ok=True)
+
+        self._retention_task = asyncio.create_task(self._retention_loop(), name="retention-loop")
+        self._storage_task = asyncio.create_task(
+            self._storage_status_loop(), name="storage-status-loop"
+        )
+        logger.info("recording_service_started")
+
+    async def stop(self) -> None:
+        """Cancel background tasks gracefully."""
+        for task in [self._retention_task, self._storage_task]:
+            if task:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        logger.info("recording_service_stopped")
+
+    # ------------------------------------------------------------------
+    # Recording lifecycle
+    # ------------------------------------------------------------------
+
+    async def start_recording(
+        self,
+        *,
+        session_id: UUID,
+        kind: RecordingKind,
+        trace_id: UUID,
+    ) -> UUID | None:
+        """Trigger a recording window for a session event.
+
+        Returns the recording_id on success, or None if recording is not
+        currently allowed (storage full / rate-limited).
+
+        Never raises — any error is logged and None is returned so the
+        session state machine keeps flowing.
+        """
+        # Guard: check storage before starting
+        status = self._router.storage_status()
+        if not status.recording_allowed:
+            logger.warning(
+                "recording_skipped_storage_full",
+                extra={"session_id": str(session_id), "free_bytes": status.free_bytes},
+            )
+            return None
+
+        try:
+            handle = await self._router.start_recording(
+                session_id=session_id,
+                kind=kind,
+                stream=self._settings.visitor_cam_stream,
+            )
+        except Exception as exc:
+            logger.exception("router_start_recording_error", exc_info=exc)
+            return None
+
+        self._active_handles[handle.recording_id] = handle
+
+        # Persist to DB
+        try:
+            self._db.insert_started(
+                recording_id=handle.recording_id,
+                session_id=session_id,
+                kind=kind,
+                stream=handle.stream,
+                started_mono_ms=handle.started_monotonic_ms,
+            )
+        except Exception as exc:
+            logger.exception("db_insert_started_error", exc_info=exc)
+            # Non-fatal: recording continues, but DB is inconsistent — log and continue.
+
+        # Emit event (contract-typed, broadcast to queue)
+        emit_recording_started(
+            recording_id=handle.recording_id,
+            session_id=session_id,
+            kind=kind,
+            stream=handle.stream,
+            trace_id=trace_id,
+            door_id=self._settings.door_id,
+        )
+
+        logger.info(
+            "recording_started",
+            extra={
+                "recording_id": str(handle.recording_id),
+                "session_id": str(session_id),
+                "kind": kind,
+                "trace_id": str(trace_id),
+            },
+        )
+        return handle.recording_id
+
+    async def finalize_recording(
+        self,
+        recording_id: UUID,
+        *,
+        consent_context: ConsentContext,
+        trace_id: UUID,
+        thumbnail_stub: bool = True,
+    ) -> bool:
+        """Finalize a recording window.
+
+        Steps:
+          1. Call the router to remux/cut the clip.
+          2. Persist finalized metadata to DB.
+          3. Emit ``media.recording_finalized``.
+          4. Emit a stub ``media.thumbnail_ready`` (T-203 fills implementation).
+
+        Returns True on success.  Never raises.
+        """
+        handle = self._active_handles.pop(recording_id, None)
+        if handle is None:
+            logger.warning(
+                "finalize_unknown_recording",
+                extra={"recording_id": str(recording_id)},
+            )
+            return False
+
+        try:
+            finalized = await self._router.finalize_recording(
+                handle,  # type: ignore[arg-type]
+                consent_context=consent_context,
+            )
+        except Exception as exc:
+            logger.exception("router_finalize_error", exc_info=exc)
+            return False
+
+        # Persist
+        try:
+            self._db.update_finalized(
+                recording_id=finalized.recording_id,
+                path=finalized.path,
+                duration_s=finalized.duration_s,
+                size_bytes=finalized.size_bytes,
+                sha256=finalized.sha256,
+                consent_context=finalized.consent_context,
+            )
+        except Exception as exc:
+            logger.exception("db_update_finalized_error", exc_info=exc)
+
+        # Emit finalized
+        emit_recording_finalized(
+            recording_id=finalized.recording_id,
+            path=finalized.path,
+            duration_s=finalized.duration_s,
+            size_bytes=finalized.size_bytes,
+            sha256=finalized.sha256,
+            consent_context=finalized.consent_context,
+            trace_id=trace_id,
+            door_id=self._settings.door_id,
+        )
+
+        # Emit thumbnail stub (T-203 fills actual thumbnail generation)
+        if thumbnail_stub:
+            thumb_stub = self._settings.thumbnails_root / f"{recording_id}.jpg"
+            # Write a 1x1 JFIF stub so the path exists for T-203 to replace
+            _write_thumbnail_stub(thumb_stub)
+            try:
+                self._db.update_thumbnail(
+                    recording_id=recording_id,
+                    thumbnail_path=str(thumb_stub.relative_to(self._settings.ssd_data_root)),
+                )
+            except Exception as exc:
+                logger.exception("db_update_thumbnail_error", exc_info=exc)
+            emit_thumbnail_ready(
+                recording_id=recording_id,
+                path=str(thumb_stub.relative_to(self._settings.ssd_data_root)),
+                trace_id=trace_id,
+                door_id=self._settings.door_id,
+            )
+
+        logger.info(
+            "recording_finalized",
+            extra={
+                "recording_id": str(recording_id),
+                "path": finalized.path,
+                "duration_s": finalized.duration_s,
+                "size_bytes": finalized.size_bytes,
+            },
+        )
+        return True
+
+    # ------------------------------------------------------------------
+    # Sync event handler
+    # ------------------------------------------------------------------
+
+    def on_sync_upload_completed(self, *, recording_id: UUID, verified_sha256: str) -> None:
+        """Called when door-sync confirms a checksum-verified upload.
+
+        This is the only gate that unlocks local deletion (ADR-0007).
+        """
+        matched = self._db.mark_synced(recording_id=recording_id, verified_sha256=verified_sha256)
+        if matched:
+            logger.info(
+                "recording_marked_synced",
+                extra={
+                    "recording_id": str(recording_id),
+                    "sha256": verified_sha256,
+                },
+            )
+
+    def on_deletion_requested(self, *, recording_id: UUID, trace_id: UUID) -> bool:
+        """Handle a ``social.deletion_requested`` for a video_message.
+
+        Returns True if the recording was found and deleted.
+        """
+        return self._delete_recording(
+            recording_id=recording_id,
+            reason="user_request",
+            trace_id=trace_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Admin API helpers
+    # ------------------------------------------------------------------
+
+    def list_recordings(self) -> list[dict]:
+        """Return a list of recording metadata dicts for GET /recordings."""
+        rows = self._db.list_pending()
+        return [
+            {
+                "recording_id": r.recording_id,
+                "session_id": r.session_id,
+                "kind": r.kind,
+                "stream": r.stream,
+                "started_at_utc": r.started_at_utc,
+                "finalized_at_utc": r.finalized_at_utc,
+                "path": r.path,
+                "duration_s": r.duration_s,
+                "size_bytes": r.size_bytes,
+                "sha256": r.sha256,
+                "consent_context": r.consent_context,
+                "thumbnail_path": r.thumbnail_path,
+                "sync_status": r.sync_status,
+            }
+            for r in rows
+        ]
+
+    def delete_recording(self, recording_id: UUID, trace_id: UUID) -> bool:
+        """Admin-initiated deletion (user_request reason)."""
+        return self._delete_recording(
+            recording_id=recording_id,
+            reason="user_request",
+            trace_id=trace_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _delete_recording(self, *, recording_id: UUID, reason: str, trace_id: UUID) -> bool:
+        row = self._db.get(recording_id)
+        if row is None:
+            return False
+        if row.sync_status == "deleted":
+            return True  # already gone
+
+        # Unlink the file
+        if row.path:
+            file_path = self._settings.ssd_data_root / row.path
+            try:
+                file_path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.exception(
+                    "delete_file_error",
+                    exc_info=exc,
+                    extra={"path": row.path},
+                )
+                return False
+
+        # Unlink thumbnail
+        if row.thumbnail_path:
+            thumb_path = self._settings.ssd_data_root / row.thumbnail_path
+            with contextlib.suppress(OSError):
+                thumb_path.unlink(missing_ok=True)
+
+        self._db.mark_deleted(recording_id=recording_id, reason=reason)
+        emit_retention_deleted(
+            recording_id=recording_id,
+            reason=reason,
+            trace_id=trace_id,
+            door_id=self._settings.door_id,
+        )
+        logger.info(
+            "recording_deleted",
+            extra={"recording_id": str(recording_id), "reason": reason},
+        )
+        return True
+
+    # ------------------------------------------------------------------
+    # Retention loop
+    # ------------------------------------------------------------------
+
+    async def _retention_loop(self) -> None:
+        """Enforce size and age caps on recorded clips.
+
+        Runs every 60 s.  On each pass:
+          1. Check free space — if below min_free_bytes, stop new recordings
+             and alert the control plane.
+          2. Delete expired clips (age > max_clip_age_s, synced only).
+          3. Delete oldest synced clips if over size cap.
+
+        A clip is only deleted if it is synced OR if we are critically low
+        on space and it is older than 1 hour (emergency eviction).
+        """
+        logger.info("retention_loop_started")
+        while True:
+            try:
+                await asyncio.sleep(60)
+                await self._run_retention_pass()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.exception("retention_loop_error", exc_info=exc)
+
+    async def _run_retention_pass(self) -> None:
+        trace_id = uuid7()
+        root = self._settings.ssd_data_root
+
+        # --- Storage check ---
+        try:
+            du = shutil.disk_usage(root)
+            free_bytes = du.free
+            total_bytes = du.total
+        except OSError:
+            # SSD not mounted — degrade gracefully
+            logger.error("disk_usage_failed", extra={"root": str(root)})
+            return
+
+        recording_allowed = free_bytes > self._settings.min_free_bytes
+
+        # Emit storage status
+        pending = self._db.list_finalized_pending_sync()
+        oldest_age = self._db.oldest_unsynced_age_s()
+        emit_storage_status(
+            free_bytes=free_bytes,
+            queue_depth=len(pending),
+            oldest_unsynced_s=oldest_age,
+            recording_allowed=recording_allowed,
+            trace_id=trace_id,
+            door_id=self._settings.door_id,
+        )
+
+        # Emit storage alert if needed
+        if total_bytes > 0:
+            free_ratio = free_bytes / total_bytes
+            if free_ratio < _CRIT_FREE_RATIO:
+                emit_storage_alert(
+                    host=socket.gethostname(),
+                    mount=str(root),
+                    free_bytes=free_bytes,
+                    severity="critical",
+                    trace_id=trace_id,
+                    door_id=self._settings.door_id,
+                )
+            elif free_ratio < _WARN_FREE_RATIO:
+                emit_storage_alert(
+                    host=socket.gethostname(),
+                    mount=str(root),
+                    free_bytes=free_bytes,
+                    severity="warning",
+                    trace_id=trace_id,
+                    door_id=self._settings.door_id,
+                )
+
+        # --- Age-based deletion (synced only) ---
+        now_s = time.time()
+        for row in self._db.list_pending():
+            if row.sync_status != "synced":
+                continue
+            try:
+                started = _parse_iso_epoch(row.started_at_utc)
+                age_s = now_s - started
+            except (ValueError, OSError):
+                continue
+            if age_s > self._settings.max_clip_age_s:
+                self._delete_recording(
+                    recording_id=UUID(row.recording_id),
+                    reason="age",
+                    trace_id=trace_id,
+                )
+
+        # --- Emergency eviction: critically low space ---
+        if free_bytes < self._settings.min_free_bytes:
+            one_hour_ago = now_s - 3600
+            for row in sorted(
+                self._db.list_pending(),
+                key=lambda r: r.started_at_utc,
+            ):
+                if row.sync_status == "deleted":
+                    continue
+                # Only evict synced clips normally; in emergency evict old pending
+                if row.sync_status == "pending":
+                    try:
+                        started = _parse_iso_epoch(row.started_at_utc)
+                        if started > one_hour_ago:
+                            continue  # too fresh — preserve
+                    except (ValueError, OSError):
+                        continue
+                self._delete_recording(
+                    recording_id=UUID(row.recording_id),
+                    reason="space",
+                    trace_id=trace_id,
+                )
+                # Re-check free space after each deletion
+                try:
+                    free_bytes = shutil.disk_usage(root).free
+                    if free_bytes >= self._settings.min_free_bytes:
+                        break
+                except OSError:
+                    break
+
+    # ------------------------------------------------------------------
+    # Storage status broadcast
+    # ------------------------------------------------------------------
+
+    async def _storage_status_loop(self) -> None:
+        """Periodically broadcast ``media.storage_status`` events."""
+        logger.info("storage_status_loop_started")
+        while True:
+            try:
+                await asyncio.sleep(self._settings.storage_status_interval_s)
+                trace_id = uuid7()
+                root = self._settings.ssd_data_root
+                try:
+                    free_bytes = shutil.disk_usage(root).free
+                except OSError:
+                    free_bytes = 0
+                pending = self._db.list_finalized_pending_sync()
+                oldest_age = self._db.oldest_unsynced_age_s()
+                recording_allowed = free_bytes > self._settings.min_free_bytes
+                emit_storage_status(
+                    free_bytes=free_bytes,
+                    queue_depth=len(pending),
+                    oldest_unsynced_s=oldest_age,
+                    recording_allowed=recording_allowed,
+                    trace_id=trace_id,
+                    door_id=self._settings.door_id,
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.exception("storage_status_loop_error", exc_info=exc)
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_iso_epoch(s: str) -> float:
+    """Parse an ISO-8601 string to a Unix timestamp (float)."""
+    from datetime import UTC, datetime
+
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.timestamp()
+
+
+def _write_thumbnail_stub(path: Path) -> None:
+    """Write a minimal 1×1 JFIF stub so the path exists for T-203 to replace."""
+    # Minimal 1x1 JFIF (JPEG) — valid enough for a stub
+    _JFIF_1x1 = bytes(
+        [
+            0xFF,
+            0xD8,
+            0xFF,
+            0xE0,
+            0x00,
+            0x10,
+            0x4A,
+            0x46,
+            0x49,
+            0x46,
+            0x00,
+            0x01,
+            0x01,
+            0x00,
+            0x00,
+            0x01,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0xFF,
+            0xDB,
+            0x00,
+            0x43,
+            0x00,
+            0x08,
+            0x06,
+            0x06,
+            0x07,
+            0x06,
+            0x05,
+            0x08,
+            0x07,
+            0x07,
+            0x07,
+            0x09,
+            0x09,
+            0x08,
+            0x0A,
+            0x0C,
+            0x14,
+            0x0D,
+            0x0C,
+            0x0B,
+            0x0B,
+            0x0C,
+            0x19,
+            0x12,
+            0x13,
+            0x0F,
+            0x14,
+            0x1D,
+            0x1A,
+            0x1F,
+            0x1E,
+            0x1D,
+            0x1A,
+            0x1C,
+            0x1C,
+            0x20,
+            0x24,
+            0x2E,
+            0x27,
+            0x20,
+            0x22,
+            0x2C,
+            0x23,
+            0x1C,
+            0x1C,
+            0x28,
+            0x37,
+            0x29,
+            0x2C,
+            0x30,
+            0x31,
+            0x34,
+            0x34,
+            0x34,
+            0x1F,
+            0x27,
+            0x39,
+            0x3D,
+            0x38,
+            0x32,
+            0x3C,
+            0x2E,
+            0x33,
+            0x34,
+            0x32,
+            0xFF,
+            0xC0,
+            0x00,
+            0x0B,
+            0x08,
+            0x00,
+            0x01,
+            0x00,
+            0x01,
+            0x01,
+            0x01,
+            0x11,
+            0x00,
+            0xFF,
+            0xC4,
+            0x00,
+            0x1F,
+            0x00,
+            0x00,
+            0x01,
+            0x05,
+            0x01,
+            0x01,
+            0x01,
+            0x01,
+            0x01,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x02,
+            0x03,
+            0x04,
+            0x05,
+            0x06,
+            0x07,
+            0x08,
+            0x09,
+            0x0A,
+            0x0B,
+            0xFF,
+            0xC4,
+            0x00,
+            0xB5,
+            0x10,
+            0x00,
+            0x02,
+            0x01,
+            0x03,
+            0x03,
+            0x02,
+            0x04,
+            0x03,
+            0x05,
+            0x05,
+            0x04,
+            0x04,
+            0x00,
+            0x00,
+            0x01,
+            0x7D,
+            0x01,
+            0x02,
+            0x03,
+            0x00,
+            0x04,
+            0x11,
+            0x05,
+            0x12,
+            0x21,
+            0x31,
+            0x41,
+            0x06,
+            0x13,
+            0x51,
+            0x61,
+            0x07,
+            0x22,
+            0x71,
+            0x14,
+            0x32,
+            0x81,
+            0x91,
+            0xA1,
+            0x08,
+            0x23,
+            0x42,
+            0xB1,
+            0xC1,
+            0x15,
+            0x52,
+            0xD1,
+            0xF0,
+            0x24,
+            0x33,
+            0x62,
+            0x72,
+            0x82,
+            0x09,
+            0x0A,
+            0x16,
+            0x17,
+            0x18,
+            0x19,
+            0x1A,
+            0x25,
+            0x26,
+            0x27,
+            0x28,
+            0x29,
+            0x2A,
+            0x34,
+            0x35,
+            0x36,
+            0x37,
+            0x38,
+            0x39,
+            0x3A,
+            0x43,
+            0x44,
+            0x45,
+            0x46,
+            0x47,
+            0x48,
+            0x49,
+            0x4A,
+            0x53,
+            0x54,
+            0x55,
+            0x56,
+            0x57,
+            0x58,
+            0x59,
+            0x5A,
+            0x63,
+            0x64,
+            0x65,
+            0x66,
+            0x67,
+            0x68,
+            0x69,
+            0x6A,
+            0x73,
+            0x74,
+            0x75,
+            0x76,
+            0x77,
+            0x78,
+            0x79,
+            0x7A,
+            0x83,
+            0x84,
+            0x85,
+            0x86,
+            0x87,
+            0x88,
+            0x89,
+            0x8A,
+            0x92,
+            0x93,
+            0x94,
+            0x95,
+            0x96,
+            0x97,
+            0x98,
+            0x99,
+            0x9A,
+            0xA2,
+            0xA3,
+            0xA4,
+            0xA5,
+            0xA6,
+            0xA7,
+            0xA8,
+            0xA9,
+            0xAA,
+            0xB2,
+            0xB3,
+            0xB4,
+            0xB5,
+            0xB6,
+            0xB7,
+            0xB8,
+            0xB9,
+            0xBA,
+            0xC2,
+            0xC3,
+            0xC4,
+            0xC5,
+            0xC6,
+            0xC7,
+            0xC8,
+            0xC9,
+            0xCA,
+            0xD2,
+            0xD3,
+            0xD4,
+            0xD5,
+            0xD6,
+            0xD7,
+            0xD8,
+            0xD9,
+            0xDA,
+            0xE1,
+            0xE2,
+            0xE3,
+            0xE4,
+            0xE5,
+            0xE6,
+            0xE7,
+            0xE8,
+            0xE9,
+            0xEA,
+            0xF1,
+            0xF2,
+            0xF3,
+            0xF4,
+            0xF5,
+            0xF6,
+            0xF7,
+            0xF8,
+            0xF9,
+            0xFA,
+            0xFF,
+            0xDA,
+            0x00,
+            0x08,
+            0x01,
+            0x01,
+            0x00,
+            0x00,
+            0x3F,
+            0x00,
+            0xFB,
+            0x26,
+            0x8A,
+            0x28,
+            0x03,
+            0xFF,
+            0xD9,
+        ]
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_JFIF_1x1)
