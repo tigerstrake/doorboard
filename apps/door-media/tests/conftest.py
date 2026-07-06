@@ -33,6 +33,7 @@ def _setup_env(tmp_path: Path):
 def anyio_backend():
     return "asyncio"
 
+
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
     """Return a TestClient. The app's lifespan will pick up the overridden settings."""

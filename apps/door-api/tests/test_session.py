@@ -775,7 +775,7 @@ class TestTimerAsync:
 
 class TestPairingInvariant:
     def test_started_ended_pairing_across_scenarios(self, tmp_path) -> None:
-        """Every scenario's events fed into SessionMachine must produce equal started/ended counts."""
+        """Every scenario's events fed into SessionMachine must pair started/ended counts."""
         from doorboard_simulator.scenarios import available_scenarios, run_scenario_name
 
         async def run_invariant():

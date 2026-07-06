@@ -398,6 +398,23 @@
   box-shadow: var(--db-shadow-lg);
 }
 
+.admin-panel-card {
+  max-width: min(920px, 100%);
+}
+
+.live-demo-view {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--db-spacing-xl);
+  box-sizing: border-box;
+}
+
+.live-demo-panel {
+  width: min(920px, 100%);
+}
+
 .placeholder-card h1 {
   font-size: 2rem;
   margin: 0 0 var(--db-spacing-xs) 0;
@@ -444,6 +461,7 @@
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: var(--db-spacing-sm);
+  margin-top: var(--db-spacing-lg);
   margin-bottom: var(--db-spacing-xl);
 }
 

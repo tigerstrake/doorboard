@@ -18,4 +18,7 @@ export type { CountdownAutoResetProps } from "./CountdownAutoReset";
 export { QRPlaceholder } from "./QRPlaceholder";
 export type { QRPlaceholderProps } from "./QRPlaceholder";
 
+export { LiveVideoPreview } from "./LiveVideoPreview";
+export type { LiveVideoPreviewProps } from "./LiveVideoPreview";
+
 export type { DoorboardEvent, HealthPayload, SessionState, PresenceLabel } from "@doorboard/contracts";
