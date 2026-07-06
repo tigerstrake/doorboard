@@ -1,0 +1,98 @@
+{
+  "events": [
+    {
+      "monotonic_ms": 100,
+      "payload": {
+        "face_count": 1,
+        "largest_face_px": 184
+      },
+      "type": "vision.face_visible"
+    },
+    {
+      "monotonic_ms": 100,
+      "payload": {
+        "confidence": 0.93,
+        "display_name": "Alice",
+        "expires_at": "2026-07-04T12:00:02.600000Z",
+        "expires_at_monotonic_ms": 2600,
+        "person_id": "prs_1",
+        "profile_id": "wave_a"
+      },
+      "type": "vision.identity_stable"
+    },
+    {
+      "monotonic_ms": 200,
+      "payload": {
+        "person_id": "prs_1"
+      },
+      "type": "vision.identity_expired"
+    },
+    {
+      "monotonic_ms": 300,
+      "payload": {
+        "face_count": 1,
+        "largest_face_px": 184
+      },
+      "type": "vision.face_visible"
+    },
+    {
+      "monotonic_ms": 300,
+      "payload": {
+        "confidence": 0.93,
+        "display_name": "Bob",
+        "expires_at": "2026-07-04T12:00:02.800000Z",
+        "expires_at_monotonic_ms": 2800,
+        "person_id": "prs_2",
+        "profile_id": "wave_b"
+      },
+      "type": "vision.identity_stable"
+    },
+    {
+      "monotonic_ms": 400,
+      "payload": {
+        "person_id": "prs_2"
+      },
+      "type": "vision.identity_expired"
+    },
+    {
+      "monotonic_ms": 500,
+      "payload": {
+        "face_count": 1,
+        "largest_face_px": 184
+      },
+      "type": "vision.face_visible"
+    },
+    {
+      "monotonic_ms": 600,
+      "payload": {
+        "had_cached_profile": true,
+        "press_id": "00000000-0000-0000-0000-000000000001",
+        "profile_id": "wave_b"
+      },
+      "type": "door.button_pressed"
+    },
+    {
+      "monotonic_ms": 620,
+      "payload": {
+        "kind": "bell_clip",
+        "recording_id": "c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788",
+        "session_id": "0f7e3f6f-6d69-44f7-b2e0-20f520cb04f5",
+        "stream": "visitor-main"
+      },
+      "type": "media.recording_started"
+    },
+    {
+      "monotonic_ms": 1120,
+      "payload": {
+        "consent_context": "bell_event",
+        "duration_s": 0.5,
+        "path": "recordings/c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788.mp4",
+        "recording_id": "c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788",
+        "sha256": "ca26b3216902d328bd2de88c51d23ed73f18c761c3b738ffa75a71cb9f0d768d",
+        "size_bytes": 93
+      },
+      "type": "media.recording_finalized"
+    }
+  ],
+  "scenario": "identity-churn-abuse"
+}

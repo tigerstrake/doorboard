@@ -115,11 +115,15 @@ name = "doorboard-door-api"
 version = "0.0.0"
 source = { editable = "apps/door-api" }
 dependencies = [
+    { name = "doorboard-contracts" },
     { name = "doorboard-esp32-link" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "doorboard-esp32-link", editable = "packages/esp32-link" }]
+requires-dist = [
+    { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "doorboard-esp32-link", editable = "packages/esp32-link" },
+]
 
 [[package]]
 name = "doorboard-door-media"

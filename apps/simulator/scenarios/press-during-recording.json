@@ -1,0 +1,10 @@
+{
+  "name": "press-during-recording",
+  "steps": [
+    {"at_ms": 0, "action": "pi_hello"},
+    {"at_ms": 100, "action": "button"},
+    {"at_ms": 120, "action": "record_bell", "duration_ms": 1000},
+    {"at_ms": 1500, "action": "button"},
+    {"at_ms": 1600, "action": "button"}
+  ]
+}
