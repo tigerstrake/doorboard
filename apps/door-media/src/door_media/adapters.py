@@ -1,3 +1,13 @@
+"""door-media adapter interfaces and value objects.
+
+``MediaRouter`` is the single abstraction over MediaMTX (hardware) and Mock
+(CI/dev).  Implementations must satisfy this protocol — the service layer
+only ever uses this interface.
+
+``StreamInfo`` carries metadata about a live stream for the ``GET /streams``
+endpoint consumed by kiosk UIs.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -35,6 +45,23 @@ class MediaStorageStatus:
     recording_allowed: bool
 
 
+@dataclass(frozen=True)
+class StreamInfo:
+    """Metadata about a single live stream for kiosk UIs."""
+
+    name: str
+    """Stream name / path on the MediaMTX server."""
+
+    whep_url: str
+    """WHEP WebRTC endpoint for consuming this stream."""
+
+    stream_up: bool
+    """Whether the stream is currently live."""
+
+    webrtc_clients: int
+    """Active WebRTC consumer count."""
+
+
 class MediaRouter(Protocol):
     async def start_recording(
         self,
@@ -57,4 +84,12 @@ class MediaRouter(Protocol):
 
     def storage_status(self) -> MediaStorageStatus:
         """Return storage state used by retention and sync logic."""
+        ...
+
+    def stream_info(self) -> list[StreamInfo]:
+        """Return current stream metadata for GET /streams."""
+        ...
+
+    async def health_check(self) -> bool:
+        """Return True if the underlying media backend is healthy."""
         ...
