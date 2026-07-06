@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Tile,
   StatusBadge,
   BigButton,
   CountdownAutoReset,
+  QRPlaceholder,
   LiveVideoPreview,
   CrossfadeSwitch,
   SessionState,
@@ -60,6 +61,26 @@ function apiErrorMessage(err: unknown, fallback: string): string {
 }
 
 // Session states that trigger Wallboard Visitor Mode takeover
+const API_BASE = import.meta.env.VITE_DOOR_API_BASE_URL ?? "http://127.0.0.1:8000";
+
+const wsUrlFromApiBase = (base: string) => `${base.replace(/^http/, "ws")}/ws`;
+
+type DoorPadScreen = "home" | "ringing" | "message" | "guestbook" | "poll" | "checkin" | "privacy";
+type VideoStep = "offer" | "countdown" | "recording" | "review" | "saved" | "qr";
+
+interface DoorApiSnapshot {
+  session?: { state?: SessionState; session_id?: string | null };
+  config?: { max_recording_s?: number };
+}
+
+interface VideoRecording {
+  recording_id: string;
+  path: string | null;
+  consent_context: "visitor_initiated" | "bell_event" | null;
+  thumbnail_path: string | null;
+  playback_url?: string;
+}
+
 const VISITOR_STATES: SessionState[] = [
   "BUTTON_PRESSED",
   "VISITOR_MODE",
@@ -86,7 +107,14 @@ export function App() {
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
   
   // DoorPad local state
-  const [doorPadScreen, setDoorPadScreen] = useState<"home" | "ringing" | "message" | "guestbook" | "poll" | "checkin" | "privacy">("home");
+  const [doorPadScreen, setDoorPadScreen] = useState<DoorPadScreen>("home");
+  const [videoStep, setVideoStep] = useState<VideoStep>("offer");
+  const [countdown, setCountdown] = useState<number>(3);
+  const [recordingElapsed, setRecordingElapsed] = useState<number>(0);
+  const [maxRecordingS, setMaxRecordingS] = useState<number>(60);
+  const [latestRecording, setLatestRecording] = useState<VideoRecording | null>(null);
+  const [visitorQrUrl, setVisitorQrUrl] = useState<string | null>(null);
+  const [adminRecordings, setAdminRecordings] = useState<VideoRecording[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Social feature state (T-403)
@@ -122,8 +150,17 @@ export function App() {
   useEffect(() => {
     const client = new DoorboardEventClient({
       // Connect to simulator ws, or fallback to mock BroadcastChannel
-      wsUrl: "ws://127.0.0.1:8765/ws",
-      filters: ["session.*", "vision.*"],
+      wsUrl: wsUrlFromApiBase(API_BASE),
+      filters: ["session.*", "vision.*", "door.*"],
+      onSnapshot: (snapshot) => {
+        const state = (snapshot as { state?: SessionState }).state;
+        if (state) {
+          setSessionState(state);
+          if (state === "IDLE") {
+            setDoorPadScreen("home");
+          }
+        }
+      },
     });
 
     clientRef.current = client;
@@ -139,10 +176,23 @@ export function App() {
           setActiveDisplayName(null);
         }
 
-        // Keep DoorPad local screen in sync
+        // Keep DoorPad local screen in sync, including sessions started by hardware.
         if (toState === "IDLE") {
           setDoorPadScreen("home");
-        } else if (VISITOR_STATES.includes(toState) && toState !== "SESSION_END") {
+          setVideoStep("offer");
+        } else if (toState === "VIDEO_MESSAGE_OFFERED") {
+          setDoorPadScreen("message");
+          setVideoStep("offer");
+        } else if (toState === "VIDEO_MESSAGE_RECORDING") {
+          setDoorPadScreen("message");
+          setVideoStep("recording");
+        } else if (toState === "VIDEO_MESSAGE_REVIEW") {
+          setDoorPadScreen("message");
+          setVideoStep("review");
+        } else if (toState === "VIDEO_MESSAGE_SAVED") {
+          setDoorPadScreen("message");
+          setVideoStep("saved");
+        } else if (VISITOR_STATES.includes(toState)) {
           setDoorPadScreen("ringing");
         }
       }
@@ -162,6 +212,34 @@ export function App() {
       client.close();
     };
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`${API_BASE}/session`, { signal: controller.signal })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: DoorApiSnapshot | null) => {
+        if (data?.session?.state) {
+          setSessionState(data.session.state);
+        }
+        if (typeof data?.config?.max_recording_s === "number") {
+          setMaxRecordingS(data.config.max_recording_s);
+        }
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (route !== "/admin" && route !== "/diagnostics") return undefined;
+    const controller = new AbortController();
+    fetch(`${API_BASE}/admin/media-inbox`, { signal: controller.signal })
+      .then((response) => (response.ok ? response.json() : { recordings: [] }))
+      .then((data: { recordings?: VideoRecording[] }) => {
+        setAdminRecordings(data.recordings ?? []);
+      })
+      .catch(() => setAdminRecordings([]));
+    return () => controller.abort();
+  }, [route]);
 
   // Show temporary toast feedback
   const triggerToast = (msg: string) => {
@@ -571,11 +649,129 @@ export function App() {
   };
 
   // --- DOORPAD SURFACE ---
+  const postDoorApi = useCallback(async (path: string) => {
+    try {
+      const response = await fetch(`${API_BASE}${path}`, { method: "POST" });
+      if (!response.ok) {
+        triggerToast("Local service unavailable");
+        return null;
+      }
+      return response.json() as Promise<DoorApiSnapshot>;
+    } catch {
+      triggerToast("Local service unavailable");
+      return null;
+    }
+  }, []);
+
+  const fetchLatestRecording = useCallback(async () => {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      try {
+        const response = await fetch(`${API_BASE}/doorpad/video-message/latest`);
+        if (response.ok) {
+          const data = (await response.json()) as { recording?: VideoRecording | null };
+          if (data.recording) {
+            setLatestRecording(data.recording);
+            return;
+          }
+        }
+      } catch {
+        // Retry briefly; final unavailable state is shown by the review screen.
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    }
+  }, []);
+
+  const stopRecording = useCallback(async () => {
+    setVideoStep("review");
+    await postDoorApi("/doorpad/video-message/stop");
+    void fetchLatestRecording();
+  }, [fetchLatestRecording, postDoorApi]);
+
+  const beginRecording = useCallback(async () => {
+    setRecordingElapsed(0);
+    setLatestRecording(null);
+    setVideoStep("recording");
+    await postDoorApi("/doorpad/video-message/start");
+  }, [postDoorApi]);
+
+  useEffect(() => {
+    if (doorPadScreen !== "message" || videoStep !== "countdown") return undefined;
+    if (countdown <= 0) {
+      void beginRecording();
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setCountdown((value) => value - 1), 1000);
+    return () => window.clearTimeout(timer);
+  }, [beginRecording, countdown, doorPadScreen, videoStep]);
+
+  useEffect(() => {
+    if (doorPadScreen !== "message" || videoStep !== "recording") return undefined;
+    const timer = window.setInterval(() => {
+      setRecordingElapsed((value) => {
+        const next = value + 1;
+        if (next >= maxRecordingS) {
+          window.clearInterval(timer);
+          void stopRecording();
+        }
+        return next;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [doorPadScreen, maxRecordingS, stopRecording, videoStep]);
+
+  const startVideoFlow = async () => {
+    setDoorPadScreen("message");
+    setVideoStep("countdown");
+    setCountdown(3);
+    setLatestRecording(null);
+    await postDoorApi("/doorpad/video-message/offer");
+  };
+
+  const discardVideoFlow = async () => {
+    setLatestRecording(null);
+    setVisitorQrUrl(null);
+    setDoorPadScreen("home");
+    setVideoStep("offer");
+    await postDoorApi("/doorpad/video-message/discard");
+  };
+
+  const saveVideoMessage = async () => {
+    setVideoStep("saved");
+    await postDoorApi("/doorpad/video-message/save");
+  };
+
+  const showVisitorQr = async () => {
+    setDoorPadScreen("message");
+    setVideoStep("qr");
+    const offered = await postDoorApi("/doorpad/video-message/offer");
+    if (offered?.config?.max_recording_s) {
+      setMaxRecordingS(offered.config.max_recording_s);
+    }
+    try {
+      const response = await fetch(`${API_BASE}/visitor-token`);
+      if (response.ok) {
+        const data = (await response.json()) as { url: string };
+        setVisitorQrUrl(data.url);
+      } else {
+        triggerToast("QR token unavailable");
+      }
+    } catch {
+      triggerToast("QR token unavailable");
+    }
+  };
+
+  const ringDoorbell = () => {
+    setSessionState("VISITOR_MODE");
+    setDoorPadScreen("ringing");
+    void postDoorApi("/doorpad/ring");
+  };
+
+  const renderVideoPreview = () => <LiveVideoPreview title="Live self-preview" />;
+
   const renderDoorPad = () => {
-    const handleActionClick = (actionName: string, targetScreen: typeof doorPadScreen) => {
+    const handleActionClick = (actionName: string, targetScreen: DoorPadScreen) => {
       if (targetScreen === "ringing") {
-        triggerEvent("VISITOR_MODE");
-        setDoorPadScreen("ringing");
+        ringDoorbell();
       } else {
         setDoorPadScreen(targetScreen);
         triggerToast(`${actionName} flow opened`);
@@ -591,52 +787,30 @@ export function App() {
           </header>
           
           <div className="doorpad-grid">
-            <BigButton
-              id="btn-ring"
-              variant="primary"
-              icon={<span>🔔</span>}
-              onClick={() => handleActionClick("Ring Bell", "ringing")}
-            >
+            <BigButton id="btn-ring" variant="primary" icon={<span>🔔</span>} onClick={ringDoorbell}>
               Ring Bell
             </BigButton>
             
-            <BigButton
-              id="btn-video"
-              icon={<span>📹</span>}
-              onClick={() => handleActionClick("Video Message", "message")}
-            >
+            <BigButton id="btn-video" icon={<span>📹</span>} onClick={() => {
+              setDoorPadScreen("message");
+              setVideoStep("offer");
+            }}>
               Video Message
             </BigButton>
 
-            <BigButton
-              id="btn-guestbook"
-              icon={<span>✍️</span>}
-              onClick={() => handleActionClick("Guestbook", "guestbook")}
-            >
+            <BigButton id="btn-guestbook" icon={<span>✍️</span>} onClick={() => handleActionClick("Guestbook", "guestbook")}>
               Guestbook
             </BigButton>
 
-            <BigButton
-              id="btn-poll"
-              icon={<span>📊</span>}
-              onClick={() => handleActionClick("Poll Vote", "poll")}
-            >
+            <BigButton id="btn-poll" icon={<span>📊</span>} onClick={() => handleActionClick("Poll Vote", "poll")}>
               Vote in Poll
             </BigButton>
 
-            <BigButton
-              id="btn-checkin"
-              icon={<span>✅</span>}
-              onClick={() => handleActionClick("Check In", "checkin")}
-            >
+            <BigButton id="btn-checkin" icon={<span>✅</span>} onClick={() => handleActionClick("Check In", "checkin")}>
               Visitor Check-In
             </BigButton>
 
-            <BigButton
-              id="btn-privacy"
-              icon={<span>🔒</span>}
-              onClick={() => handleActionClick("Privacy Notice", "privacy")}
-            >
+            <BigButton id="btn-privacy" icon={<span>🔒</span>} onClick={() => handleActionClick("Privacy Notice", "privacy")}>
               Privacy & Info
             </BigButton>
           </div>
@@ -644,35 +818,94 @@ export function App() {
       );
     }
 
-    // SUB-SCREENS (Ringing/Active Session, Video Message, Guestbook, Poll, etc.)
     return (
-      <CountdownAutoReset onReset={handleReset} timeoutMs={30000}>
+      <CountdownAutoReset onReset={doorPadScreen === "message" ? discardVideoFlow : handleReset} timeoutMs={30000}>
         <div className="doorpad-view db-app-theme fade-in">
           {doorPadScreen === "ringing" && (
             <div className="doorpad-sub-content">
               <div className="pulse-ring-icon">🔔</div>
               <h2>Ringing Doorbell...</h2>
               <p>Wallboard has flipped to Visitor Mode. Taylor & Alex have been notified.</p>
+              <div className="qr-inline">
+                <BigButton onClick={showVisitorQr}>Show QR Handoff</BigButton>
+              </div>
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={handleReset}>
-                  Cancel / End Session
-                </BigButton>
+                <BigButton variant="primary" onClick={handleReset}>Cancel / End Session</BigButton>
               </div>
             </div>
           )}
 
-          {doorPadScreen === "message" && (
+          {doorPadScreen === "message" && videoStep === "offer" && (
             <div className="doorpad-sub-content">
               <h2>Leave a Video Message</h2>
-              <p className="placeholder-subtext">[Placeholder Flow: Countdown → Record → Save]</p>
-              <LiveVideoPreview title="Message Preview" />
+              <p>A short visitor-initiated message can be reviewed before saving.</p>
+              {renderVideoPreview()}
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={() => { triggerToast("Message Saved!"); handleReset(); }}>
-                  Save Message
-                </BigButton>
-                <BigButton onClick={() => setDoorPadScreen("home")}>
-                  Cancel
-                </BigButton>
+                <BigButton variant="primary" onClick={startVideoFlow}>Start Recording</BigButton>
+                <BigButton onClick={showVisitorQr}>Use Phone QR</BigButton>
+                <BigButton onClick={discardVideoFlow}>Cancel</BigButton>
+              </div>
+            </div>
+          )}
+
+          {doorPadScreen === "message" && videoStep === "countdown" && (
+            <div className="doorpad-sub-content">
+              <h2>Recording Starts In</h2>
+              <div className="countdown-number">{countdown}</div>
+              {renderVideoPreview()}
+              <div className="action-button-group">
+                <BigButton onClick={discardVideoFlow}>Abort</BigButton>
+              </div>
+            </div>
+          )}
+
+          {doorPadScreen === "message" && videoStep === "recording" && (
+            <div className="doorpad-sub-content">
+              <div className="recording-status"><span /> Recording {recordingElapsed}s / {maxRecordingS}s</div>
+              {renderVideoPreview()}
+              <div className="action-button-group">
+                <BigButton variant="primary" onClick={stopRecording}>Stop & Review</BigButton>
+                <BigButton onClick={discardVideoFlow}>Discard</BigButton>
+              </div>
+            </div>
+          )}
+
+          {doorPadScreen === "message" && videoStep === "review" && (
+            <div className="doorpad-sub-content">
+              <h2>Review Message</h2>
+              {latestRecording?.playback_url ? (
+                <video className="review-video" src={latestRecording.playback_url} controls playsInline />
+              ) : (
+                <div className="video-preview-frame video-preview-frame--unavailable">Preparing playback...</div>
+              )}
+              <div className="message-meta">
+                Consent context: {latestRecording?.consent_context ?? "visitor_initiated"}
+              </div>
+              <div className="action-button-group">
+                <BigButton variant="primary" onClick={saveVideoMessage}>Save Message</BigButton>
+                <BigButton onClick={startVideoFlow}>Re-record</BigButton>
+                <BigButton onClick={discardVideoFlow}>Discard</BigButton>
+              </div>
+            </div>
+          )}
+
+          {doorPadScreen === "message" && videoStep === "saved" && (
+            <div className="doorpad-sub-content">
+              <h2>Message Saved</h2>
+              <p>Thanks. The saved message is now in the local admin inbox.</p>
+              <div className="action-button-group">
+                <BigButton variant="primary" onClick={handleReset}>Done</BigButton>
+              </div>
+            </div>
+          )}
+
+          {doorPadScreen === "message" && videoStep === "qr" && (
+            <div className="doorpad-sub-content">
+              <h2>Continue on Phone</h2>
+              {visitorQrUrl ? <QRPlaceholder url={visitorQrUrl} /> : <p>Preparing QR token...</p>}
+              <div className="action-button-group">
+                <BigButton variant="primary" onClick={startVideoFlow}>Record Here Instead</BigButton>
+                <BigButton onClick={discardVideoFlow}>Cancel</BigButton>
               </div>
             </div>
           )}
@@ -702,16 +935,8 @@ export function App() {
                 onChange={(e) => setGuestbookText(e.target.value)}
               />
               <div className="action-button-group">
-                <BigButton
-                  variant="primary"
-                  disabled={guestbookSubmitting || guestbookText.trim().length === 0}
-                  onClick={() => handleGuestbookSubmit(guestbookText)}
-                >
-                  Submit
-                </BigButton>
-                <BigButton onClick={() => setDoorPadScreen("home")}>
-                  Cancel
-                </BigButton>
+                <BigButton variant="primary" onClick={() => { triggerToast("Note Submitted!"); handleReset(); }}>Submit</BigButton>
+                <BigButton onClick={() => setDoorPadScreen("home")}>Cancel</BigButton>
               </div>
             </div>
           )}
@@ -745,9 +970,8 @@ export function App() {
                 </>
               )}
               <div className="action-button-group">
-                <BigButton onClick={() => setDoorPadScreen("home")}>
-                  Back
-                </BigButton>
+                <BigButton variant="primary" onClick={() => { triggerToast("Vote cast!"); handleReset(); }}>Submit Vote</BigButton>
+                <BigButton onClick={() => setDoorPadScreen("home")}>Cancel</BigButton>
               </div>
             </div>
           )}
@@ -773,9 +997,7 @@ export function App() {
                 </button>
               </div>
               <div className="action-button-group">
-                <BigButton onClick={() => setDoorPadScreen("home")}>
-                  Back
-                </BigButton>
+                <BigButton onClick={() => setDoorPadScreen("home")}>Back</BigButton>
               </div>
             </div>
           )}
@@ -807,9 +1029,8 @@ export function App() {
                 </p>
               )}
               <div className="action-button-group">
-                <BigButton onClick={() => setDoorPadScreen("home")}>
-                  Back
-                </BigButton>
+                <BigButton variant="primary" onClick={() => { triggerToast("Deletion Requested"); handleReset(); }}>Request Deletion of My Data</BigButton>
+                <BigButton onClick={() => setDoorPadScreen("home")}>Back</BigButton>
               </div>
             </div>
           )}
@@ -852,10 +1073,9 @@ export function App() {
   const renderAdmin = () => {
     return (
       <div className="placeholder-view db-app-theme">
-        <div className="placeholder-card admin-panel-card">
+        <div className="placeholder-card admin-inbox-card">
           <h1>Admin Control Panel</h1>
           <p className="subtitle-tag">Route: `/admin` | `/diagnostics`</p>
-          <div className="placeholder-badge">Admin Screen Placeholder</div>
           <LiveVideoPreview title="Local Live View" showStats />
           <div className="admin-stats-grid">
             <div className="stat-card"><span>Uptime:</span> <strong>3d 12h</strong></div>
@@ -863,6 +1083,27 @@ export function App() {
             <div className="stat-card"><span>Hailo NPU:</span> <strong>Degraded (Sim)</strong></div>
             <div className="stat-card"><span>SSD Space:</span> <strong>84% free</strong></div>
           </div>
+
+          <section className="admin-inbox-section">
+            <h2>Video Message Inbox</h2>
+            {adminRecordings.length === 0 ? (
+              <p className="desc">No saved visitor video messages.</p>
+            ) : (
+              <div className="admin-recording-list">
+                {adminRecordings.map((recording) => (
+                  <div className="admin-recording-row" key={recording.recording_id}>
+                    <div>
+                      <strong>{recording.recording_id.slice(0, 8)}</strong>
+                      <p>Consent: {recording.consent_context}</p>
+                      <p>Clip: {recording.path}</p>
+                    </div>
+                    <span>{recording.thumbnail_path ? "Thumbnail ready" : "No thumbnail"}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
           <AdminSocialPanel />
           <button className="back-home-btn" onClick={() => navigateTo("/")}>Back to Navigation</button>
         </div>

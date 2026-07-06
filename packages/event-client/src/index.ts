@@ -8,6 +8,7 @@ export interface EventClientOptions {
   mock?: boolean;
   filters?: string[];
   onStatusChange?: (status: "connecting" | "connected" | "disconnected") => void;
+  onSnapshot?: (state: unknown) => void;
 }
 
 export class DoorboardEventClient {
@@ -18,6 +19,7 @@ export class DoorboardEventClient {
   private mock: boolean;
   private filters: string[];
   private onStatusChange?: (status: "connecting" | "connected" | "disconnected") => void;
+  private onSnapshot?: (state: unknown) => void;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private maxReconnectDelay = 16000;
@@ -29,6 +31,7 @@ export class DoorboardEventClient {
     this.mock = options.mock ?? false;
     this.filters = options.filters || ["*"];
     this.onStatusChange = options.onStatusChange;
+    this.onSnapshot = options.onSnapshot;
     this.channel = new BroadcastChannel("doorboard-events");
 
     // Listen to local BroadcastChannel (for multi-tab sync under mock or fallback)
@@ -61,8 +64,13 @@ export class DoorboardEventClient {
 
       this.ws.onmessage = (messageEvent) => {
         try {
-          const dbEvent = JSON.parse(messageEvent.data) as DoorboardEvent;
-          if (dbEvent && dbEvent.type) {
+          const raw = JSON.parse(messageEvent.data) as unknown;
+          if (isSnapshotMessage(raw)) {
+            this.onSnapshot?.(raw.state);
+            return;
+          }
+          const dbEvent = isDeltaMessage(raw) ? raw.event : raw;
+          if (isDoorboardEvent(dbEvent)) {
             this.notifyListeners(dbEvent);
             // Also mirror to BroadcastChannel so other tabs sync up
             this.channel.postMessage(dbEvent);
@@ -157,4 +165,32 @@ export class DoorboardEventClient {
     }
     this.channel.close();
   }
+}
+
+
+function isDoorboardEvent(value: unknown): value is DoorboardEvent {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "type" in value &&
+      typeof (value as { type?: unknown }).type === "string"
+  );
+}
+
+function isDeltaMessage(value: unknown): value is { type: "delta"; event: DoorboardEvent } {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      (value as { type?: unknown }).type === "delta" &&
+      isDoorboardEvent((value as { event?: unknown }).event)
+  );
+}
+
+function isSnapshotMessage(value: unknown): value is { type: "snapshot"; state: unknown } {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      (value as { type?: unknown }).type === "snapshot" &&
+      "state" in value
+  );
 }

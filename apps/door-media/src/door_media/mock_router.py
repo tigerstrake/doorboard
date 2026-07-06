@@ -147,6 +147,14 @@ class MockMediaRouter:
             consent_context=consent_context,
         )
 
+    async def discard_recording(self, handle: RecordingHandle) -> None:
+        """Drop a mock active recording without writing a file."""
+        self._active.pop(handle.recording_id, None)
+        logger.info(
+            "mock_recording_discarded",
+            extra={"recording_id": str(handle.recording_id)},
+        )
+
     def storage_status(self) -> MediaStorageStatus:
         """Return storage status based on the mock recordings directory."""
         recordings_dir = self._settings.ssd_data_root

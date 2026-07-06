@@ -7,6 +7,7 @@ Override via environment variables prefixed with ``DOOR_API_``.
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass
 
 
@@ -60,6 +61,27 @@ class SessionConfig:
     # SQLite database path. Must be provided explicitly or loaded via from_env().
     db_path: str
 
+    # Door identifier included on locally emitted feedback events.
+    door_id: str = "primary"
+
+    # door-media base URL used for fire-and-forget recording lifecycle forwarding.
+    media_base_url: str = "http://127.0.0.1:8001"
+
+    # Browser-reachable media URL for local DoorPad playback.
+    media_public_base_url: str = "http://127.0.0.1:8001"
+
+    # Bounded timeout for door-api -> door-media local loopback calls.
+    media_timeout_s: float = 1.0
+
+    # Short-lived visitor QR tokens.  If unset, a per-process boot secret is used.
+    visitor_token_secret: str = ""
+    visitor_token_ttl_s: float = 300.0
+    visitor_public_base_url: str = "http://door.local"
+
+    # ESP32 feedback effect requested for DoorPad touch actions.
+    doorpad_effect_id: str = "generic_chime"
+    doorpad_effect_duration_ms: int = 900
+
     @staticmethod
     def from_env() -> SessionConfig:
         """Load configuration, applying environment variable overrides."""
@@ -82,4 +104,24 @@ class SessionConfig:
             greeting_cooldown_s=_env_float("DOOR_API_GREETING_COOLDOWN_S", 30.0),
             session_end_linger_s=_env_float("DOOR_API_SESSION_END_LINGER_S", 3.0),
             db_path=db_path,
+            door_id=os.environ.get("DOOR_API_DOOR_ID", "primary"),
+            media_base_url=os.environ.get("DOOR_API_MEDIA_BASE_URL", "http://127.0.0.1:8001"),
+            media_public_base_url=os.environ.get(
+                "DOOR_API_MEDIA_PUBLIC_BASE_URL",
+                os.environ.get("DOOR_API_MEDIA_BASE_URL", "http://127.0.0.1:8001"),
+            ),
+            media_timeout_s=_env_float("DOOR_API_MEDIA_TIMEOUT_S", 1.0),
+            visitor_token_secret=os.environ.get(
+                "DOOR_API_VISITOR_TOKEN_SECRET",
+                secrets.token_urlsafe(32),
+            ),
+            visitor_token_ttl_s=_env_float("DOOR_API_VISITOR_TOKEN_TTL_S", 300.0),
+            visitor_public_base_url=os.environ.get(
+                "DOOR_API_VISITOR_PUBLIC_BASE_URL",
+                "http://door.local",
+            ),
+            doorpad_effect_id=os.environ.get("DOOR_API_DOORPAD_EFFECT_ID", "generic_chime"),
+            doorpad_effect_duration_ms=int(
+                _env_float("DOOR_API_DOORPAD_EFFECT_DURATION_MS", 900.0)
+            ),
         )
