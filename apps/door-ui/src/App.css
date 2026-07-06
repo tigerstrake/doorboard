@@ -721,6 +721,8 @@
   margin: 4px 0 0;
   color: rgba(255, 255, 255, 0.72);
   overflow-wrap: anywhere;
+}
+
 /* Social features (T-403): guestbook/poll/checkin/privacy + visitor + admin */
 
 .guestbook-freetext {
