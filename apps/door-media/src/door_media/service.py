@@ -376,8 +376,7 @@ class RecordingService:
           2. Delete expired clips (age > max_clip_age_s, synced only).
           3. Delete oldest synced clips if over size cap.
 
-        A clip is only deleted if it is synced OR if we are critically low
-        on space and it is older than 1 hour (emergency eviction).
+        A clip is only deleted if it is synced.
         """
         logger.info("retention_loop_started")
         while True:
@@ -456,35 +455,6 @@ class RecordingService:
                     trace_id=trace_id,
                 )
 
-        # --- Emergency eviction: critically low space ---
-        if free_bytes < self._settings.min_free_bytes:
-            one_hour_ago = now_s - 3600
-            for row in sorted(
-                self._db.list_pending(),
-                key=lambda r: r.started_at_utc,
-            ):
-                if row.sync_status == "deleted":
-                    continue
-                # Only evict synced clips normally; in emergency evict old pending
-                if row.sync_status == "pending":
-                    try:
-                        started = _parse_iso_epoch(row.started_at_utc)
-                        if started > one_hour_ago:
-                            continue  # too fresh — preserve
-                    except (ValueError, OSError):
-                        continue
-                self._delete_recording(
-                    recording_id=UUID(row.recording_id),
-                    reason="space",
-                    trace_id=trace_id,
-                )
-                # Re-check free space after each deletion
-                try:
-                    free_bytes = shutil.disk_usage(root).free
-                    if free_bytes >= self._settings.min_free_bytes:
-                        break
-                except OSError:
-                    break
 
     # ------------------------------------------------------------------
     # Storage status broadcast
