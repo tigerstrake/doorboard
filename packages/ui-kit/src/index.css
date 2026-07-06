@@ -355,3 +355,68 @@
   background-color: var(--db-presence-available);
   transition: width 1s linear;
 }
+
+/* Gauge Component */
+.db-gauge {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--db-border-color);
+  border-radius: 12px;
+  padding: var(--db-spacing-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--db-spacing-sm);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.gauge-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.gauge-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--db-text-secondary);
+}
+
+.gauge-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--db-text-primary);
+}
+
+.gauge-unit {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--db-text-muted);
+}
+
+.gauge-track {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+
+.gauge-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease-in-out;
+}
+
+.gauge-bar-fill.normal {
+  background: var(--db-presence-available);
+}
+
+.gauge-bar-fill.warning {
+  background: var(--db-presence-away);
+}
+
+.gauge-bar-fill.critical {
+  background: var(--db-presence-dnd);
+}

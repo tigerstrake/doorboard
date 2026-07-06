@@ -15,6 +15,7 @@ Key invariants:
 
 from __future__ import annotations
 
+import base64
 import logging
 import sqlite3
 import threading
@@ -214,6 +215,54 @@ class RecordingDB:
             )
             rows = cur.fetchall()
         return [RecordingRow(*r) for r in rows]
+
+    def list_recordings(
+        self,
+        *,
+        kind: str | None = None,
+        sync_status: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> tuple[list[RecordingRow], str | None]:
+        """List recordings with filtering and cursor-based pagination."""
+        with self._lock:
+            query = "SELECT * FROM recordings WHERE sync_status != 'deleted'"
+            params = []
+
+            if kind:
+                query += " AND kind = ?"
+                params.append(kind)
+
+            if sync_status:
+                query += " AND sync_status = ?"
+                params.append(sync_status)
+
+            if cursor:
+                try:
+                    decoded = base64.b64decode(cursor.encode("utf-8")).decode("utf-8")
+                    query += " AND started_at_utc > ?"
+                    params.append(decoded)
+                except Exception:
+                    logger.warning("invalid_cursor_ignored", extra={"cursor": cursor})
+
+            query += " ORDER BY started_at_utc ASC"
+
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(limit + 1)
+
+            cur = self._conn.execute(query, params)
+            rows = cur.fetchall()
+
+        recording_rows = [RecordingRow(*r) for r in rows]
+
+        next_cursor = None
+        if limit is not None and len(recording_rows) > limit:
+            last_item = recording_rows[limit - 1]
+            next_cursor = base64.b64encode(last_item.started_at_utc.encode("utf-8")).decode("utf-8")
+            recording_rows = recording_rows[:limit]
+
+        return recording_rows, next_cursor
 
     def list_finalized_pending_sync(self) -> list[RecordingRow]:
         """Recordings finalized but not yet synced — for the sync queue depth."""

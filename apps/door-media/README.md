@@ -32,3 +32,30 @@ visitor cam + mic → rpicam/libcamera → H.264/AAC → MediaMTX
 ## Key metrics
 
 `stream_up`, `webrtc_clients`, `recording_write_mbps`, `ssd_free_bytes`, `sync_queue_depth`, `oldest_unsynced_s`.
+
+## Retention Policies
+
+Retention is configured globally and per-kind in the environment files (e.g. `.env.example`). The default values are:
+
+- **Global SSD Minimum Free Space:** `4 GiB` (`DOOR_MEDIA_MIN_FREE_BYTES=4294967296`). If free space falls below this, new recordings are blocked to preserve system stability.
+- **Global SSD Maximum Recording Space:** `48 GiB` (`DOOR_MEDIA_MAX_RECORDING_BYTES=51539607552`).
+- **Bell Clips:**
+  - Max Age: `3 days` (`DOOR_MEDIA_BELL_CLIP_MAX_AGE_S=259200`)
+  - Max Storage Size: `10 GiB` (`DOOR_MEDIA_BELL_CLIP_MAX_SIZE_BYTES=10737418240`)
+- **Video Messages:**
+  - Max Age: `14 days` (`DOOR_MEDIA_VIDEO_MESSAGE_MAX_AGE_S=1209600`)
+  - Max Storage Size: `30 GiB` (`DOOR_MEDIA_VIDEO_MESSAGE_MAX_SIZE_BYTES=32212254720`)
+- **Photo Booth Clips:**
+  - Max Age: `7 days` (`DOOR_MEDIA_PHOTO_BOOTH_MAX_AGE_S=604800`)
+  - Max Storage Size: `8 GiB` (`DOOR_MEDIA_PHOTO_BOOTH_MAX_SIZE_BYTES=8589934592`)
+
+A clip is only deleted due to age or size caps if it is marked as synced (door-sync has verified checksum upload). Deletion unlinks both the video clip and its thumbnail from the SSD.
+
+## Thumbnail Heuristic
+
+Thumbnails are generated automatically using `ffmpeg` when a recording is finalized. The frame-grab offset is determined dynamically based on the clip's duration:
+- Offset is selected at `1.0s` to capture stable video and avoid startup black frames/fade-in.
+- If the clip is shorter than `2.0s`, it grabs the frame at half the duration (`duration_s / 2.0`).
+- If the duration is `0.0` or less, it grabs the frame at `0.0s`.
+- If thumbnail generation fails, finalization still succeeds, and the thumbnail path is marked as missing in the database.
+

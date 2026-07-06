@@ -18,4 +18,7 @@ export type { CountdownAutoResetProps } from "./CountdownAutoReset";
 export { QRPlaceholder } from "./QRPlaceholder";
 export type { QRPlaceholderProps } from "./QRPlaceholder";
 
+export { Gauge } from "./Gauge";
+export type { GaugeProps } from "./Gauge";
+
 export type { DoorboardEvent, HealthPayload, SessionState, PresenceLabel } from "@doorboard/contracts";

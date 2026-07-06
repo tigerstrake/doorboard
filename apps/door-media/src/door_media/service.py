@@ -226,24 +226,37 @@ class RecordingService:
             door_id=self._settings.door_id,
         )
 
-        # Emit thumbnail stub (T-203 fills actual thumbnail generation)
+        # Generate thumbnail (T-203 actual thumbnail generation)
         if thumbnail_stub:
-            thumb_stub = self._settings.thumbnails_root / f"{recording_id}.jpg"
-            # Write a 1x1 JFIF stub so the path exists for T-203 to replace
-            _write_thumbnail_stub(thumb_stub)
-            try:
-                self._db.update_thumbnail(
-                    recording_id=recording_id,
-                    thumbnail_path=str(thumb_stub.relative_to(self._settings.ssd_data_root)),
-                )
-            except Exception as exc:
-                logger.exception("db_update_thumbnail_error", exc_info=exc)
-            emit_thumbnail_ready(
-                recording_id=recording_id,
-                path=str(thumb_stub.relative_to(self._settings.ssd_data_root)),
-                trace_id=trace_id,
-                door_id=self._settings.door_id,
+            clip_abs = self._settings.ssd_data_root / finalized.path
+            thumb_abs = clip_abs.with_suffix(".jpg")
+            thumb_rel = thumb_abs.relative_to(self._settings.ssd_data_root)
+
+            thumb_ok = await self._generate_thumbnail(
+                clip_path=clip_abs,
+                thumb_path=thumb_abs,
+                duration_s=finalized.duration_s,
             )
+
+            if thumb_ok:
+                try:
+                    self._db.update_thumbnail(
+                        recording_id=recording_id,
+                        thumbnail_path=str(thumb_rel),
+                    )
+                except Exception as exc:
+                    logger.exception("db_update_thumbnail_error", exc_info=exc)
+                emit_thumbnail_ready(
+                    recording_id=recording_id,
+                    path=str(thumb_rel),
+                    trace_id=trace_id,
+                    door_id=self._settings.door_id,
+                )
+            else:
+                logger.warning(
+                    "thumbnail_generation_failed",
+                    extra={"recording_id": str(recording_id)},
+                )
 
         logger.info(
             "recording_finalized",
@@ -255,6 +268,70 @@ class RecordingService:
             },
         )
         return True
+
+    async def _generate_thumbnail(
+        self, clip_path: Path, thumb_path: Path, duration_s: float
+    ) -> bool:
+        """Generate a thumbnail for a clip using ffmpeg with an offset heuristic.
+
+        Heuristic: Grab the frame at 1.0s, or half the duration if it is shorter than 2.0s.
+        If duration is 0, grab the frame at 0.0s.
+        """
+        thumb_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if self._settings.media_mode == "mock":
+            # In mock mode, if the file is empty/corrupted or missing, simulate failure
+            if not clip_path.exists() or clip_path.stat().st_size == 0:
+                logger.warning("mock_thumbnail_generation_failed_corrupted")
+                return False
+            # Otherwise, write the mock 1x1 JFIF stub
+            try:
+                _write_thumbnail_stub(thumb_path)
+                return True
+            except Exception as exc:
+                logger.exception("mock_thumbnail_write_error", exc_info=exc)
+                return False
+
+        # Real mode (mediamtx) or generic fallback
+        if not clip_path.exists() or clip_path.stat().st_size == 0:
+            logger.warning(
+                "thumbnail_skipped_input_missing_or_empty",
+                extra={"path": str(clip_path)},
+            )
+            return False
+
+        offset_s = min(1.0, duration_s / 2.0) if duration_s > 0 else 0.0
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-y",
+                "-ss",
+                f"{offset_s:.3f}",
+                "-i",
+                str(clip_path),
+                "-vframes",
+                "1",
+                "-f",
+                "image2",
+                str(thumb_path),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.error(
+                    "ffmpeg_thumbnail_failed",
+                    extra={
+                        "returncode": proc.returncode,
+                        "stderr": stderr.decode(errors="replace")[:500],
+                        "clip": str(clip_path),
+                    },
+                )
+                return False
+            return True
+        except Exception as exc:
+            logger.exception("thumbnail_generation_exception", exc_info=exc)
+            return False
 
     # ------------------------------------------------------------------
     # Sync event handler
@@ -290,9 +367,21 @@ class RecordingService:
     # Admin API helpers
     # ------------------------------------------------------------------
 
-    def list_recordings(self) -> list[dict]:
-        """Return a list of recording metadata dicts for GET /recordings."""
-        rows = self._db.list_pending()
+    def list_recordings(
+        self,
+        *,
+        kind: str | None = None,
+        sync_status: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> tuple[list[dict], str | None]:
+        """Return a list of recording metadata dicts for GET /recordings, along with next_cursor."""
+        rows, next_cursor = self._db.list_recordings(
+            kind=kind,
+            sync_status=sync_status,
+            limit=limit,
+            cursor=cursor,
+        )
         return [
             {
                 "recording_id": r.recording_id,
@@ -310,7 +399,7 @@ class RecordingService:
                 "sync_status": r.sync_status,
             }
             for r in rows
-        ]
+        ], next_cursor
 
     def delete_recording(self, recording_id: UUID, trace_id: UUID) -> bool:
         """Admin-initiated deletion (user_request reason)."""
@@ -440,6 +529,7 @@ class RecordingService:
 
         # --- Age-based deletion (synced only) ---
         now_s = time.time()
+        retention = self._settings.retention
         for row in self._db.list_pending():
             if row.sync_status != "synced":
                 continue
@@ -448,13 +538,69 @@ class RecordingService:
                 age_s = now_s - started
             except (ValueError, OSError):
                 continue
-            if age_s > self._settings.max_clip_age_s:
+
+            # Look up kind-specific age cap
+            policy = getattr(retention, row.kind, None)
+            max_age_s = policy.max_age_s if policy else self._settings.max_clip_age_s
+
+            if age_s > max_age_s:
                 self._delete_recording(
                     recording_id=UUID(row.recording_id),
                     reason="age",
                     trace_id=trace_id,
                 )
 
+        # --- Size-based deletion (synced only) ---
+        # 1. Per-kind size caps
+        for kind in ["bell_clip", "video_message", "photo_booth"]:
+            policy = getattr(retention, kind, None)
+            if not policy:
+                continue
+
+            kind_rows = [r for r in self._db.list_pending() if r.kind == kind]
+            total_kind_size = sum(r.size_bytes or 0 for r in kind_rows)
+
+            if total_kind_size > policy.max_size_bytes:
+                logger.info(
+                    "kind_size_cap_exceeded",
+                    extra={
+                        "kind": kind,
+                        "total_size": total_kind_size,
+                        "cap": policy.max_size_bytes,
+                    },
+                )
+                for row in kind_rows:
+                    if total_kind_size <= policy.max_size_bytes:
+                        break
+                    if row.sync_status == "synced":
+                        self._delete_recording(
+                            recording_id=UUID(row.recording_id),
+                            reason="space",
+                            trace_id=trace_id,
+                        )
+                        total_kind_size -= row.size_bytes or 0
+
+        # 2. Global size cap
+        all_rows = self._db.list_pending()
+        total_size = sum(r.size_bytes or 0 for r in all_rows)
+        if total_size > retention.max_recording_bytes:
+            logger.info(
+                "global_size_cap_exceeded",
+                extra={
+                    "total_size": total_size,
+                    "cap": retention.max_recording_bytes,
+                },
+            )
+            for row in all_rows:
+                if total_size <= retention.max_recording_bytes:
+                    break
+                if row.sync_status == "synced":
+                    self._delete_recording(
+                        recording_id=UUID(row.recording_id),
+                        reason="space",
+                        trace_id=trace_id,
+                    )
+                    total_size -= row.size_bytes or 0
 
     # ------------------------------------------------------------------
     # Storage status broadcast
