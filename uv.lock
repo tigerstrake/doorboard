@@ -185,6 +185,7 @@ version = "0.0.0"
 source = { editable = "apps/door-media" }
 dependencies = [
     { name = "anyio" },
+    { name = "doorboard-config" },
     { name = "doorboard-contracts" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -196,6 +197,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = ">=4.7" },
+    { name = "doorboard-config", editable = "packages/config" },
     { name = "doorboard-contracts", editable = "packages/contracts" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },

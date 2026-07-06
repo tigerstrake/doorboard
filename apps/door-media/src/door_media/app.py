@@ -275,9 +275,22 @@ async def streams(request: Request) -> list[dict]:
 async def list_recordings(
     _auth: AdminAuth,
     request: Request,
-) -> list[dict]:
+    kind: str | None = None,
+    sync_status: str | None = None,
+    limit: int | None = None,
+    cursor: str | None = None,
+) -> dict:
     svc: RecordingService = request.app.state.service
-    return svc.list_recordings()
+    recordings, next_cursor = svc.list_recordings(
+        kind=kind,
+        sync_status=sync_status,
+        limit=limit,
+        cursor=cursor,
+    )
+    return {
+        "recordings": recordings,
+        "next_cursor": next_cursor,
+    }
 
 
 @app.delete("/recordings/{recording_id}")

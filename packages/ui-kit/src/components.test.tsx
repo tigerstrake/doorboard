@@ -6,6 +6,7 @@ import { Tile } from "./Tile";
 import { GreetingBanner } from "./GreetingBanner";
 import { StatusBadge } from "./StatusBadge";
 import { CountdownAutoReset } from "./CountdownAutoReset";
+import { Gauge } from "./Gauge";
 import { PollPrompt } from "./PollPrompt";
 import { SessionEndBanner } from "./SessionEndBanner";
 import { RingStatus } from "./RingStatus";
@@ -37,6 +38,13 @@ describe("Component Security and Escaping", () => {
     render(<StatusBadge label="available" customText={dangerousString} />);
     const badgeText = screen.getByText(dangerousString);
     expect(badgeText.textContent).toBe(dangerousString);
+    expect(document.querySelector("script")).toBeNull();
+  });
+
+  it("should escape script tags when rendering Gauge", () => {
+    render(<Gauge title={dangerousString} value="50" />);
+    const titleText = screen.getByText(dangerousString);
+    expect(titleText.textContent).toBe(dangerousString);
     expect(document.querySelector("script")).toBeNull();
   });
 
@@ -120,5 +128,20 @@ describe("CountdownAutoReset", () => {
       vi.advanceTimersByTime(1000);
     });
     expect(onResetMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Gauge", () => {
+  it("should render value, title, and calculate percentage correctly", () => {
+    const { container } = render(
+      <Gauge title="SSD Space" value={50} max={100} unit="%" />
+    );
+    expect(screen.getByText("SSD Space")).toBeTruthy();
+    expect(screen.getByText("50")).toBeTruthy();
+    expect(screen.getByText("%")).toBeTruthy();
+    
+    const fillBar = container.querySelector(".gauge-bar-fill");
+    expect(fillBar).toBeTruthy();
+    expect(fillBar?.getAttribute("style")).toContain("width: 50%");
   });
 });

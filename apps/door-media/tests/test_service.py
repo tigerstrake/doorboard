@@ -72,3 +72,125 @@ async def test_service_lifecycle(service_env):
     assert not thumb_path.exists()
 
     await svc.stop()
+
+
+@pytest.mark.anyio
+async def test_thumbnail_failure_does_not_block_finalization(service_env):
+    svc, db, cfg = service_env
+    await svc.start()
+
+    session_id = uuid4()
+    trace_id = uuid4()
+
+    rid = await svc.start_recording(
+        session_id=session_id,
+        kind="video_message",
+        trace_id=trace_id,
+    )
+    assert rid is not None
+
+    # Simulate a corrupted/missing video file to trigger thumbnail failure.
+    # We monkeypatch _generate_thumbnail to return False.
+    async def mock_gen(*args, **kwargs):
+        return False
+
+    svc._generate_thumbnail = mock_gen
+
+    ok = await svc.finalize_recording(
+        rid,
+        consent_context="visitor_initiated",
+        trace_id=trace_id,
+    )
+    assert ok  # Finalization still succeeds!
+
+    row = db.get(rid)
+    assert row.thumbnail_path is None  # Marked missing!
+
+    await svc.stop()
+
+
+@pytest.mark.anyio
+async def test_retention_respects_per_kind_policy(service_env):
+    svc, db, cfg = service_env
+    await svc.start()
+
+    # Override settings for testing
+    cfg.bell_clip_max_age_s = 1  # 1 second age cap
+    cfg.video_message_max_age_s = 1000  # 1000 seconds age cap
+    cfg.bell_clip_max_size_bytes = 100 * 1024 * 1024  # 100 MB
+    cfg.video_message_max_size_bytes = 100 * 1024 * 1024  # 100 MB
+
+    session_id = uuid4()
+    trace_id = uuid4()
+
+    # Create a bell clip
+    rid_bell = await svc.start_recording(
+        session_id=session_id,
+        kind="bell_clip",
+        trace_id=trace_id,
+    )
+    await svc.finalize_recording(rid_bell, consent_context="bell_event", trace_id=trace_id)
+    # Give it a small size so it fits the size cap but we can test age cap
+    # The mock router writes size proportional to elapsed time. Let's make it synced.
+    row_bell = db.get(rid_bell)
+    svc.on_sync_upload_completed(recording_id=rid_bell, verified_sha256=row_bell.sha256)
+
+    # Create a video message
+    rid_video = await svc.start_recording(
+        session_id=session_id,
+        kind="video_message",
+        trace_id=trace_id,
+    )
+    await svc.finalize_recording(rid_video, consent_context="visitor_initiated", trace_id=trace_id)
+    row_video = db.get(rid_video)
+    svc.on_sync_upload_completed(recording_id=rid_video, verified_sha256=row_video.sha256)
+
+    # Wait 2 seconds so the bell clip is expired (> 1s) but video message is not (< 1000s)
+    import asyncio
+
+    await asyncio.sleep(1.5)
+
+    # Run retention pass
+    await svc._run_retention_pass()
+
+    # Verify: bell_clip is deleted (expired), video_message is preserved
+    assert db.get(rid_bell).sync_status == "deleted"
+    assert db.get(rid_video).sync_status == "synced"
+
+    await svc.stop()
+
+
+@pytest.mark.anyio
+async def test_retention_respects_size_caps(service_env):
+    svc, db, cfg = service_env
+    await svc.start()
+
+    # Set a low size cap for photo_booth (e.g. 150 KB)
+    cfg.photo_booth_max_size_bytes = 150 * 1024
+
+    # We will write two synced photo_booth clips. Each mock clip is ~512 KB/s.
+    # Let's create the first clip, finalize, and sync.
+    session_id = uuid4()
+    trace_id = uuid4()
+
+    rid1 = await svc.start_recording(session_id=session_id, kind="photo_booth", trace_id=trace_id)
+    await asyncio.sleep(0.2)  # Will be ~100 KB
+    await svc.finalize_recording(rid1, consent_context="visitor_initiated", trace_id=trace_id)
+    row1 = db.get(rid1)
+    svc.on_sync_upload_completed(recording_id=rid1, verified_sha256=row1.sha256)
+
+    # Create the second clip, finalize, and sync
+    rid2 = await svc.start_recording(session_id=session_id, kind="photo_booth", trace_id=trace_id)
+    await asyncio.sleep(0.2)
+    await svc.finalize_recording(rid2, consent_context="visitor_initiated", trace_id=trace_id)
+    row2 = db.get(rid2)
+    svc.on_sync_upload_completed(recording_id=rid2, verified_sha256=row2.sha256)
+
+    # Run retention pass
+    await svc._run_retention_pass()
+
+    # Verify: The oldest one (rid1) is deleted to satisfy the size cap, rid2 remains synced
+    assert db.get(rid1).sync_status == "deleted"
+    assert db.get(rid2).sync_status == "synced"
+
+    await svc.stop()

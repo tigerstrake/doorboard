@@ -18,6 +18,8 @@ export type { CountdownAutoResetProps } from "./CountdownAutoReset";
 export { QRPlaceholder } from "./QRPlaceholder";
 export type { QRPlaceholderProps } from "./QRPlaceholder";
 
+export { Gauge } from "./Gauge";
+export type { GaugeProps } from "./Gauge";
 export { LiveVideoPreview } from "./LiveVideoPreview";
 export type { LiveVideoPreviewProps } from "./LiveVideoPreview";
 export { RingStatus } from "./RingStatus";

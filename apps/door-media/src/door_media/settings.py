@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from doorboard_config import KindRetentionPolicy, RetentionConfig
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -48,6 +49,34 @@ class Settings(BaseSettings):
     max_clip_age_s: int = Field(
         default=7 * 24 * 3600,
         alias="DOOR_MEDIA_MAX_CLIP_AGE_S",
+    )
+
+    # ── retention per-kind ───────────────────────────────────────────────────
+    bell_clip_max_age_s: int = Field(
+        default=3 * 24 * 3600,
+        alias="DOOR_MEDIA_BELL_CLIP_MAX_AGE_S",
+    )
+    bell_clip_max_size_bytes: int = Field(
+        default=10 * 1024**3,
+        alias="DOOR_MEDIA_BELL_CLIP_MAX_SIZE_BYTES",
+    )
+
+    video_message_max_age_s: int = Field(
+        default=14 * 24 * 3600,
+        alias="DOOR_MEDIA_VIDEO_MESSAGE_MAX_AGE_S",
+    )
+    video_message_max_size_bytes: int = Field(
+        default=30 * 1024**3,
+        alias="DOOR_MEDIA_VIDEO_MESSAGE_MAX_SIZE_BYTES",
+    )
+
+    photo_booth_max_age_s: int = Field(
+        default=7 * 24 * 3600,
+        alias="DOOR_MEDIA_PHOTO_BOOTH_MAX_AGE_S",
+    )
+    photo_booth_max_size_bytes: int = Field(
+        default=8 * 1024**3,
+        alias="DOOR_MEDIA_PHOTO_BOOTH_MAX_SIZE_BYTES",
     )
 
     # ── MediaMTX ──────────────────────────────────────────────────────────────
@@ -107,6 +136,25 @@ class Settings(BaseSettings):
     @property
     def port(self) -> int:
         return int(self.bind.split(":")[1])
+
+    @property
+    def retention(self) -> RetentionConfig:
+        return RetentionConfig(
+            min_free_bytes=self.min_free_bytes,
+            max_recording_bytes=self.max_recording_bytes,
+            bell_clip=KindRetentionPolicy(
+                max_age_s=self.bell_clip_max_age_s,
+                max_size_bytes=self.bell_clip_max_size_bytes,
+            ),
+            video_message=KindRetentionPolicy(
+                max_age_s=self.video_message_max_age_s,
+                max_size_bytes=self.video_message_max_size_bytes,
+            ),
+            photo_booth=KindRetentionPolicy(
+                max_age_s=self.photo_booth_max_age_s,
+                max_size_bytes=self.photo_booth_max_size_bytes,
+            ),
+        )
 
 
 def get_settings() -> Settings:
