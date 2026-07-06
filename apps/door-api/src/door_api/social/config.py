@@ -60,9 +60,7 @@ class SocialConfig:
         if not db_path:
             ssd_root = os.environ.get("SSD_DATA_ROOT")
             if not ssd_root:
-                raise RuntimeError(
-                    "Either DOOR_API_SOCIAL_DB_PATH or SSD_DATA_ROOT must be set"
-                )
+                raise RuntimeError("Either DOOR_API_SOCIAL_DB_PATH or SSD_DATA_ROOT must be set")
             db_path = os.path.join(ssd_root, "door-api", "social.sqlite")
 
         return SocialConfig(
@@ -70,9 +68,7 @@ class SocialConfig:
             write_rate_limit_count=_env_int("DOOR_API_SOCIAL_RATE_LIMIT_COUNT", 5),
             write_rate_limit_window_s=_env_float("DOOR_API_SOCIAL_RATE_LIMIT_WINDOW_S", 60.0),
             guestbook_text_max_len=_env_int("DOOR_API_SOCIAL_GUESTBOOK_TEXT_MAX_LEN", 280),
-            guestbook_author_label_max_len=_env_int(
-                "DOOR_API_SOCIAL_GUESTBOOK_AUTHOR_MAX_LEN", 40
-            ),
+            guestbook_author_label_max_len=_env_int("DOOR_API_SOCIAL_GUESTBOOK_AUTHOR_MAX_LEN", 40),
             checkin_label_max_len=_env_int("DOOR_API_SOCIAL_CHECKIN_LABEL_MAX_LEN", 40),
             poll_question_max_len=_env_int("DOOR_API_SOCIAL_POLL_QUESTION_MAX_LEN", 200),
             poll_option_max_len=_env_int("DOOR_API_SOCIAL_POLL_OPTION_MAX_LEN", 80),

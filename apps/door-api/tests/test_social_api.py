@@ -39,9 +39,7 @@ def client() -> TestClient:
 
 
 def test_create_and_list_guestbook_requires_admin_approval(client: TestClient) -> None:
-    resp = client.post(
-        "/guestbook", json={"text": "hi there", "session_token": "visitor-1"}
-    )
+    resp = client.post("/guestbook", json={"text": "hi there", "session_token": "visitor-1"})
     assert resp.status_code == 201
 
     # Not visible publicly until approved.
@@ -69,9 +67,7 @@ def test_guestbook_rate_limited_after_default_burst(
         )
         assert resp.status_code == 201
 
-    resp = client.post(
-        "/guestbook", json={"text": "one too many", "session_token": "session-99"}
-    )
+    resp = client.post("/guestbook", json={"text": "one too many", "session_token": "session-99"})
     assert resp.status_code == 429
     assert resp.json()["detail"]["error"]["code"] == "rate_limited"
 
@@ -162,9 +158,7 @@ def test_deletion_request_unsupported_target_returns_400(client: TestClient) -> 
 
 
 def test_deletion_request_removes_guestbook_entry(client: TestClient) -> None:
-    create_resp = client.post(
-        "/guestbook", json={"text": "hi there", "session_token": "visitor-1"}
-    )
+    create_resp = client.post("/guestbook", json={"text": "hi there", "session_token": "visitor-1"})
     entry_id = create_resp.json()["id"]
 
     del_resp = client.post(
@@ -205,9 +199,7 @@ def test_admin_moderation_flow(client: TestClient, monkeypatch: pytest.MonkeyPat
     state.startup()
     auth = {"Authorization": "Bearer correct-token"}
 
-    create_resp = client.post(
-        "/guestbook", json={"text": "hi there", "session_token": "visitor-1"}
-    )
+    create_resp = client.post("/guestbook", json={"text": "hi there", "session_token": "visitor-1"})
     entry_id = create_resp.json()["id"]
 
     pending = client.get("/admin/guestbook?status=pending", headers=auth).json()["entries"]
@@ -245,9 +237,7 @@ def test_hostile_guestbook_text_round_trips_safely(
     auth = {"Authorization": "Bearer correct-token"}
 
     hostile = "<script>alert(1)</script>"
-    create_resp = client.post(
-        "/guestbook", json={"text": hostile, "session_token": "visitor-1"}
-    )
+    create_resp = client.post("/guestbook", json={"text": hostile, "session_token": "visitor-1"})
     assert create_resp.status_code == 201
     entry_id = create_resp.json()["id"]
     assert create_resp.json()["text"] == hostile  # stored raw, not double-escaped

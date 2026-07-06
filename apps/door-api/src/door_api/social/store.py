@@ -118,9 +118,7 @@ class SocialStore:
 
     def __init__(self, db_path: str = ":memory:") -> None:
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(
-            db_path, isolation_level="DEFERRED", check_same_thread=False
-        )
+        self._conn = sqlite3.connect(db_path, isolation_level="DEFERRED", check_same_thread=False)
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL;")
             self._conn.execute("PRAGMA synchronous=NORMAL;")
@@ -274,7 +272,11 @@ class SocialStore:
             PollOption(id=o[0], poll_id=o[1], text=o[2], sort_order=o[3]) for o in option_rows
         )
         return Poll(
-            id=row[0], question=row[1], status=row[2], created_at=row[3], closed_at=row[4],
+            id=row[0],
+            question=row[1],
+            status=row[2],
+            created_at=row[3],
+            closed_at=row[4],
             options=options,
         )
 

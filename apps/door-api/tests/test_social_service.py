@@ -106,12 +106,18 @@ class TestRateLimiting:
 
         for i in range(2):
             service.create_guestbook_entry(
-                text=f"entry {i}", author_label=None, ip="10.0.0.1", session_token=f"sess-{i}",
+                text=f"entry {i}",
+                author_label=None,
+                ip="10.0.0.1",
+                session_token=f"sess-{i}",
                 trace_id="t",
             )
         with pytest.raises(RateLimitedError):
             service.create_guestbook_entry(
-                text="entry 3", author_label=None, ip="10.0.0.1", session_token="sess-3",
+                text="entry 3",
+                author_label=None,
+                ip="10.0.0.1",
+                session_token="sess-3",
                 trace_id="t",
             )
         assert service.metrics.guestbook_rejected_rate_limited == 1
@@ -123,13 +129,19 @@ class TestRateLimiting:
 
         for i in range(2):
             service.create_guestbook_entry(
-                text=f"entry {i}", author_label=None, ip=f"10.0.0.{i}",
-                session_token="same-session", trace_id="t",
+                text=f"entry {i}",
+                author_label=None,
+                ip=f"10.0.0.{i}",
+                session_token="same-session",
+                trace_id="t",
             )
         # Rotating the IP does not bypass the per-session-token limit.
         with pytest.raises(RateLimitedError):
             service.create_guestbook_entry(
-                text="entry 3", author_label=None, ip="10.0.0.99", session_token="same-session",
+                text="entry 3",
+                author_label=None,
+                ip="10.0.0.99",
+                session_token="same-session",
                 trace_id="t",
             )
 
@@ -162,8 +174,11 @@ class TestRateLimiting:
         )
         with pytest.raises(RateLimitedError):
             service.cast_vote(
-                poll_id=poll.id, option_id=poll.options[0].id, ip="10.0.0.1",
-                session_token="s2", trace_id="t",
+                poll_id=poll.id,
+                option_id=poll.options[0].id,
+                ip="10.0.0.1",
+                session_token="s2",
+                trace_id="t",
             )
 
 
@@ -178,13 +193,19 @@ class TestPollVoting:
         poll = service.create_poll(question="Snack?", options=["Tea", "Coffee"])
 
         service.cast_vote(
-            poll_id=poll.id, option_id=poll.options[0].id, ip="10.0.0.1",
-            session_token="visitor-1", trace_id="t",
+            poll_id=poll.id,
+            option_id=poll.options[0].id,
+            ip="10.0.0.1",
+            session_token="visitor-1",
+            trace_id="t",
         )
         with pytest.raises(AlreadyVotedError):
             service.cast_vote(
-                poll_id=poll.id, option_id=poll.options[1].id, ip="10.0.0.2",
-                session_token="visitor-1", trace_id="t",
+                poll_id=poll.id,
+                option_id=poll.options[1].id,
+                ip="10.0.0.2",
+                session_token="visitor-1",
+                trace_id="t",
             )
 
         results = service.poll_results(poll.id)
@@ -196,12 +217,18 @@ class TestPollVoting:
         poll = service.create_poll(question="Snack?", options=["Tea", "Coffee"])
 
         service.cast_vote(
-            poll_id=poll.id, option_id=poll.options[0].id, ip="10.0.0.1",
-            session_token="visitor-1", trace_id="t",
+            poll_id=poll.id,
+            option_id=poll.options[0].id,
+            ip="10.0.0.1",
+            session_token="visitor-1",
+            trace_id="t",
         )
         service.cast_vote(
-            poll_id=poll.id, option_id=poll.options[0].id, ip="10.0.0.2",
-            session_token="visitor-2", trace_id="t",
+            poll_id=poll.id,
+            option_id=poll.options[0].id,
+            ip="10.0.0.2",
+            session_token="visitor-2",
+            trace_id="t",
         )
         results = service.poll_results(poll.id)
         tea = next(r for r in results if r["option_id"] == poll.options[0].id)
@@ -211,7 +238,10 @@ class TestPollVoting:
         service = make_service()
         with pytest.raises(NotFoundError):
             service.cast_vote(
-                poll_id="nonexistent", option_id="x", ip="10.0.0.1", session_token="v1",
+                poll_id="nonexistent",
+                option_id="x",
+                ip="10.0.0.1",
+                session_token="v1",
                 trace_id="t",
             )
 
@@ -220,8 +250,11 @@ class TestPollVoting:
         poll = service.create_poll(question="Snack?", options=["Tea", "Coffee"])
         with pytest.raises(NotFoundError):
             service.cast_vote(
-                poll_id=poll.id, option_id="not-a-real-option", ip="10.0.0.1",
-                session_token="v1", trace_id="t",
+                poll_id=poll.id,
+                option_id="not-a-real-option",
+                ip="10.0.0.1",
+                session_token="v1",
+                trace_id="t",
             )
 
     def test_vote_against_closed_poll_rejected(self) -> None:
@@ -230,8 +263,11 @@ class TestPollVoting:
         service.close_poll(poll.id)
         with pytest.raises(PollClosedError):
             service.cast_vote(
-                poll_id=poll.id, option_id=poll.options[0].id, ip="10.0.0.1",
-                session_token="v1", trace_id="t",
+                poll_id=poll.id,
+                option_id=poll.options[0].id,
+                ip="10.0.0.1",
+                session_token="v1",
+                trace_id="t",
             )
 
     def test_create_poll_needs_at_least_two_options(self) -> None:
@@ -243,8 +279,11 @@ class TestPollVoting:
         service = make_service()
         poll = service.create_poll(question="Snack?", options=["Tea", "Coffee"])
         service.cast_vote(
-            poll_id=poll.id, option_id=poll.options[0].id, ip="10.0.0.1",
-            session_token="v1", trace_id="t",
+            poll_id=poll.id,
+            option_id=poll.options[0].id,
+            ip="10.0.0.1",
+            session_token="v1",
+            trace_id="t",
         )
         emitted_types = [e["type"] for e in service.events]  # type: ignore[attr-defined]
         assert "social.poll_vote_cast" in emitted_types
@@ -265,7 +304,10 @@ class TestDeletion:
         assert len(service.list_public_guestbook_entries(limit=10, cursor=None)) == 1
 
         service.request_deletion(
-            target_kind="guestbook", target_id=entry.id, ip="10.0.0.1", session_token="s1",
+            target_kind="guestbook",
+            target_id=entry.id,
+            ip="10.0.0.1",
+            session_token="s1",
             trace_id="t",
         )
         assert service.list_public_guestbook_entries(limit=10, cursor=None) == []
@@ -276,7 +318,10 @@ class TestDeletion:
             text="hello", author_label=None, ip="10.0.0.1", session_token="s1", trace_id="t"
         )
         service.request_deletion(
-            target_kind="guestbook", target_id=entry.id, ip="10.0.0.1", session_token="s1",
+            target_kind="guestbook",
+            target_id=entry.id,
+            ip="10.0.0.1",
+            session_token="s1",
             trace_id="t",
         )
         emitted_types = [e["type"] for e in service.events]  # type: ignore[attr-defined]
@@ -294,7 +339,10 @@ class TestDeletion:
         )
         assert len(service.list_checkins(limit=10, cursor=None)) == 1
         service.request_deletion(
-            target_kind="checkin", target_id=checkin.id, ip="10.0.0.1", session_token="s1",
+            target_kind="checkin",
+            target_id=checkin.id,
+            ip="10.0.0.1",
+            session_token="s1",
             trace_id="t",
         )
         assert service.list_checkins(limit=10, cursor=None) == []
@@ -303,16 +351,22 @@ class TestDeletion:
         service = make_service()
         with pytest.raises(UnsupportedDeletionTargetError):
             service.request_deletion(
-                target_kind="video_message", target_id="whatever", ip="10.0.0.1",
-                session_token="s1", trace_id="t",
+                target_kind="video_message",
+                target_id="whatever",
+                ip="10.0.0.1",
+                session_token="s1",
+                trace_id="t",
             )
 
     def test_deleting_unknown_entry_raises_not_found(self) -> None:
         service = make_service()
         with pytest.raises(NotFoundError):
             service.request_deletion(
-                target_kind="guestbook", target_id="nonexistent", ip="10.0.0.1",
-                session_token="s1", trace_id="t",
+                target_kind="guestbook",
+                target_id="nonexistent",
+                ip="10.0.0.1",
+                session_token="s1",
+                trace_id="t",
             )
 
     def test_admin_delete_bypasses_visitor_rate_limit(self) -> None:
@@ -328,12 +382,20 @@ class TestDeletion:
         # Admin can delete both in quick succession without hitting the
         # visitor write-rate-limit.
         service.request_deletion(
-            target_kind="guestbook", target_id=e1.id, ip="10.0.0.9", session_token="admin",
-            trace_id="t", actor="admin",
+            target_kind="guestbook",
+            target_id=e1.id,
+            ip="10.0.0.9",
+            session_token="admin",
+            trace_id="t",
+            actor="admin",
         )
         service.request_deletion(
-            target_kind="guestbook", target_id=e2.id, ip="10.0.0.9", session_token="admin",
-            trace_id="t", actor="admin",
+            target_kind="guestbook",
+            target_id=e2.id,
+            ip="10.0.0.9",
+            session_token="admin",
+            trace_id="t",
+            actor="admin",
         )
 
 
@@ -386,12 +448,18 @@ class TestCheckinStats:
         service = make_service()
         for i in range(3):
             service.create_checkin(
-                person_id="prs_alex", label="Alex", ip=f"10.0.0.{i}", session_token=f"s{i}",
+                person_id="prs_alex",
+                label="Alex",
+                ip=f"10.0.0.{i}",
+                session_token=f"s{i}",
                 trace_id="t",
             )
         for i in range(2):
             service.create_checkin(
-                person_id=None, label="anon guest", ip=f"10.0.1.{i}", session_token=f"a{i}",
+                person_id=None,
+                label="anon guest",
+                ip=f"10.0.1.{i}",
+                session_token=f"a{i}",
                 trace_id="t",
             )
         stat = service.most_frequent_visitor_stat()
