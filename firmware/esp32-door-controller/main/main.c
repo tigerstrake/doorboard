@@ -2,11 +2,15 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #include "door_protocol.h"
+#include "door_effects.h"
 #include "doorboard_pinout.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
+#include "driver/i2s_std.h"
+#include "led_strip.h"
 #include "esp_check.h"
 #include "esp_intr_alloc.h"
 #include "esp_log.h"
@@ -17,21 +21,25 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
-typedef enum {
-    EFFECT_GENERIC_PRESS = 0,
-    EFFECT_FALLBACK,
-    EFFECT_PROFILE_BLUE_WAVE,
-    EFFECT_PROFILE_GREEN_PULSE,
-} effect_id_t;
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+#define AUDIO_SAMPLE_RATE 22050
+#define AUDIO_BUFFER_SIZE 256
 
 typedef struct {
     uint64_t observed_at_mono_ms;
 } button_isr_event_t;
 
 typedef struct {
-    effect_id_t effect_id;
+    door_effect_id_t effect_id;
     char profile_id[DOOR_PROTOCOL_PROFILE_ID_BYTES];
 } effect_command_t;
+
+typedef struct {
+    door_effect_id_t effect_id;
+} audio_command_t;
 
 typedef struct {
     char press_id[DOOR_PROTOCOL_PRESS_ID_BYTES];
@@ -42,8 +50,12 @@ static const char *TAG = "doorboard-esp32";
 static QueueHandle_t s_input_queue;
 static QueueHandle_t s_effect_queue;
 static QueueHandle_t s_link_queue;
+static QueueHandle_t s_audio_queue;
 static door_protocol_t s_protocol;
 static portMUX_TYPE s_protocol_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static led_strip_handle_t s_led_strip = NULL;
+static i2s_chan_handle_t s_tx_chan = NULL;
 
 static uint64_t mono_ms(void)
 {
@@ -63,18 +75,19 @@ static void IRAM_ATTR button_isr_handler(void *arg)
     }
 }
 
-static effect_id_t profile_effect_for_id(const char *profile_id)
+static door_effect_id_t profile_effect_for_id(const char *profile_id)
 {
-    if (profile_id != NULL && strcmp(profile_id, "green_pulse") == 0) {
-        return EFFECT_PROFILE_GREEN_PULSE;
+    if (profile_id == NULL || profile_id[0] == '\0') {
+        return DOOR_EFFECT_GENERIC_PRESS;
     }
-    if (profile_id != NULL && profile_id[0] != '\0') {
-        return EFFECT_PROFILE_BLUE_WAVE;
+    door_effect_id_t eff = door_effect_from_name(profile_id);
+    if (eff != DOOR_EFFECT_NONE) {
+        return eff;
     }
-    return EFFECT_GENERIC_PRESS;
+    return DOOR_EFFECT_BLUE_WAVE;
 }
 
-static void enqueue_effect(effect_id_t effect_id, const char *profile_id)
+static void enqueue_effect(door_effect_id_t effect_id, const char *profile_id)
 {
     effect_command_t command = {
         .effect_id = effect_id,
@@ -128,7 +141,7 @@ static void input_task(void *arg)
          * The local effect is scheduled before the link event is queued. This
          * preserves button feedback when the Pi, UART, or control plane is down.
          */
-        enqueue_effect(EFFECT_GENERIC_PRESS, NULL);
+        enqueue_effect(DOOR_EFFECT_GENERIC_PRESS, NULL);
 
         portENTER_CRITICAL(&s_protocol_mux);
         const char *profile_id = door_protocol_cached_profile_id(&s_protocol, event.observed_at_mono_ms);
@@ -154,31 +167,126 @@ static void input_task(void *arg)
     }
 }
 
+static void write_leds(const door_effect_frame_t *frame)
+{
+    if (s_led_strip == NULL) return;
+    for (int i = 0; i < DOORBOARD_NUM_LEDS; i++) {
+        led_strip_set_pixel(s_led_strip, i, frame->leds[i].r, frame->leds[i].g, frame->leds[i].b);
+    }
+    led_strip_refresh(s_led_strip);
+}
+
+static void clear_leds(void)
+{
+    if (s_led_strip == NULL) return;
+    led_strip_clear(s_led_strip);
+}
+
+static void play_tone(uint32_t freq_hz, uint32_t duration_ms)
+{
+    if (s_tx_chan == NULL) return;
+
+    audio_command_t peek_cmd;
+    if (freq_hz == 0) {
+        int16_t silence_buf[AUDIO_BUFFER_SIZE] = {0};
+        uint32_t total_samples = (AUDIO_SAMPLE_RATE * duration_ms) / 1000;
+        uint32_t samples_written = 0;
+        while (samples_written < total_samples) {
+            if (xQueuePeek(s_audio_queue, &peek_cmd, 0) == pdTRUE) {
+                break;
+            }
+            uint32_t chunk_samples = (total_samples - samples_written) > AUDIO_BUFFER_SIZE ? 
+                                     AUDIO_BUFFER_SIZE : 
+                                     (total_samples - samples_written);
+            size_t bytes_written = 0;
+            i2s_channel_write(s_tx_chan, silence_buf, chunk_samples * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+            if (bytes_written == 0) {
+                break;
+            }
+            samples_written += bytes_written / sizeof(int16_t);
+        }
+        return;
+    }
+
+    int16_t tone_buf[AUDIO_BUFFER_SIZE];
+    uint32_t total_samples = (AUDIO_SAMPLE_RATE * duration_ms) / 1000;
+    uint32_t samples_written = 0;
+    float phase = 0.0f;
+    float phase_increment = (2.0f * (float)M_PI * (float)freq_hz) / (float)AUDIO_SAMPLE_RATE;
+
+    while (samples_written < total_samples) {
+        if (xQueuePeek(s_audio_queue, &peek_cmd, 0) == pdTRUE) {
+            break;
+        }
+        uint32_t chunk_samples = (total_samples - samples_written) > AUDIO_BUFFER_SIZE ? 
+                                 AUDIO_BUFFER_SIZE : 
+                                 (total_samples - samples_written);
+        for (uint32_t i = 0; i < chunk_samples; i++) {
+            tone_buf[i] = (int16_t)(sinf(phase) * 10000.0f);
+            phase += phase_increment;
+            if (phase >= 2.0f * (float)M_PI) {
+                phase -= 2.0f * (float)M_PI;
+            }
+        }
+        size_t bytes_written = 0;
+        i2s_channel_write(s_tx_chan, tone_buf, chunk_samples * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+        if (bytes_written == 0) {
+            break;
+        }
+        samples_written += bytes_written / sizeof(int16_t);
+    }
+}
+
+static void audio_task(void *arg)
+{
+    (void)arg;
+    audio_command_t cmd;
+
+    (void)esp_task_wdt_add(NULL);
+    for (;;) {
+        if (xQueueReceive(s_audio_queue, &cmd, portMAX_DELAY) == pdTRUE) {
+            const door_audio_cue_t *cue = door_effects_get_audio_cue(cmd.effect_id);
+            for (uint32_t i = 0; i < cue->num_tones; i++) {
+                audio_command_t peek_cmd;
+                if (xQueuePeek(s_audio_queue, &peek_cmd, 0) == pdTRUE) {
+                    break;
+                }
+                play_tone(cue->tones[i].frequency_hz, cue->tones[i].duration_ms);
+            }
+        }
+        esp_task_wdt_reset();
+    }
+}
+
 static void effects_task(void *arg)
 {
     (void)arg;
     effect_command_t command;
+    door_effect_state_t state;
+    door_effects_init_state(&state);
+    bool animation_active = false;
 
     (void)esp_task_wdt_add(NULL);
     for (;;) {
-        if (xQueueReceive(s_effect_queue, &command, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            switch (command.effect_id) {
-                case EFFECT_GENERIC_PRESS:
-                    gpio_set_level(DOORBOARD_PIN_LED_DATA_GPIO, 1);
-                    vTaskDelay(pdMS_TO_TICKS(20));
-                    gpio_set_level(DOORBOARD_PIN_LED_DATA_GPIO, 0);
-                    break;
-                case EFFECT_FALLBACK:
-                    gpio_set_level(DOORBOARD_PIN_LED_DATA_GPIO, 1);
-                    vTaskDelay(pdMS_TO_TICKS(80));
-                    gpio_set_level(DOORBOARD_PIN_LED_DATA_GPIO, 0);
-                    break;
-                case EFFECT_PROFILE_BLUE_WAVE:
-                case EFFECT_PROFILE_GREEN_PULSE:
-                    gpio_set_level(DOORBOARD_PIN_LED_DATA_GPIO, 1);
-                    vTaskDelay(pdMS_TO_TICKS(50));
-                    gpio_set_level(DOORBOARD_PIN_LED_DATA_GPIO, 0);
-                    break;
+        TickType_t wait_ticks = animation_active ? pdMS_TO_TICKS(30) : portMAX_DELAY;
+
+        if (xQueueReceive(s_effect_queue, &command, wait_ticks) == pdTRUE) {
+            door_effects_start(&state, command.effect_id, command.profile_id[0] != '\0' ? command.profile_id : NULL);
+            animation_active = (state.effect_id != DOOR_EFFECT_NONE);
+
+            audio_command_t audio_cmd = {
+                .effect_id = state.effect_id,
+            };
+            (void)xQueueSend(s_audio_queue, &audio_cmd, 0);
+        }
+
+        if (animation_active) {
+            door_effect_frame_t frame;
+            bool continues = door_effects_step(&state, &frame);
+            write_leds(&frame);
+            if (!continues) {
+                animation_active = false;
+                clear_leds();
             }
         }
         esp_task_wdt_reset();
@@ -291,7 +399,7 @@ static void link_task(void *arg)
                 uart_write_frame(heartbeat);
             }
             if (fallback_active && !fallback_was_active) {
-                enqueue_effect(EFFECT_FALLBACK, NULL);
+                enqueue_effect(DOOR_EFFECT_FALLBACK, NULL);
             }
             fallback_was_active = fallback_active;
             last_heartbeat_mono_ms = now;
@@ -329,18 +437,53 @@ static void configure_gpio(void)
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_NEGEDGE,
     };
-    const gpio_config_t led_config = {
-        .pin_bit_mask = 1ULL << DOORBOARD_PIN_LED_DATA_GPIO,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
 
     ESP_ERROR_CHECK(gpio_config(&button_config));
-    ESP_ERROR_CHECK(gpio_config(&led_config));
     ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_IRAM));
     ESP_ERROR_CHECK(gpio_isr_handler_add(DOORBOARD_PIN_BUTTON_GPIO, button_isr_handler, NULL));
+}
+
+static void configure_leds(void)
+{
+    led_strip_config_t strip_config = {
+        .strip_gpio_num = DOORBOARD_PIN_LED_DATA_GPIO,
+        .max_leds = DOORBOARD_NUM_LEDS,
+        .led_pixel_format = LED_PIXEL_FORMAT_GRB,
+        .led_model = LED_MODEL_WS2812,
+        .flags.invert_out = false,
+    };
+    led_strip_rmt_config_t rmt_config = {
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .resolution_hz = 10 * 1000 * 1000,
+        .flags.with_dma = false,
+    };
+    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &s_led_strip));
+    led_strip_clear(s_led_strip);
+}
+
+static void configure_audio(void)
+{
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &s_tx_chan, NULL));
+
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
+        .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = DOORBOARD_PIN_AUDIO_BCLK_GPIO,
+            .ws = DOORBOARD_PIN_AUDIO_WS_GPIO,
+            .dout = DOORBOARD_PIN_AUDIO_DOUT_GPIO,
+            .din = I2S_GPIO_UNUSED,
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv = false,
+            },
+        },
+    };
+    ESP_ERROR_CHECK(i2s_channel_init_std_tx(s_tx_chan, &std_cfg));
+    ESP_ERROR_CHECK(i2s_channel_enable(s_tx_chan));
 }
 
 static void configure_uart(void)
@@ -377,6 +520,16 @@ static void configure_watchdog(void)
     }
 }
 
+static void on_effect_play_received(const char *effect_id, uint32_t duration_ms, void *user)
+{
+    (void)duration_ms;
+    (void)user;
+    door_effect_id_t id = door_effect_from_name(effect_id);
+    if (id != DOOR_EFFECT_NONE) {
+        enqueue_effect(id, NULL);
+    }
+}
+
 void app_main(void)
 {
     configure_watchdog();
@@ -385,15 +538,26 @@ void app_main(void)
     s_input_queue = xQueueCreate(DOORBOARD_INPUT_QUEUE_DEPTH, sizeof(button_isr_event_t));
     s_effect_queue = xQueueCreate(DOORBOARD_EFFECT_QUEUE_DEPTH, sizeof(effect_command_t));
     s_link_queue = xQueueCreate(DOORBOARD_LINK_QUEUE_DEPTH, sizeof(link_button_event_t));
+    s_audio_queue = xQueueCreate(DOORBOARD_EFFECT_QUEUE_DEPTH, sizeof(audio_command_t));
+
     ESP_ERROR_CHECK(s_input_queue == NULL ? ESP_ERR_NO_MEM : ESP_OK);
     ESP_ERROR_CHECK(s_effect_queue == NULL ? ESP_ERR_NO_MEM : ESP_OK);
     ESP_ERROR_CHECK(s_link_queue == NULL ? ESP_ERR_NO_MEM : ESP_OK);
+    ESP_ERROR_CHECK(s_audio_queue == NULL ? ESP_ERR_NO_MEM : ESP_OK);
 
     door_protocol_init(&s_protocol, "esp32-door-controller", "t-101-0.1.0");
+    s_protocol.effect_play_cb = on_effect_play_received;
+    s_protocol.effect_play_cb_user = NULL;
+
     configure_gpio();
+    configure_leds();
+    configure_audio();
 
     xTaskCreate(input_task, "input", 4096, NULL, 12, NULL);
     xTaskCreate(effects_task, "effects", 4096, NULL, 10, NULL);
+    xTaskCreate(audio_task, "audio", 4096, NULL, 11, NULL);
     xTaskCreate(link_task, "link", 6144, NULL, 8, NULL);
     xTaskCreate(sensors_task, "sensors", 4096, NULL, 5, NULL);
+
+    enqueue_effect(DOOR_EFFECT_BOOT, NULL);
 }
