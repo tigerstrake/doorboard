@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 os.environ["DOOR_API_DB_PATH"] = ":memory:"
+os.environ["DOOR_API_SOCIAL_DB_PATH"] = ":memory:"
 
 from door_api.app import app, state
 
@@ -19,6 +20,7 @@ def _mock_env_for_test(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None,
     # Force the app to use an in-memory DB for tests, avoiding the RuntimeError
     # from config.py if the environment isn't fully set up.
     monkeypatch.setenv("DOOR_API_DB_PATH", ":memory:")
+    monkeypatch.setenv("DOOR_API_SOCIAL_DB_PATH", ":memory:")
     # Re-initialize state to pick up the test env
     state.__init__()
     state.startup()

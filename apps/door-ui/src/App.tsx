@@ -3,13 +3,15 @@ import {
   Tile,
   StatusBadge,
   BigButton,
-  GreetingBanner,
   CountdownAutoReset,
   QRPlaceholder,
+  LiveVideoPreview,
+  CrossfadeSwitch,
   SessionState,
 } from "@doorboard/ui-kit";
 import { DoorboardEventClient, uuidv7 } from "@doorboard/event-client";
 import type { DoorboardEvent } from "@doorboard/contracts";
+import { WallboardVisitorMode } from "./wallboard/WallboardVisitorMode";
 import {
   presenceFixture,
   birdFixture,
@@ -19,13 +21,44 @@ import {
   moodFixture,
   scoreboardFixture,
   foodFixture,
-  pollFixture,
-  guestbookFixture,
 } from "./fixtures";
+import { socialApi, ApiError } from "./socialApi";
+import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
+import { AdminSocialPanel } from "./AdminSocialPanel";
+import { VisitorPage } from "./VisitorPage";
+import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
 
 // Import CSS
 import "@doorboard/ui-kit/index.css";
 import "./App.css";
+
+const CANNED_GUESTBOOK_PHRASES = ["Hey, stopped by!", "Call me later!", "Awesome door board!"];
+
+// Content this kiosk session created, so the Privacy screen can offer a
+// real deletion path without needing a login/identity system.
+type MyContentRef = { kind: "guestbook" | "checkin"; id: string; label: string };
+const MY_CONTENT_KEY = "doorboard_my_social_content";
+
+function loadMyContent(): MyContentRef[] {
+  try {
+    const raw = window.localStorage.getItem(MY_CONTENT_KEY);
+    return raw ? (JSON.parse(raw) as MyContentRef[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveMyContent(items: MyContentRef[]): void {
+  window.localStorage.setItem(MY_CONTENT_KEY, JSON.stringify(items));
+}
+
+function apiErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    if (err.status === 429) return "Please slow down — too many submissions. Try again in a bit.";
+    return err.message || fallback;
+  }
+  return fallback;
+}
 
 // Session states that trigger Wallboard Visitor Mode takeover
 const API_BASE = import.meta.env.VITE_DOOR_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -60,10 +93,15 @@ const VISITOR_STATES: SessionState[] = [
   "VIDEO_MESSAGE_SAVED",
 ];
 
+// Wallboard keeps rendering its takeover view through SESSION_END so the
+// thank-you screen is visible before the session auto-expires to IDLE.
+const WALLBOARD_TAKEOVER_STATES: SessionState[] = [...VISITOR_STATES, "SESSION_END"];
+
 export function App() {
   const [route, setRoute] = useState<string>(window.location.pathname);
   const [sessionState, setSessionState] = useState<SessionState>("IDLE");
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
+  const [activeDisplayName, setActiveDisplayName] = useState<string | null>(null);
   const [mockSessionId, setMockSessionId] = useState<string>(() => crypto.randomUUID());
   const [showSimPanel, setShowSimPanel] = useState<boolean>(true);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
@@ -78,6 +116,16 @@ export function App() {
   const [visitorQrUrl, setVisitorQrUrl] = useState<string | null>(null);
   const [adminRecordings, setAdminRecordings] = useState<VideoRecording[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Social feature state (T-403)
+  const [guestbookText, setGuestbookText] = useState<string>("");
+  const [guestbookSubmitting, setGuestbookSubmitting] = useState<boolean>(false);
+  const [currentPoll, setCurrentPoll] = useState<Poll | null>(null);
+  const [pollResults, setPollResults] = useState<PollResultRow[] | null>(null);
+  const [pollVoteError, setPollVoteError] = useState<string | null>(null);
+  const [checkinSubmitting, setCheckinSubmitting] = useState<boolean>(false);
+  const [myContent, setMyContent] = useState<MyContentRef[]>(() => loadMyContent());
+  const [approvedGuestbook, setApprovedGuestbook] = useState<GuestbookEntry[]>([]);
 
   const clientRef = useRef<DoorboardEventClient | null>(null);
 
@@ -125,6 +173,7 @@ export function App() {
 
         if (toState === "IDLE") {
           setActiveProfile(null);
+          setActiveDisplayName(null);
         }
 
         // Keep DoorPad local screen in sync, including sessions started by hardware.
@@ -153,6 +202,7 @@ export function App() {
     const unsubscribeVision = client.subscribe("vision.identity_stable", (event: DoorboardEvent) => {
       if (event && event.type === "vision.identity_stable" && event.payload) {
         setActiveProfile(event.payload.profile_id);
+        setActiveDisplayName(event.payload.display_name);
       }
     });
 
@@ -200,6 +250,136 @@ export function App() {
   const navigateTo = (path: string) => {
     window.history.pushState(null, "", path);
     setRoute(path);
+  };
+
+  // Feed the ambient Guestbook Highlights + Room Poll tiles from real data.
+  useEffect(() => {
+    if (route !== "/wallboard") return;
+    let cancelled = false;
+    const load = () => {
+      socialApi
+        .listGuestbook(5)
+        .then((entries) => {
+          if (!cancelled) setApprovedGuestbook(entries);
+        })
+        .catch(() => {
+          // NUC/door-api unreachable — tile just keeps showing last-known data.
+        });
+      socialApi
+        .getCurrentPoll()
+        .then((poll) => {
+          if (cancelled) return;
+          setCurrentPoll(poll);
+          if (poll) {
+            return socialApi.getPollResults(poll.id).then((results) => {
+              if (!cancelled) setPollResults(results);
+            });
+          }
+          setPollResults(null);
+        })
+        .catch(() => {
+          // Same fallback as above — ambient tile keeps last-known data.
+        });
+    };
+    load();
+    const interval = setInterval(load, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [route]);
+
+  // Load the current poll + results whenever the DoorPad poll screen opens.
+  useEffect(() => {
+    if (doorPadScreen !== "poll") return;
+    let cancelled = false;
+    socialApi
+      .getCurrentPoll()
+      .then((poll) => {
+        if (cancelled) return;
+        setCurrentPoll(poll);
+        if (poll) {
+          return socialApi.getPollResults(poll.id).then((results) => {
+            if (!cancelled) setPollResults(results);
+          });
+        }
+        setPollResults(null);
+      })
+      .catch((err) => {
+        if (!cancelled) setPollVoteError(apiErrorMessage(err, "Couldn't load the poll."));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [doorPadScreen]);
+
+  const rememberMyContent = (ref: MyContentRef) => {
+    const next = [...myContent, ref];
+    setMyContent(next);
+    saveMyContent(next);
+  };
+
+  const handleGuestbookSubmit = async (text: string) => {
+    if (guestbookSubmitting) return;
+    setGuestbookSubmitting(true);
+    try {
+      const entry = await socialApi.createGuestbookEntry(text, null);
+      rememberMyContent({ kind: "guestbook", id: entry.id, label: text.slice(0, 40) });
+      triggerToast("Note submitted! It'll show up once approved.");
+      setGuestbookText("");
+      handleReset();
+    } catch (err) {
+      triggerToast(apiErrorMessage(err, "Couldn't submit your note — try again."));
+    } finally {
+      setGuestbookSubmitting(false);
+    }
+  };
+
+  const handlePollVote = async (optionId: string) => {
+    if (!currentPoll) return;
+    setPollVoteError(null);
+    try {
+      await socialApi.castVote(currentPoll.id, optionId);
+      const results = await socialApi.getPollResults(currentPoll.id);
+      setPollResults(results);
+      triggerToast("Vote cast!");
+    } catch (err) {
+      setPollVoteError(apiErrorMessage(err, "Couldn't cast your vote."));
+    }
+  };
+
+  const handleCheckin = async (kind: "enrolled" | "guest") => {
+    if (checkinSubmitting) return;
+    setCheckinSubmitting(true);
+    try {
+      const label = kind === "enrolled" ? "Enrolled Visitor" : "Guest";
+      // door-api derives attribution server-side from the session's cached
+      // identity — this client never asserts a person_id.
+      const checkin = await socialApi.createCheckin(label);
+      rememberMyContent({ kind: "checkin", id: checkin.id, label });
+      triggerToast(
+        checkin.person_id
+          ? `Checked in — recognized as ${checkin.person_id}!`
+          : `Checked in as ${label}`
+      );
+      setDoorPadScreen("home");
+    } catch (err) {
+      triggerToast(apiErrorMessage(err, "Couldn't check in — try again."));
+    } finally {
+      setCheckinSubmitting(false);
+    }
+  };
+
+  const handleDeletionRequest = async (item: MyContentRef) => {
+    try {
+      await socialApi.requestDeletion(item.kind, item.id);
+      const next = myContent.filter((c) => c.id !== item.id);
+      setMyContent(next);
+      saveMyContent(next);
+      triggerToast("Deletion request honored.");
+    } catch (err) {
+      triggerToast(apiErrorMessage(err, "Couldn't process the deletion request."));
+    }
   };
 
   const triggerEvent = (toState: SessionState, profileId: string | null = null) => {
@@ -259,6 +439,22 @@ export function App() {
     triggerEvent("IDLE");
   };
 
+  // The Wallboard's own "Done" button ends the visitor session properly (VISITOR_MODE
+  // family -> SESSION_END) rather than jumping straight to IDLE, so the session-end
+  // thank-you screen has a moment to show — mirroring door-api's real transition table.
+  const endVisitorSession = () => {
+    triggerEvent("SESSION_END");
+  };
+
+  // door-api auto-expires SESSION_END -> IDLE; this mock mirrors that so the thank-you
+  // screen the Wallboard shows during SESSION_END returns to ambient on its own.
+  useEffect(() => {
+    if (sessionState !== "SESSION_END") return;
+    const timeout = setTimeout(() => triggerEvent("IDLE"), 3000);
+    return () => clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionState]);
+
   // Render Simulator panel overlay (for interactive dev)
   const renderSimPanel = () => {
     if (!showSimPanel) {
@@ -296,199 +492,159 @@ export function App() {
 
   // --- WALLBOARD SURFACE ---
   const renderWallboard = () => {
-    const isVisitorMode = VISITOR_STATES.includes(sessionState);
+    const isVisitorMode = WALLBOARD_TAKEOVER_STATES.includes(sessionState);
+    const visitorUrl = `${window.location.origin}/visitor?token=${mockSessionId}`;
 
-    if (isVisitorMode) {
-      // VISITOR MODE TAKEOVER
-      let greetTitle = "Hello, Visitor!";
-      let greetSubtitle = "Press the bell or leave a video message below.";
-      
-      if (activeProfile === "owner") {
-        greetTitle = "Welcome home, Taylor!";
-        greetSubtitle = "You are currently marked as Available.";
-      } else if (activeProfile === "roommate") {
-        greetTitle = "Welcome home, Alex!";
-        greetSubtitle = "You are currently marked as Busy.";
-      }
+    return (
+      <CrossfadeSwitch activeKey={isVisitorMode ? "visitor" : "ambient"}>
+        {isVisitorMode ? (
+          <WallboardVisitorMode
+            sessionState={sessionState}
+            sessionId={mockSessionId}
+            profileId={activeProfile}
+            displayName={activeDisplayName}
+            presence={presenceFixture}
+            pollQuestion={currentPoll?.question ?? "No poll running right now."}
+            visitorUrl={visitorUrl}
+            onDone={endVisitorSession}
+          />
+        ) : (
+          // AMBIENT MODE - TILE DASHBOARD
+          <div className="wallboard-ambient-view db-app-theme">
+            <header className="ambient-header">
+              <div className="ambient-header-left">
+                <h1 className="ambient-header-title">Room 304 Wallboard</h1>
+                <span className="ambient-header-subtitle">Dorm Hallway Display</span>
+              </div>
+              <div className="ambient-clock">
+                {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </div>
+            </header>
 
-      return (
-        <CountdownAutoReset onReset={handleReset} timeoutMs={30000}>
-          <div className="wallboard-visitor-view db-app-theme fade-in">
-            <GreetingBanner
-              title={greetTitle}
-              subtitle={greetSubtitle}
-              profileId={activeProfile}
-            />
-            
-            <div className="visitor-grid">
-              <Tile title="DoorPad Instructions">
-                <div className="instructions-card">
-                  <p>Touch the <strong>7" DoorPad screen</strong> below to:</p>
-                  <ul>
-                    <li>Ring the doorbell again</li>
-                    <li>Leave a short video message</li>
-                    <li>Sign our digital guestbook</li>
-                    <li>Answer the roommate poll</li>
-                  </ul>
-                </div>
-              </Tile>
-
-              <Tile title="Availability State">
-                <div className="status-display-box">
-                  <div className="status-display-row">
-                    <span className="person-name">Taylor (Owner)</span>
+            <main className="ambient-grid">
+              {/* Tile 1: Presence */}
+              <Tile title="Presence" asOf={presenceFixture.owner.occurred_at}>
+                <div className="presence-tile-content">
+                  <div className="presence-row">
+                    <span>Taylor:</span>
                     <StatusBadge label={presenceFixture.owner.label} />
                   </div>
-                  <div className="status-display-row">
-                    <span className="person-name">Alex (Roommate)</span>
+                  <div className="presence-row">
+                    <span>Alex:</span>
                     <StatusBadge label={presenceFixture.roommate.label} />
                   </div>
                 </div>
               </Tile>
 
-              <Tile title="Scan Visitor QR">
-                <QRPlaceholder url="http://door.local/visitor?token=visitor_kiosk_pass" />
+              {/* Tile 2: Mood */}
+              <Tile title="Current Mood" asOf={moodFixture.occurred_at}>
+                <div className="mood-tile-content">
+                  <span className="mood-emoji">🎯</span>
+                  <span className="mood-text">Taylor is feeling <strong>{moodFixture.mood}</strong></span>
+                </div>
               </Tile>
-            </div>
 
-            <div className="visitor-mode-footer">
-              <BigButton variant="primary" onClick={handleReset}>
-                Done / End Session
-              </BigButton>
-            </div>
+              {/* Tile 3: Birds */}
+              <Tile title="Bird Detections" asOf={birdFixture.occurred_at}>
+                <div className="bird-tile-content">
+                  <p className="bird-stat">Total today: <strong>{birdFixture.total_detections}</strong></p>
+                  {birdFixture.top_species.map((s, idx) => (
+                    <div key={idx} className="bird-row">
+                      <span>{s.name} (x{s.count})</span>
+                      <span className="bird-conf">{(s.confidence_avg * 100).toFixed(0)}% conf</span>
+                    </div>
+                  ))}
+                </div>
+              </Tile>
+
+              {/* Tile 4: Aircraft */}
+              <Tile title="Overhead Aircraft" asOf={aircraftFixture.occurred_at}>
+                <div className="aircraft-tile-content">
+                  {aircraftFixture.nearby.map((a, idx) => (
+                    <div key={idx} className="aircraft-row">
+                      <span className="aircraft-call">{a.callsign}</span>
+                      <span>{a.altitude_ft.toLocaleString()} ft</span>
+                      <span>{a.distance_km} km away</span>
+                    </div>
+                  ))}
+                </div>
+              </Tile>
+
+              {/* Tile 5: Satellite Pass */}
+              <Tile title="Next Satellite Pass" asOf={satelliteFixture.occurred_at}>
+                <div className="satellite-tile-content">
+                  <p>🛰️ <strong>{satelliteFixture.satellite}</strong></p>
+                  <p>Rise: {new Date(satelliteFixture.rise_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                  <p>Direction: {satelliteFixture.direction} ({satelliteFixture.max_elevation_deg}° max elev)</p>
+                </div>
+              </Tile>
+
+              {/* Tile 6: Printer Status */}
+              <Tile title="3D Printer" asOf={printerFixture.occurred_at}>
+                <div className="printer-tile-content">
+                  <p>Job: <strong>{printerFixture.job_name}</strong> ({printerFixture.state})</p>
+                  <div className="progress-bar-container">
+                    <div className="progress-bar-fill" style={{ width: `${printerFixture.progress_pct}%` }} />
+                  </div>
+                  <p className="printer-subtext">{printerFixture.progress_pct}% completed · ETA 15m</p>
+                </div>
+              </Tile>
+
+              {/* Tile 7: Roommate Scoreboard */}
+              <Tile title="Scoreboard" asOf={scoreboardFixture.occurred_at}>
+                <div className="scoreboard-tile-content">
+                  {scoreboardFixture.scores.map((s, idx) => (
+                    <div key={idx} className="score-row">
+                      <span>{s.name}</span>
+                      <span className="score-points"><strong>{s.score}</strong> pts</span>
+                    </div>
+                  ))}
+                </div>
+              </Tile>
+
+              {/* Tile 8: Daily Food */}
+              <Tile title="Daily Food Recommendation" asOf={foodFixture.occurred_at}>
+                <div className="food-tile-content">
+                  <h4>🍜 {foodFixture.title}</h4>
+                  <p>{foodFixture.detail}</p>
+                </div>
+              </Tile>
+
+              {/* Tile 9: Room Poll — fed by the real current poll (T-403) */}
+              <Tile title="Active Room Poll">
+                <div className="poll-tile-content">
+                  {!currentPoll && <p>No poll running right now.</p>}
+                  {currentPoll && (
+                    <>
+                      <p className="poll-q"><strong>{currentPoll.question}</strong></p>
+                      {currentPoll.options.map((opt) => (
+                        <PollOptionRow
+                          key={opt.id}
+                          text={opt.text}
+                          votes={pollResults?.find((r) => r.option_id === opt.id)?.votes ?? 0}
+                        />
+                      ))}
+                    </>
+                  )}
+                </div>
+              </Tile>
+
+              {/* Tile 10: Guestbook Highlights — fed by real approved entries (T-403) */}
+              <Tile
+                title="Guestbook Highlights"
+                asOf={approvedGuestbook[0]?.created_at ?? null}
+              >
+                <div className="guestbook-tile-content">
+                  {approvedGuestbook.length === 0 && <p>No guestbook notes yet — be the first!</p>}
+                  {approvedGuestbook.map((e) => (
+                    <GuestbookQuote key={e.id} text={e.text} authorLabel={e.author_label} />
+                  ))}
+                </div>
+              </Tile>
+            </main>
           </div>
-        </CountdownAutoReset>
-      );
-    }
-
-    // AMBIENT MODE - TILE DASHBOARD
-    return (
-      <div className="wallboard-ambient-view db-app-theme">
-        <header className="ambient-header">
-          <div className="ambient-header-left">
-            <h1 className="ambient-header-title">Room 304 Wallboard</h1>
-            <span className="ambient-header-subtitle">Dorm Hallway Display</span>
-          </div>
-          <div className="ambient-clock">
-            {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-          </div>
-        </header>
-
-        <main className="ambient-grid">
-          {/* Tile 1: Presence */}
-          <Tile title="Presence" asOf={presenceFixture.owner.occurred_at}>
-            <div className="presence-tile-content">
-              <div className="presence-row">
-                <span>Taylor:</span>
-                <StatusBadge label={presenceFixture.owner.label} />
-              </div>
-              <div className="presence-row">
-                <span>Alex:</span>
-                <StatusBadge label={presenceFixture.roommate.label} />
-              </div>
-            </div>
-          </Tile>
-
-          {/* Tile 2: Mood */}
-          <Tile title="Current Mood" asOf={moodFixture.occurred_at}>
-            <div className="mood-tile-content">
-              <span className="mood-emoji">🎯</span>
-              <span className="mood-text">Taylor is feeling <strong>{moodFixture.mood}</strong></span>
-            </div>
-          </Tile>
-
-          {/* Tile 3: Birds */}
-          <Tile title="Bird Detections" asOf={birdFixture.occurred_at}>
-            <div className="bird-tile-content">
-              <p className="bird-stat">Total today: <strong>{birdFixture.total_detections}</strong></p>
-              {birdFixture.top_species.map((s, idx) => (
-                <div key={idx} className="bird-row">
-                  <span>{s.name} (x{s.count})</span>
-                  <span className="bird-conf">{(s.confidence_avg * 100).toFixed(0)}% conf</span>
-                </div>
-              ))}
-            </div>
-          </Tile>
-
-          {/* Tile 4: Aircraft */}
-          <Tile title="Overhead Aircraft" asOf={aircraftFixture.occurred_at}>
-            <div className="aircraft-tile-content">
-              {aircraftFixture.nearby.map((a, idx) => (
-                <div key={idx} className="aircraft-row">
-                  <span className="aircraft-call">{a.callsign}</span>
-                  <span>{a.altitude_ft.toLocaleString()} ft</span>
-                  <span>{a.distance_km} km away</span>
-                </div>
-              ))}
-            </div>
-          </Tile>
-
-          {/* Tile 5: Satellite Pass */}
-          <Tile title="Next Satellite Pass" asOf={satelliteFixture.occurred_at}>
-            <div className="satellite-tile-content">
-              <p>🛰️ <strong>{satelliteFixture.satellite}</strong></p>
-              <p>Rise: {new Date(satelliteFixture.rise_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-              <p>Direction: {satelliteFixture.direction} ({satelliteFixture.max_elevation_deg}° max elev)</p>
-            </div>
-          </Tile>
-
-          {/* Tile 6: Printer Status */}
-          <Tile title="3D Printer" asOf={printerFixture.occurred_at}>
-            <div className="printer-tile-content">
-              <p>Job: <strong>{printerFixture.job_name}</strong> ({printerFixture.state})</p>
-              <div className="progress-bar-container">
-                <div className="progress-bar-fill" style={{ width: `${printerFixture.progress_pct}%` }} />
-              </div>
-              <p className="printer-subtext">{printerFixture.progress_pct}% completed · ETA 15m</p>
-            </div>
-          </Tile>
-
-          {/* Tile 7: Roommate Scoreboard */}
-          <Tile title="Scoreboard" asOf={scoreboardFixture.occurred_at}>
-            <div className="scoreboard-tile-content">
-              {scoreboardFixture.scores.map((s, idx) => (
-                <div key={idx} className="score-row">
-                  <span>{s.name}</span>
-                  <span className="score-points"><strong>{s.score}</strong> pts</span>
-                </div>
-              ))}
-            </div>
-          </Tile>
-
-          {/* Tile 8: Daily Food */}
-          <Tile title="Daily Food Recommendation" asOf={foodFixture.occurred_at}>
-            <div className="food-tile-content">
-              <h4>🍜 {foodFixture.title}</h4>
-              <p>{foodFixture.detail}</p>
-            </div>
-          </Tile>
-
-          {/* Tile 9: Room Poll */}
-          <Tile title="Active Room Poll">
-            <div className="poll-tile-content">
-              <p className="poll-q"><strong>{pollFixture.question}</strong></p>
-              {pollFixture.options.map((opt) => (
-                <div key={opt.id} className="poll-option-row">
-                  <span>{opt.text}</span>
-                  <span><strong>{opt.votes}</strong> votes</span>
-                </div>
-              ))}
-            </div>
-          </Tile>
-
-          {/* Tile 10: Guestbook Highlights */}
-          <Tile title="Guestbook Highlights" asOf={guestbookFixture.occurred_at}>
-            <div className="guestbook-tile-content">
-              {guestbookFixture.entries.map((e, idx) => (
-                <blockquote key={idx} className="guestbook-quote">
-                  <p>"{e.text}"</p>
-                  <cite>— {e.author}</cite>
-                </blockquote>
-              ))}
-            </div>
-          </Tile>
-        </main>
-      </div>
+        )}
+      </CrossfadeSwitch>
     );
   };
 
@@ -610,12 +766,7 @@ export function App() {
     void postDoorApi("/doorpad/ring");
   };
 
-  const renderVideoPreview = () => (
-    <div className="video-preview-frame" aria-label="Live self-preview">
-      <div className="video-preview-scan" />
-      <div className="video-preview-label">Live Preview</div>
-    </div>
-  );
+  const renderVideoPreview = () => <LiveVideoPreview title="Live self-preview" />;
 
   const renderDoorPad = () => {
     const handleActionClick = (actionName: string, targetScreen: DoorPadScreen) => {
@@ -762,12 +913,27 @@ export function App() {
           {doorPadScreen === "guestbook" && (
             <div className="doorpad-sub-content">
               <h2>Leave a Guestbook Note</h2>
-              <p className="placeholder-subtext">[Placeholder Flow: Select phrase or write note]</p>
+              <p className="placeholder-subtext">Pick a phrase or write a short note (280 chars max)</p>
               <div className="phrase-grid">
-                <button className="phrase-btn" onClick={() => triggerToast('Selected: "Hey, stopped by!"')}>"Hey, stopped by!"</button>
-                <button className="phrase-btn" onClick={() => triggerToast('Selected: "Call me later!"')}>"Call me later!"</button>
-                <button className="phrase-btn" onClick={() => triggerToast('Selected: "Awesome door board!"')}>"Awesome door board!"</button>
+                {CANNED_GUESTBOOK_PHRASES.map((phrase) => (
+                  <button
+                    key={phrase}
+                    className="phrase-btn"
+                    disabled={guestbookSubmitting}
+                    onClick={() => handleGuestbookSubmit(phrase)}
+                  >
+                    "{phrase}"
+                  </button>
+                ))}
               </div>
+              <textarea
+                className="guestbook-freetext"
+                maxLength={280}
+                rows={3}
+                placeholder="Or write your own note..."
+                value={guestbookText}
+                onChange={(e) => setGuestbookText(e.target.value)}
+              />
               <div className="action-button-group">
                 <BigButton variant="primary" onClick={() => { triggerToast("Note Submitted!"); handleReset(); }}>Submit</BigButton>
                 <BigButton onClick={() => setDoorPadScreen("home")}>Cancel</BigButton>
@@ -778,14 +944,31 @@ export function App() {
           {doorPadScreen === "poll" && (
             <div className="doorpad-sub-content">
               <h2>Vote in Poll</h2>
-              <p className="poll-q"><strong>{pollFixture.question}</strong></p>
-              <div className="poll-choices">
-                {pollFixture.options.map((opt) => (
-                  <button key={opt.id} className="phrase-btn" style={{ width: "100%", margin: "4px 0" }} onClick={() => triggerToast(`Voted for: ${opt.text}`)}>
-                    {opt.text}
-                  </button>
-                ))}
-              </div>
+              {!currentPoll && <p>No poll is running right now — check back later!</p>}
+              {currentPoll && (
+                <>
+                  <p className="poll-q"><strong>{currentPoll.question}</strong></p>
+                  {pollVoteError && <p className="poll-error">{pollVoteError}</p>}
+                  <div className="poll-choices">
+                    {currentPoll.options.map((opt) => {
+                      const result = pollResults?.find((r) => r.option_id === opt.id);
+                      return (
+                        <button
+                          key={opt.id}
+                          className="phrase-btn"
+                          style={{ width: "100%", margin: "4px 0" }}
+                          onClick={() => handlePollVote(opt.id)}
+                        >
+                          {opt.text}
+                          {result !== undefined && (
+                            <span className="poll-vote-count"> — {result.votes} votes</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
               <div className="action-button-group">
                 <BigButton variant="primary" onClick={() => { triggerToast("Vote cast!"); handleReset(); }}>Submit Vote</BigButton>
                 <BigButton onClick={() => setDoorPadScreen("home")}>Cancel</BigButton>
@@ -798,8 +981,20 @@ export function App() {
               <h2>Check In</h2>
               <p>Voluntarily mark yourself as a visitor to increment stats!</p>
               <div className="phrase-grid">
-                <button className="phrase-btn" onClick={() => triggerToast("Checked in as Enrolled Visitor")}>Enrolled Visitor</button>
-                <button className="phrase-btn" onClick={() => triggerToast("Checked in as Guest")}>Anonymous Guest</button>
+                <button
+                  className="phrase-btn"
+                  disabled={checkinSubmitting}
+                  onClick={() => handleCheckin("enrolled")}
+                >
+                  Enrolled Visitor
+                </button>
+                <button
+                  className="phrase-btn"
+                  disabled={checkinSubmitting}
+                  onClick={() => handleCheckin("guest")}
+                >
+                  Anonymous Guest
+                </button>
               </div>
               <div className="action-button-group">
                 <BigButton onClick={() => setDoorPadScreen("home")}>Back</BigButton>
@@ -814,6 +1009,25 @@ export function App() {
                 <p>📸 This door pad utilizes physical cameras for proactive face recognition of enrolled users.</p>
                 <p>🔒 Embeddings for unknown visitors are never persisted or recorded. biometrics stay strictly offline on device.</p>
               </div>
+              {myContent.length > 0 && (
+                <div className="my-content-list">
+                  <p>Things you've submitted this session:</p>
+                  {myContent.map((item) => (
+                    <div key={item.id} className="my-content-row">
+                      <span>{item.kind}: {item.label}</span>
+                      <button className="phrase-btn" onClick={() => handleDeletionRequest(item)}>
+                        Delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {myContent.length === 0 && (
+                <p className="placeholder-subtext">
+                  Nothing submitted yet this session — guestbook notes and check-ins will show
+                  up here with a delete option.
+                </p>
+              )}
               <div className="action-button-group">
                 <BigButton variant="primary" onClick={() => { triggerToast("Deletion Requested"); handleReset(); }}>Request Deletion of My Data</BigButton>
                 <BigButton onClick={() => setDoorPadScreen("home")}>Back</BigButton>
@@ -832,10 +1046,25 @@ export function App() {
         <div className="placeholder-card">
           <h1>Visitor Surface</h1>
           <p className="subtitle-tag">Route: `/visitor`</p>
-          <div className="placeholder-badge">Visitor Screen Placeholder</div>
-          <p className="desc">This is the tokenized mobile experience reachable via QR code scan.</p>
+          <VisitorPage sessionState={sessionState} />
           <button className="back-home-btn" onClick={() => navigateTo("/")}>Back to Navigation</button>
         </div>
+      </div>
+    );
+  };
+
+  // --- LIVE VIEW DEMO ---
+  const renderLiveViewDemo = () => {
+    return (
+      <div className="live-demo-view db-app-theme">
+        <main className="live-demo-panel">
+          <LiveVideoPreview title="Door Camera Preview" showStats />
+          <div className="action-button-group">
+            <BigButton onClick={() => navigateTo("/")}>
+              Back
+            </BigButton>
+          </div>
+        </main>
       </div>
     );
   };
@@ -847,6 +1076,7 @@ export function App() {
         <div className="placeholder-card admin-inbox-card">
           <h1>Admin Control Panel</h1>
           <p className="subtitle-tag">Route: `/admin` | `/diagnostics`</p>
+          <LiveVideoPreview title="Local Live View" showStats />
           <div className="admin-stats-grid">
             <div className="stat-card"><span>Uptime:</span> <strong>3d 12h</strong></div>
             <div className="stat-card"><span>SQLite WAL:</span> <strong>Active</strong></div>
@@ -873,6 +1103,8 @@ export function App() {
               </div>
             )}
           </section>
+
+          <AdminSocialPanel />
           <button className="back-home-btn" onClick={() => navigateTo("/")}>Back to Navigation</button>
         </div>
       </div>
@@ -917,6 +1149,13 @@ export function App() {
               <p>Owner administration placeholder</p>
               <span className="route-tag">/admin</span>
             </div>
+
+            <div className="nav-card" onClick={() => navigateTo("/live-view-demo")}>
+              <span className="nav-icon">▣</span>
+              <h3>Live View Demo</h3>
+              <p>Reusable media preview surface</p>
+              <span className="route-tag">/live-view-demo</span>
+            </div>
           </div>
         </div>
       </div>
@@ -929,6 +1168,7 @@ export function App() {
       {route === "/wallboard" && renderWallboard()}
       {route === "/doorpad" && renderDoorPad()}
       {route === "/visitor" && renderVisitor()}
+      {route === "/live-view-demo" && renderLiveViewDemo()}
       {(route === "/admin" || route === "/diagnostics") && renderAdmin()}
       {route === "/" && renderNavigation()}
       {(route === "/wallboard" || route === "/doorpad") && renderSimPanel()}

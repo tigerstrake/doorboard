@@ -24,9 +24,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from doorboard_contracts.events import (
@@ -37,7 +37,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from door_media._uuid7 import uuid7
-from door_media.adapters import MediaRouter
+from door_media.adapters import MediaRouter, StreamInfo
 from door_media.db import RecordingDB
 from door_media.emitter import get_broadcast_queue
 from door_media.mediamtx_router import MediaMTXRouter
@@ -249,7 +249,12 @@ async def metrics(request: Request) -> Response:
 @app.get("/streams")
 async def streams(request: Request) -> list[dict]:
     router: MediaRouter = request.app.state.router
-    infos = router.stream_info()
+    stream_info_async = getattr(router, "stream_info_async", None)
+    if callable(stream_info_async):
+        async_stream_info = cast(Callable[[], Awaitable[list[StreamInfo]]], stream_info_async)
+        infos = await async_stream_info()
+    else:
+        infos = router.stream_info()
     return [
         {
             "name": s.name,

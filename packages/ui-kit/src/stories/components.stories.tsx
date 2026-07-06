@@ -5,6 +5,10 @@ import { BigButton } from "../BigButton";
 import { GreetingBanner } from "../GreetingBanner";
 import { CountdownAutoReset } from "../CountdownAutoReset";
 import { QRPlaceholder } from "../QRPlaceholder";
+import { RingStatus } from "../RingStatus";
+import { VideoMessageStatus } from "../VideoMessageStatus";
+import { PollPrompt } from "../PollPrompt";
+import { SessionEndBanner } from "../SessionEndBanner";
 
 export const Tiles = () => (
   <div style={{ display: "flex", gap: "16px", padding: "16px", flexWrap: "wrap", background: "#0b0f19" }}>
@@ -76,5 +80,45 @@ export const AutoReset = () => {
 export const QRDisplay = () => (
   <div style={{ padding: "16px", background: "#0b0f19" }}>
     <QRPlaceholder url="http://door.local/visitor?token=123" />
+  </div>
+);
+
+export const RingStatuses = () => (
+  <div style={{ display: "flex", flexDirection: "column", gap: "16px", padding: "16px", background: "#0b0f19" }}>
+    <RingStatus state="RINGING" />
+    <RingStatus state="ANSWERED" />
+    <RingStatus state="UNANSWERED_TIMEOUT" />
+  </div>
+);
+
+export const VideoMessageStatuses = () => (
+  <div style={{ display: "flex", flexDirection: "column", gap: "16px", padding: "16px", background: "#0b0f19" }}>
+    <VideoMessageStatus state="VIDEO_MESSAGE_OFFERED" />
+    <VideoMessageStatus state="VIDEO_MESSAGE_RECORDING" />
+    <VideoMessageStatus state="VIDEO_MESSAGE_REVIEW" />
+    <VideoMessageStatus state="VIDEO_MESSAGE_SAVED" />
+  </div>
+);
+
+export const PollPromptDisplay = () => (
+  <div style={{ padding: "16px", background: "#0b0f19" }}>
+    <PollPrompt question="What should we name the door?" />
+  </div>
+);
+
+export const SessionEndBannerDisplay = () => (
+  <div style={{ padding: "16px", background: "#0b0f19" }}>
+    <SessionEndBanner />
+  </div>
+);
+
+export const CelebratoryGreeting = () => (
+  <div style={{ padding: "16px", background: "#0b0f19" }}>
+    <GreetingBanner
+      title="Welcome back, Taylor"
+      subtitle="Owner recognized"
+      profileId="owner"
+      celebratory
+    />
   </div>
 );

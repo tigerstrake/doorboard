@@ -73,6 +73,9 @@ typedef struct {
     } pending[DOOR_PROTOCOL_PENDING_DEPTH];
     size_t pending_head;
     size_t pending_count;
+
+    void (*effect_play_cb)(const char *effect_id, uint32_t duration_ms, void *user);
+    void *effect_play_cb_user;
 } door_protocol_t;
 
 void door_protocol_init(

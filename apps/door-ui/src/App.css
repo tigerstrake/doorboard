@@ -398,6 +398,23 @@
   box-shadow: var(--db-shadow-lg);
 }
 
+.admin-panel-card {
+  max-width: min(920px, 100%);
+}
+
+.live-demo-view {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--db-spacing-xl);
+  box-sizing: border-box;
+}
+
+.live-demo-panel {
+  width: min(920px, 100%);
+}
+
 .placeholder-card h1 {
   font-size: 2rem;
   margin: 0 0 var(--db-spacing-xs) 0;
@@ -444,6 +461,7 @@
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: var(--db-spacing-sm);
+  margin-top: var(--db-spacing-lg);
   margin-bottom: var(--db-spacing-xl);
 }
 
@@ -703,4 +721,88 @@
   margin: 4px 0 0;
   color: rgba(255, 255, 255, 0.72);
   overflow-wrap: anywhere;
+/* Social features (T-403): guestbook/poll/checkin/privacy + visitor + admin */
+
+.guestbook-freetext {
+  width: 100%;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--db-border-color);
+  color: var(--db-text-primary);
+  border-radius: 12px;
+  padding: var(--db-spacing-sm);
+  font-size: 1rem;
+  margin: var(--db-spacing-sm) 0;
+  resize: vertical;
+}
+
+.poll-error, .visitor-note-status {
+  color: var(--db-presence-dnd);
+  font-weight: 550;
+}
+
+.poll-vote-count {
+  color: var(--db-text-muted);
+  font-weight: 400;
+}
+
+.my-content-list {
+  width: 100%;
+  margin-top: var(--db-spacing-md);
+}
+
+.my-content-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--db-spacing-sm);
+  padding: var(--db-spacing-sm);
+  border-bottom: 1px solid var(--db-border-color);
+}
+
+.visitor-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--db-spacing-lg);
+  text-align: left;
+  width: 100%;
+}
+
+.visitor-section {
+  border-top: 1px solid var(--db-border-color);
+  padding-top: var(--db-spacing-md);
+}
+
+.visitor-ring-status {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.admin-social-panel {
+  text-align: left;
+  width: 100%;
+  margin-top: var(--db-spacing-lg);
+  border-top: 1px solid var(--db-border-color);
+  padding-top: var(--db-spacing-md);
+}
+
+.admin-poll-create {
+  display: flex;
+  flex-direction: column;
+  gap: var(--db-spacing-sm);
+  margin-bottom: var(--db-spacing-md);
+}
+
+.admin-poll-create input {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--db-border-color);
+  color: var(--db-text-primary);
+  border-radius: 8px;
+  padding: var(--db-spacing-sm);
+}
+
+.moderation-log-row {
+  font-family: monospace;
+  font-size: 0.85rem;
+  color: var(--db-text-muted);
+  padding: 2px 0;
 }

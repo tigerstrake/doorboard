@@ -14,6 +14,7 @@ members = [
     "doorboard-door-sync",
     "doorboard-door-visiond",
     "doorboard-esp32-link",
+    "doorboard-media-client",
     "doorboard-observability",
     "doorboard-simulator",
     "doorboard-wallboard-worker",
@@ -96,6 +97,7 @@ dev = [
     { name = "doorboard-door-sync" },
     { name = "doorboard-door-visiond" },
     { name = "doorboard-esp32-link" },
+    { name = "doorboard-media-client" },
     { name = "doorboard-observability" },
     { name = "doorboard-simulator" },
     { name = "doorboard-wallboard-worker" },
@@ -118,6 +120,7 @@ dev = [
     { name = "doorboard-door-sync", editable = "apps/door-sync" },
     { name = "doorboard-door-visiond", editable = "apps/door-visiond" },
     { name = "doorboard-esp32-link", editable = "packages/esp32-link" },
+    { name = "doorboard-media-client", editable = "packages/media-client" },
     { name = "doorboard-observability", editable = "packages/observability" },
     { name = "doorboard-simulator", editable = "apps/simulator" },
     { name = "doorboard-wallboard-worker", editable = "apps/wallboard-worker" },
@@ -231,6 +234,11 @@ requires-dist = [
     { name = "doorboard-contracts", editable = "packages/contracts" },
     { name = "pydantic", specifier = ">=2.8,<3" },
 ]
+
+[[package]]
+name = "doorboard-media-client"
+version = "0.0.0"
+source = { editable = "packages/media-client" }
 
 [[package]]
 name = "doorboard-observability"

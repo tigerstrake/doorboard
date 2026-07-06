@@ -29,6 +29,10 @@ from door_api.broadcast import DisplayBroadcast
 from door_api.config import SessionConfig
 from door_api.persistence import SessionStore
 from door_api.session import SessionMachine
+from door_api.social.config import SocialConfig
+from door_api.social.routes import build_social_router
+from door_api.social.service import SocialService
+from door_api.social.store import SocialStore
 
 
 class DoorApiState:
@@ -52,6 +56,14 @@ class DoorApiState:
 
         self.machine = SessionMachine(config=self.config, store=self.store, on_event=on_event)
 
+        self.social_config = SocialConfig.from_env()
+        self.social_store = SocialStore(self.social_config.db_path)
+        self.social_service = SocialService(
+            config=self.social_config,
+            store=self.social_store,
+            on_event=self.broadcast.send_delta,
+        )
+
     def startup(self) -> None:
         """Start the machine and populate the initial snapshot."""
         self.machine.restore_from_persistence()
@@ -60,6 +72,7 @@ class DoorApiState:
     def shutdown(self) -> None:
         """Close resources."""
         self.machine.close()
+        self.social_store.close()
 
     def snapshot_response(self) -> dict[str, Any]:
         return {
@@ -177,6 +190,12 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+app.include_router(
+    build_social_router(
+        lambda: state.social_service,
+        lambda: state.machine.snapshot().person_id,
+    )
+)
 
 
 @app.get("/health")
@@ -186,7 +205,7 @@ async def health() -> dict[str, str]:
 
 @app.get("/metrics")
 async def metrics() -> JSONResponse:
-    data = state.machine.metrics.to_dict()
+    data = {**state.machine.metrics.to_dict(), **state.social_service.metrics.to_dict()}
     data.update(
         {
             "door_api_doorpad_effect_requests_total": state.effect_requests,
