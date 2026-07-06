@@ -67,7 +67,7 @@ class OffsetSample:
 
     @property
     def rtt_ms(self) -> float:
-        """One-way latency estimate (half the round-trip time)."""
+        """Full round-trip time."""
         return self.t_pi_ack_ms - self.t_pi_send_ms
 
     @property

@@ -29,6 +29,9 @@ from doorboard_observability.percentiles import summary
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+    from uuid import UUID
+
+    from doorboard_contracts.events import DoorboardEvent, SystemLatencySamplePayload
 
 # ---------------------------------------------------------------------------
 # Named measurement points for each §4 path
@@ -169,3 +172,79 @@ def _observe_prometheus(path: str, duration_ms: float) -> None:
     h = _histograms.get(path)
     if h is not None:
         h.observe(duration_ms)  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# Event emission (system.latency_sample)
+# ---------------------------------------------------------------------------
+
+
+def _uuid7_now() -> UUID:
+    import random
+    from uuid import UUID
+
+    timestamp_ms = int(time.time_ns() // 1_000_000) & ((1 << 48) - 1)
+    rand_a = random.getrandbits(12)
+    rand_b = random.getrandbits(62)
+    value = (timestamp_ms << 80) | (0x7 << 76) | (rand_a << 64) | (0b10 << 62) | rand_b
+    return UUID(int=value)
+
+
+def latency_sample_payload(path: str, window_s: int) -> SystemLatencySamplePayload:
+    """Return a SystemLatencySamplePayload for the given path's accumulated samples."""
+    from doorboard_contracts.events import SystemLatencySamplePayload
+
+    vals = _samples.get(path, [])
+    if not vals:
+        return SystemLatencySamplePayload(
+            path=path,
+            p50_ms=0.0,
+            p95_ms=0.0,
+            p99_ms=0.0,
+            window_s=window_s,
+        )
+
+    s = summary(vals)
+    return SystemLatencySamplePayload(
+        path=path,
+        p50_ms=s["p50_ms"],
+        p95_ms=s["p95_ms"],
+        p99_ms=s["p99_ms"],
+        window_s=window_s,
+    )
+
+
+def drain_latency_events(source: str, door_id: str, window_s: int) -> list[DoorboardEvent]:
+    """Build and return full system.latency_sample events for all paths with samples.
+
+    After building the events, the in-memory sample window is cleared so subsequent
+    calls will only report new samples.
+    """
+    from doorboard_contracts.events import SystemLatencySampleEvent
+
+    events: list[DoorboardEvent] = []
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    now_mono_ms = int(time.monotonic() * 1000)
+
+    for path, vals in _samples.items():
+        if not vals:
+            continue
+
+        payload = latency_sample_payload(path, window_s)
+
+        event = SystemLatencySampleEvent(
+            event_id=_uuid7_now(),
+            trace_id=_uuid7_now(),
+            source=source,
+            door_id=door_id,
+            type="system.latency_sample",
+            occurred_at=now,
+            monotonic_ms=now_mono_ms,
+            payload=payload,
+        )
+        events.append(event)
+
+    _samples.clear()
+    return events
