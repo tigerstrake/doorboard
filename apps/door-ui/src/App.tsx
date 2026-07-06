@@ -19,13 +19,44 @@ import {
   moodFixture,
   scoreboardFixture,
   foodFixture,
-  pollFixture,
-  guestbookFixture,
 } from "./fixtures";
+import { socialApi, ApiError } from "./socialApi";
+import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
+import { AdminSocialPanel } from "./AdminSocialPanel";
+import { VisitorPage } from "./VisitorPage";
+import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
 
 // Import CSS
 import "@doorboard/ui-kit/index.css";
 import "./App.css";
+
+const CANNED_GUESTBOOK_PHRASES = ["Hey, stopped by!", "Call me later!", "Awesome door board!"];
+
+// Content this kiosk session created, so the Privacy screen can offer a
+// real deletion path without needing a login/identity system.
+type MyContentRef = { kind: "guestbook" | "checkin"; id: string; label: string };
+const MY_CONTENT_KEY = "doorboard_my_social_content";
+
+function loadMyContent(): MyContentRef[] {
+  try {
+    const raw = window.localStorage.getItem(MY_CONTENT_KEY);
+    return raw ? (JSON.parse(raw) as MyContentRef[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveMyContent(items: MyContentRef[]): void {
+  window.localStorage.setItem(MY_CONTENT_KEY, JSON.stringify(items));
+}
+
+function apiErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    if (err.status === 429) return "Please slow down — too many submissions. Try again in a bit.";
+    return err.message || fallback;
+  }
+  return fallback;
+}
 
 // Session states that trigger Wallboard Visitor Mode takeover
 const VISITOR_STATES: SessionState[] = [
@@ -51,6 +82,16 @@ export function App() {
   // DoorPad local state
   const [doorPadScreen, setDoorPadScreen] = useState<"home" | "ringing" | "message" | "guestbook" | "poll" | "checkin" | "privacy">("home");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Social feature state (T-403)
+  const [guestbookText, setGuestbookText] = useState<string>("");
+  const [guestbookSubmitting, setGuestbookSubmitting] = useState<boolean>(false);
+  const [currentPoll, setCurrentPoll] = useState<Poll | null>(null);
+  const [pollResults, setPollResults] = useState<PollResultRow[] | null>(null);
+  const [pollVoteError, setPollVoteError] = useState<string | null>(null);
+  const [checkinSubmitting, setCheckinSubmitting] = useState<boolean>(false);
+  const [myContent, setMyContent] = useState<MyContentRef[]>(() => loadMyContent());
+  const [approvedGuestbook, setApprovedGuestbook] = useState<GuestbookEntry[]>([]);
 
   const clientRef = useRef<DoorboardEventClient | null>(null);
 
@@ -123,6 +164,136 @@ export function App() {
   const navigateTo = (path: string) => {
     window.history.pushState(null, "", path);
     setRoute(path);
+  };
+
+  // Feed the ambient Guestbook Highlights + Room Poll tiles from real data.
+  useEffect(() => {
+    if (route !== "/wallboard") return;
+    let cancelled = false;
+    const load = () => {
+      socialApi
+        .listGuestbook(5)
+        .then((entries) => {
+          if (!cancelled) setApprovedGuestbook(entries);
+        })
+        .catch(() => {
+          // NUC/door-api unreachable — tile just keeps showing last-known data.
+        });
+      socialApi
+        .getCurrentPoll()
+        .then((poll) => {
+          if (cancelled) return;
+          setCurrentPoll(poll);
+          if (poll) {
+            return socialApi.getPollResults(poll.id).then((results) => {
+              if (!cancelled) setPollResults(results);
+            });
+          }
+          setPollResults(null);
+        })
+        .catch(() => {
+          // Same fallback as above — ambient tile keeps last-known data.
+        });
+    };
+    load();
+    const interval = setInterval(load, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [route]);
+
+  // Load the current poll + results whenever the DoorPad poll screen opens.
+  useEffect(() => {
+    if (doorPadScreen !== "poll") return;
+    let cancelled = false;
+    socialApi
+      .getCurrentPoll()
+      .then((poll) => {
+        if (cancelled) return;
+        setCurrentPoll(poll);
+        if (poll) {
+          return socialApi.getPollResults(poll.id).then((results) => {
+            if (!cancelled) setPollResults(results);
+          });
+        }
+        setPollResults(null);
+      })
+      .catch((err) => {
+        if (!cancelled) setPollVoteError(apiErrorMessage(err, "Couldn't load the poll."));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [doorPadScreen]);
+
+  const rememberMyContent = (ref: MyContentRef) => {
+    const next = [...myContent, ref];
+    setMyContent(next);
+    saveMyContent(next);
+  };
+
+  const handleGuestbookSubmit = async (text: string) => {
+    if (guestbookSubmitting) return;
+    setGuestbookSubmitting(true);
+    try {
+      const entry = await socialApi.createGuestbookEntry(text, null);
+      rememberMyContent({ kind: "guestbook", id: entry.id, label: text.slice(0, 40) });
+      triggerToast("Note submitted! It'll show up once approved.");
+      setGuestbookText("");
+      handleReset();
+    } catch (err) {
+      triggerToast(apiErrorMessage(err, "Couldn't submit your note — try again."));
+    } finally {
+      setGuestbookSubmitting(false);
+    }
+  };
+
+  const handlePollVote = async (optionId: string) => {
+    if (!currentPoll) return;
+    setPollVoteError(null);
+    try {
+      await socialApi.castVote(currentPoll.id, optionId);
+      const results = await socialApi.getPollResults(currentPoll.id);
+      setPollResults(results);
+      triggerToast("Vote cast!");
+    } catch (err) {
+      setPollVoteError(apiErrorMessage(err, "Couldn't cast your vote."));
+    }
+  };
+
+  const handleCheckin = async (kind: "enrolled" | "guest") => {
+    if (checkinSubmitting) return;
+    setCheckinSubmitting(true);
+    try {
+      const label = kind === "enrolled" ? "Enrolled Visitor" : "Guest";
+      // door-api derives attribution server-side from the session's cached
+      // identity — this client never asserts a person_id.
+      const checkin = await socialApi.createCheckin(label);
+      rememberMyContent({ kind: "checkin", id: checkin.id, label });
+      triggerToast(
+        checkin.person_id
+          ? `Checked in — recognized as ${checkin.person_id}!`
+          : `Checked in as ${label}`
+      );
+      setDoorPadScreen("home");
+    } catch (err) {
+      triggerToast(apiErrorMessage(err, "Couldn't check in — try again."));
+    } finally {
+      setCheckinSubmitting(false);
+    }
+  };
+
+  const handleDeletionRequest = async (item: MyContentRef) => {
+    try {
+      await socialApi.requestDeletion(item.kind, item.id);
+      const next = myContent.filter((c) => c.id !== item.id);
+      setMyContent(next);
+      saveMyContent(next);
+      triggerToast("Deletion request honored.");
+    } catch (err) {
+      triggerToast(apiErrorMessage(err, "Couldn't process the deletion request."));
+    }
   };
 
   const triggerEvent = (toState: SessionState, profileId: string | null = null) => {
@@ -386,27 +557,34 @@ export function App() {
             </div>
           </Tile>
 
-          {/* Tile 9: Room Poll */}
+          {/* Tile 9: Room Poll — fed by the real current poll (T-403) */}
           <Tile title="Active Room Poll">
             <div className="poll-tile-content">
-              <p className="poll-q"><strong>{pollFixture.question}</strong></p>
-              {pollFixture.options.map((opt) => (
-                <div key={opt.id} className="poll-option-row">
-                  <span>{opt.text}</span>
-                  <span><strong>{opt.votes}</strong> votes</span>
-                </div>
-              ))}
+              {!currentPoll && <p>No poll running right now.</p>}
+              {currentPoll && (
+                <>
+                  <p className="poll-q"><strong>{currentPoll.question}</strong></p>
+                  {currentPoll.options.map((opt) => (
+                    <PollOptionRow
+                      key={opt.id}
+                      text={opt.text}
+                      votes={pollResults?.find((r) => r.option_id === opt.id)?.votes ?? 0}
+                    />
+                  ))}
+                </>
+              )}
             </div>
           </Tile>
 
-          {/* Tile 10: Guestbook Highlights */}
-          <Tile title="Guestbook Highlights" asOf={guestbookFixture.occurred_at}>
+          {/* Tile 10: Guestbook Highlights — fed by real approved entries (T-403) */}
+          <Tile
+            title="Guestbook Highlights"
+            asOf={approvedGuestbook[0]?.created_at ?? null}
+          >
             <div className="guestbook-tile-content">
-              {guestbookFixture.entries.map((e, idx) => (
-                <blockquote key={idx} className="guestbook-quote">
-                  <p>"{e.text}"</p>
-                  <cite>— {e.author}</cite>
-                </blockquote>
+              {approvedGuestbook.length === 0 && <p>No guestbook notes yet — be the first!</p>}
+              {approvedGuestbook.map((e) => (
+                <GuestbookQuote key={e.id} text={e.text} authorLabel={e.author_label} />
               ))}
             </div>
           </Tile>
@@ -527,14 +705,33 @@ export function App() {
           {doorPadScreen === "guestbook" && (
             <div className="doorpad-sub-content">
               <h2>Leave a Guestbook Note</h2>
-              <p className="placeholder-subtext">[Placeholder Flow: Select phrase or write note]</p>
+              <p className="placeholder-subtext">Pick a phrase or write a short note (280 chars max)</p>
               <div className="phrase-grid">
-                <button className="phrase-btn" onClick={() => triggerToast('Selected: "Hey, stopped by!"')}>"Hey, stopped by!"</button>
-                <button className="phrase-btn" onClick={() => triggerToast('Selected: "Call me later!"')}>"Call me later!"</button>
-                <button className="phrase-btn" onClick={() => triggerToast('Selected: "Awesome door board!"')}>"Awesome door board!"</button>
+                {CANNED_GUESTBOOK_PHRASES.map((phrase) => (
+                  <button
+                    key={phrase}
+                    className="phrase-btn"
+                    disabled={guestbookSubmitting}
+                    onClick={() => handleGuestbookSubmit(phrase)}
+                  >
+                    "{phrase}"
+                  </button>
+                ))}
               </div>
+              <textarea
+                className="guestbook-freetext"
+                maxLength={280}
+                rows={3}
+                placeholder="Or write your own note..."
+                value={guestbookText}
+                onChange={(e) => setGuestbookText(e.target.value)}
+              />
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={() => { triggerToast("Note Submitted!"); handleReset(); }}>
+                <BigButton
+                  variant="primary"
+                  disabled={guestbookSubmitting || guestbookText.trim().length === 0}
+                  onClick={() => handleGuestbookSubmit(guestbookText)}
+                >
                   Submit
                 </BigButton>
                 <BigButton onClick={() => setDoorPadScreen("home")}>
@@ -547,20 +744,34 @@ export function App() {
           {doorPadScreen === "poll" && (
             <div className="doorpad-sub-content">
               <h2>Vote in Poll</h2>
-              <p className="poll-q"><strong>{pollFixture.question}</strong></p>
-              <div className="poll-choices">
-                {pollFixture.options.map((opt) => (
-                  <button key={opt.id} className="phrase-btn" style={{ width: "100%", margin: "4px 0" }} onClick={() => triggerToast(`Voted for: ${opt.text}`)}>
-                    {opt.text}
-                  </button>
-                ))}
-              </div>
+              {!currentPoll && <p>No poll is running right now — check back later!</p>}
+              {currentPoll && (
+                <>
+                  <p className="poll-q"><strong>{currentPoll.question}</strong></p>
+                  {pollVoteError && <p className="poll-error">{pollVoteError}</p>}
+                  <div className="poll-choices">
+                    {currentPoll.options.map((opt) => {
+                      const result = pollResults?.find((r) => r.option_id === opt.id);
+                      return (
+                        <button
+                          key={opt.id}
+                          className="phrase-btn"
+                          style={{ width: "100%", margin: "4px 0" }}
+                          onClick={() => handlePollVote(opt.id)}
+                        >
+                          {opt.text}
+                          {result !== undefined && (
+                            <span className="poll-vote-count"> — {result.votes} votes</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={() => { triggerToast("Vote cast!"); handleReset(); }}>
-                  Submit Vote
-                </BigButton>
                 <BigButton onClick={() => setDoorPadScreen("home")}>
-                  Cancel
+                  Back
                 </BigButton>
               </div>
             </div>
@@ -571,8 +782,20 @@ export function App() {
               <h2>Check In</h2>
               <p>Voluntarily mark yourself as a visitor to increment stats!</p>
               <div className="phrase-grid">
-                <button className="phrase-btn" onClick={() => triggerToast("Checked in as Enrolled Visitor")}>Enrolled Visitor</button>
-                <button className="phrase-btn" onClick={() => triggerToast("Checked in as Guest")}>Anonymous Guest</button>
+                <button
+                  className="phrase-btn"
+                  disabled={checkinSubmitting}
+                  onClick={() => handleCheckin("enrolled")}
+                >
+                  Enrolled Visitor
+                </button>
+                <button
+                  className="phrase-btn"
+                  disabled={checkinSubmitting}
+                  onClick={() => handleCheckin("guest")}
+                >
+                  Anonymous Guest
+                </button>
               </div>
               <div className="action-button-group">
                 <BigButton onClick={() => setDoorPadScreen("home")}>
@@ -589,10 +812,26 @@ export function App() {
                 <p>📸 This door pad utilizes physical cameras for proactive face recognition of enrolled users.</p>
                 <p>🔒 Embeddings for unknown visitors are never persisted or recorded. biometrics stay strictly offline on device.</p>
               </div>
+              {myContent.length > 0 && (
+                <div className="my-content-list">
+                  <p>Things you've submitted this session:</p>
+                  {myContent.map((item) => (
+                    <div key={item.id} className="my-content-row">
+                      <span>{item.kind}: {item.label}</span>
+                      <button className="phrase-btn" onClick={() => handleDeletionRequest(item)}>
+                        Delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {myContent.length === 0 && (
+                <p className="placeholder-subtext">
+                  Nothing submitted yet this session — guestbook notes and check-ins will show
+                  up here with a delete option.
+                </p>
+              )}
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={() => { triggerToast("Deletion Requested"); handleReset(); }}>
-                  Request Deletion of My Data
-                </BigButton>
                 <BigButton onClick={() => setDoorPadScreen("home")}>
                   Back
                 </BigButton>
@@ -611,8 +850,7 @@ export function App() {
         <div className="placeholder-card">
           <h1>Visitor Surface</h1>
           <p className="subtitle-tag">Route: `/visitor`</p>
-          <div className="placeholder-badge">Visitor Screen Placeholder</div>
-          <p className="desc">This is the tokenized mobile experience reachable via QR code scan.</p>
+          <VisitorPage sessionState={sessionState} />
           <button className="back-home-btn" onClick={() => navigateTo("/")}>Back to Navigation</button>
         </div>
       </div>
@@ -634,6 +872,7 @@ export function App() {
             <div className="stat-card"><span>Hailo NPU:</span> <strong>Degraded (Sim)</strong></div>
             <div className="stat-card"><span>SSD Space:</span> <strong>84% free</strong></div>
           </div>
+          <AdminSocialPanel />
           <button className="back-home-btn" onClick={() => navigateTo("/")}>Back to Navigation</button>
         </div>
       </div>
