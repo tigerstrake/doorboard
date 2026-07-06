@@ -1,0 +1,15 @@
+{
+  "name": "Doorboard Storage Alert",
+  "unique_id": "doorboard_primary_storage_alert",
+  "state_topic": "doorboard/system/storage_alert",
+  "value_template": "{{ value_json.payload.severity }}",
+  "json_attributes_topic": "doorboard/system/storage_alert",
+  "json_attributes_template": "{{ {'host': value_json.payload.host, 'mount': value_json.payload.mount, 'free_bytes': value_json.payload.free_bytes} | tojson }}",
+  "icon": "mdi:harddisk-alert",
+  "device": {
+    "identifiers": ["doorboard_primary"],
+    "name": "Doorboard",
+    "manufacturer": "doorboard (self-hosted)",
+    "model": "NUC control plane"
+  }
+}

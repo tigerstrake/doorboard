@@ -1,0 +1,163 @@
+# Laptop dev stack (T-503): runs the full *simulated* system with zero
+# hardware. `doorboard-simulator` stands in for the ESP32/cameras/Hailo/door
+# plane (apps/simulator/README.md); everything else here is the real
+# control plane, same images/config as infra/compose/docker-compose.yml,
+# just bound to localhost and paired with an `ntfy` container so the
+# missed-bell/storage-alert notification path is demonstrable without a
+# real ntfy.sh account.
+#
+# Run from the repo root:
+#   docker compose -f infra/compose/compose.dev.yml --env-file .env up -d
+#
+# Then see infra/compose/scripts/demo-bell-to-ha.sh for a scripted walk of
+# the acceptance criterion: bell scenario -> ingest -> MQTT fan-out -> HA
+# entities, and a missed-bell/storage-critical scenario -> ntfy notification.
+name: doorboard-dev
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: doorboard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      POSTGRES_DB: doorboard
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U doorboard -d doorboard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # No named volume on purpose: a dev stack is disposable; `docker compose
+    # down` should leave nothing behind that outlives the demo.
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    entrypoint: ["/mosquitto-entrypoint.sh"]
+    environment:
+      MQTT_CP_PASSWORD: ${MQTT_CP_PASSWORD:-devpassword}
+      MQTT_PI_PASSWORD: ${MQTT_PI_PASSWORD:-devpassword}
+      MQTT_HA_PASSWORD: ${MQTT_HA_PASSWORD:-devpassword}
+      MQTT_HA_DISCOVERY_PASSWORD: ${MQTT_HA_DISCOVERY_PASSWORD:-devpassword}
+      MQTT_HEALTHCHECK_PASSWORD: ${MQTT_HEALTHCHECK_PASSWORD:-devpassword}
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl.conf:/mosquitto/config/acl.conf:ro
+      - ./mosquitto/entrypoint.sh:/mosquitto-entrypoint.sh:ro
+    ports:
+      - "127.0.0.1:1883:1883"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mosquitto_pub -h 127.0.0.1 -p 1883 -u healthcheck -P \"$$MQTT_HEALTHCHECK_PASSWORD\" -t healthcheck/ping -m ok -r",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  control-plane-api:
+    build:
+      context: ../..
+      dockerfile: infra/compose/docker/control-plane-api.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+      ntfy:
+        condition: service_started
+    environment:
+      DOORBOARD_DOOR_ID: primary
+      CONTROL_PLANE_BIND: 0.0.0.0:8090
+      POSTGRES_DSN: postgresql+psycopg://doorboard:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/doorboard
+      MQTT_URL: mqtt://mosquitto:1883
+      MQTT_USERNAME: control-plane-api
+      MQTT_PASSWORD: ${MQTT_CP_PASSWORD:-devpassword}
+      # Points at the ntfy container below, not ntfy.sh, so the missed-bell/
+      # storage-critical notification path is verifiable with no internet
+      # dependency and no real account.
+      NTFY_URL: http://ntfy:80
+      NTFY_TOPIC: doorboard-dev
+      CONTROL_PLANE_ADMIN_TOKEN: ${CONTROL_PLANE_ADMIN_TOKEN:-dev-admin-token}
+      CONTROL_PLANE_SYNC_STALL_ALERT_S: 5
+      CONTROL_PLANE_NOTIFY_COOLDOWN_S: 5
+    ports:
+      - "127.0.0.1:8090:8090"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  ntfy:
+    image: binwiederhier/ntfy
+    restart: unless-stopped
+    command: ["serve"]
+    ports:
+      - "127.0.0.1:8880:80"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:80/v1/health', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  home-assistant:
+    image: "ghcr.io/home-assistant/home-assistant:stable"
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-UTC}
+      MQTT_HA_USERNAME: home-assistant
+      MQTT_HA_PASSWORD: ${MQTT_HA_PASSWORD:-devpassword}
+      CONTROL_PLANE_URL: http://control-plane-api:8090
+    volumes:
+      - ./../../integrations/home-assistant/config/configuration.yaml:/config/configuration.yaml:ro
+      - ./../../integrations/home-assistant/config/automations.yaml:/config/automations.yaml:ro
+      - ./../../integrations/home-assistant/config/rest_commands.yaml:/config/rest_commands.yaml:ro
+    ports:
+      - "127.0.0.1:8123:8123"
+
+  ha-discovery-publisher:
+    image: eclipse-mosquitto:2
+    restart: "no"
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/discovery/publish-discovery.sh"]
+    environment:
+      MQTT_HA_DISCOVERY_PASSWORD: ${MQTT_HA_DISCOVERY_PASSWORD:-devpassword}
+      MQTT_HOST: mosquitto
+    volumes:
+      - ./../../integrations/home-assistant/discovery:/discovery:ro
+
+  wallboard-worker:
+    build:
+      context: ../..
+      dockerfile: infra/compose/docker/wallboard-worker.Dockerfile
+    restart: unless-stopped
+    profiles: ["future"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  simulator:
+    build:
+      context: ../..
+      dockerfile: infra/compose/docker/simulator.Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s

@@ -1,0 +1,37 @@
+# Inbound webhook -> control-plane-api bridge (T-503 deliverable: "inbound
+# webhook config for Focus shortcuts/geofence labels -> control-plane-api").
+#
+# HA's native `webhook` trigger creates the inbound endpoint automatically —
+# no extra HA config needed beyond this automation. Point a phone Shortcuts
+# automation (iOS Focus change / Android geofence/Tasker equivalent) at:
+#
+#   http://<nuc-lan-host>:8123/api/webhook/doorboard-presence-label
+#
+# with a JSON POST body: {"subject_id": "...", "source": "focus_shortcut",
+# "label": "available|busy|do_not_disturb|sleeping|at_class|at_library|away"}
+# — the broad-label set from ARCHITECTURE.md §9 / docs/protocols/events.md
+# `status.presence_changed`. `source` should be `"focus_shortcut"` or
+# `"geofence_label"` per the precedence order (manual > focus_shortcut >
+# geofence_label > calendar > default); control-plane-api enforces that
+# precedence once T-504 implements the receiving endpoint.
+#
+# DISABLED by default (`initial_state: false`): the target endpoint doesn't
+# exist until T-504. Flip to `true` once it does — no other change needed
+# here. Firing this against T-503-era control-plane-api just produces a
+# harmless 404 in the HA log (HA is an integration surface, never a
+# dependency of the door path — ADR-0002).
+- id: doorboard_presence_label_webhook
+  alias: "Doorboard: forward presence label webhook to control-plane-api"
+  initial_state: false
+  triggers:
+    - trigger: webhook
+      webhook_id: doorboard-presence-label
+      allowed_methods:
+        - POST
+      local_only: true
+  actions:
+    - action: rest_command.presence_label_update
+      data:
+        subject_id: "{{ trigger.json.subject_id }}"
+        source: "{{ trigger.json.source }}"
+        label: "{{ trigger.json.label }}"
