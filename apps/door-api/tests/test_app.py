@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 os.environ["DOOR_API_DB_PATH"] = ":memory:"
+os.environ["DOOR_API_SOCIAL_DB_PATH"] = ":memory:"
 
 from door_api.app import app, state
 
@@ -19,6 +20,7 @@ def _mock_env_for_test(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None,
     # Force the app to use an in-memory DB for tests, avoiding the RuntimeError
     # from config.py if the environment isn't fully set up.
     monkeypatch.setenv("DOOR_API_DB_PATH", ":memory:")
+    monkeypatch.setenv("DOOR_API_SOCIAL_DB_PATH", ":memory:")
     # Re-initialize state to pick up the test env
     state.__init__()
     state.startup()
@@ -75,3 +77,62 @@ def test_websocket_broadcast_smoke() -> None:
         assert delta3["type"] == "delta"
         assert delta3["event"]["type"] == "session.state_changed"
         assert delta3["event"]["payload"]["to_state"] == "VISITOR_MODE"
+
+
+def _receive_delta(websocket, event_type: str) -> dict:
+    while True:
+        data = json.loads(websocket.receive_text())
+        if data.get("type") == "delta" and data.get("event", {}).get("type") == event_type:
+            return data["event"]
+
+
+def test_doorpad_ring_uses_touch_entry_and_effect_event() -> None:
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as websocket:
+        json.loads(websocket.receive_text())  # snapshot
+        response = client.post("/doorpad/ring")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["accepted"] is True
+        assert body["effect"]["status"] == "unavailable"
+        assert body["session"]["state"] == "VISITOR_MODE"
+
+        changed = _receive_delta(websocket, "session.state_changed")
+        started = _receive_delta(websocket, "session.started")
+        effect = _receive_delta(websocket, "door.effect_play")
+
+        assert changed["payload"]["trigger"] == "doorpad.touch_ring"
+        assert started["payload"]["entry"] == "touch"
+        assert effect["payload"]["effect_id"] == state.config.doorpad_effect_id
+
+
+def test_video_message_offer_starts_touch_session() -> None:
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as websocket:
+        json.loads(websocket.receive_text())  # snapshot
+        response = client.post("/doorpad/video-message/offer")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["accepted"] is True
+        assert body["session"]["state"] == "VIDEO_MESSAGE_OFFERED"
+
+        first_changed = _receive_delta(websocket, "session.state_changed")
+        started = _receive_delta(websocket, "session.started")
+        assert first_changed["payload"]["trigger"] == "doorpad.video_message_offer"
+        assert started["payload"]["entry"] == "touch"
+
+
+def test_visitor_token_requires_active_session_and_is_scoped() -> None:
+    client = TestClient(app)
+    missing = client.get("/visitor-token")
+    assert missing.status_code == 409
+
+    client.post("/doorpad/ring")
+    response = client.get("/visitor-token")
+
+    assert response.status_code == 200
+    token = response.json()["token"]
+    assert "." in token
+    assert response.json()["url"].endswith(f"/visitor?token={token}")

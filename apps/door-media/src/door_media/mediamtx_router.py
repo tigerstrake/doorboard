@@ -269,6 +269,14 @@ class MediaMTXRouter:
             consent_context=consent_context,
         )
 
+    async def discard_recording(self, handle: RecordingHandle) -> None:
+        """Abort an active recording window without cutting a clip."""
+        self._active.pop(handle.recording_id, None)
+        logger.info(
+            "recording_discarded",
+            extra={"recording_id": str(handle.recording_id)},
+        )
+
     def storage_status(self) -> MediaStorageStatus:
         """Delegate to OS disk stats for the SSD mount."""
         root = self._settings.ssd_data_root

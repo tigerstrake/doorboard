@@ -14,7 +14,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@doorboard/contracts": "workspace:*"
+    "@doorboard/contracts": "workspace:*",
+    "@doorboard/media-client": "workspace:*"
   },
   "devDependencies": {
     "@ladle/react": "^5.1.1",

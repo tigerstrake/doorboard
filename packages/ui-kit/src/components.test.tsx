@@ -7,6 +7,10 @@ import { GreetingBanner } from "./GreetingBanner";
 import { StatusBadge } from "./StatusBadge";
 import { CountdownAutoReset } from "./CountdownAutoReset";
 import { Gauge } from "./Gauge";
+import { PollPrompt } from "./PollPrompt";
+import { SessionEndBanner } from "./SessionEndBanner";
+import { RingStatus } from "./RingStatus";
+import { VideoMessageStatus } from "./VideoMessageStatus";
 
 describe("Component Security and Escaping", () => {
   const dangerousString = "<script>alert(1)</script>";
@@ -42,6 +46,54 @@ describe("Component Security and Escaping", () => {
     const titleText = screen.getByText(dangerousString);
     expect(titleText.textContent).toBe(dangerousString);
     expect(document.querySelector("script")).toBeNull();
+  });
+
+  it("should escape script tags when rendering PollPrompt question", () => {
+    render(<PollPrompt question={dangerousString} />);
+    const text = screen.getByText(dangerousString);
+    expect(text.textContent).toBe(dangerousString);
+    expect(document.querySelector("script")).toBeNull();
+  });
+
+  it("should escape script tags when rendering SessionEndBanner title", () => {
+    render(<SessionEndBanner title={dangerousString} />);
+    const heading = screen.getByRole("heading", { level: 1 });
+    expect(heading.textContent).toBe(dangerousString);
+    expect(document.querySelector("script")).toBeNull();
+  });
+});
+
+describe("RingStatus", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("renders distinct copy per ring state", () => {
+    const { rerender } = render(<RingStatus state="RINGING" />);
+    expect(screen.getByTestId("ring-status").getAttribute("data-state")).toBe("RINGING");
+
+    rerender(<RingStatus state="ANSWERED" />);
+    expect(screen.getByTestId("ring-status").getAttribute("data-state")).toBe("ANSWERED");
+
+    rerender(<RingStatus state="UNANSWERED_TIMEOUT" />);
+    expect(screen.getByTestId("ring-status").getAttribute("data-state")).toBe("UNANSWERED_TIMEOUT");
+  });
+});
+
+describe("VideoMessageStatus", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("never renders a video/camera element for any state", () => {
+    (
+      ["VIDEO_MESSAGE_OFFERED", "VIDEO_MESSAGE_RECORDING", "VIDEO_MESSAGE_REVIEW", "VIDEO_MESSAGE_SAVED"] as const
+    ).forEach((state) => {
+      const { unmount } = render(<VideoMessageStatus state={state} />);
+      expect(document.querySelector("video")).toBeNull();
+      expect(document.querySelector("img")).toBeNull();
+      unmount();
+    });
   });
 });
 

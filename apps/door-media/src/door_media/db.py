@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS recordings (
 
 CREATE INDEX IF NOT EXISTS idx_recordings_sync_status ON recordings(sync_status);
 CREATE INDEX IF NOT EXISTS idx_recordings_started_at  ON recordings(started_at_utc);
+CREATE INDEX IF NOT EXISTS idx_recordings_session_kind ON recordings(session_id, kind);
 """
 
 
@@ -194,6 +195,28 @@ class RecordingDB:
                 },
             )
         return matched
+
+    def delete_unfinalized(self, *, recording_id: UUID) -> bool:
+        """Remove a started row that never produced a durable clip."""
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM recordings WHERE recording_id=? AND path IS NULL",
+                (str(recording_id),),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def rows_for_session(self, *, session_id: UUID, kind: str | None = None) -> list[RecordingRow]:
+        query = "SELECT * FROM recordings WHERE session_id=?"
+        params: list[str] = [str(session_id)]
+        if kind is not None:
+            query += " AND kind=?"
+            params.append(kind)
+        query += " ORDER BY started_at_utc"
+        with self._lock:
+            cur = self._conn.execute(query, params)
+            rows = cur.fetchall()
+        return [RecordingRow(*r) for r in rows]
 
     def mark_deleted(self, *, recording_id: UUID, reason: str) -> bool:
         """Mark a recording deleted.  Only legal if synced or user_request/age/space."""
