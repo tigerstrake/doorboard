@@ -10,10 +10,14 @@ from doorboard_simulator.scenarios import available_scenarios, result_to_json, r
 def test_all_required_scenarios_have_golden_logs(tmp_path: Path) -> None:
     expected_names = {
         "basic-bell",
+        "double-press-abuse",
+        "full-happy-path",
+        "identity-churn-abuse",
         "known-visitor",
-        "unknown-visitor",
         "nuc-outage",
+        "press-during-recording",
         "storage-low",
+        "unknown-visitor",
     }
 
     assert set(available_scenarios()) == expected_names
