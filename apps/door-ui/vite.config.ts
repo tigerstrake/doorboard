@@ -1,5 +1,8 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+// vitest/config re-exports vite's defineConfig with its ambient `test` key
+// augmentation applied — importing from plain "vite" fails typecheck as
+// soon as a `test` block is present in this config.
+import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [react()],
