@@ -76,6 +76,23 @@ class RecordingRow:
     deleted_at_utc: str | None
 
 
+_CURSOR_SEP = "\x1f"  # unit separator — never appears in a timestamp or UUID
+
+
+def _encode_recording_cursor(started_at_utc: str, recording_id: str) -> str:
+    raw = f"{started_at_utc}{_CURSOR_SEP}{recording_id}"
+    return base64.b64encode(raw.encode("utf-8")).decode("utf-8")
+
+
+def _decode_recording_cursor(cursor: str) -> tuple[str, str] | None:
+    try:
+        decoded = base64.b64decode(cursor.encode("utf-8")).decode("utf-8")
+        started_at_utc, recording_id = decoded.split(_CURSOR_SEP, 1)
+        return started_at_utc, recording_id
+    except Exception:
+        return None
+
+
 class RecordingDB:
     """Thread-safe SQLite recording registry.
 
@@ -224,10 +241,18 @@ class RecordingDB:
         limit: int | None = None,
         cursor: str | None = None,
     ) -> tuple[list[RecordingRow], str | None]:
-        """List recordings with filtering and cursor-based pagination."""
+        """List recordings with filtering and cursor-based pagination.
+
+        The cursor encodes ``(started_at_utc, recording_id)`` rather than
+        ``started_at_utc`` alone: two recordings can share a timestamp (the
+        column has microsecond resolution but no uniqueness guarantee), and
+        a cursor keyed on a non-unique column silently drops every row that
+        shares the boundary value with a strict ``>`` comparison. Pairing it
+        with the primary key gives a stable total order.
+        """
         with self._lock:
             query = "SELECT * FROM recordings WHERE sync_status != 'deleted'"
-            params = []
+            params: list[object] = []
 
             if kind:
                 query += " AND kind = ?"
@@ -238,14 +263,15 @@ class RecordingDB:
                 params.append(sync_status)
 
             if cursor:
-                try:
-                    decoded = base64.b64decode(cursor.encode("utf-8")).decode("utf-8")
-                    query += " AND started_at_utc > ?"
-                    params.append(decoded)
-                except Exception:
+                decoded_cursor = _decode_recording_cursor(cursor)
+                if decoded_cursor is None:
                     logger.warning("invalid_cursor_ignored", extra={"cursor": cursor})
+                else:
+                    cursor_started_at, cursor_recording_id = decoded_cursor
+                    query += " AND (started_at_utc, recording_id) > (?, ?)"
+                    params.extend([cursor_started_at, cursor_recording_id])
 
-            query += " ORDER BY started_at_utc ASC"
+            query += " ORDER BY started_at_utc ASC, recording_id ASC"
 
             if limit is not None:
                 query += " LIMIT ?"
@@ -259,7 +285,7 @@ class RecordingDB:
         next_cursor = None
         if limit is not None and len(recording_rows) > limit:
             last_item = recording_rows[limit - 1]
-            next_cursor = base64.b64encode(last_item.started_at_utc.encode("utf-8")).decode("utf-8")
+            next_cursor = _encode_recording_cursor(last_item.started_at_utc, last_item.recording_id)
             recording_rows = recording_rows[:limit]
 
         return recording_rows, next_cursor
