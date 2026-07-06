@@ -2,7 +2,24 @@
 name = "doorboard-control-plane-api"
 version = "0.0.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "doorboard-contracts",
+    "doorboard-auth",
+    "doorboard-config",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.2",
+    "paho-mqtt>=2.1",
+    "httpx>=0.28",
+]
+
+[project.scripts]
+control-plane-api = "control_plane_api.__main__:main"
+control-plane-api-admin = "control_plane_api.cli:main"
 
 [build-system]
 requires = ["hatchling"]

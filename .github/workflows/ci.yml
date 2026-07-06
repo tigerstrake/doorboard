@@ -86,6 +86,25 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' || github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
+    # control-plane-api (T-501) is the first Postgres-backed service — its
+    # idempotency/migration tests run against a real Postgres, not SQLite,
+    # so they exercise the same engine ADR-0003 mandates for production.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: doorboard
+          POSTGRES_PASSWORD: doorboard
+          POSTGRES_DB: doorboard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CONTROL_PLANE_TEST_DATABASE_URL: postgresql+psycopg://doorboard:doorboard@localhost:5432/doorboard_test
     steps:
       - uses: actions/checkout@v4
 

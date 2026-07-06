@@ -20,3 +20,78 @@ Sit in the door critical path; expose admin surfaces without auth; store raw bio
 ## Interfaces
 
 HTTP: `/health`, `/metrics`, `/ingest` (token-auth), `/status/*`, `/social/*`, `/config/door/{door_id}`. MQTT: `doorboard/#` topics for HA/audit fan-out. DB: PostgreSQL with Alembic migrations.
+
+## T-501 status (this task)
+
+Implements: Postgres schema + Alembic migrations, `/ingest` (idempotent by
+`event_id`, per-batch results), Pi-scoped service tokens (issue/revoke,
+`packages/auth`), `/config/door/{door_id}` (versioned bundle, checksum,
+secret-free by construction — `packages/config`), social moderation/deletion
+for guestbook and checkin content, person-data purge
+(`DELETE /people/{person_id}/events`, ADR-0009 §3.4), MQTT audit fan-out, and
+owner notifications.
+
+**Out of scope for T-501** (see brief): the Home Assistant bridge and its
+entities (T-503), presence computation / the Weasley clock (T-504), and
+running this service inside the NUC's Docker Compose stack (T-503 wires that
+up — this task only guarantees the service runs standalone against a
+Postgres instance).
+
+**Social storage scope.** Only `social.guestbook_entry_created` and
+`social.checkin_created` get a durable, moderatable mirror (`social_items`)
+— those are the only two `social.deletion_requested.target_kind` values the
+contract defines outside of media/enrollment. `poll_vote_cast`,
+`mood_updated`, and `scoreboard_updated` are still durably recorded (they
+land in the append-only `events` table like everything else) but have no
+moderation panel, since nothing in the contract makes them deletable
+targets.
+
+**Notification channel: ntfy** (the brief's other option, Home Assistant
+notify, would pull in T-503's HA bridge as a dependency, which is explicitly
+out of scope here). Set `NTFY_URL`/`NTFY_TOPIC` in `.env`; unset means
+notifications just log instead of sending (dev/CI default). Rules: missed
+bell (`session.ended{outcome=unanswered_timeout}`), critical storage
+(`system.storage_alert{severity=critical}`), and sync falling behind
+(`media.storage_status.oldest_unsynced_s` over
+`CONTROL_PLANE_SYNC_STALL_ALERT_S`, default 4h) — each rate-limited by
+`CONTROL_PLANE_NOTIFY_COOLDOWN_S` (default 1h) per rule+subject.
+
+**Admin auth stopgap.** `packages/auth` doesn't have session-based admin
+auth yet (see its README). `/admin/*` here is gated by
+`CONTROL_PLANE_ADMIN_TOKEN` (shared bearer secret, `secrets.compare_digest`,
+fails closed with 503 if unset) — the same pattern `door-api`'s social panel
+uses. Replace both when real admin auth lands.
+
+**Service token scopes:** `ingest` (batch event submission and the
+person-data purge call — both are Pi-automation calling into the NUC),
+`upload` (reserved for door-sync's media upload credential; door-sync itself
+is T-502), `config` (read-only `/config/door/{door_id}` access). Issue/revoke
+via `POST/DELETE /admin/tokens` or offline via
+`uv run python -m control_plane_api.cli issue-token --door-id primary --scope ingest`.
+Revocation takes effect on the very next request — verification always
+re-reads the `service_tokens` table, never caches a decision.
+
+**Person purge (ADR-0009 §3.4).** `DELETE /people/{person_id}/events`
+deletes every archived event whose payload carried that `person_id`
+(`vision.identity_stable`, `vision.identity_expired`,
+`social.checkin_created`) and marks that person's checkin mirror rows
+deleted. Idempotent and safe to retry — a repeat call with nothing left just
+returns zero counts. `social.deletion_requested{target_kind="enrollment"}`
+delegates to the same logic (`target_id` is the `person_id` in that case).
+
+### Running tests locally
+
+Tests run against a real local Postgres — not SQLite — because the
+idempotency guarantee this service provides depends on the actual unique-
+constraint/`IntegrityError` behavior of the production database engine.
+
+```bash
+brew install postgresql@16
+brew services start postgresql@16   # or run postgres manually
+createuser -s doorboard
+createdb -O doorboard doorboard_test
+psql -d doorboard_test -c "ALTER USER doorboard WITH PASSWORD 'doorboard';"
+```
+
+Override `CONTROL_PLANE_TEST_DATABASE_URL` if you use different credentials.
+CI runs an equivalent Postgres service container (see `.github/workflows/ci.yml`).
