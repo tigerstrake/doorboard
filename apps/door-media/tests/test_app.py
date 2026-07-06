@@ -100,3 +100,65 @@ def test_session_event_lifecycle(client: TestClient):
 
     resp = client.get("/recordings")
     assert len(resp.json()) == 0
+
+
+def test_video_message_discard_deletes_finalized_clip(client: TestClient):
+    session_id = str(uuid.uuid4())
+    trace_id = str(uuid.uuid4())
+    time = __import__("time")
+
+    start = client.post(
+        "/internal/session_event",
+        json={
+            "session_id": session_id,
+            "from_state": SessionState.VIDEO_MESSAGE_OFFERED,
+            "to_state": SessionState.VIDEO_MESSAGE_RECORDING,
+            "trigger": "visitor:record_start",
+            "trace_id": trace_id,
+        },
+    )
+    assert start.status_code == 200
+    time.sleep(0.1)
+
+    review = client.post(
+        "/internal/session_event",
+        json={
+            "session_id": session_id,
+            "from_state": SessionState.VIDEO_MESSAGE_RECORDING,
+            "to_state": SessionState.VIDEO_MESSAGE_REVIEW,
+            "trigger": "visitor:record_stop",
+            "trace_id": trace_id,
+        },
+    )
+    assert review.status_code == 200
+    time.sleep(0.1)
+
+    recordings = client.get("/recordings").json()
+    assert len(recordings) == 1
+    recording = recordings[0]
+    assert recording["kind"] == "video_message"
+    assert recording["consent_context"] == "visitor_initiated"
+    assert recording["thumbnail_path"] is not None
+    file_response = client.get(
+        f"/recordings/{recording['recording_id']}/file?session_id={session_id}"
+    )
+    assert file_response.status_code == 200
+
+    discard = client.post(
+        "/internal/session_event",
+        json={
+            "session_id": session_id,
+            "from_state": SessionState.VIDEO_MESSAGE_REVIEW,
+            "to_state": SessionState.SESSION_END,
+            "trigger": "visitor:discard",
+            "trace_id": trace_id,
+        },
+    )
+    assert discard.status_code == 200
+    time.sleep(0.1)
+
+    assert client.get("/recordings").json() == []
+    missing = client.get(
+        f"/recordings/{recording['recording_id']}/file?session_id={session_id}"
+    )
+    assert missing.status_code == 404

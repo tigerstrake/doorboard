@@ -244,6 +244,7 @@ class SessionMachine:
         person_id: str | None = None,
         display_name: str | None = None,
         profile_id: str | None = None,
+        session_entry: Literal["button", "touch", "approach"] | None = None,
     ) -> bool:
         """Attempt a state transition.
 
@@ -318,7 +319,9 @@ class SessionMachine:
         # Emit session.started on first non-IDLE transition.
         if from_state == SessionState.IDLE:
             self.metrics.sessions_started += 1
-            entry = "button" if to_state == SessionState.BUTTON_PRESSED else "approach"
+            entry = session_entry or (
+                "button" if to_state == SessionState.BUTTON_PRESSED else "approach"
+            )
             started_payload = SessionStartedPayload(
                 session_id=self._session_id,
                 entry=entry,
@@ -379,6 +382,8 @@ class SessionMachine:
         self,
         *,
         trace_id: UUID | None = None,
+        trigger: str = "door.button_pressed",
+        entry: Literal["button", "touch"] = "button",
     ) -> bool:
         """Handle a ``door.button_pressed`` event.
 
@@ -412,8 +417,9 @@ class SessionMachine:
         # Transition to BUTTON_PRESSED.
         ok = self.transition(
             SessionState.BUTTON_PRESSED,
-            "door.button_pressed",
+            trigger,
             trace_id=trace_id,
+            session_entry=entry,
         )
         if not ok:
             return False  # pragma: no cover — should not happen given the guard above
@@ -490,8 +496,67 @@ class SessionMachine:
             return self.transition(SessionState.ANSWERED, trigger)
         return False
 
+
+    def handle_video_message_offer(
+        self,
+        *,
+        trace_id: UUID | None = None,
+        trigger: str = "doorpad.video_message_offer",
+    ) -> bool:
+        """Move the active session to VIDEO_MESSAGE_OFFERED for the DoorPad flow.
+
+        The contracts table has no direct IDLE -> VIDEO_MESSAGE_OFFERED edge, so a
+        visitor-initiated message starts a touch session and advances through the
+        legal local states without waiting on the ring timeout.
+        """
+        changed = False
+
+        if self._state in (
+            SessionState.IDLE,
+            SessionState.APPROACH_DETECTED,
+            SessionState.IDENTITY_CACHED,
+        ):
+            changed = self.handle_button_pressed(
+                trace_id=trace_id,
+                trigger=trigger,
+                entry="touch",
+            ) or changed
+
+        if self._state == SessionState.BUTTON_PRESSED:
+            changed = self.transition(
+                SessionState.VISITOR_MODE,
+                "auto:touch_to_visitor",
+            ) or changed
+
+        if self._state == SessionState.VISITOR_MODE:
+            changed = self.transition(
+                SessionState.RINGING,
+                "doorpad:video_offer_ring_skip",
+            ) or changed
+
+        if self._state == SessionState.RINGING:
+            changed = self.transition(
+                SessionState.UNANSWERED_TIMEOUT,
+                "doorpad:video_offer_unanswered",
+            ) or changed
+
+        if self._state in (SessionState.ANSWERED, SessionState.UNANSWERED_TIMEOUT):
+            changed = self.transition(
+                SessionState.VIDEO_MESSAGE_OFFERED,
+                "doorpad:video_offer",
+            ) or changed
+
+        if self._state == SessionState.VIDEO_MESSAGE_OFFERED:
+            return True
+        return changed
+
     def handle_video_message_start(self) -> bool:
         """Visitor chose to record a video message."""
+        if self._state == SessionState.VIDEO_MESSAGE_REVIEW:
+            return self.transition(
+                SessionState.VIDEO_MESSAGE_RECORDING,
+                "visitor:rerecord",
+            )
         if self._state == SessionState.VIDEO_MESSAGE_OFFERED:
             return self.transition(
                 SessionState.VIDEO_MESSAGE_RECORDING,

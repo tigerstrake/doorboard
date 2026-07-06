@@ -33,7 +33,7 @@ from doorboard_contracts.events import (
     SessionState,
 )
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from door_media._uuid7 import uuid7
@@ -299,6 +299,40 @@ async def delete_recording(
     return {"deleted": recording_id}
 
 
+
+
+@app.get("/recordings/{recording_id}/file")
+async def recording_file(
+    recording_id: str,
+    session_id: str,
+    request: Request,
+) -> FileResponse:
+    """Serve a just-recorded visitor message back to the local DoorPad review UI."""
+    try:
+        rid = UUID(recording_id)
+        sid = UUID(session_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid recording_id or session_id UUID",
+        ) from None
+
+    db: RecordingDB = request.app.state.db
+    cfg: Settings = request.app.state.cfg
+    row = db.get(rid)
+    if (
+        row is None
+        or row.session_id != str(sid)
+        or row.kind != "video_message"
+        or row.path is None
+        or row.sync_status == "deleted"
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+
+    path = cfg.ssd_data_root / row.path
+    if not path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording file missing")
+    return FileResponse(path, media_type="video/mp4")
 # ---------------------------------------------------------------------------
 # Internal session event endpoint
 # ---------------------------------------------------------------------------
@@ -331,7 +365,6 @@ async def session_event(
         to_state = SessionState(body.to_state)
         from_state = SessionState(body.from_state)
     except (ValueError, KeyError) as exc:
-        # Well-formed but invalid: drop and count, never crash.
         logger.warning(
             "session_event_invalid",
             extra={"error": str(exc), "body": body.model_dump()},
@@ -349,9 +382,10 @@ async def session_event(
         },
     )
 
-    # Determine recording action
-    if to_state == SessionState.BUTTON_PRESSED:
-        # bell_clip: starts immediately when button pressed
+    if (
+        to_state == SessionState.BUTTON_PRESSED
+        and body.trigger != "doorpad.video_message_offer"
+    ):
         asyncio.create_task(
             svc.start_recording(
                 session_id=session_id,
@@ -362,49 +396,76 @@ async def session_event(
         )
 
     elif to_state == SessionState.VIDEO_MESSAGE_RECORDING:
-        # Finalize the bell_clip if active, start a video_message
-        # (simplified: we track active by session in a real impl)
+        async def _start_video_message() -> None:
+            if from_state == SessionState.VIDEO_MESSAGE_REVIEW:
+                await svc.discard_recordings_for_session(
+                    session_id=session_id,
+                    kind="video_message",
+                    trace_id=trace_id,
+                )
+            await svc.start_recording(
+                session_id=session_id,
+                kind="video_message",
+                trace_id=trace_id,
+            )
+
+        asyncio.create_task(_start_video_message(), name=f"start_video_msg_{session_id}")
+
+    elif to_state == SessionState.VIDEO_MESSAGE_REVIEW:
+        for rid in _active_recording_ids(svc, session_id=session_id, kind="video_message"):
+            asyncio.create_task(
+                svc.finalize_recording(
+                    rid,
+                    consent_context="visitor_initiated",
+                    trace_id=trace_id,
+                ),
+                name=f"finalize_video_msg_{rid}",
+            )
+
+    elif to_state == SessionState.SESSION_END and body.trigger in (
+        "visitor:discard",
+        "timeout:review",
+        "timeout:inactivity",
+    ):
         asyncio.create_task(
-            svc.start_recording(
+            svc.discard_recordings_for_session(
                 session_id=session_id,
                 kind="video_message",
                 trace_id=trace_id,
             ),
-            name=f"start_video_msg_{session_id}",
+            name=f"discard_video_msg_{session_id}",
         )
 
     elif to_state in (
         SessionState.SESSION_END,
-        SessionState.VIDEO_MESSAGE_SAVED,
         SessionState.UNANSWERED_TIMEOUT,
         SessionState.ANSWERED,
     ):
-        # Finalize any active recordings for this session
-        # We fire-and-forget finalization tasks for all active handles
-        # that belong to this session.
-        consent = (
-            "visitor_initiated"
-            if from_state == SessionState.VIDEO_MESSAGE_RECORDING
-            else "bell_event"
-        )
-        # Collect active recording IDs for this session
-        active_ids = [
-            rid
-            for rid, handle in svc._active_handles.items()  # type: ignore[attr-defined]
-            if hasattr(handle, "session_id")
-            and str(getattr(handle, "session_id", "")) == str(session_id)
-        ]
-        for rid in active_ids:
+        for rid in _active_recording_ids(svc, session_id=session_id, kind="bell_clip"):
             asyncio.create_task(
                 svc.finalize_recording(
                     rid,
-                    consent_context=consent,  # type: ignore[arg-type]
+                    consent_context="bell_event",
                     trace_id=trace_id,
                 ),
-                name=f"finalize_{rid}",
+                name=f"finalize_bell_clip_{rid}",
             )
 
     return {"accepted": True}
+
+
+def _active_recording_ids(
+    svc: RecordingService,
+    *,
+    session_id: UUID,
+    kind: str | None,
+) -> list[UUID]:
+    return [
+        rid
+        for rid, handle in svc._active_handles.items()  # type: ignore[attr-defined]
+        if getattr(handle, "session_id", None) == session_id
+        and (kind is None or getattr(handle, "kind", None) == kind)
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -260,6 +260,65 @@ class RecordingService:
     # Sync event handler
     # ------------------------------------------------------------------
 
+    async def discard_recording(
+        self,
+        recording_id: UUID,
+        *,
+        trace_id: UUID,
+    ) -> bool:
+        """Discard an active or finalized recording and remove local files."""
+        handle = self._active_handles.pop(recording_id, None)
+        if handle is not None:
+            try:
+                await self._router.discard_recording(handle)  # type: ignore[arg-type]
+            except Exception as exc:
+                logger.exception("router_discard_error", exc_info=exc)
+                return False
+            self._db.delete_unfinalized(recording_id=recording_id)
+            logger.info(
+                "recording_discarded",
+                extra={"recording_id": str(recording_id)},
+            )
+            return True
+        return self._delete_recording(
+            recording_id=recording_id,
+            reason="user_request",
+            trace_id=trace_id,
+        )
+
+    async def discard_recordings_for_session(
+        self,
+        *,
+        session_id: UUID,
+        kind: RecordingKind | None,
+        trace_id: UUID,
+    ) -> int:
+        """Discard all active/finalized recordings for a session and kind."""
+        discarded = 0
+        active_ids = [
+            rid
+            for rid, handle in self._active_handles.items()
+            if getattr(handle, "session_id", None) == session_id
+            and (kind is None or getattr(handle, "kind", None) == kind)
+        ]
+        for rid in active_ids:
+            if await self.discard_recording(rid, trace_id=trace_id):
+                discarded += 1
+
+        for row in self._db.rows_for_session(session_id=session_id, kind=kind):
+            if row.sync_status != "deleted" and row.path is not None:
+                if self._delete_recording(
+                    recording_id=UUID(row.recording_id),
+                    reason="user_request",
+                    trace_id=trace_id,
+                ):
+                    discarded += 1
+            elif row.path is None and self._db.delete_unfinalized(
+                recording_id=UUID(row.recording_id)
+            ):
+                discarded += 1
+        return discarded
+
     def on_sync_upload_completed(self, *, recording_id: UUID, verified_sha256: str) -> None:
         """Called when door-sync confirms a checksum-verified upload.
 
