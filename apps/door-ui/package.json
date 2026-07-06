@@ -7,16 +7,20 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:e2e": "playwright test",
+    "test:e2e:update-snapshots": "playwright test --update-snapshots",
+    "test:e2e:soak": "playwright test e2e/soak.spec.ts --project=1080p-landscape"
   },
   "dependencies": {
     "@doorboard/contracts": "workspace:*",
-    "@doorboard/ui-kit": "workspace:*",
     "@doorboard/event-client": "workspace:*",
+    "@doorboard/ui-kit": "workspace:*",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@vitejs/plugin-react": "^4.6.0",
     "typescript": "^5.8.3",
     "vite": "^7.0.0"
