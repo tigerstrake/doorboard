@@ -46,7 +46,7 @@ def test_drain_latency_events_validates() -> None:
 
     # We should have one event per path
     assert len(events) == 2
-    paths = {getattr(e.payload, "path") for e in events}
+    paths = {e.payload.path for e in events}  # type: ignore
     assert paths == {"button_to_generic_feedback", "tap_to_local_response"}
 
     for event in events:
@@ -58,7 +58,7 @@ def test_drain_latency_events_validates() -> None:
         assert validated.type == "system.latency_sample"
         assert validated.source == "test_runner"
         assert validated.door_id == "door-123"
-        assert getattr(validated.payload, "window_s") == 60
+        assert validated.payload.window_s == 60  # type: ignore
 
     # Ensure the window was cleared
     events_after = drain_latency_events(source="test_runner", door_id="door-123", window_s=60)
