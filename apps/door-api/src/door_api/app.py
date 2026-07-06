@@ -68,7 +68,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-app.include_router(build_social_router(lambda: state.social_service))
+app.include_router(
+    build_social_router(
+        lambda: state.social_service,
+        lambda: state.machine.snapshot().person_id,
+    )
+)
 
 
 @app.get("/health")

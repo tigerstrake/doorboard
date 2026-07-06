@@ -132,15 +132,35 @@ def test_vote_flow_end_to_end(client: TestClient, monkeypatch: pytest.MonkeyPatc
 
 
 def test_checkin_create_and_stats(client: TestClient) -> None:
-    resp = client.post(
-        "/checkins",
-        json={"person_id": "prs_alex", "label": "Alex", "session_token": "s1"},
+    # Simulate a real, server-side cached identity — the only legitimate
+    # source of check-in attribution (vision.identity_stable equivalent).
+    state.machine.handle_identity_stable(
+        person_id="prs_alex", display_name="Alex", profile_id="blue_wave"
     )
+
+    resp = client.post("/checkins", json={"label": "Alex", "session_token": "s1"})
     assert resp.status_code == 201
+    assert resp.json()["person_id"] == "prs_alex"
 
     stats = client.get("/checkins/stats/most-frequent").json()["stat"]
     assert stats["person_id"] == "prs_alex"
     assert stats["count"] == 1
+
+
+def test_checkin_ignores_client_supplied_person_id(client: TestClient) -> None:
+    # No identity cached server-side — a client-claimed person_id must be
+    # ignored, not trusted. Otherwise any visitor could attribute a
+    # check-in to any known person_id.
+    resp = client.post(
+        "/checkins",
+        json={"person_id": "prs_taylor", "label": "Taylor", "session_token": "s1"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["person_id"] is None
+
+    # An anonymous check-in never counts toward the most-frequent-visitor stat.
+    stats = client.get("/checkins/stats/most-frequent").json()["stat"]
+    assert stats is None
 
 
 # ---------------------------------------------------------------------------

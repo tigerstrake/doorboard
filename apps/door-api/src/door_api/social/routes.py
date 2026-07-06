@@ -84,7 +84,11 @@ class PollVoteRequest(BaseModel):
 
 
 class CheckinCreateRequest(BaseModel):
-    person_id: str | None = None
+    # No client-supplied person_id: attribution is only ever derived
+    # server-side from the current session's cached identity (see
+    # get_current_person_id in build_social_router) — never trusted from
+    # the request body. A client claiming to be a specific enrolled person
+    # would otherwise let any visitor attribute check-ins to anyone.
     label: str | None = None
     session_token: str = Field(min_length=1, max_length=200)
 
@@ -137,12 +141,18 @@ def _checkin_to_dict(checkin: Checkin) -> dict:
     }
 
 
-def build_social_router(get_service: Callable[[], SocialService]) -> APIRouter:
+def build_social_router(
+    get_service: Callable[[], SocialService],
+    get_current_person_id: Callable[[], str | None],
+) -> APIRouter:
     """Build the public + admin social router.
 
-    Takes a getter rather than a fixed ``SocialService`` instance so the
-    router (built once, at import time) always operates on the *current*
-    service — needed because tests rebuild ``DoorApiState`` between cases.
+    Takes getters rather than fixed instances so the router (built once, at
+    import time) always operates on *current* state — needed because tests
+    rebuild ``DoorApiState`` between cases. ``get_current_person_id`` reads
+    the door-api session machine's cached identity (populated only from real
+    ``vision.identity_stable`` events for enrolled, consenting people) —
+    check-in attribution is derived from this, never from client input.
     """
 
     router = APIRouter()
@@ -247,7 +257,7 @@ def build_social_router(get_service: Callable[[], SocialService]) -> APIRouter:
         trace_id = _trace_id(request)
         try:
             checkin = service.create_checkin(
-                person_id=body.person_id,
+                person_id=get_current_person_id(),
                 label=body.label,
                 ip=_client_ip(request),
                 session_token=body.session_token,

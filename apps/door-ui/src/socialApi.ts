@@ -149,10 +149,13 @@ export const socialApi = {
     });
   },
 
-  async createCheckin(personId: string | null, label: string | null): Promise<Checkin> {
+  // No person_id param: attribution is derived server-side from the current
+  // session's cached identity (door-api SessionMachine), never trusted from
+  // the client — see door_api/social/routes.py CheckinCreateRequest.
+  async createCheckin(label: string | null): Promise<Checkin> {
     return request<Checkin>("/checkins", {
       method: "POST",
-      body: { person_id: personId, label, session_token: getSessionToken() },
+      body: { label, session_token: getSessionToken() },
     });
   },
 

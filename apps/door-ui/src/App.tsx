@@ -266,11 +266,16 @@ export function App() {
     if (checkinSubmitting) return;
     setCheckinSubmitting(true);
     try {
-      const personId = kind === "enrolled" && activeProfile ? activeProfile : null;
       const label = kind === "enrolled" ? "Enrolled Visitor" : "Guest";
-      const checkin = await socialApi.createCheckin(personId, label);
+      // door-api derives attribution server-side from the session's cached
+      // identity — this client never asserts a person_id.
+      const checkin = await socialApi.createCheckin(label);
       rememberMyContent({ kind: "checkin", id: checkin.id, label });
-      triggerToast(`Checked in as ${label}`);
+      triggerToast(
+        checkin.person_id
+          ? `Checked in — recognized as ${checkin.person_id}!`
+          : `Checked in as ${label}`
+      );
       setDoorPadScreen("home");
     } catch (err) {
       triggerToast(apiErrorMessage(err, "Couldn't check in — try again."));
