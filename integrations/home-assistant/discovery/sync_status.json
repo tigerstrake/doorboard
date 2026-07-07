@@ -1,0 +1,16 @@
+{
+  "name": "Doorboard Sync Status",
+  "unique_id": "doorboard_primary_sync_status",
+  "state_topic": "doorboard/media/storage_status",
+  "value_template": "{{ value_json.payload.oldest_unsynced_s }}",
+  "unit_of_measurement": "s",
+  "json_attributes_topic": "doorboard/media/storage_status",
+  "json_attributes_template": "{{ {'queue_depth': value_json.payload.queue_depth, 'recording_allowed': value_json.payload.recording_allowed, 'free_bytes': value_json.payload.free_bytes} | tojson }}",
+  "icon": "mdi:cloud-sync",
+  "device": {
+    "identifiers": ["doorboard_primary"],
+    "name": "Doorboard",
+    "manufacturer": "doorboard (self-hosted)",
+    "model": "NUC control plane"
+  }
+}

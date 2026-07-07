@@ -79,6 +79,60 @@ deleted. Idempotent and safe to retry — a repeat call with nothing left just
 returns zero counts. `social.deletion_requested{target_kind="enrollment"}`
 delegates to the same logic (`target_id` is the `person_id` in that case).
 
+## T-504 status (presence / Weasley clock)
+
+Implements the presence engine `T-501`'s README scoped out: per-subject
+(`owner`, `roommate`, auto-provisioned) source registry
+(`presence_sources`/`presence_subjects`, migration `0002`), fixed precedence
+resolution (`manual > focus_shortcut > geofence_label > calendar > default`,
+`presence.py`), `until`-expiry fallthrough recomputed on every read *and*
+write (no background scheduler needed), change-only `status.presence_changed`
+emission (`presence_engine.sync_presence` — a `presence_history` row and
+MQTT publish happen only when the resolved (label, source, until) actually
+changes), and a retention cap (`CONTROL_PLANE_PRESENCE_HISTORY_MAX_ROWS`,
+default 500 rows per subject).
+
+**Routes** (see `app.py`'s module docstring for the full list):
+`GET /status/presence` / `GET|PATCH /status/presence/{subject_id}` /
+`GET /status/presence/{subject_id}/history` (admin) for the admin panel;
+`POST|DELETE /status/presence/{subject_id}/override` (admin UI + one-tap
+phone shortcut) for the manual override that always wins instantly;
+`PATCH /status/presence/{subject_id}/sources/{source}` (admin) for
+per-source enable/disable; `POST /status/presence/webhook/focus-shortcut`
+and `.../webhook/geofence-label` for HA-forwarded phone Focus
+shortcuts/voluntary geofence labels (T-503 wires the HA→here forwarding;
+this task only implements the receiving endpoint). All of the above reuse
+`CONTROL_PLANE_ADMIN_TOKEN` rather than adding a new `ServiceTokenScope` —
+see the app.py docstring for why that's still the right stopgap here.
+`GET /status/presence/bundle` is Pi-facing (`config`-scoped token, same tier
+as `/config/door/{door_id}`) — the data bundle the wallboard caches so its
+presence tile can show a last-known label with a staleness hint
+(`CONTROL_PLANE_PRESENCE_STALE_AFTER_S`, default 1800s) through a NUC
+outage; see `presence.is_stale`.
+
+**Privacy.** Every label passed to any presence endpoint is validated
+against the fixed eight-label `PresenceLabel` enum — no ad hoc strings.
+`focus_shortcut`/`geofence_label` webhook payloads are scanned recursively
+for coordinate-shaped fields (`lat`, `lon`, `gps`, `geo`, `location`,
+`coordinate`, at any nesting depth) and rejected with a logged
+`presence_webhook_coordinate_payload_rejected` warning plus a 422 — on top
+of the request model's `extra="forbid"`, which already rejects anything
+outside `{subject_id, label, until}`. `tracking_enabled` (per subject) gates
+the *inferred* sources (focus_shortcut, geofence_label, calendar) — the
+"config flag per subject" the brief scopes roommate consent down to; manual
+overrides are never gated by it, since a subject stating their own status
+isn't the kind of inference consent is about.
+
+**Calendar inference is a stub** (`CalendarProvider` protocol +
+`MockCalendarProvider`, wired into `AppState.calendar_provider`) — it always
+returns "no signal" until a real provider is injected; real calendar wiring
+is an explicitly later brief.
+
+**Out of scope for T-504** (see brief): real calendar integration, phone
+Focus-shortcut authoring (documented for the owner, not automated), roommate
+consent flows beyond the `tracking_enabled` flag, and wallboard tile visuals
+(already exist — this task only had to make the data available).
+
 ### Running tests locally
 
 Tests run against a real local Postgres — not SQLite — because the

@@ -1,0 +1,35 @@
+# Keeps NUC image build contexts small (infra/compose/docker/*.Dockerfile
+# build with the repo root as context, since this is a uv/pnpm workspace and
+# apps depend on sibling packages/*).
+.git/
+.github/
+
+**/__pycache__/
+**/*.py[cod]
+.venv/
+**/.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+**/dist/
+**/build/
+**/*.egg-info/
+.simulator-artifacts/
+
+node_modules/
+**/node_modules/
+.pnpm-store/
+**/*.tsbuildinfo
+**/.vite/
+coverage/
+test-results/
+playwright-report/
+blob-report/
+
+docs/
+firmware/
+tools/
+
+.env
+.env.*
+!.env.example

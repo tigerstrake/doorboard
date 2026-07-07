@@ -5,11 +5,18 @@ from __future__ import annotations
 from control_plane_api.db import make_engine, make_session_factory
 from control_plane_api.mqtt import MqttPublisher, build_publisher
 from control_plane_api.notify import NotifyEngine, build_notifier
+from control_plane_api.presence import CalendarProvider, MockCalendarProvider
 from control_plane_api.settings import Settings
 
 
 class AppState:
-    def __init__(self, cfg: Settings, *, mqtt_publisher: MqttPublisher | None = None) -> None:
+    def __init__(
+        self,
+        cfg: Settings,
+        *,
+        mqtt_publisher: MqttPublisher | None = None,
+        calendar_provider: CalendarProvider | None = None,
+    ) -> None:
         self.settings = cfg
         self.engine = make_engine(cfg.postgres_dsn)
         self.session_factory = make_session_factory(self.engine)
@@ -20,6 +27,10 @@ class AppState:
         self.notify_engine = NotifyEngine(
             notifier, cooldown_s=cfg.notify_cooldown_s, sync_stall_alert_s=cfg.sync_stall_alert_s
         )
+        # Real calendar wiring is a later brief (T-504) — `MockCalendarProvider`
+        # always returns "no signal", so calendar simply never wins precedence
+        # until a real provider is injected.
+        self.calendar_provider: CalendarProvider = calendar_provider or MockCalendarProvider()
 
     def dispose(self) -> None:
         self.engine.dispose()

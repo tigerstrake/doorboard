@@ -11,7 +11,12 @@ from sqlalchemy import engine_from_config, pool
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # `disable_existing_loggers=False` — the fileConfig default (True) would
+    # otherwise permanently disable every logger already created in this
+    # process (e.g. `control_plane_api.presence`) the first time a migration
+    # runs, which only surfaces later as unrelated tests' `caplog` assertions
+    # silently seeing zero records for the rest of the pytest session.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

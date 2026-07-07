@@ -1,0 +1,14 @@
+{
+  "name": "Doorboard Bell",
+  "unique_id": "doorboard_primary_bell_event",
+  "state_topic": "doorboard/door/button_pressed",
+  "value_template": "{{ 'ON' if value_json.type == 'door.button_pressed' else 'OFF' }}",
+  "off_delay": 5,
+  "icon": "mdi:bell-ring",
+  "device": {
+    "identifiers": ["doorboard_primary"],
+    "name": "Doorboard",
+    "manufacturer": "doorboard (self-hosted)",
+    "model": "NUC control plane"
+  }
+}
