@@ -7,14 +7,14 @@ from datetime import UTC, datetime
 
 import httpx
 from birdnet.provider import BirdProvider
-from satellites.provider import SatelliteProvider
 from doorboard_contracts.events import (
     AmbientBirdSpeciesSummary,
-    AmbientSatellitePassEvent,
-    AmbientSatellitePassPayload,
     AmbientBirdSummaryEvent,
     AmbientBirdSummaryPayload,
+    AmbientSatellitePassEvent,
+    AmbientSatellitePassPayload,
 )
+from satellites.provider import SatelliteProvider
 
 from wallboard_worker.settings import Settings
 from wallboard_worker.uuid7 import uuid7
