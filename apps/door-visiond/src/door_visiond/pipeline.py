@@ -45,6 +45,8 @@ from door_visiond.matcher import Matcher, MatchResult
 logger = get_logger("door_visiond.pipeline")
 
 EventSink = Callable[[DoorboardEvent], None]
+CacheUpdateSink = Callable[[CurrentVisitor, str, UUID], None]
+CacheClearSink = Callable[[CurrentVisitor, str, UUID], None]
 
 _MAX_SAMPLES = 2000
 
@@ -129,6 +131,8 @@ class PipelineCore:
         cooldown_ms: int,
         stability_window: int,
         stability_required: int,
+        cache_update_sink: CacheUpdateSink | None = None,
+        cache_clear_sink: CacheClearSink | None = None,
     ) -> None:
         self._matcher = matcher
         self._cache = cache
@@ -139,6 +143,8 @@ class PipelineCore:
         self._ttl_ms = ttl_ms
         self._cooldown_ms = cooldown_ms
         self._stability_required = stability_required
+        self._cache_update_sink = cache_update_sink
+        self._cache_clear_sink = cache_clear_sink
         self._ring: collections.deque[str | None] = collections.deque(maxlen=stability_window)
         # Cooldown + streak bookkeeping, keyed only by ENROLLED person_id
         # (never by an unknown) and pruned on refresh / when a person leaves.
@@ -251,15 +257,25 @@ class PipelineCore:
 
         # Always refresh the cache so the button gets a fresh personalization,
         # independent of the (longer) greeting cooldown.
-        self._cache.set(
-            CurrentVisitor(
-                person_id=person_id,
-                display_name=result.display_name,
-                profile_id=result.profile_id,
-                expires_at_monotonic_ms=expires_mono,
-                expires_at_utc=expires_utc,
-            )
+        prior = self._cache.current(now)
+        priority = (
+            "high"
+            if prior is None
+            or prior.person_id != person_id
+            or prior.profile_id != result.profile_id
+            else "normal"
         )
+        visitor = CurrentVisitor(
+            person_id=person_id,
+            display_name=result.display_name,
+            profile_id=result.profile_id,
+            expires_at_monotonic_ms=expires_mono,
+            expires_at_utc=expires_utc,
+        )
+        self._cache.set(visitor)
+        if self._cache_update_sink is not None:
+            trace = self._streak_trace.get(person_id, uuid7())
+            self._cache_update_sink(visitor, priority, trace)
 
         last = self._last_stable_ms.get(person_id)
         if last is not None and now - last < self._cooldown_ms:
@@ -296,15 +312,16 @@ class PipelineCore:
         """Expire the cache if its TTL elapsed and emit identity_expired."""
         expired = self._cache.expire_if_due(self._clock.monotonic_ms())
         if expired is not None:
-            self._emit_expired(expired.person_id)
+            self._emit_expired(expired, reason="expired")
 
-    def clear_cache_and_notify(self) -> None:
+    def clear_cache_and_notify(self, *, reason: str = "admin") -> None:
         """Force-clear the cache (privacy mode / unenroll) and emit identity_expired."""
         prior = self._cache.clear()
         if prior is not None:
-            self._emit_expired(prior.person_id)
+            self._emit_expired(prior, reason=reason)
 
-    def _emit_expired(self, person_id: str) -> None:
+    def _emit_expired(self, visitor: CurrentVisitor, *, reason: str) -> None:
+        person_id = visitor.person_id
         trace = self._streak_trace.pop(person_id, None) or uuid7()
         self._first_seen_ms.pop(person_id, None)
         self._sink(
@@ -315,6 +332,8 @@ class PipelineCore:
                 person_id=person_id,
             )
         )
+        if self._cache_clear_sink is not None:
+            self._cache_clear_sink(visitor, reason, trace)
         self._metrics.identity_expired_count += 1
 
 

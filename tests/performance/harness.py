@@ -127,7 +127,7 @@ async def _run_simulator_loop(
                     {
                         "profile_id": str(pl["profile_id"]),
                         "ttl_ms": ttl_ms,
-                        "priority": "normal",
+                        "priority": "high",
                     },
                 )
             )

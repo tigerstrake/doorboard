@@ -59,9 +59,6 @@ class SessionConfig:
     # with no button press (seconds).
     approach_timeout_s: float = 10.0
 
-    # Greeting cooldown per person — architecture §5 specifies 30 s.
-    greeting_cooldown_s: float = 30.0
-
     # SESSION_END lingers briefly before auto-transitioning to IDLE (seconds).
     session_end_linger_s: float = 3.0
 
@@ -114,7 +111,6 @@ class SessionConfig:
             saved_linger_s=_env_float("DOOR_API_SAVED_LINGER_S", 5.0),
             inactivity_timeout_s=_env_float("DOOR_API_INACTIVITY_TIMEOUT_S", 120.0),
             approach_timeout_s=_env_float("DOOR_API_APPROACH_TIMEOUT_S", 10.0),
-            greeting_cooldown_s=_env_float("DOOR_API_GREETING_COOLDOWN_S", 30.0),
             session_end_linger_s=_env_float("DOOR_API_SESSION_END_LINGER_S", 3.0),
             db_path=db_path,
             door_id=os.environ.get("DOOR_API_DOOR_ID", "primary"),

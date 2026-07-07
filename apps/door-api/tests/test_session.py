@@ -13,6 +13,7 @@ Coverage targets from the T-401 brief:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -485,6 +486,39 @@ class TestIdentityFlow:
         assert result is False
         assert machine.state == SessionState.APPROACH_DETECTED
 
+    def test_button_press_propagates_cached_profile_flag(self) -> None:
+        """door.button_pressed cache metadata stays on the local session envelope."""
+        machine, collector, _ = make_machine()
+
+        assert machine.handle_button_pressed(had_cached_profile=True, profile_id="blue_wave")
+
+        assert machine.snapshot().had_cached_profile is True
+        assert machine.snapshot().profile_id == "blue_wave"
+        changed = collector.of_type("session.state_changed")
+        started = collector.of_type("session.started")
+        assert all(event["had_cached_profile"] is True for event in changed)
+        assert started[0]["had_cached_profile"] is True
+        assert "had_cached_profile" not in changed[0]["payload"]
+
+    def test_late_identity_mid_session_updates_display_only(self) -> None:
+        """Late recognition enriches the active session without a new transition."""
+        machine, collector, _ = make_machine()
+        assert machine.handle_button_pressed()
+        events_before = len(collector.events)
+        session_id = machine.session_id
+
+        changed = machine.handle_identity_stable(
+            person_id="prs_1",
+            display_name="Alice",
+            profile_id="blue_wave",
+        )
+
+        assert changed is False
+        assert machine.session_id == session_id
+        assert machine.state == SessionState.VISITOR_MODE
+        assert machine.snapshot().display_name == "Alice"
+        assert len(collector.events) == events_before
+
 
 # ---------------------------------------------------------------------------
 # §9 — Door contact
@@ -819,6 +853,29 @@ class TestPairingInvariant:
                 )
 
         asyncio.run(run_invariant())
+
+
+class TestAdr0009P11:
+    def test_no_identity_imports_in_authorization_path(self) -> None:
+        """P-11: door-api may use identity for greeting/display, never authorization."""
+        root = Path(__file__).resolve().parents[1] / "src" / "door_api"
+        forbidden = (
+            "door_visiond.matcher",
+            "door_visiond.pipeline",
+            "door_visiond.enrollment",
+            "Matcher(",
+            "match_result",
+            "identity_author",
+            "access_decision",
+            "unlock",
+        )
+        offenders: list[str] = []
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for needle in forbidden:
+                if needle in text:
+                    offenders.append(f"{path.relative_to(root)}:{needle}")
+        assert offenders == []
 
 
 class TestDoorPadVideoMessageAbandonment:

@@ -21,6 +21,15 @@
       "type": "vision.identity_stable"
     },
     {
+      "monotonic_ms": 100,
+      "payload": {
+        "expires_at_monotonic_ms": 2600,
+        "priority": "high",
+        "profile_id": "blue_wave"
+      },
+      "type": "door.profile_update"
+    },
+    {
       "monotonic_ms": 300,
       "payload": {
         "had_cached_profile": true,
@@ -57,6 +66,13 @@
         "person_id": "prs_8f3k2j"
       },
       "type": "vision.identity_expired"
+    },
+    {
+      "monotonic_ms": 2700,
+      "payload": {
+        "reason": "expired"
+      },
+      "type": "door.profile_clear"
     }
   ],
   "scenario": "full-happy-path"
