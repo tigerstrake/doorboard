@@ -1,4 +1,5 @@
 import uuid
+from typing import Any, cast
 
 from doorboard_contracts.events import SessionState
 from fastapi.testclient import TestClient
@@ -167,3 +168,103 @@ def test_snapshot(client: TestClient) -> None:
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/jpeg"
     assert len(resp.content) > 0
+def test_photo_booth_save_writes_consent_metadata(client: TestClient):
+    session_id = str(uuid.uuid4())
+    trace_id = str(uuid.uuid4())
+
+    capture = client.post(
+        "/photos/capture",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert capture.status_code == 200
+    photo = capture.json()["photo"]
+
+    save = client.post(
+        f"/photos/{photo['recording_id']}/save",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert save.status_code == 200
+    recording = save.json()["recording"]
+    assert recording["kind"] == "photo_booth"
+    assert recording["consent_context"] == "visitor_initiated"
+    assert recording["consent_metadata_path"] is not None
+
+    row = client.get("/recordings", params={"kind": "photo_booth"}).json()["recordings"][0]
+    assert row["recording_id"] == photo["recording_id"]
+    assert row["thumbnail_path"] is not None
+    assert row["consent_metadata_path"] == recording["consent_metadata_path"]
+
+    cfg = cast(Any, client.app).state.cfg
+    metadata = (cfg.ssd_data_root / row["consent_metadata_path"]).read_text(encoding="utf-8")
+    assert '"capture_mode": "explicit_photo_booth"' in metadata
+    assert '"saved_after_review": true' in metadata
+
+
+def test_photo_booth_feature_off_closes_photo_routes(client: TestClient):
+    cfg = cast(Any, client.app).state.cfg
+    cfg.feature_photobooth = False
+    session_id = str(uuid.uuid4())
+    trace_id = str(uuid.uuid4())
+
+    capture = client.post(
+        "/photos/capture",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert capture.status_code == 404
+
+
+def test_photo_booth_discard_leaves_no_media_files(client: TestClient):
+    session_id = str(uuid.uuid4())
+    trace_id = str(uuid.uuid4())
+
+    capture = client.post(
+        "/photos/capture",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert capture.status_code == 200
+    photo = capture.json()["photo"]
+    cfg = cast(Any, client.app).state.cfg
+    assert (cfg.ssd_data_root / photo["review_path"]).exists()
+
+    discard = client.post(
+        f"/photos/{photo['recording_id']}/discard",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert discard.status_code == 200
+    assert not (cfg.ssd_data_root / photo["review_path"]).exists()
+    assert client.get("/recordings", params={"kind": "photo_booth"}).json()["recordings"] == []
+    assert list((cfg.ssd_data_root / "recordings").rglob("photo_booth_*")) == []
+    assert list((cfg.ssd_data_root / "thumbnails").rglob("photo_booth_*")) == []
+
+
+def test_photo_review_pending_set_is_bounded(client: TestClient):
+    cfg = cast(Any, client.app).state.cfg
+    cfg.photo_review_max_pending = 1
+    session_id = str(uuid.uuid4())
+    trace_id = str(uuid.uuid4())
+
+    first = client.post(
+        "/photos/capture",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert first.status_code == 200
+    first_photo = first.json()["photo"]
+    first_path = cfg.ssd_data_root / first_photo["review_path"]
+    assert first_path.exists()
+
+    second = client.post(
+        "/photos/capture",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert second.status_code == 200
+    second_photo = second.json()["photo"]
+
+    assert not first_path.exists()
+    assert (cfg.ssd_data_root / second_photo["review_path"]).exists()
+    assert (
+        client.get(
+            f"/photos/{first_photo['recording_id']}/review",
+            params={"session_id": session_id},
+        ).status_code
+        == 404
+    )

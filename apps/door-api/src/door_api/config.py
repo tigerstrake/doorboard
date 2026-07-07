@@ -18,6 +18,13 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True, kw_only=True)
 class SessionConfig:
     """Timeouts and durations for the visitor session state machine.
@@ -52,9 +59,6 @@ class SessionConfig:
     # with no button press (seconds).
     approach_timeout_s: float = 10.0
 
-    # Greeting cooldown per person — architecture §5 specifies 30 s.
-    greeting_cooldown_s: float = 30.0
-
     # SESSION_END lingers briefly before auto-transitioning to IDLE (seconds).
     session_end_linger_s: float = 3.0
 
@@ -72,6 +76,12 @@ class SessionConfig:
 
     # Bounded timeout for door-api -> door-media local loopback calls.
     media_timeout_s: float = 1.0
+
+    # door-sync local base URL for non-critical admin/gallery operations.
+    sync_base_url: str = "http://127.0.0.1:8083"
+
+    # Feature gate for the explicit photo-booth + private gallery flow.
+    feature_photobooth: bool = False
 
     # Short-lived visitor QR tokens.  If unset, a per-process boot secret is used.
     visitor_token_secret: str = ""
@@ -101,7 +111,6 @@ class SessionConfig:
             saved_linger_s=_env_float("DOOR_API_SAVED_LINGER_S", 5.0),
             inactivity_timeout_s=_env_float("DOOR_API_INACTIVITY_TIMEOUT_S", 120.0),
             approach_timeout_s=_env_float("DOOR_API_APPROACH_TIMEOUT_S", 10.0),
-            greeting_cooldown_s=_env_float("DOOR_API_GREETING_COOLDOWN_S", 30.0),
             session_end_linger_s=_env_float("DOOR_API_SESSION_END_LINGER_S", 3.0),
             db_path=db_path,
             door_id=os.environ.get("DOOR_API_DOOR_ID", "primary"),
@@ -111,6 +120,8 @@ class SessionConfig:
                 os.environ.get("DOOR_API_MEDIA_BASE_URL", "http://127.0.0.1:8001"),
             ),
             media_timeout_s=_env_float("DOOR_API_MEDIA_TIMEOUT_S", 1.0),
+            sync_base_url=os.environ.get("DOOR_API_SYNC_BASE_URL", "http://127.0.0.1:8083"),
+            feature_photobooth=_env_bool("FEATURE_PHOTOBOOTH", False),
             visitor_token_secret=os.environ.get(
                 "DOOR_API_VISITOR_TOKEN_SECRET",
                 secrets.token_urlsafe(32),

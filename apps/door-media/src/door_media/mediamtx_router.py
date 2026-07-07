@@ -35,6 +35,7 @@ import httpx
 
 from door_media._uuid7 import uuid7
 from door_media.adapters import (
+    CapturedPhoto,
     ConsentContext,
     FinalizedRecording,
     MediaStorageStatus,
@@ -275,6 +276,45 @@ class MediaMTXRouter:
         logger.info(
             "recording_discarded",
             extra={"recording_id": str(handle.recording_id)},
+        )
+
+    async def capture_photo(
+        self,
+        *,
+        session_id: UUID,
+        stream: str,
+    ) -> CapturedPhoto:
+        """Capture one still from the live visitor stream for photo-booth review."""
+        recording_id = uuid7()
+        out_path = self._settings.ssd_data_root / "photo-review" / f"photo_booth_{recording_id}.jpg"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-y",
+            "-rtsp_transport",
+            "tcp",
+            "-i",
+            f"rtsp://127.0.0.1:8554/{stream}",
+            "-frames:v",
+            "1",
+            str(out_path),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            with contextlib.suppress(OSError):
+                out_path.unlink(missing_ok=True)
+            msg = stderr.decode(errors="replace")[:500]
+            raise RuntimeError(f"ffmpeg still capture failed: {msg}")
+        sha256 = _sha256_file(out_path)
+        return CapturedPhoto(
+            recording_id=recording_id,
+            session_id=session_id,
+            path=str(out_path.relative_to(self._settings.ssd_data_root)),
+            size_bytes=out_path.stat().st_size,
+            sha256=sha256,
+            captured_monotonic_ms=time.monotonic_ns() // 1_000_000,
         )
 
     def storage_status(self) -> MediaStorageStatus:

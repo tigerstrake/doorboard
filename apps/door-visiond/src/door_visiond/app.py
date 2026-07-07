@@ -75,9 +75,12 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # Scoped to the admin-UI dev origins (mirrors door-api); a wildcard with
+    # credentials is invalid per the CORS spec and wrong for a service handling
+    # biometric/recording data. Production serves the UI same-origin via Caddy.
+    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
