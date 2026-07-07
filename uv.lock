@@ -16,6 +16,7 @@ members = [
     "doorboard-esp32-link",
     "doorboard-media-client",
     "doorboard-observability",
+    "doorboard-printer",
     "doorboard-simulator",
     "doorboard-wallboard-worker",
 ]
@@ -330,6 +331,25 @@ version = "0.0.0"
 source = { editable = "packages/observability" }
 
 [[package]]
+name = "doorboard-printer"
+version = "0.0.0"
+source = { editable = "integrations/printer" }
+dependencies = [
+    { name = "doorboard-config" },
+    { name = "doorboard-contracts" },
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "doorboard-config", editable = "packages/config" },
+    { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[[package]]
 name = "doorboard-simulator"
 version = "0.0.0"
 source = { editable = "apps/simulator" }
@@ -354,6 +374,20 @@ requires-dist = [
 name = "doorboard-wallboard-worker"
 version = "0.0.0"
 source = { editable = "apps/wallboard-worker" }
+dependencies = [
+    { name = "doorboard-config" },
+    { name = "doorboard-contracts" },
+    { name = "doorboard-printer" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "doorboard-config", editable = "packages/config" },
+    { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "doorboard-printer", editable = "integrations/printer" },
+    { name = "httpx" },
+]
 
 [[package]]
 name = "fastapi"
