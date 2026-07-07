@@ -163,6 +163,13 @@ def test_video_message_discard_deletes_finalized_clip(client: TestClient):
     assert missing.status_code == 404
 
 
+def test_snapshot(client: TestClient) -> None:
+    resp = client.get("/snapshot")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+    assert len(resp.content) > 0
+
+
 def test_photo_booth_save_writes_consent_metadata(client: TestClient):
     session_id = str(uuid.uuid4())
     trace_id = str(uuid.uuid4())

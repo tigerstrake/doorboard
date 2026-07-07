@@ -26,6 +26,7 @@ import {
 import { socialApi, ApiError } from "./socialApi";
 import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
 import { AdminSocialPanel } from "./AdminSocialPanel";
+import { AdminEnrollmentPanel } from "./AdminEnrollmentPanel";
 import { VisitorPage } from "./VisitorPage";
 import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
 
@@ -1733,6 +1734,7 @@ export function App() {
           )}
 
           <AdminSocialPanel />
+          <AdminEnrollmentPanel />
         </div>
       </div>
     );

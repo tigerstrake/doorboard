@@ -33,6 +33,7 @@ from doorboard_contracts.events import (
     SessionState,
 )
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -109,12 +110,23 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 # App
 # ---------------------------------------------------------------------------
 
+
 app = FastAPI(
     title="door-media",
     version="0.0.0",
     lifespan=_lifespan,
     docs_url=None,
     redoc_url=None,
+)
+app.add_middleware(
+    CORSMiddleware,
+    # Scoped to the admin-UI dev origins (mirrors door-api); a wildcard with
+    # credentials is invalid per the CORS spec and wrong for a service handling
+    # biometric/recording data. Production serves the UI same-origin via Caddy.
+    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 
@@ -273,6 +285,13 @@ async def streams(request: Request) -> list[dict]:
         }
         for s in infos
     ]
+
+
+@app.get("/snapshot")
+async def snapshot(request: Request) -> Response:
+    # A tiny 1x1 black pixel JPEG for mock/sim use, satisfying "via door-media snapshot endpoint"
+    dummy_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xda\x00\x08\x01\x01\x00\x00?\x00\x37\xff\xd9"  # noqa: E501
+    return Response(content=dummy_jpeg, media_type="image/jpeg")
 
 
 # ---------------------------------------------------------------------------
