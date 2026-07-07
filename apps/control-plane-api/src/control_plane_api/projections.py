@@ -33,6 +33,7 @@ from doorboard_contracts.events import (
     SessionStateChangedEvent,
     SocialCheckinCreatedEvent,
     SocialGuestbookEntryCreatedEvent,
+    StatusPresenceChangedEvent,
     SyncUploadCompletedEvent,
     SyncUploadFailedEvent,
     SyncUploadQueuedEvent,
@@ -40,7 +41,12 @@ from doorboard_contracts.events import (
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from control_plane_api.models import MediaMirrorRow, SessionMirrorRow, SocialItemRow
+from control_plane_api.models import (
+    MediaMirrorRow,
+    PresenceHistoryRow,
+    SessionMirrorRow,
+    SocialItemRow,
+)
 
 
 def _get_or_create_session_row(session: Session, session_id: str, door_id: str) -> SessionMirrorRow:
@@ -84,6 +90,8 @@ def project(session: Session, event: DoorboardEvent, *, now: datetime) -> None:
         _project_social_guestbook_entry_created(session, event, now)
     elif event.type == "social.checkin_created":
         _project_social_checkin_created(session, event, now)
+    elif event.type == "status.presence_changed":
+        _project_status_presence_changed(session, event, now)
 
 
 def _project_session_started(session: Session, event: SessionStartedEvent, now: datetime) -> None:
@@ -217,3 +225,22 @@ def _project_social_checkin_created(
     row.label = event.payload.label
     row.source_event_id = str(event.event_id)
     row.updated_at = now
+
+
+def _project_status_presence_changed(
+    session: Session, event: StatusPresenceChangedEvent, now: datetime
+) -> None:
+    # `event_id` doubles as the PK: `ingest_one` already guaranteed this
+    # event wasn't a duplicate before `project()` ever runs, so there is no
+    # existing row to find-or-update — every call here is a fresh insert.
+    session.add(
+        PresenceHistoryRow(
+            event_id=str(event.event_id),
+            subject_id=event.payload.subject_id,
+            label=str(event.payload.label),
+            source=str(event.payload.source),
+            until=event.payload.until,
+            occurred_at=event.occurred_at,
+            recorded_at=now,
+        )
+    )

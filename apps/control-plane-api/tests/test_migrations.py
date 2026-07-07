@@ -21,7 +21,10 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def alembic_config(engine, monkeypatch: pytest.MonkeyPatch) -> Config:
     Base.metadata.drop_all(engine)  # start from a genuinely empty database
-    dsn = str(engine.url)
+    # render_as_string(hide_password=False), NOT str(engine.url): str() masks
+    # the password as "***", which a trust-auth local Postgres accepts but a
+    # password-auth Postgres (CI) rejects with "password authentication failed".
+    dsn = engine.url.render_as_string(hide_password=False)
     monkeypatch.setenv("ALEMBIC_DATABASE_URL", dsn)
     cfg = Config(str(APP_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(APP_ROOT / "migrations"))
@@ -39,9 +42,14 @@ def test_upgrade_downgrade_upgrade_cycle_is_clean(alembic_config: Config, engine
     after_upgrade = _table_names(engine)
     assert after_upgrade == set(Base.metadata.tables) | {"alembic_version"}
 
+    # `-1` undoes exactly the latest revision, not the whole chain — as more
+    # migrations accumulate (T-504 added 0002) this is no longer the same as
+    # `base`. What must always hold: something goes away, `alembic_version`
+    # itself never does, and re-upgrading exactly restores `after_upgrade`.
     command.downgrade(alembic_config, "-1")
     after_downgrade = _table_names(engine)
-    assert after_downgrade == {"alembic_version"}
+    assert after_downgrade < after_upgrade
+    assert "alembic_version" in after_downgrade
 
     command.upgrade(alembic_config, "head")
     after_reupgrade = _table_names(engine)
