@@ -17,6 +17,10 @@ from uuid import UUID
 
 from doorboard_contracts.events import (
     DoorboardEvent,
+    DoorProfileClearEvent,
+    DoorProfileClearPayload,
+    DoorProfileUpdateEvent,
+    DoorProfileUpdatePayload,
     VisionFaceVisibleEvent,
     VisionFaceVisiblePayload,
     VisionIdentityExpiredEvent,
@@ -101,6 +105,36 @@ def make_identity_expired(
     return VisionIdentityExpiredEvent(
         type="vision.identity_expired",
         payload=VisionIdentityExpiredPayload(person_id=person_id),
+        **_base_fields(clock, door_id, trace_id),
+    )
+
+
+def make_door_profile_update(
+    *,
+    clock: Clock,
+    door_id: str,
+    trace_id: UUID,
+    profile_id: str,
+    expires_at_monotonic_ms: int,
+    priority: str,
+) -> DoorProfileUpdateEvent:
+    return DoorProfileUpdateEvent(
+        type="door.profile_update",
+        payload=DoorProfileUpdatePayload(
+            profile_id=profile_id,
+            expires_at_monotonic_ms=expires_at_monotonic_ms,
+            priority=priority,  # type: ignore[arg-type]
+        ),
+        **_base_fields(clock, door_id, trace_id),
+    )
+
+
+def make_door_profile_clear(
+    *, clock: Clock, door_id: str, trace_id: UUID, reason: str
+) -> DoorProfileClearEvent:
+    return DoorProfileClearEvent(
+        type="door.profile_clear",
+        payload=DoorProfileClearPayload(reason=reason),  # type: ignore[arg-type]
         **_base_fields(clock, door_id, trace_id),
     )
 

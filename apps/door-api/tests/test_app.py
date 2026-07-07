@@ -7,6 +7,8 @@ import os
 from collections.abc import Generator
 
 import pytest
+from doorboard_simulator.clock import SimClock
+from doorboard_simulator.events import EventFactory
 from fastapi.testclient import TestClient
 
 os.environ["DOOR_API_DB_PATH"] = ":memory:"
@@ -136,3 +138,31 @@ def test_visitor_token_requires_active_session_and_is_scoped() -> None:
     token = response.json()["token"]
     assert "." in token
     assert response.json()["url"].endswith(f"/visitor?token={token}")
+
+
+def test_photobooth_feature_off_hides_public_endpoints() -> None:
+    client = TestClient(app)
+    response = client.post("/doorpad/photo-booth/capture")
+    assert response.status_code == 404
+    moments = client.get("/wallboard/moments")
+    assert moments.status_code == 404
+
+
+def test_contract_button_event_sets_cached_profile_snapshot() -> None:
+    events = EventFactory(SimClock())
+    button = events.make(
+        "door.button_pressed",
+        {
+            "press_id": "00000000-0000-0000-0000-000000000001",
+            "had_cached_profile": True,
+            "profile_id": "blue_wave",
+        },
+    )
+
+    accepted = state.handle_contract_event(button)
+
+    assert accepted is True
+    snapshot = state.snapshot_response()["session"]
+    assert snapshot["state"] == "VISITOR_MODE"
+    assert snapshot["had_cached_profile"] is True
+    assert snapshot["profile_id"] == "blue_wave"

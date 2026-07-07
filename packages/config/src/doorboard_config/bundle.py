@@ -2,7 +2,7 @@
 
 The bundle is the *only* config surface the NUC pushes to the Pi (the Pi
 pulls it over `/config/door/{door_id}`, ADR-0002 trust model). It carries
-non-secret operational settings only — vision mode, feature flags, cooldown
+non-secret operational settings only — vision mode, feature flags, cache
 tuning. Nothing here may ever be a credential, DSN, or admin token; that is
 enforced both by the model shape (no field is typed to hold one) and by
 `assert_secret_free`, a denylist scan control-plane-api runs against every
@@ -43,7 +43,6 @@ class DoorConfigSettings(BaseModel):
     esp32_transport: str = "uart"
     vision_mode: str = "mock"
     single_camera_mode: bool = True
-    greeting_cooldown_s: int = 30
     identity_cache_ttl_s: float = 2.5
     feature_flags: dict[str, bool] = {}
 

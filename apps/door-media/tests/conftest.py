@@ -13,6 +13,7 @@ from pydantic import Field
 
 class TestSettings(Settings):
     media_mode: str = Field(default="mock")
+    feature_photobooth: bool = Field(default=True)
     # Shorten retention loop defaults for testing if needed
     min_free_bytes: int = Field(default=1024 * 1024)
     storage_status_interval_s: int = Field(default=3600)  # Don't let loop spam logs
