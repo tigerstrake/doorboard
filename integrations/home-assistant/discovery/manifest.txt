@@ -1,0 +1,8 @@
+# topic|file — read by publish-discovery.sh. One retained MQTT Discovery
+# config message per line, per the four entities T-503's brief calls for
+# (bell event, presence, storage alert, sync status). Adding an entity is:
+# add a payload file here + one line below, nothing else.
+homeassistant/binary_sensor/doorboard/bell_event/config|bell_event.json
+homeassistant/sensor/doorboard/presence/config|presence.json
+homeassistant/sensor/doorboard/storage_alert/config|storage_alert.json
+homeassistant/sensor/doorboard/sync_status/config|sync_status.json
