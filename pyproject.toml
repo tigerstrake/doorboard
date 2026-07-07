@@ -45,6 +45,7 @@ members = [
     "apps/wallboard-worker",
     "apps/simulator",
     "integrations/birdnet",
+    "integrations/satellites",
 ]
 
 [tool.uv.sources]
@@ -62,6 +63,7 @@ doorboard-observability = { workspace = true }
 doorboard-simulator = { workspace = true }
 doorboard-wallboard-worker = { workspace = true }
 doorboard-birdnet = { workspace = true }
+doorboard-satellites = { workspace = true }
 
 [tool.ruff]
 line-length = 100

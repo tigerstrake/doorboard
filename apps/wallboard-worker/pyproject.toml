@@ -6,6 +6,7 @@ dependencies = [
     "doorboard-contracts",
     "doorboard-config",
     "doorboard-birdnet",
+    "doorboard-satellites",
     "httpx",
 ]
 

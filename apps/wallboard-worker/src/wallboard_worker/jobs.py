@@ -7,8 +7,11 @@ from datetime import UTC, datetime
 
 import httpx
 from birdnet.provider import BirdProvider
+from satellites.provider import SatelliteProvider
 from doorboard_contracts.events import (
     AmbientBirdSpeciesSummary,
+    AmbientSatellitePassEvent,
+    AmbientSatellitePassPayload,
     AmbientBirdSummaryEvent,
     AmbientBirdSummaryPayload,
 )
@@ -115,3 +118,68 @@ def run_daily_collage(settings: Settings, now: datetime | None = None) -> None:
     else falls back to species list card.
     """
     logger.info("Daily collage job stub executed successfully.")
+
+
+def run_satellite_passes(
+    settings: Settings, provider: SatelliteProvider, now: datetime | None = None
+) -> dict | None:
+    """Calculate the next visible satellite pass and ingest it into the control plane."""
+    if now is None:
+        now = datetime.now(UTC)
+
+    try:
+        pass_data = provider.get_next_pass(now)
+    except Exception as exc:
+        logger.error(f"Satellite pass prediction job failed: {exc}")
+        # Degradation path: return None so no new event is posted and the tile is marked stale
+        return None
+
+    if pass_data is None:
+        logger.info("No visible satellite passes predicted in the next 24 hours.")
+        return None
+
+    # Construct payload
+    payload = AmbientSatellitePassPayload(
+        satellite=pass_data["satellite"],
+        rise_at=pass_data["rise_at"],
+        max_elevation_deg=pass_data["max_elevation_deg"],
+        direction=pass_data["direction"],
+        visible=pass_data["visible"],
+    )
+
+    # Construct event
+    event = AmbientSatellitePassEvent(
+        event_id=uuid7(),
+        type="ambient.satellite_pass",
+        source="wallboard-worker",
+        occurred_at=now,
+        monotonic_ms=int(time.monotonic() * 1000),
+        door_id=settings.door_id,
+        trace_id=uuid.uuid4(),
+        payload=payload,
+    )
+
+    # Ingest event
+    url = f"{settings.control_plane_url.rstrip('/')}/ingest"
+    token = get_ingest_token(settings)
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    raw_event = event.model_dump(mode="json")
+    batch = {"batch_id": f"worker-satellites-{int(time.time())}", "events": [raw_event]}
+
+    try:
+        resp = httpx.post(url, json=batch, headers=headers, timeout=5.0)
+        if resp.status_code == 200:
+            logger.info(
+                f"Ingested satellite pass event successfully: "
+                f"{pass_data['satellite']} rise_at={pass_data['rise_at']}"
+            )
+            return resp.json()
+        else:
+            logger.error(f"Ingestion failed with status {resp.status_code}: {resp.text}")
+    except Exception as exc:
+        logger.error(f"Failed to post satellite pass event: {exc}")
+
+    return None
