@@ -13,6 +13,7 @@ The local brain of the visitor experience. Owns the visitor session state machin
 - **Privacy mode:** propagates to door-visiond and ESP32; basic door interaction keeps working.
 - **Tokenized visitor endpoints:** QR-code flows with short-lived signed tokens, rate-limited (api-conventions.md).
 - **Local fallback content:** wallboard data cache so ambient tiles show last-known data when the NUC is down.
+- **Photo booth coordination:** when `FEATURE_PHOTOBOOTH=true`, DoorPad explicit still-capture requests proxy to door-media, admin gallery actions proxy to door-sync, and `/wallboard/moments` returns only owner-approved gallery moments.
 
 ## Must never
 
@@ -20,4 +21,4 @@ Wait on control-plane HTTP for any session transition; show unsanitized user con
 
 ## Interfaces
 
-Events in: `door.*`, `vision.identity_stable/_expired`, `media.*`. Events out: `session.*`, `social.*`. HTTP: `/health`, `/metrics`, `/ws`, session/guestbook/poll/checkin routes per task briefs, `/admin/*` (authenticated).
+Events in: `door.*`, `vision.identity_stable/_expired`, `media.*`. Events out: `session.*`, `social.*`. HTTP: `/health`, `/metrics`, `/ws`, session/guestbook/poll/checkin routes per task briefs, `/admin/*` (authenticated), and feature-gated photo booth/gallery routes.

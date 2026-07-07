@@ -136,3 +136,11 @@ def test_visitor_token_requires_active_session_and_is_scoped() -> None:
     token = response.json()["token"]
     assert "." in token
     assert response.json()["url"].endswith(f"/visitor?token={token}")
+
+
+def test_photobooth_feature_off_hides_public_endpoints() -> None:
+    client = TestClient(app)
+    response = client.post("/doorpad/photo-booth/capture")
+    assert response.status_code == 404
+    moments = client.get("/wallboard/moments")
+    assert moments.status_code == 404
