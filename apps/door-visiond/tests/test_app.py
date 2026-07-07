@@ -89,3 +89,37 @@ def test_privacy_mode_toggle_and_enroll_block(client: TestClient) -> None:
 def test_privacy_mode_invalid_changed_by_is_422(client: TestClient) -> None:
     resp = client.post("/privacy-mode", json={"enabled": True, "changed_by": "hacker"})
     assert resp.status_code == 422
+
+
+def test_list_people(client: TestClient) -> None:
+    # Initially empty list of enrolled people.
+    resp = client.get("/people")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+    # Enroll one person.
+    person_id = _enroll(client)
+
+    # Check that they appear in the list.
+    resp = client.get("/people")
+    assert resp.status_code == 200
+    people = resp.json()
+    assert len(people) == 1
+    assert people[0]["person_id"] == person_id
+    assert people[0]["display_name"] == "Alex"
+    assert people[0]["profile_id"] == "blue_wave"
+    assert people[0]["color"] == "#0000ff"
+    assert "consent_at" in people[0]
+
+    # Clean up.
+    client.post("/unenroll", json={"person_id": person_id})
+
+
+def test_get_consent(client: TestClient) -> None:
+    resp = client.get("/consent")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "version" in data
+    assert "text" in data
+    assert "v1" in data["version"]
+    assert "consent" in data["text"].lower()

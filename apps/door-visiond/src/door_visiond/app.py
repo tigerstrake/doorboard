@@ -17,6 +17,7 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import (
@@ -30,8 +31,10 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from door_visiond.consent import current_consent_version
 from door_visiond.enrollment import ProfileSpec
 from door_visiond.logging_setup import get_logger
 from door_visiond.service import (
@@ -69,6 +72,13 @@ app = FastAPI(
     lifespan=_lifespan,
     docs_url=None,
     redoc_url=None,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -191,3 +201,35 @@ async def privacy_mode(_auth: AdminAuth, request: Request, body: _PrivacyBody) -
         )
     _svc(request).set_privacy_mode(enabled=body.enabled, changed_by=body.changed_by)
     return {"enabled": body.enabled}
+
+
+@app.get("/people")
+async def list_people(_auth: AdminAuth, request: Request) -> list[dict[str, Any]]:
+    return _svc(request)._store.list_people()
+
+
+@app.get("/consent")
+async def get_consent(request: Request) -> dict[str, str]:
+    svc = _svc(request)
+    path = svc._settings.consent_statement_path
+    version = current_consent_version(
+        statement_path=path,
+        fallback=svc._settings.consent_version,
+    )
+    text = ""
+    resolved_path = path
+    if resolved_path is None or not resolved_path.exists():
+        for p in [
+            Path("/Users/tigerstrake/dev/doorboard-T304/docs/policies/consent-statement.md"),
+            Path("docs/policies/consent-statement.md"),
+            Path("../docs/policies/consent-statement.md"),
+            Path("../../docs/policies/consent-statement.md"),
+        ]:
+            if p.exists():
+                resolved_path = p
+                break
+    if resolved_path and resolved_path.exists():
+        text = resolved_path.read_text(encoding="utf-8")
+    else:
+        text = "# Face-recognition consent statement\n\nVersion: v1\n\nBy enrolling, I confirm that:\n- I am enrolling my face.\n"  # noqa: E501
+    return {"text": text, "version": version}
