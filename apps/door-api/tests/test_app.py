@@ -146,6 +146,8 @@ def test_photobooth_feature_off_hides_public_endpoints() -> None:
     assert response.status_code == 404
     moments = client.get("/wallboard/moments")
     assert moments.status_code == 404
+
+
 def test_contract_button_event_sets_cached_profile_snapshot() -> None:
     events = EventFactory(SimClock())
     button = events.make(
