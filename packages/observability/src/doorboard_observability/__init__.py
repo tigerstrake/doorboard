@@ -6,16 +6,23 @@ Exports:
     clock_offset: cross-device clock-offset estimation (ESP32 ↔ Pi)
 """
 
-from doorboard_observability import clock_offset, metrics, percentiles
+from doorboard_observability import clock_offset, metrics, percentiles, redaction
 from doorboard_observability.clock_offset import ClockOffsetEstimator, OffsetSample
 from doorboard_observability.metrics import LATENCY_PATHS, measure, record_sample
 from doorboard_observability.percentiles import p50, p95, p99, percentile, summary
+from doorboard_observability.redaction import (
+    BiometricRedactionFilter,
+    install_biometric_redaction,
+    redaction_filter,
+)
 
 __all__ = [
+    "BiometricRedactionFilter",
     "ClockOffsetEstimator",
     "LATENCY_PATHS",
     "OffsetSample",
     "clock_offset",
+    "install_biometric_redaction",
     "measure",
     "metrics",
     "p50",
@@ -24,5 +31,7 @@ __all__ = [
     "percentile",
     "percentiles",
     "record_sample",
+    "redaction",
+    "redaction_filter",
     "summary",
 ]
