@@ -1,0 +1,29 @@
+# Home Assistant config for the doorboard NUC bridge (T-503).
+#
+# Bind-mounted read-only into the `home-assistant` container's /config in
+# infra/compose/docker-compose.yml and compose.dev.yml. HA's own runtime
+# state (`.storage/`, `home-assistant_v2.db`, logs) lives in the `ha_data`
+# named Docker volume, never in this repo — nothing under this directory is
+# ever written to by HA itself.
+#
+# ADR-0002: HA is an integration surface, never a dependency of the door
+# path — if HA is down, the door doesn't notice. Nothing configured here
+# gates door behavior; entities are display/notification only.
+
+default_config:
+
+# MQTT broker connection. `!env_var` (supported by HA's YAML loader) reads
+# straight from the container's environment — set by compose from `.env` —
+# so no second secrets file needs to stay in sync with `.env` by hand.
+# Discovery is automatic once this integration is up; the retained
+# discovery config messages themselves are published once by the
+# `ha-discovery-publisher` one-shot container
+# (integrations/home-assistant/discovery/).
+mqtt:
+  broker: mosquitto
+  port: 1883
+  username: !env_var MQTT_HA_USERNAME
+  password: !env_var MQTT_HA_PASSWORD
+
+rest_command: !include rest_commands.yaml
+automation: !include automations.yaml

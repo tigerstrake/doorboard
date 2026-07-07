@@ -1,0 +1,20 @@
+# rest_command targets HA automations call into. T-503 wires the HA side of
+# "inbound webhook config for Focus shortcuts/geofence labels ->
+# control-plane-api"; the receiving endpoint is presence computation, which
+# is explicitly T-504's scope (out of scope here, see docs/tasks/T-503-nuc-stack.md).
+#
+# Until T-504 lands, `presence_label_update` 404s against control-plane-api
+# — expected, and harmless (HA is never a dependency of the door path,
+# ADR-0002). Enable the automation in automations.yaml once the endpoint
+# exists.
+presence_label_update:
+  # Same in-network hostname as the `mqtt:` block above's `broker:` — a
+  # topology fact fixed by the compose service name, not a secret, so it's
+  # not worth an `!env_var` indirection (CONTROL_PLANE_URL is still passed
+  # into this container's environment for anyone extending this).
+  url: "http://control-plane-api:8090/webhooks/presence"
+  method: POST
+  headers:
+    content-type: "application/json"
+  payload: >-
+    {"subject_id": "{{ subject_id }}", "source": "{{ source }}", "label": "{{ label }}"}

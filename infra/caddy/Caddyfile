@@ -1,0 +1,25 @@
+# Optional internal-HTTPS reverse proxy for the NUC (T-503). Only started
+# when the `caddy` compose service is enabled via `--profile https`
+# (infra/compose/docker-compose.yml) — most deployments stay on plain HTTP
+# within the LAN and skip this entirely (handoff §16 requires *no* direct
+# public internet exposure either way; this is about encrypting LAN
+# traffic, not about opening anything up).
+#
+# {$DOORBOARD_INTERNAL_DOMAIN} is a LAN-only hostname (e.g. one resolved by
+# the router/Pi-hole, or a .local mDNS name) — never a publicly routable
+# domain. Caddy's automatic HTTPS falls back to a locally-trusted internal
+# CA for such names (see infra/compose/README.md for trusting that CA on
+# client devices); it never contacts a public ACME server for internal-only
+# hostnames, so this stays LAN-only even with HTTPS on.
+{$DOORBOARD_INTERNAL_DOMAIN:doorboard.internal} {
+	# control-plane-api: the door Pi and the owner's browser/admin panel.
+	@control_plane_api path /ingest* /config/* /people/* /admin/* /health /metrics /webhooks/*
+	handle @control_plane_api {
+		reverse_proxy control-plane-api:8090
+	}
+
+	# Everything else on this host goes to Home Assistant.
+	handle {
+		reverse_proxy home-assistant:8123
+	}
+}

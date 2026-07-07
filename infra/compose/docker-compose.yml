@@ -1,0 +1,187 @@
+# Production NUC stack (T-503). See infra/compose/README.md and
+# deploy/nuc/README.md for prerequisites and the full setup walkthrough.
+#
+# Trust model (ARCHITECTURE.md §2): everything here is control-plane —
+# latency-tolerant, holds admin secrets (in `.env`, never in git), and never
+# sits in the door critical path (ADR-0002). `docker compose up` with no
+# `--profile` flags starts the services required for the acceptance bar
+# ("all healthchecks green"); `caddy` (optional internal HTTPS) and
+# `wallboard-worker` (no jobs until T-601..T-605) are behind profiles.
+#
+# Run from the repo root:
+#   docker compose -f infra/compose/docker-compose.yml --env-file .env up -d
+name: doorboard-nuc
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: doorboard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: doorboard
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U doorboard -d doorboard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # Postgres itself is never exposed beyond the compose network — only
+    # control-plane-api talks to it (ADR-0007: NUC disk, not the NAS; no
+    # active database ever leaves the trust boundary).
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    entrypoint: ["/mosquitto-entrypoint.sh"]
+    environment:
+      MQTT_CP_PASSWORD: ${MQTT_CP_PASSWORD:?MQTT_CP_PASSWORD must be set in .env}
+      MQTT_PI_PASSWORD: ${MQTT_PI_PASSWORD:?MQTT_PI_PASSWORD must be set in .env}
+      MQTT_HA_PASSWORD: ${MQTT_HA_PASSWORD:?MQTT_HA_PASSWORD must be set in .env}
+      MQTT_HA_DISCOVERY_PASSWORD: ${MQTT_HA_DISCOVERY_PASSWORD:?MQTT_HA_DISCOVERY_PASSWORD must be set in .env}
+      MQTT_HEALTHCHECK_PASSWORD: ${MQTT_HEALTHCHECK_PASSWORD:?MQTT_HEALTHCHECK_PASSWORD must be set in .env}
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl.conf:/mosquitto/config/acl.conf:ro
+      - ./mosquitto/entrypoint.sh:/mosquitto-entrypoint.sh:ro
+      - mosquitto_data:/mosquitto/data
+    # LAN-only: bind to the NUC's LAN interface, never 0.0.0.0 on a box with
+    # a public interface, and never port-forward this on the router
+    # (handoff §16). LAN_BIND_ADDR defaults to all interfaces for the common
+    # case of a NUC with a single LAN NIC; override in .env if the NUC is
+    # dual-homed.
+    ports:
+      - "${LAN_BIND_ADDR:-0.0.0.0}:1883:1883"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mosquitto_pub -h 127.0.0.1 -p 1883 -u healthcheck -P \"$$MQTT_HEALTHCHECK_PASSWORD\" -t healthcheck/ping -m ok -r",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  control-plane-api:
+    build:
+      context: ../..
+      dockerfile: infra/compose/docker/control-plane-api.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    environment:
+      DOORBOARD_DOOR_ID: ${DOORBOARD_DOOR_ID:-primary}
+      CONTROL_PLANE_BIND: 0.0.0.0:8090
+      POSTGRES_DSN: postgresql+psycopg://doorboard:${POSTGRES_PASSWORD}@postgres:5432/doorboard
+      MQTT_URL: mqtt://mosquitto:1883
+      MQTT_USERNAME: control-plane-api
+      MQTT_PASSWORD: ${MQTT_CP_PASSWORD}
+      NTFY_URL: ${NTFY_URL:-}
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      CONTROL_PLANE_ADMIN_TOKEN: ${CONTROL_PLANE_ADMIN_TOKEN:?CONTROL_PLANE_ADMIN_TOKEN must be set in .env}
+      CONTROL_PLANE_SYNC_STALL_ALERT_S: ${CONTROL_PLANE_SYNC_STALL_ALERT_S:-14400}
+      CONTROL_PLANE_NOTIFY_COOLDOWN_S: ${CONTROL_PLANE_NOTIFY_COOLDOWN_S:-3600}
+    ports:
+      - "${LAN_BIND_ADDR:-0.0.0.0}:8090:8090"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  postgres-backup:
+    image: postgres:16
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/backup/pg-backup.sh"]
+    environment:
+      POSTGRES_DSN: postgresql://doorboard:${POSTGRES_PASSWORD}@postgres:5432/doorboard
+      BACKUP_DEST: /mnt/nas-backups
+      BACKUP_INTERVAL_S: ${BACKUP_INTERVAL_S:-86400}
+      BACKUP_RETAIN_COUNT: ${BACKUP_RETAIN_COUNT:-14}
+    volumes:
+      - ./backup/pg-backup.sh:/backup/pg-backup.sh:ro
+      # NAS_BACKUP_PATH is a host mount of the NAS share
+      # (deploy/nas/README.md: doorboard/backups/) — never a Docker volume,
+      # so a container/volume wipe can't take the only backup copy with it.
+      - ${NAS_BACKUP_PATH:?NAS_BACKUP_PATH (host mount of the NAS backups share) must be set in .env}:/mnt/nas-backups
+
+  home-assistant:
+    image: "ghcr.io/home-assistant/home-assistant:stable"
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-UTC}
+      MQTT_HA_USERNAME: home-assistant
+      MQTT_HA_PASSWORD: ${MQTT_HA_PASSWORD}
+      # In-network service name, not the Pi-facing CONTROL_PLANE_URL from
+      # .env (that one points at the NUC's LAN hostname for door-sync).
+      CONTROL_PLANE_URL: http://control-plane-api:8090
+    volumes:
+      - ha_data:/config
+      - ./../../integrations/home-assistant/config/configuration.yaml:/config/configuration.yaml:ro
+      - ./../../integrations/home-assistant/config/automations.yaml:/config/automations.yaml:ro
+      - ./../../integrations/home-assistant/config/rest_commands.yaml:/config/rest_commands.yaml:ro
+    # Never exposed beyond the LAN (handoff §16); the door plane never talks
+    # to HA directly (ADR-0002) — this port is for the owner's browser/app
+    # and for the Caddy profile below.
+    ports:
+      - "${LAN_BIND_ADDR:-0.0.0.0}:8123:8123"
+    # The official image ships its own HEALTHCHECK; not overridden here.
+
+  ha-discovery-publisher:
+    image: eclipse-mosquitto:2
+    restart: "no"
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/discovery/publish-discovery.sh"]
+    environment:
+      MQTT_HA_DISCOVERY_PASSWORD: ${MQTT_HA_DISCOVERY_PASSWORD}
+      MQTT_HOST: mosquitto
+    volumes:
+      - ./../../integrations/home-assistant/discovery:/discovery:ro
+
+  wallboard-worker:
+    build:
+      context: ../..
+      dockerfile: infra/compose/docker/wallboard-worker.Dockerfile
+    restart: unless-stopped
+    profiles: ["future"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    profiles: ["https"]
+    depends_on:
+      - control-plane-api
+      - home-assistant
+    volumes:
+      - ./../../infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      DOORBOARD_INTERNAL_DOMAIN: ${DOORBOARD_INTERNAL_DOMAIN:-doorboard.internal}
+    ports:
+      - "${LAN_BIND_ADDR:-0.0.0.0}:443:443"
+
+volumes:
+  postgres_data:
+  mosquitto_data:
+  ha_data:
+  caddy_data:
+  caddy_config:
