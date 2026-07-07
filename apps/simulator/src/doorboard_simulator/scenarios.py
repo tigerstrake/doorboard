@@ -110,6 +110,15 @@ class ScenarioRunner:
             if stable is not None:
                 self._emit(stable)
                 stable_payload = stable.model_dump(mode="python")["payload"]
+                profile_update = self.events.make(
+                    "door.profile_update",
+                    {
+                        "profile_id": str(stable_payload["profile_id"]),
+                        "expires_at_monotonic_ms": stable_payload["expires_at_monotonic_ms"],
+                        "priority": "high",
+                    },
+                )
+                self._emit(profile_update)
                 ttl_ms = int(stable_payload["expires_at_monotonic_ms"]) - self.clock.monotonic_ms
                 await self.esp32.send(
                     self.esp32.make_message(
@@ -117,7 +126,7 @@ class ScenarioRunner:
                         {
                             "profile_id": str(stable_payload["profile_id"]),
                             "ttl_ms": ttl_ms,
-                            "priority": "normal",
+                            "priority": "high",
                         },
                     )
                 )
@@ -132,6 +141,9 @@ class ScenarioRunner:
             return
         if action == "identity_expired":
             self._emit(await self.vision.identity_expired(str(step["person_id"])))
+            profile_clear = self.events.make("door.profile_clear", {"reason": "expired"})
+            self._emit(profile_clear)
+            await self.esp32.send(self.esp32.make_message("profile_clear", {"reason": "expired"}))
             return
         if action == "hailo_down":
             self.outages.set_hailo(False)

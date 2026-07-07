@@ -21,6 +21,7 @@ Design decisions
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -59,6 +60,7 @@ class SessionSnapshot:
     person_id: str | None
     display_name: str | None
     profile_id: str | None
+    had_cached_profile: bool
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -67,6 +69,7 @@ class SessionSnapshot:
             "person_id": self.person_id,
             "display_name": self.display_name,
             "profile_id": self.profile_id,
+            "had_cached_profile": self.had_cached_profile,
         }
 
 
@@ -139,6 +142,7 @@ class SessionMachine:
     _person_id: str | None = field(default=None, init=False)
     _display_name: str | None = field(default=None, init=False)
     _profile_id: str | None = field(default=None, init=False)
+    _had_cached_profile: bool = field(default=False, init=False)
     _started_at_mono_ms: int = field(default=0, init=False)
     _last_transition_mono_ms: int = field(default=0, init=False)
     _timer: _TimerState = field(default_factory=_TimerState, init=False)
@@ -180,6 +184,9 @@ class SessionMachine:
         self._profile_id = persisted.profile_id
         self._started_at_mono_ms = persisted.started_at_monotonic_ms
         self._last_transition_mono_ms = persisted.last_transition_monotonic_ms
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            meta = json.loads(persisted.meta_json)
+            self._had_cached_profile = bool(meta.get("had_cached_profile", False))
 
         now_ms = self._monotonic_ms_fn()
         elapsed_s = (now_ms - persisted.last_transition_monotonic_ms) / 1000.0
@@ -221,6 +228,7 @@ class SessionMachine:
             person_id=self._person_id,
             display_name=self._display_name,
             profile_id=self._profile_id,
+            had_cached_profile=self._had_cached_profile,
         )
 
     @property
@@ -244,6 +252,7 @@ class SessionMachine:
         person_id: str | None = None,
         display_name: str | None = None,
         profile_id: str | None = None,
+        had_cached_profile: bool | None = None,
         session_entry: Literal["button", "touch", "approach"] | None = None,
     ) -> bool:
         """Attempt a state transition.
@@ -284,6 +293,7 @@ class SessionMachine:
             self._person_id = person_id
             self._display_name = display_name
             self._profile_id = profile_id
+            self._had_cached_profile = bool(had_cached_profile)
         else:
             # Allow identity to be updated (e.g., late recognition during APPROACH_DETECTED).
             if person_id is not None:
@@ -292,6 +302,8 @@ class SessionMachine:
                 self._display_name = display_name
             if profile_id is not None:
                 self._profile_id = profile_id
+            if to_state == SessionState.BUTTON_PRESSED and had_cached_profile is not None:
+                self._had_cached_profile = had_cached_profile
 
         self._state = to_state
         self._last_transition_mono_ms = now_ms
@@ -313,6 +325,7 @@ class SessionMachine:
                 "payload": payload.model_dump(mode="json"),
                 "session_id": str(self._session_id),
                 "trace_id": str(self._trace_id),
+                "had_cached_profile": self._had_cached_profile,
             }
         )
 
@@ -332,6 +345,7 @@ class SessionMachine:
                     "payload": started_payload.model_dump(mode="json"),
                     "session_id": str(self._session_id),
                     "trace_id": str(self._trace_id),
+                    "had_cached_profile": self._had_cached_profile,
                 }
             )
 
@@ -352,6 +366,7 @@ class SessionMachine:
                     "payload": ended_payload.model_dump(mode="json"),
                     "session_id": str(self._session_id),
                     "trace_id": str(self._trace_id),
+                    "had_cached_profile": self._had_cached_profile,
                 }
             )
 
@@ -363,6 +378,7 @@ class SessionMachine:
             self._person_id = None
             self._display_name = None
             self._profile_id = None
+            self._had_cached_profile = False
         elif to_state == SessionState.SESSION_END:
             # Persist SESSION_END so restart knows to transition to IDLE.
             self._persist()
@@ -384,6 +400,8 @@ class SessionMachine:
         trace_id: UUID | None = None,
         trigger: str = "door.button_pressed",
         entry: Literal["button", "touch"] = "button",
+        had_cached_profile: bool | None = None,
+        profile_id: str | None = None,
     ) -> bool:
         """Handle a ``door.button_pressed`` event.
 
@@ -414,12 +432,22 @@ class SessionMachine:
             )
             return False
 
+        cached = (
+            had_cached_profile
+            if had_cached_profile is not None
+            else current in (SessionState.APPROACH_DETECTED, SessionState.IDENTITY_CACHED)
+            and self._profile_id is not None
+        )
+        button_profile_id = profile_id if cached else None
+
         # Transition to BUTTON_PRESSED.
         ok = self.transition(
             SessionState.BUTTON_PRESSED,
             trigger,
             trace_id=trace_id,
             session_entry=entry,
+            profile_id=button_profile_id,
+            had_cached_profile=cached,
         )
         if not ok:
             return False  # pragma: no cover — should not happen given the guard above
@@ -746,6 +774,7 @@ class SessionMachine:
                             self._timer.target_state.value if self._timer.target_state else None
                         ),
                         "timer_trigger": self._timer.trigger or None,
+                        "had_cached_profile": self._had_cached_profile,
                     }
                 ),
             )

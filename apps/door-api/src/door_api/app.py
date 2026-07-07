@@ -19,6 +19,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
+from doorboard_contracts.events import DoorboardEvent
 from doorboard_esp32_link import Esp32Transport, WireMessage
 from doorboard_esp32_link.esp32 import uuid7_now
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
@@ -46,6 +47,7 @@ class DoorApiState:
         self.effect_requests = 0
         self.effect_unavailable = 0
         self.media_forward_errors = 0
+        self._esp32_event_task: asyncio.Task[None] | None = None
 
         def on_event(event: dict[str, Any]) -> None:
             self.broadcast.send_delta(event)
@@ -68,11 +70,55 @@ class DoorApiState:
         """Start the machine and populate the initial snapshot."""
         self.machine.restore_from_persistence()
         self.broadcast.update_snapshot(self.machine.snapshot().to_dict())
+        self.start_esp32_event_consumer()
 
     def shutdown(self) -> None:
         """Close resources."""
+        if self._esp32_event_task is not None:
+            self._esp32_event_task.cancel()
         self.machine.close()
         self.social_store.close()
+
+    def start_esp32_event_consumer(self) -> None:
+        if self.esp32_transport is None or self._esp32_event_task is not None:
+            return
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+            self._esp32_event_task = loop.create_task(
+                self._consume_esp32_events(),
+                name="door-api-esp32-events",
+            )
+
+    async def _consume_esp32_events(self) -> None:
+        assert self.esp32_transport is not None
+        async for event in self.esp32_transport.events():
+            self.handle_contract_event(event)
+
+    def handle_contract_event(self, event: DoorboardEvent) -> bool:
+        payload = event.payload
+        changed = False
+        if event.type == "door.button_pressed":
+            changed = self.machine.handle_button_pressed(
+                trace_id=event.trace_id,
+                had_cached_profile=payload.had_cached_profile,
+                profile_id=payload.profile_id,
+            )
+        elif event.type == "vision.identity_stable":
+            changed = self.machine.handle_identity_stable(
+                person_id=payload.person_id,
+                display_name=payload.display_name,
+                profile_id=payload.profile_id,
+                trace_id=event.trace_id,
+            )
+            self.broadcast.send_delta(event.model_dump(mode="json"))
+        elif event.type == "vision.identity_expired":
+            changed = self.machine.handle_identity_expired(person_id=payload.person_id)
+            self.broadcast.send_delta(event.model_dump(mode="json"))
+        elif event.type == "door.contact_changed":
+            changed = self.machine.handle_contact_changed(state=payload.state)
+        if changed or event.type.startswith("vision."):
+            self.broadcast.update_snapshot(self.machine.snapshot().to_dict())
+        return changed
 
     def snapshot_response(self) -> dict[str, Any]:
         return {
