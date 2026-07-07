@@ -63,11 +63,23 @@ function apiErrorMessage(err: unknown, fallback: string): string {
 
 // Session states that trigger Wallboard Visitor Mode takeover
 const API_BASE = import.meta.env.VITE_DOOR_API_BASE_URL ?? "http://127.0.0.1:8000";
+const FEATURE_PHOTOBOOTH =
+  ((import.meta.env.VITE_FEATURE_PHOTOBOOTH as string | undefined) ??
+    (import.meta.env.FEATURE_PHOTOBOOTH as string | undefined)) === "true";
 
 const wsUrlFromApiBase = (base: string) => `${base.replace(/^http/, "ws")}/ws`;
 
-type DoorPadScreen = "home" | "ringing" | "message" | "guestbook" | "poll" | "checkin" | "privacy";
+type DoorPadScreen =
+  | "home"
+  | "ringing"
+  | "message"
+  | "photo"
+  | "guestbook"
+  | "poll"
+  | "checkin"
+  | "privacy";
 type VideoStep = "offer" | "countdown" | "recording" | "review" | "saved" | "qr";
+type PhotoStep = "offer" | "countdown" | "review" | "saved";
 
 interface DoorApiSnapshot {
   session?: { state?: SessionState; session_id?: string | null };
@@ -80,6 +92,27 @@ interface VideoRecording {
   consent_context: "visitor_initiated" | "bell_event" | null;
   thumbnail_path: string | null;
   playback_url?: string;
+}
+
+interface PhotoReview {
+  recording_id: string;
+  session_id: string;
+  review_url: string;
+  size_bytes: number;
+  sha256: string;
+}
+
+interface GalleryPhoto extends Recording {
+  gallery_status: "pending" | "approved" | "deleted";
+  tags: string[];
+  wallboard_moment: boolean;
+}
+
+interface WallboardMoment {
+  recording_id: string;
+  tags: string[];
+  approved_at: string | null;
+  thumbnail_path: string | null;
 }
 
 const VISITOR_STATES: SessionState[] = [
@@ -125,12 +158,17 @@ export function App() {
   // DoorPad local state
   const [doorPadScreen, setDoorPadScreen] = useState<DoorPadScreen>("home");
   const [videoStep, setVideoStep] = useState<VideoStep>("offer");
+  const [photoStep, setPhotoStep] = useState<PhotoStep>("offer");
   const [countdown, setCountdown] = useState<number>(3);
+  const [photoCountdown, setPhotoCountdown] = useState<number>(3);
   const [recordingElapsed, setRecordingElapsed] = useState<number>(0);
   const [maxRecordingS, setMaxRecordingS] = useState<number>(60);
   const [latestRecording, setLatestRecording] = useState<VideoRecording | null>(null);
+  const [currentPhoto, setCurrentPhoto] = useState<PhotoReview | null>(null);
   const [visitorQrUrl, setVisitorQrUrl] = useState<string | null>(null);
   const [adminRecordings, setAdminRecordings] = useState<VideoRecording[]>([]);
+  const [galleryPhotos, setGalleryPhotos] = useState<GalleryPhoto[]>([]);
+  const [wallboardMoments, setWallboardMoments] = useState<WallboardMoment[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Admin surface media & storage states
@@ -287,6 +325,18 @@ export function App() {
     return () => controller.abort();
   }, [route]);
 
+  useEffect(() => {
+    if (!FEATURE_PHOTOBOOTH || (route !== "/admin" && route !== "/diagnostics")) return undefined;
+    const controller = new AbortController();
+    fetch(`${API_BASE}/admin/gallery/photos`, { signal: controller.signal })
+      .then((response) => (response.ok ? response.json() : { photos: [] }))
+      .then((data: { photos?: GalleryPhoto[] }) => {
+        setGalleryPhotos(data.photos ?? []);
+      })
+      .catch(() => setGalleryPhotos([]));
+    return () => controller.abort();
+  }, [route]);
+
   // Show temporary toast feedback
   const triggerToast = (msg: string) => {
     setToastMessage(msg);
@@ -372,6 +422,69 @@ export function App() {
     }
   };
 
+  const refreshGalleryPhotos = useCallback(async () => {
+    if (!FEATURE_PHOTOBOOTH) return;
+    try {
+      const response = await fetch(`${API_BASE}/admin/gallery/photos`);
+      const data = response.ok ? ((await response.json()) as { photos?: GalleryPhoto[] }) : {};
+      setGalleryPhotos(data.photos ?? []);
+    } catch {
+      setGalleryPhotos([]);
+    }
+  }, []);
+
+  const approveGalleryPhoto = async (photo: GalleryPhoto) => {
+    const tagText = window.prompt("Tags, comma-separated", photo.tags.join(", "));
+    if (tagText === null) return;
+    try {
+      const response = await fetch(`${API_BASE}/admin/gallery/photos/${photo.recording_id}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tags: tagText.split(",").map((tag) => tag.trim()).filter(Boolean),
+          wallboard_moment: photo.wallboard_moment,
+        }),
+      });
+      triggerToast(response.ok ? "Photo approved" : "Couldn't approve photo");
+      void refreshGalleryPhotos();
+    } catch {
+      triggerToast("Couldn't approve photo");
+    }
+  };
+
+  const updateGalleryTags = async (photo: GalleryPhoto, wallboardMoment?: boolean) => {
+    const tagText = window.prompt("Tags, comma-separated", photo.tags.join(", "));
+    if (tagText === null && wallboardMoment === undefined) return;
+    try {
+      const response = await fetch(`${API_BASE}/admin/gallery/photos/${photo.recording_id}/tags`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tags: tagText === null ? photo.tags : tagText.split(",").map((tag) => tag.trim()),
+          wallboard_moment: wallboardMoment ?? photo.wallboard_moment,
+        }),
+      });
+      triggerToast(response.ok ? "Photo updated" : "Couldn't update photo");
+      void refreshGalleryPhotos();
+    } catch {
+      triggerToast("Couldn't update photo");
+    }
+  };
+
+  const deleteGalleryPhoto = async (photo: GalleryPhoto) => {
+    if (!window.confirm("Delete this photo from SSD, NAS, gallery, and thumbnails?")) return;
+    try {
+      const response = await fetch(`${API_BASE}/admin/gallery/photos/${photo.recording_id}`, {
+        method: "DELETE",
+      });
+      triggerToast(response.ok ? "Photo deleted" : "Couldn't delete photo");
+      void refreshGalleryPhotos();
+      void fetchRecordings(currentCursor);
+    } catch {
+      triggerToast("Couldn't delete photo");
+    }
+  };
+
   // Feed the ambient Guestbook Highlights + Room Poll tiles from real data.
   useEffect(() => {
     if (route !== "/wallboard") return;
@@ -400,6 +513,16 @@ export function App() {
         .catch(() => {
           // Same fallback as above — ambient tile keeps last-known data.
         });
+      if (FEATURE_PHOTOBOOTH) {
+        fetch(`${API_BASE}/wallboard/moments`)
+          .then((response) => (response.ok ? response.json() : { photos: [] }))
+          .then((data: { photos?: WallboardMoment[] }) => {
+            if (!cancelled) setWallboardMoments(data.photos ?? []);
+          })
+          .catch(() => {
+            // Private gallery unavailable — keep the last approved moment list.
+          });
+      }
     };
     load();
     const interval = setInterval(load, 30000);
@@ -761,6 +884,24 @@ export function App() {
                   ))}
                 </div>
               </Tile>
+
+              {FEATURE_PHOTOBOOTH && wallboardMoments.length > 0 && (
+                <Tile title="Moments" asOf={wallboardMoments[0]?.approved_at ?? null}>
+                  <div className="moments-tile-content">
+                    {wallboardMoments.slice(0, 3).map((photo) => (
+                      <div className="moment-row" key={photo.recording_id}>
+                        <div className="moment-thumb-placeholder">
+                          {photo.recording_id.slice(0, 2).toUpperCase()}
+                        </div>
+                        <div>
+                          <strong>{photo.tags.length > 0 ? photo.tags.join(", ") : "Photo Booth"}</strong>
+                          <p>{photo.recording_id.slice(0, 8)}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Tile>
+              )}
             </main>
           </div>
         )}
@@ -860,6 +1001,88 @@ export function App() {
     await postDoorApi("/doorpad/video-message/save");
   };
 
+  const startPhotoFlow = async () => {
+    if (!FEATURE_PHOTOBOOTH) return;
+    setDoorPadScreen("photo");
+    setPhotoStep("countdown");
+    setPhotoCountdown(3);
+    setCurrentPhoto(null);
+  };
+
+  const capturePhoto = useCallback(async () => {
+    if (!FEATURE_PHOTOBOOTH) return;
+    try {
+      const response = await fetch(`${API_BASE}/doorpad/photo-booth/capture`, { method: "POST" });
+      if (!response.ok) {
+        triggerToast("Photo capture unavailable");
+        setDoorPadScreen("home");
+        setPhotoStep("offer");
+        return;
+      }
+      const data = (await response.json()) as { photo: PhotoReview };
+      setCurrentPhoto(data.photo);
+      setPhotoStep("review");
+    } catch {
+      triggerToast("Photo capture unavailable");
+      setDoorPadScreen("home");
+      setPhotoStep("offer");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (doorPadScreen !== "photo" || photoStep !== "countdown") return undefined;
+    if (photoCountdown <= 0) {
+      void capturePhoto();
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setPhotoCountdown((value) => value - 1), 1000);
+    return () => window.clearTimeout(timer);
+  }, [capturePhoto, doorPadScreen, photoCountdown, photoStep]);
+
+  const discardPhotoFlow = async () => {
+    const photo = currentPhoto;
+    setCurrentPhoto(null);
+    setDoorPadScreen("home");
+    setPhotoStep("offer");
+    if (!photo) return;
+    try {
+      await fetch(`${API_BASE}/doorpad/photo-booth/${photo.recording_id}/discard`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: photo.session_id }),
+      });
+    } catch {
+      // Best effort; backend review TTL/cleanup owns stale temp files.
+    }
+  };
+
+  const retakePhoto = async () => {
+    await discardPhotoFlow();
+    void startPhotoFlow();
+  };
+
+  const savePhoto = async () => {
+    if (!currentPhoto) return;
+    try {
+      const response = await fetch(
+        `${API_BASE}/doorpad/photo-booth/${currentPhoto.recording_id}/save`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: currentPhoto.session_id }),
+        }
+      );
+      if (!response.ok) {
+        triggerToast("Couldn't save photo");
+        return;
+      }
+      setPhotoStep("saved");
+      triggerToast("Photo saved for owner review.");
+    } catch {
+      triggerToast("Couldn't save photo");
+    }
+  };
+
   const showVisitorQr = async () => {
     setDoorPadScreen("message");
     setVideoStep("qr");
@@ -918,6 +1141,12 @@ export function App() {
               Video Message
             </BigButton>
 
+            {FEATURE_PHOTOBOOTH && (
+              <BigButton id="btn-photo-booth" icon={<span>📸</span>} onClick={startPhotoFlow}>
+                Photo Booth
+              </BigButton>
+            )}
+
             <BigButton id="btn-guestbook" icon={<span>✍️</span>} onClick={() => handleActionClick("Guestbook", "guestbook")}>
               Guestbook
             </BigButton>
@@ -939,7 +1168,16 @@ export function App() {
     }
 
     return (
-      <CountdownAutoReset onReset={doorPadScreen === "message" ? discardVideoFlow : handleReset} timeoutMs={30000}>
+      <CountdownAutoReset
+        onReset={
+          doorPadScreen === "message"
+            ? discardVideoFlow
+            : doorPadScreen === "photo"
+              ? discardPhotoFlow
+              : handleReset
+        }
+        timeoutMs={30000}
+      >
         <div className="doorpad-view db-app-theme fade-in">
           {doorPadScreen === "ringing" && (
             <div className="doorpad-sub-content">
@@ -1026,6 +1264,48 @@ export function App() {
               <div className="action-button-group">
                 <BigButton variant="primary" onClick={startVideoFlow}>Record Here Instead</BigButton>
                 <BigButton onClick={discardVideoFlow}>Cancel</BigButton>
+              </div>
+            </div>
+          )}
+
+          {doorPadScreen === "photo" && photoStep === "countdown" && (
+            <div className="doorpad-sub-content">
+              <h2>Photo In</h2>
+              <div className="countdown-number">{photoCountdown}</div>
+              {renderVideoPreview()}
+              <div className="action-button-group">
+                <BigButton onClick={discardPhotoFlow}>Cancel</BigButton>
+              </div>
+            </div>
+          )}
+
+          {doorPadScreen === "photo" && photoStep === "review" && (
+            <div className="doorpad-sub-content">
+              <h2>Review Photo</h2>
+              {currentPhoto ? (
+                <img className="review-photo" src={currentPhoto.review_url} alt="Photo booth review" />
+              ) : (
+                <div className="video-preview-frame video-preview-frame--unavailable">
+                  Preparing photo...
+                </div>
+              )}
+              <div className="message-meta">Consent context: visitor_initiated</div>
+              <div className="action-button-group">
+                <BigButton variant="primary" onClick={savePhoto}>Keep Photo</BigButton>
+                <BigButton onClick={retakePhoto}>Retake</BigButton>
+                <BigButton onClick={discardPhotoFlow}>Discard</BigButton>
+              </div>
+            </div>
+          )}
+
+          {doorPadScreen === "photo" && photoStep === "saved" && (
+            <div className="doorpad-sub-content">
+              <h2>Photo Saved</h2>
+              <p>Saved privately for owner review before it appears anywhere else.</p>
+              <div className="action-button-group">
+                <BigButton variant="primary" onClick={() => setDoorPadScreen("home")}>
+                  Done
+                </BigButton>
               </div>
             </div>
           )}
@@ -1403,6 +1683,54 @@ export function App() {
               </button>
             </div>
           </section>
+
+          {FEATURE_PHOTOBOOTH && (
+            <section className="admin-gallery-section">
+              <h3 className="section-title">Photo Booth Gallery</h3>
+              {galleryPhotos.length === 0 ? (
+                <p className="desc">No saved photo booth stills awaiting review.</p>
+              ) : (
+                <div className="admin-gallery-grid">
+                  {galleryPhotos.map((photo) => (
+                    <div className="admin-gallery-row" key={photo.recording_id}>
+                      <div className="gallery-photo-preview">
+                        {photo.recording_id.slice(0, 2).toUpperCase()}
+                      </div>
+                      <div className="gallery-photo-detail">
+                        <strong>{photo.recording_id.slice(0, 8)}</strong>
+                        <p>Status: {photo.gallery_status}</p>
+                        <p>Consent: {photo.consent_context ?? "visitor_initiated"}</p>
+                        <p>Tags: {photo.tags.length > 0 ? photo.tags.join(", ") : "none"}</p>
+                      </div>
+                      <div className="gallery-photo-actions">
+                        {photo.gallery_status !== "approved" && (
+                          <button className="phrase-btn" onClick={() => approveGalleryPhoto(photo)}>
+                            Approve
+                          </button>
+                        )}
+                        {photo.gallery_status === "approved" && (
+                          <>
+                            <button className="phrase-btn" onClick={() => updateGalleryTags(photo)}>
+                              Tags
+                            </button>
+                            <button
+                              className="phrase-btn"
+                              onClick={() => updateGalleryTags(photo, !photo.wallboard_moment)}
+                            >
+                              {photo.wallboard_moment ? "Hide Moment" : "Show Moment"}
+                            </button>
+                          </>
+                        )}
+                        <button className="delete-recording-btn" onClick={() => deleteGalleryPhoto(photo)}>
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
 
           <AdminSocialPanel />
         </div>

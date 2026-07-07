@@ -18,6 +18,13 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True, kw_only=True)
 class SessionConfig:
     """Timeouts and durations for the visitor session state machine.
@@ -70,6 +77,12 @@ class SessionConfig:
     # Bounded timeout for door-api -> door-media local loopback calls.
     media_timeout_s: float = 1.0
 
+    # door-sync local base URL for non-critical admin/gallery operations.
+    sync_base_url: str = "http://127.0.0.1:8083"
+
+    # Feature gate for the explicit photo-booth + private gallery flow.
+    feature_photobooth: bool = False
+
     # Short-lived visitor QR tokens.  If unset, a per-process boot secret is used.
     visitor_token_secret: str = ""
     visitor_token_ttl_s: float = 300.0
@@ -107,6 +120,8 @@ class SessionConfig:
                 os.environ.get("DOOR_API_MEDIA_BASE_URL", "http://127.0.0.1:8001"),
             ),
             media_timeout_s=_env_float("DOOR_API_MEDIA_TIMEOUT_S", 1.0),
+            sync_base_url=os.environ.get("DOOR_API_SYNC_BASE_URL", "http://127.0.0.1:8083"),
+            feature_photobooth=_env_bool("FEATURE_PHOTOBOOTH", False),
             visitor_token_secret=os.environ.get(
                 "DOOR_API_VISITOR_TOKEN_SECRET",
                 secrets.token_urlsafe(32),

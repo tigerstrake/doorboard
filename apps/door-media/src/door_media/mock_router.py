@@ -25,6 +25,7 @@ from uuid import UUID
 
 from door_media._uuid7 import uuid7
 from door_media.adapters import (
+    CapturedPhoto,
     ConsentContext,
     FinalizedRecording,
     MediaStorageStatus,
@@ -59,7 +60,9 @@ class MockMediaRouter:
         self._settings = settings
         self._active: dict[UUID, _ActiveMock] = {}
         self._recordings_dir = settings.recordings_root / "mock"
+        self._review_dir = settings.ssd_data_root / "photo-review"
         self._recordings_dir.mkdir(parents=True, exist_ok=True)
+        self._review_dir.mkdir(parents=True, exist_ok=True)
         logger.info("mock_router_init", extra={"recordings_dir": str(self._recordings_dir)})
 
     # ------------------------------------------------------------------
@@ -155,6 +158,25 @@ class MockMediaRouter:
             extra={"recording_id": str(handle.recording_id)},
         )
 
+    async def capture_photo(
+        self,
+        *,
+        session_id: UUID,
+        stream: str,
+    ) -> CapturedPhoto:
+        recording_id = uuid7()
+        out_path = self._review_dir / f"photo_booth_{recording_id}.jpg"
+        _write_mock_photo(out_path, recording_id=recording_id, session_id=session_id, stream=stream)
+        digest = hashlib.sha256(out_path.read_bytes()).hexdigest()
+        return CapturedPhoto(
+            recording_id=recording_id,
+            session_id=session_id,
+            path=str(out_path.relative_to(self._settings.ssd_data_root)),
+            size_bytes=out_path.stat().st_size,
+            sha256=digest,
+            captured_monotonic_ms=time.monotonic_ns() // 1_000_000,
+        )
+
     def storage_status(self) -> MediaStorageStatus:
         """Return storage status based on the mock recordings directory."""
         recordings_dir = self._settings.ssd_data_root
@@ -209,3 +231,14 @@ def _dir_size_bytes(path: Path) -> int:
     except OSError:
         pass
     return total
+
+
+def _write_mock_photo(path: Path, *, recording_id: UUID, session_id: UUID, stream: str) -> None:
+    """Write a tiny deterministic JPEG-like fixture for CI review flows."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = (
+        b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00\x48\x00\x48\x00\x00"
+        + f"doorboard-photo:{recording_id}:{session_id}:{stream}".encode()
+        + b"\xff\xd9"
+    )
+    path.write_bytes(payload)

@@ -7,6 +7,7 @@ Drains local queues to the control plane and archive. This is the only component
 ## Responsibilities
 
 - Upload finalized clips/thumbnails/metadata and mirror local events (sessions, guestbook, polls) to the NUC.
+- Maintain the private NAS gallery projection for approved photo-booth stills: album copies, manual tags, wallboard eligibility, and deletion across archive tiers.
 - Durable queue in SQLite (WAL) on the SSD; survives reboots and outages of any length.
 - Exponential backoff with jitter; per-item attempt tracking; `sync.upload_failed` events with `next_retry_at`.
 - Deduplication: uploads idempotent by `(item_id, sha256)`; re-sending after a crash must not duplicate archive entries.
@@ -19,7 +20,7 @@ Block or slow any visitor interaction; hold NAS/HA admin credentials; delete any
 
 ## Interfaces
 
-Events out: `sync.upload_queued/_completed/_failed`. HTTP: `/health`, `/metrics`, `GET /queue` (admin). Targets behind adapters: `NucTarget`, `NasTarget`, `MockTarget`.
+Events out: `sync.upload_queued/_completed/_failed`. HTTP: `/health`, `/metrics`, `GET /queue` (admin), internal gallery projection endpoints. Targets behind adapters: `NucTarget`, `NasTarget`, `MockTarget`, `GalleryStore`.
 
 ## Implementation (T-502)
 
@@ -32,6 +33,8 @@ Events out: `sync.upload_queued/_completed/_failed`. HTTP: `/health`, `/metrics`
 **Retry policy.** Exponential backoff with jitter, bounded. *Transient* failures (target unreachable, 5xx, 401/403) retry forever within backoff and never dead-letter — a multi-day outage drains on recovery. Only *permanent* failures (4xx, checksum mismatch, missing local file) count toward `SYNC_MAX_PERMANENT_ATTEMPTS` and then dead-letter (surfaced via `/queue` + `/metrics`, never silently dropped). Completed items are pruned after `SYNC_COMPLETED_RETENTION_S`; dead-letters are kept.
 
 **Biometric fence.** Media enqueue accepts a path only if it resolves inside an allowlisted root (`SYNC_SYNCABLE_ROOTS`, default `recordings,thumbnails`); the `visiond/` enrollment/embedding tree is excluded by omission and additionally denylisted, and `..`/symlink escapes are rejected. See `fence.py`.
+
+**Private gallery.** `GalleryStore` has filesystem-NAS and mock implementations. Approval copies an already-saved `photo_booth` artifact into `gallery/albums/YYYY-MM/` with optional manual tags and a wallboard-moment flag. Wallboard moments are returned only when owner-approved and explicitly marked. `social.deletion_requested` with `target_kind="photo"` removes deterministic NAS base copies, gallery album copies, thumbnails, and consent metadata; door-api also asks door-media to remove the SSD copy.
 
 **Config / env.** See `.env.example` (`--- door-sync ---`). The Pi holds only limited credentials: an ingest-scoped NUC token (`SYNC_INGEST_TOKEN`) and a limited NAS service target (`NAS_SYNC_TARGET`) — never Postgres/HA/NUC-admin/MQTT secrets (`tests/test_credential_fence.py` enforces this).
 

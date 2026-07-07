@@ -158,3 +158,11 @@ def test_contract_button_event_sets_cached_profile_snapshot() -> None:
     assert snapshot["state"] == "VISITOR_MODE"
     assert snapshot["had_cached_profile"] is True
     assert snapshot["profile_id"] == "blue_wave"
+
+
+def test_photobooth_feature_off_hides_public_endpoints() -> None:
+    client = TestClient(app)
+    response = client.post("/doorpad/photo-booth/capture")
+    assert response.status_code == 404
+    moments = client.get("/wallboard/moments")
+    assert moments.status_code == 404

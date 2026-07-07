@@ -1,4 +1,5 @@
 import uuid
+from typing import Any, cast
 
 from doorboard_contracts.events import SessionState
 from fastapi.testclient import TestClient
@@ -160,3 +161,59 @@ def test_video_message_discard_deletes_finalized_clip(client: TestClient):
     assert client.get("/recordings").json()["recordings"] == []
     missing = client.get(f"/recordings/{recording['recording_id']}/file?session_id={session_id}")
     assert missing.status_code == 404
+
+
+def test_photo_booth_save_writes_consent_metadata(client: TestClient):
+    session_id = str(uuid.uuid4())
+    trace_id = str(uuid.uuid4())
+
+    capture = client.post(
+        "/photos/capture",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert capture.status_code == 200
+    photo = capture.json()["photo"]
+
+    save = client.post(
+        f"/photos/{photo['recording_id']}/save",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert save.status_code == 200
+    recording = save.json()["recording"]
+    assert recording["kind"] == "photo_booth"
+    assert recording["consent_context"] == "visitor_initiated"
+    assert recording["consent_metadata_path"] is not None
+
+    row = client.get("/recordings", params={"kind": "photo_booth"}).json()["recordings"][0]
+    assert row["recording_id"] == photo["recording_id"]
+    assert row["thumbnail_path"] is not None
+    assert row["consent_metadata_path"] == recording["consent_metadata_path"]
+
+    cfg = cast(Any, client.app).state.cfg
+    metadata = (cfg.ssd_data_root / row["consent_metadata_path"]).read_text(encoding="utf-8")
+    assert '"capture_mode": "explicit_photo_booth"' in metadata
+    assert '"saved_after_review": true' in metadata
+
+
+def test_photo_booth_discard_leaves_no_media_files(client: TestClient):
+    session_id = str(uuid.uuid4())
+    trace_id = str(uuid.uuid4())
+
+    capture = client.post(
+        "/photos/capture",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert capture.status_code == 200
+    photo = capture.json()["photo"]
+    cfg = cast(Any, client.app).state.cfg
+    assert (cfg.ssd_data_root / photo["review_path"]).exists()
+
+    discard = client.post(
+        f"/photos/{photo['recording_id']}/discard",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert discard.status_code == 200
+    assert not (cfg.ssd_data_root / photo["review_path"]).exists()
+    assert client.get("/recordings", params={"kind": "photo_booth"}).json()["recordings"] == []
+    assert list((cfg.ssd_data_root / "recordings").rglob("photo_booth_*")) == []
+    assert list((cfg.ssd_data_root / "thumbnails").rglob("photo_booth_*")) == []

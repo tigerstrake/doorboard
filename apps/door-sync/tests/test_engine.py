@@ -212,3 +212,70 @@ async def test_license_callback_error_leaves_item_completed_and_recoverable(
         assert good.synced == [(rid, sha)]
     finally:
         queue.close()
+
+
+async def test_gallery_delete_removes_photo_across_nas_tiers(tmp_path: Path, helpers) -> None:
+    from door_sync.gallery import FilesystemGalleryStore, GalleryPhotoInput
+
+    settings = helpers.make_settings(tmp_path, media_target="nas")
+    nas_root = Path(settings.nas_sync_target)
+    nas_root.mkdir(parents=True)
+    rid = "00000000-0000-7000-8000-00000000d606"
+
+    photo_rel, sha, photo_abs = helpers.make_recording_file(
+        settings.ssd_data_root, name=f"photo_booth_{rid}.jpg"
+    )
+    thumb_rel = f"thumbnails/photo_booth_{rid}.jpg"
+    thumb_abs = settings.ssd_data_root / thumb_rel
+    thumb_abs.parent.mkdir(parents=True, exist_ok=True)
+    thumb_abs.write_bytes(b"thumb-bytes")
+    metadata_rel = f"recordings/photo_booth_{rid}.consent.json"
+    metadata_abs = settings.ssd_data_root / metadata_rel
+    metadata_abs.write_text('{"consent_context":"visitor_initiated"}', encoding="utf-8")
+
+    for rel, src in (
+        (photo_rel, photo_abs),
+        (thumb_rel, thumb_abs),
+        (metadata_rel, metadata_abs),
+    ):
+        dest = nas_root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(src.read_bytes())
+
+    store = FilesystemGalleryStore(
+        nas_root=nas_root,
+        ssd_data_root=settings.ssd_data_root,
+        syncable_roots=settings.syncable_roots,
+    )
+    approved = store.ingest_approved_photo(
+        GalleryPhotoInput(
+            recording_id=rid,
+            local_path=photo_rel,
+            thumbnail_path=thumb_rel,
+            consent_metadata_path=metadata_rel,
+            sha256=sha,
+            tags=("friends",),
+            wallboard_moment=False,
+        )
+    )
+    gallery_paths = [
+        approved.gallery_original_path,
+        approved.gallery_thumbnail_path,
+        approved.gallery_metadata_path,
+    ]
+    assert all(path is not None and (nas_root / path).exists() for path in gallery_paths)
+    assert store.list_wallboard_moments() == []
+
+    store.update_tags(rid, tags=("friends",), wallboard_moment=True)
+    assert [p.recording_id for p in store.list_wallboard_moments()] == [rid]
+
+    assert store.delete_photo(rid) is True
+    assert not (nas_root / photo_rel).exists()
+    assert not (nas_root / thumb_rel).exists()
+    assert not (nas_root / metadata_rel).exists()
+    for path in gallery_paths:
+        assert path is not None
+        assert not (nas_root / path).exists()
+    assert store.list_wallboard_moments() == []
+    deleted = store.list_photos(include_deleted=True)[0]
+    assert deleted.status == "deleted"

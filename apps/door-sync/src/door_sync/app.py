@@ -22,11 +22,18 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any
 
+from doorboard_contracts.events import SocialDeletionRequestedEvent, parse_event
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel, ValidationError
 
 from door_sync._uuid7 import uuid7
 from door_sync.engine import SyncEngine
+from door_sync.gallery import (
+    FilesystemGalleryStore,
+    GalleryPhotoInput,
+    GalleryStore,
+    MockGalleryStore,
+)
 from door_sync.media_client import HttpMediaClient
 from door_sync.queue import UploadQueue
 from door_sync.settings import Settings
@@ -58,11 +65,20 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     cfg = get_settings()
     queue = UploadQueue(cfg.queue_db_path)
     engine = build_engine(cfg, queue)
+    if cfg.media_target == "mock":
+        gallery: GalleryStore = MockGalleryStore()
+    else:
+        gallery = FilesystemGalleryStore(
+            nas_root=Path(cfg.nas_sync_target),
+            ssd_data_root=cfg.ssd_data_root,
+            syncable_roots=cfg.syncable_roots,
+        )
     source = MediaEventSource(engine, base_url=cfg.door_media_url)
 
     app.state.cfg = cfg
     app.state.queue = queue
     app.state.engine = engine
+    app.state.gallery = gallery
 
     # Startup crash-recovery + safety-net reconciliation, then background drain.
     await engine.finalize_licenses()
@@ -104,6 +120,10 @@ def _queue(request: Request) -> UploadQueue:
 
 def _engine(request: Request) -> SyncEngine:
     return request.app.state.engine
+
+
+def _gallery(request: Request) -> GalleryStore:
+    return request.app.state.gallery
 
 
 def _require_admin(request: Request) -> None:
@@ -238,3 +258,108 @@ async def internal_purge(person_id: str, request: Request) -> dict:
     engine = _engine(request)
     newly = engine.enqueue_purge(person_id=person_id, trace_id=str(uuid7()))
     return {"enqueued": newly, "person_id": person_id}
+
+
+# ---------------------------------------------------------------------------
+# Private gallery projection (admin/internal)
+# ---------------------------------------------------------------------------
+
+
+class _GalleryApproveBody(BaseModel):
+    local_path: str
+    thumbnail_path: str | None = None
+    consent_metadata_path: str | None = None
+    sha256: str
+    tags: list[str] = []
+    approved_by: str = "owner"
+    wallboard_moment: bool = False
+
+
+class _GalleryTagsBody(BaseModel):
+    tags: list[str] = []
+    wallboard_moment: bool | None = None
+
+
+class _DeletionEventBody(BaseModel):
+    event: dict
+
+
+@app.get("/internal/gallery/photos")
+async def internal_gallery_photos(request: Request) -> dict:
+    return {"photos": [p.to_dict() for p in _gallery(request).list_photos()]}
+
+
+@app.get("/internal/gallery/moments")
+async def internal_gallery_moments(request: Request) -> dict:
+    return {"photos": [p.to_dict() for p in _gallery(request).list_wallboard_moments()]}
+
+
+@app.post("/internal/gallery/photos/{recording_id}/approve")
+async def internal_gallery_approve(
+    recording_id: str,
+    body: _GalleryApproveBody,
+    request: Request,
+) -> dict:
+    row = _gallery(request).ingest_approved_photo(
+        GalleryPhotoInput(
+            recording_id=recording_id,
+            local_path=body.local_path,
+            thumbnail_path=body.thumbnail_path,
+            consent_metadata_path=body.consent_metadata_path,
+            sha256=body.sha256,
+            tags=tuple(_clean_tags(body.tags)),
+            approved_by=body.approved_by,
+            wallboard_moment=body.wallboard_moment,
+        )
+    )
+    return {"photo": row.to_dict()}
+
+
+@app.patch("/internal/gallery/photos/{recording_id}/tags")
+async def internal_gallery_tags(
+    recording_id: str,
+    body: _GalleryTagsBody,
+    request: Request,
+) -> dict:
+    row = _gallery(request).update_tags(
+        recording_id,
+        tags=tuple(_clean_tags(body.tags)),
+        wallboard_moment=body.wallboard_moment,
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="photo not found")
+    return {"photo": row.to_dict()}
+
+
+@app.delete("/internal/gallery/photos/{recording_id}")
+async def internal_gallery_delete(recording_id: str, request: Request) -> dict:
+    deleted = _gallery(request).delete_photo(recording_id)
+    return {"deleted": deleted, "recording_id": recording_id}
+
+
+@app.post("/internal/social-deletion")
+async def internal_social_deletion(body: _DeletionEventBody, request: Request) -> dict:
+    try:
+        event = parse_event(body.event)
+        if not isinstance(event, SocialDeletionRequestedEvent):
+            raise ValueError("expected social.deletion_requested")
+        if event.payload.target_kind != "photo":
+            return {"handled": False}
+        deleted = _gallery(request).delete_photo(event.payload.target_id)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"handled": True, "deleted": deleted}
+
+
+def _clean_tags(tags: list[str]) -> list[str]:
+    clean: list[str] = []
+    seen: set[str] = set()
+    for raw in tags:
+        tag = raw.strip().lower()
+        if not tag or len(tag) > 40 or tag in seen:
+            continue
+        clean.append(tag)
+        seen.add(tag)
+        if len(clean) >= 12:
+            break
+    return clean

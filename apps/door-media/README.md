@@ -11,6 +11,7 @@ visitor cam + mic → rpicam/libcamera → H.264/AAC → MediaMTX
   ├→ WebRTC (kiosks, phones on local network; primary live protocol — not HLS)
   └→ segmented recording on USB SSD
         → on session events: cut/finalize clip (bell_clip | video_message)
+        → on explicit photo-booth trigger: capture still → local review → keep/discard
         → sha256 + thumbnail → media.recording_finalized → sync queue
 ```
 
@@ -26,7 +27,7 @@ visitor cam + mic → rpicam/libcamera → H.264/AAC → MediaMTX
 
 - Events out: `media.recording_started/_finalized`, `media.thumbnail_ready`, `media.retention_deleted`, `media.storage_status`.
 - Events in: `session.state_changed` (record window triggers), deletion requests.
-- HTTP: `/health`, `/metrics`, `GET /streams` (endpoint metadata for UIs), `GET /recordings` + `DELETE /recordings/{id}` (admin).
+- HTTP: `/health`, `/metrics`, `GET /streams` (endpoint metadata for UIs), `GET /recordings` + `DELETE /recordings/{id}` (admin), and `/photos/*` still-capture review endpoints used by the feature-gated DoorPad photo booth.
 - MediaMTX sits behind a `MediaRouter` adapter (`mediamtx | mock`); raw MediaMTX/RTSP ports are never exposed off-host (security §16).
 
 ## Key metrics
@@ -51,6 +52,8 @@ Retention is configured globally and per-kind in the environment files (e.g. `.e
 
 A clip is only deleted due to age or size caps if it is marked as synced (door-sync has verified checksum upload). Deletion unlinks both the video clip and its thumbnail from the SSD.
 
+Photo booth stills are explicit-capture only. Review captures live under `photo-review/` and are not inserted in the durable registry until the visitor keeps them. Saving writes the photo, thumbnail, and consent sidecar under `SSD_DATA_ROOT`; discarding removes the review file and leaves no registry row or sync-visible artifact.
+
 ## Thumbnail Heuristic
 
 Thumbnails are generated automatically using `ffmpeg` when a recording is finalized. The frame-grab offset is determined dynamically based on the clip's duration:
@@ -58,4 +61,3 @@ Thumbnails are generated automatically using `ffmpeg` when a recording is finali
 - If the clip is shorter than `2.0s`, it grabs the frame at half the duration (`duration_s / 2.0`).
 - If the duration is `0.0` or less, it grabs the frame at `0.0s`.
 - If thumbnail generation fails, finalization still succeeds, and the thumbnail path is marked as missing in the database.
-

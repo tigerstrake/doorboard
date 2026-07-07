@@ -5,6 +5,7 @@ import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
 import { AdminSocialPanel } from "./AdminSocialPanel";
 import { VisitorPage } from "./VisitorPage";
+import { App } from "./App";
 
 const HOSTILE = "<script>alert(1)</script>";
 
@@ -87,5 +88,17 @@ describe("VisitorPage renders untrusted poll option text inertly", () => {
 
     await waitFor(() => expect(screen.getAllByText(HOSTILE).length).toBeGreaterThan(0));
     expect(document.querySelector("script")).toBeNull();
+  });
+});
+
+describe("Photo booth feature flag", () => {
+  it("hides the DoorPad photo booth button when the flag is unset", async () => {
+    window.history.pushState(null, "", "/doorpad");
+    mockFetchSequence([{ body: { session: { state: "IDLE" }, config: {} } }]);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
+    expect(screen.queryByText("Photo Booth")).toBeNull();
   });
 });
