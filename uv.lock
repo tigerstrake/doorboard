@@ -18,6 +18,7 @@ members = [
     "doorboard-esp32-link",
     "doorboard-media-client",
     "doorboard-observability",
+    "doorboard-printer",
     "doorboard-satellites",
     "doorboard-simulator",
     "doorboard-wallboard-worker",
@@ -371,6 +372,25 @@ version = "0.0.0"
 source = { editable = "packages/observability" }
 
 [[package]]
+name = "doorboard-printer"
+version = "0.0.0"
+source = { editable = "integrations/printer" }
+dependencies = [
+    { name = "doorboard-config" },
+    { name = "doorboard-contracts" },
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "doorboard-config", editable = "packages/config" },
+    { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[[package]]
 name = "doorboard-satellites"
 version = "0.0.0"
 source = { editable = "integrations/satellites" }
@@ -423,6 +443,7 @@ dependencies = [
     { name = "doorboard-birdnet" },
     { name = "doorboard-config" },
     { name = "doorboard-contracts" },
+    { name = "doorboard-printer" },
     { name = "doorboard-satellites" },
     { name = "httpx" },
 ]
@@ -433,6 +454,7 @@ requires-dist = [
     { name = "doorboard-birdnet", editable = "integrations/birdnet" },
     { name = "doorboard-config", editable = "packages/config" },
     { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "doorboard-printer", editable = "integrations/printer" },
     { name = "doorboard-satellites", editable = "integrations/satellites" },
     { name = "httpx" },
 ]

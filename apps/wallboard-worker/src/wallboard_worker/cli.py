@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import click
 from aircraft.provider import AircraftConfig, MockAircraftProvider, OpenSkyAircraftProvider
 from birdnet.provider import BirdnetConfig, BirdnetGoProvider, MockBirdProvider
+from printer.provider import (
+    MockPrinterProvider,
+    OctoPrintProvider,
+    PrinterConfig,
+    PrinterState,
+)
 from satellites.provider import MockSatelliteProvider, SatelliteConfig, SkyfieldSatelliteProvider
 
 from wallboard_worker.jobs import (
     run_aircraft_summary,
     run_bird_summary,
     run_daily_collage,
+    run_printer_status,
     run_satellite_passes,
 )
 from wallboard_worker.settings import Settings
@@ -104,6 +112,33 @@ def aircraft_summary(mock: bool) -> None:
         provider = OpenSkyAircraftProvider(config)
 
     run_aircraft_summary(settings, provider)
+
+
+@cli.command()
+@click.option("--mock", is_flag=True, help="Force use of mock provider")
+@click.option(
+    "--state",
+    type=click.Choice(["idle", "printing", "paused", "error", "offline"]),
+    help="Force state for mock",
+)
+def printer_status(mock: bool, state: str | None) -> None:
+    """Run the printer status ingestion job."""
+    settings = Settings()
+
+    if mock or not settings.feature_printer:
+        logger.info("Using MockPrinterProvider")
+        # `state` is constrained to the PrinterState literals by click.Choice above.
+        provider = MockPrinterProvider(force_state=cast("PrinterState | None", state))
+    else:
+        logger.info("Using OctoPrintProvider")
+        config = PrinterConfig(
+            octoprint_url=settings.octoprint_url,
+            octoprint_api_key=settings.octoprint_api_key,
+            camera_stream_url=settings.printer_camera_stream_url,
+        )
+        provider = OctoPrintProvider(config)
+
+    run_printer_status(settings, provider)
 
 
 if __name__ == "__main__":

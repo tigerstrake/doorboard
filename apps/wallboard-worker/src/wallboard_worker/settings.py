@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     aircraft_bbox_half_size_lon: float = Field(default=0.25, alias="AIRCRAFT_BBOX_HALF_SIZE_LON")
     aircraft_poll_cooldown_seconds: int = Field(default=30, alias="AIRCRAFT_POLL_COOLDOWN_SECONDS")
 
+    feature_printer: bool = Field(default=False, alias="FEATURE_PRINTER")
+    octoprint_url: str = Field(default="http://octopi.local", alias="OCTOPRINT_URL")
+    octoprint_api_key: str = Field(default="", alias="OCTOPRINT_API_KEY")
+    printer_camera_stream_url: str = Field(default="", alias="PRINTER_CAMERA_STREAM_URL")
+
     @field_validator("birdnet_species_filter", mode="before")
     @classmethod
     def parse_species(cls, v: object) -> list[str]:

@@ -15,9 +15,12 @@ from doorboard_contracts.events import (
     AmbientBirdSpeciesSummary,
     AmbientBirdSummaryEvent,
     AmbientBirdSummaryPayload,
+    AmbientPrinterStatusEvent,
+    AmbientPrinterStatusPayload,
     AmbientSatellitePassEvent,
     AmbientSatellitePassPayload,
 )
+from printer.provider import PrinterProvider
 from satellites.provider import SatelliteProvider
 
 from wallboard_worker.settings import Settings
@@ -252,5 +255,67 @@ def run_aircraft_summary(
             logger.error(f"Ingestion failed with status {resp.status_code}: {resp.text}")
     except Exception as exc:
         logger.error(f"Failed to post aircraft summary event: {exc}")
+
+    return None
+
+
+def run_printer_status(
+    settings: Settings, provider: PrinterProvider, now: datetime | None = None
+) -> dict | None:
+    """Fetch printer status and ingest it into the control plane."""
+    if now is None:
+        now = datetime.now(UTC)
+
+    try:
+        status = provider.get_status(now)
+    except Exception as exc:
+        logger.error(f"Printer status job failed to retrieve data: {exc}")
+        # Degradation: fallback to offline status
+        status = {
+            "state": "offline",
+            "job_name": None,
+            "progress_pct": None,
+            "eta": None,
+        }
+
+    # Construct payload
+    payload = AmbientPrinterStatusPayload(
+        state=status["state"],
+        job_name=status["job_name"],
+        progress_pct=status["progress_pct"],
+        eta=status["eta"],
+    )
+
+    # Construct event
+    event = AmbientPrinterStatusEvent(
+        event_id=uuid7(),
+        type="ambient.printer_status",
+        source="wallboard-worker",
+        occurred_at=now,
+        monotonic_ms=int(time.monotonic() * 1000),
+        door_id=settings.door_id,
+        trace_id=uuid.uuid4(),
+        payload=payload,
+    )
+
+    # Ingest event
+    url = f"{settings.control_plane_url.rstrip('/')}/ingest"
+    token = get_ingest_token(settings)
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    raw_event = event.model_dump(mode="json")
+    batch = {"batch_id": f"worker-printer-{int(time.time())}", "events": [raw_event]}
+
+    try:
+        resp = httpx.post(url, json=batch, headers=headers, timeout=5.0)
+        if resp.status_code == 200:
+            logger.info(f"Ingested printer status event successfully. State: {status['state']}")
+            return resp.json()
+        else:
+            logger.error(f"Ingestion failed with status {resp.status_code}: {resp.text}")
+    except Exception as exc:
+        logger.error(f"Failed to post printer status event: {exc}")
 
     return None

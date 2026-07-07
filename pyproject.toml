@@ -47,6 +47,7 @@ members = [
     "integrations/birdnet",
     "integrations/satellites",
     "integrations/aircraft",
+    "integrations/printer",
 ]
 
 [tool.uv.sources]
@@ -66,6 +67,7 @@ doorboard-wallboard-worker = { workspace = true }
 doorboard-birdnet = { workspace = true }
 doorboard-satellites = { workspace = true }
 doorboard-aircraft = { workspace = true }
+doorboard-printer = { workspace = true }
 
 [tool.ruff]
 line-length = 100
