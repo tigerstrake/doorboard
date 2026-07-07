@@ -195,6 +195,19 @@ def test_photo_booth_save_writes_consent_metadata(client: TestClient):
     assert '"saved_after_review": true' in metadata
 
 
+def test_photo_booth_feature_off_closes_photo_routes(client: TestClient):
+    cfg = cast(Any, client.app).state.cfg
+    cfg.feature_photobooth = False
+    session_id = str(uuid.uuid4())
+    trace_id = str(uuid.uuid4())
+
+    capture = client.post(
+        "/photos/capture",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert capture.status_code == 404
+
+
 def test_photo_booth_discard_leaves_no_media_files(client: TestClient):
     session_id = str(uuid.uuid4())
     trace_id = str(uuid.uuid4())
@@ -217,3 +230,36 @@ def test_photo_booth_discard_leaves_no_media_files(client: TestClient):
     assert client.get("/recordings", params={"kind": "photo_booth"}).json()["recordings"] == []
     assert list((cfg.ssd_data_root / "recordings").rglob("photo_booth_*")) == []
     assert list((cfg.ssd_data_root / "thumbnails").rglob("photo_booth_*")) == []
+
+
+def test_photo_review_pending_set_is_bounded(client: TestClient):
+    cfg = cast(Any, client.app).state.cfg
+    cfg.photo_review_max_pending = 1
+    session_id = str(uuid.uuid4())
+    trace_id = str(uuid.uuid4())
+
+    first = client.post(
+        "/photos/capture",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert first.status_code == 200
+    first_photo = first.json()["photo"]
+    first_path = cfg.ssd_data_root / first_photo["review_path"]
+    assert first_path.exists()
+
+    second = client.post(
+        "/photos/capture",
+        json={"session_id": session_id, "trace_id": trace_id},
+    )
+    assert second.status_code == 200
+    second_photo = second.json()["photo"]
+
+    assert not first_path.exists()
+    assert (cfg.ssd_data_root / second_photo["review_path"]).exists()
+    assert (
+        client.get(
+            f"/photos/{first_photo['recording_id']}/review",
+            params={"session_id": session_id},
+        ).status_code
+        == 404
+    )

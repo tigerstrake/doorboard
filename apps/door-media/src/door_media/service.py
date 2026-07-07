@@ -91,7 +91,8 @@ class RecordingService:
         self._settings.recordings_root.mkdir(parents=True, exist_ok=True)
         self._settings.segments_root.mkdir(parents=True, exist_ok=True)
         self._settings.thumbnails_root.mkdir(parents=True, exist_ok=True)
-        (self._settings.ssd_data_root / "photo-review").mkdir(parents=True, exist_ok=True)
+        self._review_dir().mkdir(parents=True, exist_ok=True)
+        self._cleanup_review_dir()
 
         self._retention_task = asyncio.create_task(self._retention_loop(), name="retention-loop")
         self._storage_task = asyncio.create_task(
@@ -302,6 +303,7 @@ class RecordingService:
         therefore leaves no sync-visible rows and only has one temporary file to
         unlink.
         """
+        self._prune_review_photos()
         status = self._router.storage_status()
         if not status.recording_allowed:
             logger.warning(
@@ -320,6 +322,7 @@ class RecordingService:
             return None
 
         self._review_photos[captured.recording_id] = captured
+        self._prune_review_photos()
         logger.info(
             "photo_review_captured",
             extra={
@@ -448,6 +451,55 @@ class RecordingService:
             (self._settings.ssd_data_root / captured.path).unlink(missing_ok=True)
         logger.info("photo_review_discarded", extra={"recording_id": str(recording_id)})
         return True
+
+    def review_photo(self, recording_id: UUID, *, session_id: UUID) -> CapturedPhoto | None:
+        """Return a pending review capture if it is still current."""
+        self._prune_review_photos()
+        captured = self._review_photos.get(recording_id)
+        if captured is None or captured.session_id != session_id:
+            return None
+        return captured
+
+    def _prune_review_photos(self) -> None:
+        now_ms = time.monotonic_ns() // 1_000_000
+        ttl_ms = max(self._settings.photo_review_ttl_s, 1) * 1000
+        stale = [
+            recording_id
+            for recording_id, captured in self._review_photos.items()
+            if now_ms - captured.captured_monotonic_ms > ttl_ms
+        ]
+        for recording_id in stale:
+            self._discard_review_recording_id(recording_id, reason="expired")
+
+        max_pending = max(self._settings.photo_review_max_pending, 1)
+        overflow = len(self._review_photos) - max_pending
+        if overflow <= 0:
+            return
+        oldest = sorted(
+            self._review_photos.items(),
+            key=lambda item: item[1].captured_monotonic_ms,
+        )[:overflow]
+        for recording_id, _captured in oldest:
+            self._discard_review_recording_id(recording_id, reason="overflow")
+
+    def _discard_review_recording_id(self, recording_id: UUID, *, reason: str) -> None:
+        captured = self._review_photos.pop(recording_id, None)
+        if captured is None:
+            return
+        with contextlib.suppress(OSError):
+            (self._settings.ssd_data_root / captured.path).unlink(missing_ok=True)
+        logger.info(
+            "photo_review_pruned",
+            extra={"recording_id": str(recording_id), "reason": reason},
+        )
+
+    def _cleanup_review_dir(self) -> None:
+        for path in self._review_dir().glob("photo_booth_*"):
+            with contextlib.suppress(OSError):
+                path.unlink()
+
+    def _review_dir(self) -> Path:
+        return self._settings.ssd_data_root / "photo-review"
 
     async def _generate_thumbnail(
         self, clip_path: Path, thumb_path: Path, duration_s: float
