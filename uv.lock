@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "doorboard",
+    "doorboard-aircraft",
     "doorboard-auth",
     "doorboard-config",
     "doorboard-contracts",
@@ -142,6 +143,25 @@ dev = [
     { name = "pyright", specifier = ">=1.1.403" },
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "ruff", specifier = ">=0.12.1" },
+]
+
+[[package]]
+name = "doorboard-aircraft"
+version = "0.0.0"
+source = { editable = "integrations/aircraft" }
+dependencies = [
+    { name = "doorboard-config" },
+    { name = "doorboard-contracts" },
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "doorboard-config", editable = "packages/config" },
+    { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "httpx" },
+    { name = "pydantic" },
 ]
 
 [[package]]
@@ -354,6 +374,20 @@ requires-dist = [
 name = "doorboard-wallboard-worker"
 version = "0.0.0"
 source = { editable = "apps/wallboard-worker" }
+dependencies = [
+    { name = "doorboard-aircraft" },
+    { name = "doorboard-config" },
+    { name = "doorboard-contracts" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "doorboard-aircraft", editable = "integrations/aircraft" },
+    { name = "doorboard-config", editable = "packages/config" },
+    { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "httpx" },
+]
 
 [[package]]
 name = "fastapi"
