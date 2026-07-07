@@ -33,6 +33,8 @@ from doorboard_contracts.events import (
     SessionStateChangedEvent,
     SocialCheckinCreatedEvent,
     SocialGuestbookEntryCreatedEvent,
+    SocialMoodUpdatedEvent,
+    SocialScoreboardUpdatedEvent,
     StatusPresenceChangedEvent,
     SyncUploadCompletedEvent,
     SyncUploadFailedEvent,
@@ -90,6 +92,10 @@ def project(session: Session, event: DoorboardEvent, *, now: datetime) -> None:
         _project_social_guestbook_entry_created(session, event, now)
     elif event.type == "social.checkin_created":
         _project_social_checkin_created(session, event, now)
+    elif event.type == "social.mood_updated":
+        _project_social_mood_updated(session, event, now)
+    elif event.type == "social.scoreboard_updated":
+        _project_social_scoreboard_updated(session, event, now)
     elif event.type == "status.presence_changed":
         _project_status_presence_changed(session, event, now)
 
@@ -244,3 +250,51 @@ def _project_status_presence_changed(
             recorded_at=now,
         )
     )
+
+
+def _project_social_mood_updated(
+    session: Session, event: SocialMoodUpdatedEvent, now: datetime
+) -> None:
+    subject_id = event.payload.subject_id
+    row = session.get(SocialItemRow, ("mood", subject_id))
+    if row is None:
+        row = SocialItemRow(
+            kind="mood",
+            item_id=subject_id,
+            door_id=event.door_id,
+            created_at=event.occurred_at,
+            status="active",
+        )
+        session.add(row)
+    row.text = event.payload.mood
+    row.source_event_id = str(event.event_id)
+    row.updated_at = now
+
+
+def _project_social_scoreboard_updated(
+    session: Session, event: SocialScoreboardUpdatedEvent, now: datetime
+) -> None:
+    entry_id = str(event.payload.entry_id)
+    row = session.get(SocialItemRow, ("scoreboard", entry_id))
+    if row is None:
+        row = SocialItemRow(
+            kind="scoreboard",
+            item_id=entry_id,
+            door_id=event.door_id,
+            label=event.payload.board_id,
+            person_id="0",
+            created_at=event.occurred_at,
+            status="active",
+        )
+        session.add(row)
+
+    current_score = 0
+    if row.person_id:
+        try:
+            current_score = int(row.person_id)
+        except ValueError:
+            pass
+    new_score = current_score + event.payload.delta
+    row.person_id = str(new_score)
+    row.source_event_id = str(event.event_id)
+    row.updated_at = now

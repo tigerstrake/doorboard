@@ -5,6 +5,8 @@ import type {
   Poll,
   MostFrequentVisitorStat,
   ModerationLogEntry,
+  ScoreboardEntry,
+  FoodRecommendation,
 } from "./socialApi";
 
 // Guestbook/poll/check-in moderation panel (T-403). Gated by door-api's
@@ -33,6 +35,23 @@ export function AdminSocialPanel() {
   const [stat, setStat] = useState<MostFrequentVisitorStat | null>(null);
   const [log, setLog] = useState<ModerationLogEntry[]>([]);
 
+  // Mood/Scoreboard/Food States
+  const [moods, setMoods] = useState<Record<string, string>>({});
+  const [boards, setBoards] = useState<Record<string, ScoreboardEntry[]>>({});
+  const [food, setFood] = useState<FoodRecommendation | null>(null);
+
+  // Scoreboard Form States
+  const [boardId, setBoardId] = useState("daily");
+  const [title, setTitle] = useState("");
+  const [notes, setNotes] = useState("");
+  const [score, setScore] = useState(0);
+
+  // Scoreboard Editing States
+  const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+  const [editingNotes, setEditingNotes] = useState("");
+  const [editingScore, setEditingScore] = useState(0);
+
   const [newQuestion, setNewQuestion] = useState("");
   const [newOptions, setNewOptions] = useState(["", ""]);
 
@@ -45,13 +64,19 @@ export function AdminSocialPanel() {
       socialApi.admin.listPolls(activeToken),
       socialApi.mostFrequentVisitor(),
       socialApi.admin.moderationLog(activeToken),
+      socialApi.getCurrentMoods(),
+      socialApi.getScoreboard(),
+      socialApi.getLatestFood(),
     ])
-      .then(([p, a, polledPolls, s, l]) => {
+      .then(([p, a, polledPolls, s, l, md, sb, fd]) => {
         setPending(p);
         setApproved(a);
         setPolls(polledPolls);
         setStat(s);
         setLog(l);
+        setMoods(md);
+        setBoards(sb.boards);
+        setFood(fd);
       })
       .catch((err) => setError(apiErrorMessage(err, "Couldn't load the moderation panel.")));
   };

@@ -14,6 +14,7 @@ members = [
     "doorboard-door-sync",
     "doorboard-door-visiond",
     "doorboard-esp32-link",
+    "doorboard-food",
     "doorboard-media-client",
     "doorboard-observability",
     "doorboard-simulator",
@@ -320,6 +321,23 @@ requires-dist = [
 ]
 
 [[package]]
+name = "doorboard-food"
+version = "0.0.0"
+source = { editable = "integrations/food-recommendation" }
+dependencies = [
+    { name = "doorboard-config" },
+    { name = "doorboard-contracts" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "doorboard-config", editable = "packages/config" },
+    { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "pydantic" },
+]
+
+[[package]]
 name = "doorboard-media-client"
 version = "0.0.0"
 source = { editable = "packages/media-client" }
@@ -354,6 +372,20 @@ requires-dist = [
 name = "doorboard-wallboard-worker"
 version = "0.0.0"
 source = { editable = "apps/wallboard-worker" }
+dependencies = [
+    { name = "doorboard-config" },
+    { name = "doorboard-contracts" },
+    { name = "doorboard-food" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "doorboard-config", editable = "packages/config" },
+    { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "doorboard-food", editable = "integrations/food-recommendation" },
+    { name = "httpx" },
+]
 
 [[package]]
 name = "fastapi"

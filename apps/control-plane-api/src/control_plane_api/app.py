@@ -40,7 +40,10 @@ from __future__ import annotations
 import logging
 import logging.config
 import secrets
+import html
 import time
+import uuid
+from control_plane_api._uuid7 import uuid7
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -650,3 +653,241 @@ async def admin_list_tokens(request: Request, _auth: AdminAuth) -> dict:
             for r in records
         ]
     }
+
+
+# ---------------------------------------------------------------------------
+# Mood Endpoints
+# ---------------------------------------------------------------------------
+
+VALID_MOODS = {"focused", "chilling", "busy", "away"}
+
+
+class MoodUpdateRequest(BaseModel):
+    subject_id: str
+    mood: str
+
+
+@app.post("/admin/social/mood")
+async def admin_update_mood(body: MoodUpdateRequest, request: Request, _auth: AdminAuth) -> dict:
+    if body.mood not in VALID_MOODS:
+        raise HTTPException(status_code=422, detail=f"invalid mood. Must be one of {VALID_MOODS}")
+    if body.subject_id not in {"owner", "roommate"}:
+        raise HTTPException(status_code=422, detail="invalid subject. Must be 'owner' or 'roommate'")
+
+    state = _state(request)
+    now = datetime.now(UTC)
+    raw_event = {
+        "event_id": str(uuid7()),
+        "type": "social.mood_updated",
+        "source": "admin_ui",
+        "occurred_at": now.isoformat(),
+        "monotonic_ms": int(time.monotonic() * 1000),
+        "door_id": state.settings.door_id,
+        "trace_id": str(uuid.uuid4()),
+        "payload": {
+            "subject_id": body.subject_id,
+            "mood": html.escape(body.mood),
+        },
+    }
+
+    ingest_batch(
+        state.session_factory,
+        [raw_event],
+        batch_id=f"admin-mood-{int(time.time())}",
+        now=now,
+        mqtt_publisher=state.mqtt_publisher,
+        notify_engine=state.notify_engine,
+    )
+    return {"status": "success", "subject_id": body.subject_id, "mood": body.mood}
+
+
+@app.get("/social/mood")
+async def get_moods(request: Request) -> dict:
+    state = _state(request)
+    with session_scope(state.session_factory) as session:
+        stmt = select(SocialItemRow).where(
+            SocialItemRow.kind == "mood", SocialItemRow.status == "active"
+        )
+        rows = session.execute(stmt).scalars().all()
+        return {r.item_id: r.text for r in rows}
+
+
+@app.get("/social/food")
+async def get_latest_food(request: Request) -> dict:
+    state = _state(request)
+    with session_scope(state.session_factory) as session:
+        stmt = (
+            select(EventRow)
+            .where(EventRow.type == "ambient.food_recommendation")
+            .order_by(EventRow.occurred_at.desc())
+            .limit(1)
+        )
+        row = session.execute(stmt).scalars().first()
+        if row is None:
+            return {}
+        return row.payload
+
+
+# ---------------------------------------------------------------------------
+# Scoreboard Endpoints
+# ---------------------------------------------------------------------------
+
+
+class ScoreboardCreateRequest(BaseModel):
+    board_id: str
+    title: str
+    notes: str | None = None
+    score: int = 0
+
+
+class ScoreboardUpdateRequest(BaseModel):
+    title: str
+    notes: str | None = None
+    score: int
+
+
+@app.get("/social/scoreboard")
+async def get_scoreboard(request: Request) -> dict:
+    state = _state(request)
+    with session_scope(state.session_factory) as session:
+        stmt = select(SocialItemRow).where(
+            SocialItemRow.kind == "scoreboard", SocialItemRow.status == "active"
+        )
+        rows = session.execute(stmt).scalars().all()
+
+        boards: dict[str, list[dict]] = {}
+        for r in rows:
+            board_id = r.label or "default"
+            score = 0
+            if r.person_id:
+                try:
+                    score = int(r.person_id)
+                except ValueError:
+                    pass
+            entry = {
+                "entry_id": r.item_id,
+                "title": r.author_label,
+                "notes": r.text,
+                "score": score,
+                "created_at": r.created_at.isoformat(),
+            }
+            boards.setdefault(board_id, []).append(entry)
+
+        # Sort each board's entries by score descending
+        for b_id in boards:
+            boards[b_id].sort(key=lambda x: x["score"], reverse=True)
+
+        return {"boards": boards}
+
+
+@app.post("/admin/social/scoreboard", status_code=201)
+async def admin_create_scoreboard_entry(
+    body: ScoreboardCreateRequest, request: Request, _auth: AdminAuth
+) -> dict:
+    state = _state(request)
+    now = datetime.now(UTC)
+    entry_id = str(uuid.uuid4())
+
+    with session_scope(state.session_factory) as session:
+        row = SocialItemRow(
+            kind="scoreboard",
+            item_id=entry_id,
+            door_id=state.settings.door_id,
+            label=html.escape(body.board_id),
+            author_label=html.escape(body.title),
+            text=html.escape(body.notes) if body.notes else None,
+            person_id=str(body.score),
+            source_event_id="admin_crud",
+            created_at=now,
+            status="active",
+            updated_at=now,
+        )
+        session.add(row)
+        session.flush()
+
+        # Ingest a social.scoreboard_updated event with delta=0 so WebSocket clients get notified
+        raw_event = {
+            "event_id": str(uuid7()),
+            "type": "social.scoreboard_updated",
+            "source": "admin_ui",
+            "occurred_at": now.isoformat(),
+            "monotonic_ms": int(time.monotonic() * 1000),
+            "door_id": state.settings.door_id,
+            "trace_id": str(uuid.uuid4()),
+            "payload": {
+                "board_id": body.board_id,
+                "entry_id": entry_id,
+                "delta": 0,
+            },
+        }
+        ingest_batch(
+            state.session_factory,
+            [raw_event],
+            batch_id=f"admin-scoreboard-{int(time.time())}",
+            now=now,
+            mqtt_publisher=state.mqtt_publisher,
+            notify_engine=state.notify_engine,
+        )
+
+    return {"entry_id": entry_id, "status": "created"}
+
+
+@app.put("/admin/social/scoreboard/{entry_id}")
+async def admin_update_scoreboard_entry(
+    entry_id: str, body: ScoreboardUpdateRequest, request: Request, _auth: AdminAuth
+) -> dict:
+    state = _state(request)
+    now = datetime.now(UTC)
+
+    with session_scope(state.session_factory) as session:
+        row = session.get(SocialItemRow, ("scoreboard", entry_id))
+        if row is None or row.status != "active":
+            raise HTTPException(status_code=404, detail="entry not found")
+
+        old_score = 0
+        if row.person_id:
+            try:
+                old_score = int(row.person_id)
+            except ValueError:
+                pass
+
+        row.author_label = html.escape(body.title)
+        row.text = html.escape(body.notes) if body.notes else None
+        row.person_id = str(body.score)
+        row.updated_at = now
+        session.flush()
+
+        # If score changed, emit a social.scoreboard_updated event with the delta
+        delta = body.score - old_score
+        if delta != 0:
+            raw_event = {
+                "event_id": str(uuid7()),
+                "type": "social.scoreboard_updated",
+                "source": "admin_ui",
+                "occurred_at": now.isoformat(),
+                "monotonic_ms": int(time.monotonic() * 1000),
+                "door_id": state.settings.door_id,
+                "trace_id": str(uuid.uuid4()),
+                "payload": {
+                    "board_id": row.label,
+                    "entry_id": entry_id,
+                    "delta": delta,
+                },
+            }
+            ingest_batch(
+                state.session_factory,
+                [raw_event],
+                batch_id=f"admin-scoreboard-update-{int(time.time())}",
+                now=now,
+                mqtt_publisher=state.mqtt_publisher,
+                notify_engine=state.notify_engine,
+            )
+
+    return {"entry_id": entry_id, "status": "updated"}
+
+
+@app.delete("/admin/social/scoreboard/{entry_id}")
+async def admin_delete_scoreboard_entry(
+    entry_id: str, request: Request, _auth: AdminAuth
+) -> dict:
+    return _delete_social_item(request, "scoreboard", entry_id)

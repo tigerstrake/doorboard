@@ -119,6 +119,20 @@ export interface ModerationLogEntry {
   created_at: string;
 }
 
+export interface ScoreboardEntry {
+  entry_id: string;
+  title: string;
+  notes: string | null;
+  score: number;
+  created_at: string;
+}
+
+export interface FoodRecommendation {
+  date: string;
+  title: string;
+  detail: string | null;
+}
+
 export const socialApi = {
   async createGuestbookEntry(text: string, authorLabel: string | null): Promise<GuestbookEntry> {
     return request<GuestbookEntry>("/guestbook", {
@@ -178,6 +192,20 @@ export const socialApi = {
     });
   },
 
+  async getCurrentMoods(): Promise<Record<string, string>> {
+    return request<Record<string, string>>("/social/mood");
+  },
+
+  async getScoreboard(): Promise<{ boards: Record<string, ScoreboardEntry[]> }> {
+    return request<{ boards: Record<string, ScoreboardEntry[]> }>("/social/scoreboard");
+  },
+
+  async getLatestFood(): Promise<FoodRecommendation | null> {
+    const data = await request<FoodRecommendation | Record<string, never>>("/social/food");
+    if (!data || !data.title) return null;
+    return data as FoodRecommendation;
+  },
+
   admin: {
     async listGuestbook(
       status: "pending" | "approved",
@@ -225,6 +253,49 @@ export const socialApi = {
         { adminToken }
       );
       return data.entries;
+    },
+
+    async updateMood(subjectId: string, mood: string, adminToken: string): Promise<void> {
+      await request("/admin/social/mood", {
+        method: "POST",
+        body: { subject_id: subjectId, mood },
+        adminToken,
+      });
+    },
+
+    async createScoreboardEntry(
+      boardId: string,
+      title: string,
+      notes: string | null,
+      score: number,
+      adminToken: string
+    ): Promise<{ entry_id: string }> {
+      return request<{ entry_id: string }>("/admin/social/scoreboard", {
+        method: "POST",
+        body: { board_id: boardId, title, notes, score },
+        adminToken,
+      });
+    },
+
+    async updateScoreboardEntry(
+      entryId: string,
+      title: string,
+      notes: string | null,
+      score: number,
+      adminToken: string
+    ): Promise<void> {
+      await request(`/admin/social/scoreboard/${entryId}`, {
+        method: "PUT",
+        body: { title, notes, score },
+        adminToken,
+      });
+    },
+
+    async deleteScoreboardEntry(entryId: string, adminToken: string): Promise<void> {
+      await request(`/admin/social/scoreboard/${entryId}`, {
+        method: "DELETE",
+        adminToken,
+      });
     },
   },
 };

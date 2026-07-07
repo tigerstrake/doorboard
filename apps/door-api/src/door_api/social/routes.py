@@ -403,4 +403,113 @@ def build_social_router(
         limit = min(max(limit, 1), service.config.max_list_limit)
         return {"entries": service.moderation_log(limit=limit)}
 
+    import os
+    import httpx
+
+    CONTROL_PLANE_URL = os.environ.get("CONTROL_PLANE_URL", "http://127.0.0.1:8090")
+    CONTROL_PLANE_ADMIN_TOKEN = os.environ.get("CONTROL_PLANE_ADMIN_TOKEN", "")
+
+    @router.get("/social/mood")
+    def proxy_get_moods() -> dict:
+        try:
+            resp = httpx.get(f"{CONTROL_PLANE_URL}/social/mood", timeout=5.0)
+            if resp.status_code == 200:
+                return resp.json()
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+
+    @router.post("/admin/social/mood", dependencies=[Depends(require_admin)])
+    def proxy_admin_update_mood(body: dict) -> dict:
+        headers = {}
+        if CONTROL_PLANE_ADMIN_TOKEN:
+            headers["Authorization"] = f"Bearer {CONTROL_PLANE_ADMIN_TOKEN}"
+        try:
+            resp = httpx.post(
+                f"{CONTROL_PLANE_URL}/admin/social/mood",
+                json=body,
+                headers=headers,
+                timeout=5.0,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+
+    @router.get("/social/scoreboard")
+    def proxy_get_scoreboard() -> dict:
+        try:
+            resp = httpx.get(f"{CONTROL_PLANE_URL}/social/scoreboard", timeout=5.0)
+            if resp.status_code == 200:
+                return resp.json()
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+
+    @router.post(
+        "/admin/social/scoreboard", status_code=201, dependencies=[Depends(require_admin)]
+    )
+    def proxy_admin_create_scoreboard_entry(body: dict) -> dict:
+        headers = {}
+        if CONTROL_PLANE_ADMIN_TOKEN:
+            headers["Authorization"] = f"Bearer {CONTROL_PLANE_ADMIN_TOKEN}"
+        try:
+            resp = httpx.post(
+                f"{CONTROL_PLANE_URL}/admin/social/scoreboard",
+                json=body,
+                headers=headers,
+                timeout=5.0,
+            )
+            if resp.status_code == 201:
+                return resp.json()
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+
+    @router.put("/admin/social/scoreboard/{entry_id}", dependencies=[Depends(require_admin)])
+    def proxy_admin_update_scoreboard_entry(entry_id: str, body: dict) -> dict:
+        headers = {}
+        if CONTROL_PLANE_ADMIN_TOKEN:
+            headers["Authorization"] = f"Bearer {CONTROL_PLANE_ADMIN_TOKEN}"
+        try:
+            resp = httpx.put(
+                f"{CONTROL_PLANE_URL}/admin/social/scoreboard/{entry_id}",
+                json=body,
+                headers=headers,
+                timeout=5.0,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+
+    @router.delete("/admin/social/scoreboard/{entry_id}", dependencies=[Depends(require_admin)])
+    def proxy_admin_delete_scoreboard_entry(entry_id: str) -> dict:
+        headers = {}
+        if CONTROL_PLANE_ADMIN_TOKEN:
+            headers["Authorization"] = f"Bearer {CONTROL_PLANE_ADMIN_TOKEN}"
+        try:
+            resp = httpx.delete(
+                f"{CONTROL_PLANE_URL}/admin/social/scoreboard/{entry_id}",
+                headers=headers,
+                timeout=5.0,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+
+    @router.get("/social/food")
+    def proxy_get_latest_food() -> dict:
+        try:
+            resp = httpx.get(f"{CONTROL_PLANE_URL}/social/food", timeout=5.0)
+            if resp.status_code == 200:
+                return resp.json()
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+
     return router
