@@ -140,6 +140,14 @@ def test_visitor_token_requires_active_session_and_is_scoped() -> None:
     assert response.json()["url"].endswith(f"/visitor?token={token}")
 
 
+def test_photobooth_feature_off_hides_public_endpoints() -> None:
+    client = TestClient(app)
+    response = client.post("/doorpad/photo-booth/capture")
+    assert response.status_code == 404
+    moments = client.get("/wallboard/moments")
+    assert moments.status_code == 404
+
+
 def test_contract_button_event_sets_cached_profile_snapshot() -> None:
     events = EventFactory(SimClock())
     button = events.make(
