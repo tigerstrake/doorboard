@@ -21,7 +21,10 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def alembic_config(engine, monkeypatch: pytest.MonkeyPatch) -> Config:
     Base.metadata.drop_all(engine)  # start from a genuinely empty database
-    dsn = str(engine.url)
+    # render_as_string(hide_password=False), NOT str(engine.url): str() masks
+    # the password as "***", which a trust-auth local Postgres accepts but a
+    # password-auth Postgres (CI) rejects with "password authentication failed".
+    dsn = engine.url.render_as_string(hide_password=False)
     monkeypatch.setenv("ALEMBIC_DATABASE_URL", dsn)
     cfg = Config(str(APP_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(APP_ROOT / "migrations"))
