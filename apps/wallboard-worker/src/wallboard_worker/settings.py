@@ -26,9 +26,7 @@ class Settings(BaseSettings):
     )
     satellites_observer_lat: float = Field(default=0.0, alias="SATELLITES_OBSERVER_LAT")
     satellites_observer_lon: float = Field(default=0.0, alias="SATELLITES_OBSERVER_LON")
-    satellites_observer_elevation: float = Field(
-        default=0.0, alias="SATELLITES_OBSERVER_ELEVATION"
-    )
+    satellites_observer_elevation: float = Field(default=0.0, alias="SATELLITES_OBSERVER_ELEVATION")
     satellites_min_elevation: float = Field(default=10.0, alias="SATELLITES_MIN_ELEVATION")
     satellites_tle_url: str = Field(
         default="https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
