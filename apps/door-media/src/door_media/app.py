@@ -156,6 +156,15 @@ def _require_admin(request: Request) -> None:
 AdminAuth = Annotated[None, Depends(_require_admin)]
 
 
+def _require_photobooth(request: Request) -> None:
+    cfg: Settings = request.app.state.cfg
+    if not cfg.feature_photobooth:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="photo booth disabled")
+
+
+PhotoBoothEnabled = Annotated[None, Depends(_require_photobooth)]
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -530,6 +539,7 @@ class _PhotoCaptureBody(BaseModel):
 @app.post("/photos/capture")
 async def capture_photo(
     body: _PhotoCaptureBody,
+    _enabled: PhotoBoothEnabled,
     request: Request,
 ) -> dict:
     svc: RecordingService = request.app.state.service
@@ -563,6 +573,7 @@ async def capture_photo(
 async def photo_review_file(
     recording_id: str,
     session_id: str,
+    _enabled: PhotoBoothEnabled,
     request: Request,
 ) -> FileResponse:
     svc: RecordingService = request.app.state.service
@@ -575,7 +586,7 @@ async def photo_review_file(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid recording_id or session_id UUID",
         ) from None
-    captured = svc._review_photos.get(rid)  # type: ignore[attr-defined]
+    captured = svc.review_photo(rid, session_id=sid)
     if captured is None or captured.session_id != sid:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
     path = cfg.ssd_data_root / captured.path
@@ -588,6 +599,7 @@ async def photo_review_file(
 async def save_photo(
     recording_id: str,
     body: _PhotoCaptureBody,
+    _enabled: PhotoBoothEnabled,
     request: Request,
 ) -> dict:
     svc: RecordingService = request.app.state.service
@@ -611,6 +623,7 @@ async def save_photo(
 async def discard_photo(
     recording_id: str,
     body: _PhotoCaptureBody,
+    _enabled: PhotoBoothEnabled,
     request: Request,
 ) -> dict:
     svc: RecordingService = request.app.state.service
@@ -632,6 +645,7 @@ async def discard_photo(
 async def saved_photo_file(
     recording_id: str,
     session_id: str,
+    _enabled: PhotoBoothEnabled,
     request: Request,
 ) -> FileResponse:
     try:

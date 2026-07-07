@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     # (acceptable in dev; CI uses empty).
     admin_token: str = Field(default="", alias="DOOR_MEDIA_ADMIN_TOKEN")
 
+    # ── explicit photo booth ─────────────────────────────────────────────────
+    feature_photobooth: bool = Field(default=False, alias="FEATURE_PHOTOBOOTH")
+    photo_review_ttl_s: int = Field(default=300, alias="DOOR_MEDIA_PHOTO_REVIEW_TTL_S")
+    photo_review_max_pending: int = Field(default=16, alias="DOOR_MEDIA_PHOTO_REVIEW_MAX_PENDING")
+
     # ── storage status broadcast interval ────────────────────────────────────
     storage_status_interval_s: int = Field(
         default=60,
