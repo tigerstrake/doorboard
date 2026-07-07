@@ -37,6 +37,15 @@ class Settings(BaseSettings):
         alias="SATELLITES_TLE_CACHE_PATH",
     )
 
+    feature_aircraft: bool = Field(default=False, alias="FEATURE_AIRCRAFT")
+    opensky_username: str = Field(default="", alias="OPENSKY_USERNAME")
+    opensky_password: str = Field(default="", alias="OPENSKY_PASSWORD")
+    aircraft_observer_lat: float = Field(default=0.0, alias="AIRCRAFT_OBSERVER_LAT")
+    aircraft_observer_lon: float = Field(default=0.0, alias="AIRCRAFT_OBSERVER_LON")
+    aircraft_bbox_half_size_lat: float = Field(default=0.25, alias="AIRCRAFT_BBOX_HALF_SIZE_LAT")
+    aircraft_bbox_half_size_lon: float = Field(default=0.25, alias="AIRCRAFT_BBOX_HALF_SIZE_LON")
+    aircraft_poll_cooldown_seconds: int = Field(default=30, alias="AIRCRAFT_POLL_COOLDOWN_SECONDS")
+
     @field_validator("birdnet_species_filter", mode="before")
     @classmethod
     def parse_species(cls, v: object) -> list[str]:
