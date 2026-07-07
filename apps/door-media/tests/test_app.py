@@ -168,6 +168,8 @@ def test_snapshot(client: TestClient) -> None:
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/jpeg"
     assert len(resp.content) > 0
+
+
 def test_photo_booth_save_writes_consent_metadata(client: TestClient):
     session_id = str(uuid.uuid4())
     trace_id = str(uuid.uuid4())
