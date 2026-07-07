@@ -153,12 +153,12 @@ class FakeEsp32Transport:
         await self._inbound.put(msg)
         return msg
 
-    def events(self) -> AsyncIterator[WireMessage]:
+    def events(self) -> AsyncIterator[DoorboardEvent]:
         return self._event_stream()
 
-    async def _event_stream(self) -> AsyncIterator[WireMessage]:
+    async def _event_stream(self) -> AsyncIterator[DoorboardEvent]:
         while True:
-            yield await self._inbound.get()
+            yield self.to_contract_event(await self._inbound.get())
 
     def status(self) -> Esp32TransportStatus:
         self._apply_timeouts()

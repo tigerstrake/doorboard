@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 
 from door_visiond.clock import FakeClock
 from door_visiond.embedder import MockEmbedder
 from door_visiond.enrollment import ProfileSpec
+from door_visiond.events import EventEmitter
 from door_visiond.service import VisiondService
 from door_visiond.settings import Settings
 from doorboard_contracts.events import DoorboardEvent
@@ -16,8 +18,9 @@ from doorboard_simulator.events import EventFactory
 from .conftest import TEST_DIM, face
 
 
-class _CollectingEmitter:
+class _CollectingEmitter(EventEmitter):
     def __init__(self) -> None:
+        super().__init__()
         self.events: list[DoorboardEvent] = []
 
     def emit(self, event: DoorboardEvent) -> None:
@@ -31,6 +34,12 @@ class _FailingTransport:
     async def send(self, msg: WireMessage) -> WireMessage:
         self.messages.append(msg)
         raise TimeoutError("offline")
+
+    async def events(self) -> AsyncIterator[DoorboardEvent]:
+        # Never yields; this transport exists only to exercise the offline send path.
+        empty: list[DoorboardEvent] = []
+        for event in empty:
+            yield event
 
     def status(self) -> Esp32TransportStatus:
         return Esp32TransportStatus(
@@ -138,6 +147,7 @@ def test_unenroll_propagates_admin_clear_and_heartbeat_null(ssd_settings: Settin
 
     assert out == {"deleted": True, "archive_purge": "queued"}
     assert esp32.side_effects[-1] == "profile_clear:admin"
+    assert health_event.type == "door.controller_health"
     assert health_event.payload.cached_profile_id is None
     assert svc.current_visitor() is None
 

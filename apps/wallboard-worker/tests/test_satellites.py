@@ -123,9 +123,9 @@ def test_skyfield_satellite_provider_stale_tle_raises_error(tmp_path) -> None:
 
 
 def test_run_satellite_passes_job_degrades_gracefully() -> None:
-    settings = Settings(
-        feature_satellites=True,
-    )
+    # run_satellite_passes ignores the feature flag (that gate lives in the CLI),
+    # so a default Settings is sufficient here.
+    settings = Settings()
     mock_provider = MagicMock()
     mock_provider.get_next_pass.side_effect = Exception("Prediction engine failed")
 
