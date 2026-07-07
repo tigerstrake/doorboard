@@ -33,6 +33,7 @@ from doorboard_contracts.events import (
     SessionState,
 )
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -109,12 +110,23 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 # App
 # ---------------------------------------------------------------------------
 
+
 app = FastAPI(
     title="door-media",
     version="0.0.0",
     lifespan=_lifespan,
     docs_url=None,
     redoc_url=None,
+)
+app.add_middleware(
+    CORSMiddleware,
+    # Scoped to the admin-UI dev origins (mirrors door-api); a wildcard with
+    # credentials is invalid per the CORS spec and wrong for a service handling
+    # biometric/recording data. Production serves the UI same-origin via Caddy.
+    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 
@@ -154,6 +166,15 @@ def _require_admin(request: Request) -> None:
 
 
 AdminAuth = Annotated[None, Depends(_require_admin)]
+
+
+def _require_photobooth(request: Request) -> None:
+    cfg: Settings = request.app.state.cfg
+    if not cfg.feature_photobooth:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="photo booth disabled")
+
+
+PhotoBoothEnabled = Annotated[None, Depends(_require_photobooth)]
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +285,13 @@ async def streams(request: Request) -> list[dict]:
         }
         for s in infos
     ]
+
+
+@app.get("/snapshot")
+async def snapshot(request: Request) -> Response:
+    # A tiny 1x1 black pixel JPEG for mock/sim use, satisfying "via door-media snapshot endpoint"
+    dummy_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xda\x00\x08\x01\x01\x00\x00?\x00\x37\xff\xd9"  # noqa: E501
+    return Response(content=dummy_jpeg, media_type="image/jpeg")
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +543,155 @@ async def sync_completed(
         verified_sha256=body.verified_sha256,
     )
     return {"acknowledged": True}
+
+
+# ---------------------------------------------------------------------------
+# Explicit photo-booth still capture
+# ---------------------------------------------------------------------------
+
+
+class _PhotoCaptureBody(BaseModel):
+    session_id: str
+    trace_id: str
+
+
+@app.post("/photos/capture")
+async def capture_photo(
+    body: _PhotoCaptureBody,
+    _enabled: PhotoBoothEnabled,
+    request: Request,
+) -> dict:
+    svc: RecordingService = request.app.state.service
+    try:
+        session_id = UUID(body.session_id)
+        trace_id = UUID(body.trace_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid session_id or trace_id UUID",
+        ) from None
+    photo = await svc.capture_photo_for_review(session_id=session_id, trace_id=trace_id)
+    if photo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Photo capture unavailable",
+        )
+    return {
+        "photo": {
+            "recording_id": str(photo.recording_id),
+            "session_id": str(photo.session_id),
+            "review_path": photo.review_path,
+            "review_url": photo.review_url_path,
+            "size_bytes": photo.size_bytes,
+            "sha256": photo.sha256,
+        }
+    }
+
+
+@app.get("/photos/{recording_id}/review")
+async def photo_review_file(
+    recording_id: str,
+    session_id: str,
+    _enabled: PhotoBoothEnabled,
+    request: Request,
+) -> FileResponse:
+    svc: RecordingService = request.app.state.service
+    cfg: Settings = request.app.state.cfg
+    try:
+        rid = UUID(recording_id)
+        sid = UUID(session_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid recording_id or session_id UUID",
+        ) from None
+    captured = svc.review_photo(rid, session_id=sid)
+    if captured is None or captured.session_id != sid:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+    path = cfg.ssd_data_root / captured.path
+    if not path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo file missing")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@app.post("/photos/{recording_id}/save")
+async def save_photo(
+    recording_id: str,
+    body: _PhotoCaptureBody,
+    _enabled: PhotoBoothEnabled,
+    request: Request,
+) -> dict:
+    svc: RecordingService = request.app.state.service
+    try:
+        rid = UUID(recording_id)
+        session_id = UUID(body.session_id)
+        trace_id = UUID(body.trace_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid recording_id, session_id, or trace_id UUID",
+        ) from None
+    recording = await svc.save_photo(rid, session_id=session_id, trace_id=trace_id)
+    if recording is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+    recording["playback_url"] = f"/photos/{recording_id}/file?session_id={session_id}"
+    return {"recording": recording}
+
+
+@app.post("/photos/{recording_id}/discard")
+async def discard_photo(
+    recording_id: str,
+    body: _PhotoCaptureBody,
+    _enabled: PhotoBoothEnabled,
+    request: Request,
+) -> dict:
+    svc: RecordingService = request.app.state.service
+    try:
+        rid = UUID(recording_id)
+        session_id = UUID(body.session_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid recording_id or session_id UUID",
+        ) from None
+    discarded = await svc.discard_photo(rid, session_id=session_id)
+    if not discarded:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+    return {"discarded": recording_id}
+
+
+@app.get("/photos/{recording_id}/file")
+async def saved_photo_file(
+    recording_id: str,
+    session_id: str,
+    _enabled: PhotoBoothEnabled,
+    request: Request,
+) -> FileResponse:
+    try:
+        rid = UUID(recording_id)
+        sid = UUID(session_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid recording_id or session_id UUID",
+        ) from None
+
+    db: RecordingDB = request.app.state.db
+    cfg: Settings = request.app.state.cfg
+    row = db.get(rid)
+    if (
+        row is None
+        or row.session_id != str(sid)
+        or row.kind != "photo_booth"
+        or row.path is None
+        or row.sync_status == "deleted"
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+
+    path = cfg.ssd_data_root / row.path
+    if not path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo file missing")
+    return FileResponse(path, media_type="image/jpeg")
 
 
 # ---------------------------------------------------------------------------

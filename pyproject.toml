@@ -44,6 +44,8 @@ members = [
     "apps/control-plane-api",
     "apps/wallboard-worker",
     "apps/simulator",
+    "integrations/birdnet",
+    "integrations/satellites",
     "integrations/aircraft",
 ]
 
@@ -61,6 +63,8 @@ doorboard-media-client = { workspace = true }
 doorboard-observability = { workspace = true }
 doorboard-simulator = { workspace = true }
 doorboard-wallboard-worker = { workspace = true }
+doorboard-birdnet = { workspace = true }
+doorboard-satellites = { workspace = true }
 doorboard-aircraft = { workspace = true }
 
 [tool.ruff]

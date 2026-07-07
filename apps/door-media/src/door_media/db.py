@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS recordings (
     sha256         TEXT,
     consent_context TEXT,
     thumbnail_path TEXT,
+    consent_metadata_path TEXT,
     sync_status    TEXT NOT NULL DEFAULT 'pending',
     synced_sha256  TEXT,
     deleted_at_utc TEXT
@@ -55,6 +56,27 @@ CREATE INDEX IF NOT EXISTS idx_recordings_sync_status ON recordings(sync_status)
 CREATE INDEX IF NOT EXISTS idx_recordings_started_at  ON recordings(started_at_utc);
 CREATE INDEX IF NOT EXISTS idx_recordings_session_kind ON recordings(session_id, kind);
 """
+
+_ROW_COLUMNS = (
+    "recording_id",
+    "session_id",
+    "kind",
+    "stream",
+    "started_at_utc",
+    "started_mono_ms",
+    "finalized_at_utc",
+    "path",
+    "duration_s",
+    "size_bytes",
+    "sha256",
+    "consent_context",
+    "thumbnail_path",
+    "consent_metadata_path",
+    "sync_status",
+    "synced_sha256",
+    "deleted_at_utc",
+)
+_ROW_SELECT = ", ".join(_ROW_COLUMNS)
 
 
 @dataclass
@@ -72,6 +94,7 @@ class RecordingRow:
     sha256: str | None
     consent_context: str | None
     thumbnail_path: str | None
+    consent_metadata_path: str | None
     sync_status: str
     synced_sha256: str | None
     deleted_at_utc: str | None
@@ -110,8 +133,16 @@ class RecordingDB:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
+        self._ensure_column("consent_metadata_path", "TEXT")
         self._conn.commit()
         logger.info("recording_db_opened", extra={"path": str(db_path)})
+
+    def _ensure_column(self, name: str, decl: str) -> None:
+        existing = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(recordings)").fetchall()
+        }
+        if name not in existing:
+            self._conn.execute(f"ALTER TABLE recordings ADD COLUMN {name} {decl}")
 
     # ------------------------------------------------------------------
     # Write operations
@@ -173,6 +204,14 @@ class RecordingDB:
             )
             self._conn.commit()
 
+    def update_consent_metadata(self, *, recording_id: UUID, metadata_path: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE recordings SET consent_metadata_path=? WHERE recording_id=?",
+                (metadata_path, str(recording_id)),
+            )
+            self._conn.commit()
+
     def mark_synced(self, *, recording_id: UUID, verified_sha256: str) -> bool:
         """Mark a recording synced only if sha256 matches.
 
@@ -207,7 +246,7 @@ class RecordingDB:
             return cur.rowcount > 0
 
     def rows_for_session(self, *, session_id: UUID, kind: str | None = None) -> list[RecordingRow]:
-        query = "SELECT * FROM recordings WHERE session_id=?"
+        query = f"SELECT {_ROW_SELECT} FROM recordings WHERE session_id=?"
         params: list[str] = [str(session_id)]
         if kind is not None:
             query += " AND kind=?"
@@ -237,7 +276,7 @@ class RecordingDB:
     def get(self, recording_id: UUID) -> RecordingRow | None:
         with self._lock:
             cur = self._conn.execute(
-                "SELECT * FROM recordings WHERE recording_id=?",
+                f"SELECT {_ROW_SELECT} FROM recordings WHERE recording_id=?",
                 (str(recording_id),),
             )
             row = cur.fetchone()
@@ -249,7 +288,7 @@ class RecordingDB:
         """Return all recordings not yet deleted."""
         with self._lock:
             cur = self._conn.execute(
-                """SELECT * FROM recordings
+                f"""SELECT {_ROW_SELECT} FROM recordings
                    WHERE sync_status != 'deleted'
                    ORDER BY started_at_utc""",
             )
@@ -274,7 +313,7 @@ class RecordingDB:
         with the primary key gives a stable total order.
         """
         with self._lock:
-            query = "SELECT * FROM recordings WHERE sync_status != 'deleted'"
+            query = f"SELECT {_ROW_SELECT} FROM recordings WHERE sync_status != 'deleted'"
             params: list[object] = []
 
             if kind:
@@ -317,7 +356,7 @@ class RecordingDB:
         """Recordings finalized but not yet synced — for the sync queue depth."""
         with self._lock:
             cur = self._conn.execute(
-                """SELECT * FROM recordings
+                f"""SELECT {_ROW_SELECT} FROM recordings
                    WHERE sync_status='pending' AND path IS NOT NULL
                    ORDER BY started_at_utc""",
             )
