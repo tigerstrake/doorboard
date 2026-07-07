@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 members = [
     "doorboard",
     "doorboard-auth",
+    "doorboard-birdnet",
     "doorboard-config",
     "doorboard-contracts",
     "doorboard-control-plane-api",
@@ -148,6 +149,25 @@ dev = [
 name = "doorboard-auth"
 version = "0.0.0"
 source = { editable = "packages/auth" }
+
+[[package]]
+name = "doorboard-birdnet"
+version = "0.0.0"
+source = { editable = "integrations/birdnet" }
+dependencies = [
+    { name = "doorboard-config" },
+    { name = "doorboard-contracts" },
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "doorboard-config", editable = "packages/config" },
+    { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "httpx" },
+    { name = "pydantic" },
+]
 
 [[package]]
 name = "doorboard-config"
@@ -354,6 +374,20 @@ requires-dist = [
 name = "doorboard-wallboard-worker"
 version = "0.0.0"
 source = { editable = "apps/wallboard-worker" }
+dependencies = [
+    { name = "doorboard-birdnet" },
+    { name = "doorboard-config" },
+    { name = "doorboard-contracts" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "doorboard-birdnet", editable = "integrations/birdnet" },
+    { name = "doorboard-config", editable = "packages/config" },
+    { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "httpx" },
+]
 
 [[package]]
 name = "fastapi"
