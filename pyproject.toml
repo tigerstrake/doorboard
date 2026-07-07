@@ -44,6 +44,7 @@ members = [
     "apps/control-plane-api",
     "apps/wallboard-worker",
     "apps/simulator",
+    "integrations/birdnet",
 ]
 
 [tool.uv.sources]
@@ -60,6 +61,7 @@ doorboard-media-client = { workspace = true }
 doorboard-observability = { workspace = true }
 doorboard-simulator = { workspace = true }
 doorboard-wallboard-worker = { workspace = true }
+doorboard-birdnet = { workspace = true }
 
 [tool.ruff]
 line-length = 100
