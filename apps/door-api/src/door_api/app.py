@@ -100,15 +100,18 @@ class DoorApiState:
             self.handle_contract_event(event)
 
     def handle_contract_event(self, event: DoorboardEvent) -> bool:
-        payload = event.payload
+        # `event` is a discriminated union keyed on `type`; read `event.payload`
+        # inside each branch so it narrows to the concrete payload type.
         changed = False
         if event.type == "door.button_pressed":
+            payload = event.payload
             changed = self.machine.handle_button_pressed(
                 trace_id=event.trace_id,
                 had_cached_profile=payload.had_cached_profile,
                 profile_id=payload.profile_id,
             )
         elif event.type == "vision.identity_stable":
+            payload = event.payload
             changed = self.machine.handle_identity_stable(
                 person_id=payload.person_id,
                 display_name=payload.display_name,
@@ -117,9 +120,11 @@ class DoorApiState:
             )
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "vision.identity_expired":
+            payload = event.payload
             changed = self.machine.handle_identity_expired(person_id=payload.person_id)
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "door.contact_changed":
+            payload = event.payload
             changed = self.machine.handle_contact_changed(state=payload.state)
         if changed or event.type.startswith("vision."):
             self.broadcast.update_snapshot(self.machine.snapshot().to_dict())
