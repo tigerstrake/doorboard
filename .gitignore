@@ -40,6 +40,7 @@ playwright/.cache/
 *.sqlite-wal
 *.sqlite-shm
 *.db
+tests/performance/results/
 
 # Face/enrollment data — biometric data never belongs in git
 enrollment-data/
