@@ -37,15 +37,14 @@ not a new one. Replace when real admin auth lands (see T-501 README note).
 
 from __future__ import annotations
 
+import html
 import logging
 import logging.config
 import secrets
-import html
 import time
 import uuid
-from control_plane_api._uuid7 import uuid7
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -59,6 +58,7 @@ from sqlalchemy import func, select
 
 from control_plane_api import presence_engine
 from control_plane_api import tokens as token_store
+from control_plane_api._uuid7 import uuid7
 from control_plane_api.bundles import get_or_create_bundle, update_bundle
 from control_plane_api.db import session_scope
 from control_plane_api.models import EventRow, SocialItemRow
@@ -672,7 +672,9 @@ async def admin_update_mood(body: MoodUpdateRequest, request: Request, _auth: Ad
     if body.mood not in VALID_MOODS:
         raise HTTPException(status_code=422, detail=f"invalid mood. Must be one of {VALID_MOODS}")
     if body.subject_id not in {"owner", "roommate"}:
-        raise HTTPException(status_code=422, detail="invalid subject. Must be 'owner' or 'roommate'")
+        raise HTTPException(
+            status_code=422, detail="invalid subject. Must be 'owner' or 'roommate'"
+        )
 
     state = _state(request)
     now = datetime.now(UTC)
@@ -760,10 +762,8 @@ async def get_scoreboard(request: Request) -> dict:
             board_id = r.label or "default"
             score = 0
             if r.person_id:
-                try:
+                with suppress(ValueError):
                     score = int(r.person_id)
-                except ValueError:
-                    pass
             entry = {
                 "entry_id": r.item_id,
                 "title": r.author_label,
@@ -796,38 +796,37 @@ async def admin_create_scoreboard_entry(
             label=html.escape(body.board_id),
             author_label=html.escape(body.title),
             text=html.escape(body.notes) if body.notes else None,
-            person_id=str(body.score),
+            person_id="0",
             source_event_id="admin_crud",
             created_at=now,
             status="active",
             updated_at=now,
         )
         session.add(row)
-        session.flush()
 
-        # Ingest a social.scoreboard_updated event with delta=0 so WebSocket clients get notified
-        raw_event = {
-            "event_id": str(uuid7()),
-            "type": "social.scoreboard_updated",
-            "source": "admin_ui",
-            "occurred_at": now.isoformat(),
-            "monotonic_ms": int(time.monotonic() * 1000),
-            "door_id": state.settings.door_id,
-            "trace_id": str(uuid.uuid4()),
-            "payload": {
-                "board_id": body.board_id,
-                "entry_id": entry_id,
-                "delta": 0,
-            },
-        }
-        ingest_batch(
-            state.session_factory,
-            [raw_event],
-            batch_id=f"admin-scoreboard-{int(time.time())}",
-            now=now,
-            mqtt_publisher=state.mqtt_publisher,
-            notify_engine=state.notify_engine,
-        )
+    # Ingest a social.scoreboard_updated event with delta=0 so WebSocket clients get notified
+    raw_event = {
+        "event_id": str(uuid7()),
+        "type": "social.scoreboard_updated",
+        "source": "admin_ui",
+        "occurred_at": now.isoformat(),
+        "monotonic_ms": int(time.monotonic() * 1000),
+        "door_id": state.settings.door_id,
+        "trace_id": str(uuid.uuid4()),
+        "payload": {
+            "board_id": body.board_id,
+            "entry_id": entry_id,
+            "delta": body.score,
+        },
+    }
+    ingest_batch(
+        state.session_factory,
+        [raw_event],
+        batch_id=f"admin-scoreboard-{int(time.time())}",
+        now=now,
+        mqtt_publisher=state.mqtt_publisher,
+        notify_engine=state.notify_engine,
+    )
 
     return {"entry_id": entry_id, "status": "created"}
 
@@ -839,6 +838,9 @@ async def admin_update_scoreboard_entry(
     state = _state(request)
     now = datetime.now(UTC)
 
+    delta = 0
+    board_id = ""
+
     with session_scope(state.session_factory) as session:
         row = session.get(SocialItemRow, ("scoreboard", entry_id))
         if row is None or row.status != "active":
@@ -846,48 +848,43 @@ async def admin_update_scoreboard_entry(
 
         old_score = 0
         if row.person_id:
-            try:
+            with suppress(ValueError):
                 old_score = int(row.person_id)
-            except ValueError:
-                pass
 
         row.author_label = html.escape(body.title)
         row.text = html.escape(body.notes) if body.notes else None
-        row.person_id = str(body.score)
         row.updated_at = now
-        session.flush()
-
-        # If score changed, emit a social.scoreboard_updated event with the delta
         delta = body.score - old_score
-        if delta != 0:
-            raw_event = {
-                "event_id": str(uuid7()),
-                "type": "social.scoreboard_updated",
-                "source": "admin_ui",
-                "occurred_at": now.isoformat(),
-                "monotonic_ms": int(time.monotonic() * 1000),
-                "door_id": state.settings.door_id,
-                "trace_id": str(uuid.uuid4()),
-                "payload": {
-                    "board_id": row.label,
-                    "entry_id": entry_id,
-                    "delta": delta,
-                },
-            }
-            ingest_batch(
-                state.session_factory,
-                [raw_event],
-                batch_id=f"admin-scoreboard-update-{int(time.time())}",
-                now=now,
-                mqtt_publisher=state.mqtt_publisher,
-                notify_engine=state.notify_engine,
-            )
+        board_id = row.label
+
+    # If score changed, emit a social.scoreboard_updated event with the delta
+    if delta != 0:
+        raw_event = {
+            "event_id": str(uuid7()),
+            "type": "social.scoreboard_updated",
+            "source": "admin_ui",
+            "occurred_at": now.isoformat(),
+            "monotonic_ms": int(time.monotonic() * 1000),
+            "door_id": state.settings.door_id,
+            "trace_id": str(uuid.uuid4()),
+            "payload": {
+                "board_id": board_id,
+                "entry_id": entry_id,
+                "delta": delta,
+            },
+        }
+        ingest_batch(
+            state.session_factory,
+            [raw_event],
+            batch_id=f"admin-scoreboard-update-{int(time.time())}",
+            now=now,
+            mqtt_publisher=state.mqtt_publisher,
+            notify_engine=state.notify_engine,
+        )
 
     return {"entry_id": entry_id, "status": "updated"}
 
 
 @app.delete("/admin/social/scoreboard/{entry_id}")
-async def admin_delete_scoreboard_entry(
-    entry_id: str, request: Request, _auth: AdminAuth
-) -> dict:
+async def admin_delete_scoreboard_entry(entry_id: str, request: Request, _auth: AdminAuth) -> dict:
     return _delete_social_item(request, "scoreboard", entry_id)

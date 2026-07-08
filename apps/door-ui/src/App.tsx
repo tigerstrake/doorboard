@@ -24,7 +24,7 @@ import {
   foodFixture,
 } from "./fixtures";
 import { socialApi, ApiError } from "./socialApi";
-import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
+import type { GuestbookEntry, Poll, PollResultRow, ScoreboardEntry } from "./socialApi";
 import { AdminSocialPanel } from "./AdminSocialPanel";
 import { VisitorPage } from "./VisitorPage";
 import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
@@ -113,6 +113,49 @@ interface Recording {
 // thank-you screen is visible before the session auto-expires to IDLE.
 const WALLBOARD_TAKEOVER_STATES: SessionState[] = [...VISITOR_STATES, "SESSION_END"];
 
+interface BirdSummaryState {
+  occurred_at: string;
+  total_detections: number;
+  top_species: Array<{ name: string; count: number; confidence_avg: number }>;
+}
+
+interface AircraftSummaryState {
+  occurred_at: string;
+  nearby: Array<{ callsign: string; altitude_ft: number; distance_km: number }>;
+}
+
+interface SatellitePassState {
+  occurred_at: string;
+  satellite: string;
+  rise_at: string;
+  direction: string;
+  max_elevation_deg: number;
+}
+
+interface PrinterStatusState {
+  occurred_at: string;
+  state: string;
+  job_name: string | null;
+  progress_pct: number | null;
+  eta: string | null;
+}
+
+interface MoodState {
+  occurred_at: string;
+  mood: string;
+}
+
+interface ScoreboardState {
+  occurred_at: string;
+  scores: Array<{ name: string; score: number }>;
+}
+
+interface FoodState {
+  occurred_at: string;
+  title: string;
+  detail: string | null;
+}
+
 export function App() {
   const [route, setRoute] = useState<string>(window.location.pathname);
   const [sessionState, setSessionState] = useState<SessionState>("IDLE");
@@ -160,6 +203,15 @@ export function App() {
   const [myContent, setMyContent] = useState<MyContentRef[]>(() => loadMyContent());
   const [approvedGuestbook, setApprovedGuestbook] = useState<GuestbookEntry[]>([]);
 
+  // Ambient & Social tile states (T-601, T-602, T-603, T-604, T-605)
+  const [birdState, setBirdState] = useState<BirdSummaryState>(birdFixture);
+  const [aircraftState, setAircraftState] = useState<AircraftSummaryState>(aircraftFixture);
+  const [satelliteState, setSatelliteState] = useState<SatellitePassState>(satelliteFixture);
+  const [printerState, setPrinterState] = useState<PrinterStatusState>(printerFixture);
+  const [moodState, setMoodState] = useState<MoodState>(moodFixture);
+  const [scoreboardState, setScoreboardState] = useState<ScoreboardState>(scoreboardFixture);
+  const [foodState, setFoodState] = useState<FoodState>(foodFixture);
+
   const clientRef = useRef<DoorboardEventClient | null>(null);
 
   // Sync pathname route
@@ -179,12 +231,41 @@ export function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // Load initial data on mount
+  useEffect(() => {
+    socialApi.getCurrentMoods().then((mds) => {
+      if (mds.owner) {
+        setMoodState({ occurred_at: new Date().toISOString(), mood: mds.owner });
+      }
+    }).catch(() => {});
+
+    socialApi.getScoreboard().then((res) => {
+      const daily = res.boards.daily || [];
+      if (daily.length > 0) {
+        setScoreboardState({
+          occurred_at: new Date().toISOString(),
+          scores: daily.map((e: ScoreboardEntry) => ({ name: e.title, score: e.score })),
+        });
+      }
+    }).catch(() => {});
+
+    socialApi.getLatestFood().then((fd) => {
+      if (fd) {
+        setFoodState({
+          occurred_at: new Date().toISOString(),
+          title: fd.title,
+          detail: fd.detail,
+        });
+      }
+    }).catch(() => {});
+  }, []);
+
   // Initialize event client
   useEffect(() => {
     const client = new DoorboardEventClient({
       // Connect to simulator ws, or fallback to mock BroadcastChannel
       wsUrl: wsUrlFromApiBase(API_BASE),
-      filters: ["session.*", "vision.*", "door.*", "media.*"],
+      filters: ["session.*", "vision.*", "door.*", "media.*", "ambient.*", "social.*"],
       onSnapshot: (snapshot) => {
         const state = (snapshot as { state?: SessionState }).state;
         if (state) {
@@ -251,10 +332,100 @@ export function App() {
       }
     });
 
+    // Listen to ambient bird detections
+    const unsubscribeBird = client.subscribe("ambient.bird_summary", (event: DoorboardEvent) => {
+      if (event && event.type === "ambient.bird_summary" && event.payload) {
+        setBirdState({
+          occurred_at: event.occurred_at,
+          total_detections: event.payload.total_detections,
+          top_species: event.payload.top_species,
+        });
+      }
+    });
+
+    // Listen to ambient overhead aircraft
+    const unsubscribeAircraft = client.subscribe("ambient.aircraft_summary", (event: DoorboardEvent) => {
+      if (event && event.type === "ambient.aircraft_summary" && event.payload) {
+        setAircraftState({
+          occurred_at: event.occurred_at,
+          nearby: event.payload.nearby,
+        });
+      }
+    });
+
+    // Listen to ambient satellite passes
+    const unsubscribeSatellite = client.subscribe("ambient.satellite_pass", (event: DoorboardEvent) => {
+      if (event && event.type === "ambient.satellite_pass" && event.payload) {
+        setSatelliteState({
+          occurred_at: event.occurred_at,
+          satellite: event.payload.satellite,
+          rise_at: event.payload.rise_at,
+          direction: event.payload.direction,
+          max_elevation_deg: event.payload.max_elevation_deg,
+        });
+      }
+    });
+
+    // Listen to ambient printer status
+    const unsubscribePrinter = client.subscribe("ambient.printer_status", (event: DoorboardEvent) => {
+      if (event && event.type === "ambient.printer_status" && event.payload) {
+        setPrinterState({
+          occurred_at: event.occurred_at,
+          state: event.payload.state,
+          job_name: event.payload.job_name,
+          progress_pct: event.payload.progress_pct,
+          eta: event.payload.eta,
+        });
+      }
+    });
+
+    // Listen to social mood updates
+    const unsubscribeMood = client.subscribe("social.mood_updated", (event: DoorboardEvent) => {
+      if (event && event.type === "social.mood_updated" && event.payload) {
+        if (event.payload.subject_id === "owner") {
+          setMoodState({
+            occurred_at: event.occurred_at,
+            mood: event.payload.mood,
+          });
+        }
+      }
+    });
+
+    // Listen to social scoreboard updates
+    const unsubscribeScoreboard = client.subscribe("social.scoreboard_updated", (event: DoorboardEvent) => {
+      if (event && event.type === "social.scoreboard_updated" && event.payload) {
+        socialApi.getScoreboard().then((res) => {
+          const daily = res.boards.daily || [];
+          setScoreboardState({
+            occurred_at: event.occurred_at,
+            scores: daily.map((e: ScoreboardEntry) => ({ name: e.title, score: e.score })),
+          });
+        }).catch(() => {});
+      }
+    });
+
+    // Listen to ambient food recommendation
+    const unsubscribeFood = client.subscribe("ambient.food_recommendation", (event: DoorboardEvent) => {
+      if (event && event.type === "ambient.food_recommendation" && event.payload) {
+        setFoodState({
+          occurred_at: event.occurred_at,
+          title: event.payload.title,
+          detail: event.payload.detail,
+        });
+      }
+    });
+
     return () => {
       unsubscribeSession();
       unsubscribeVision();
       unsubscribeMedia();
+      unsubscribeBird();
+      unsubscribeAircraft();
+      unsubscribeSatellite();
+      unsubscribePrinter();
+      unsubscribeMood();
+      unsubscribeScoreboard();
+      unsubscribeFood();
       client.close();
     };
   }, []);
@@ -657,18 +828,18 @@ export function App() {
               </Tile>
 
               {/* Tile 2: Mood */}
-              <Tile title="Current Mood" asOf={moodFixture.occurred_at}>
+              <Tile title="Current Mood" asOf={moodState.occurred_at}>
                 <div className="mood-tile-content">
                   <span className="mood-emoji">🎯</span>
-                  <span className="mood-text">Taylor is feeling <strong>{moodFixture.mood}</strong></span>
+                  <span className="mood-text">Taylor is feeling <strong>{moodState.mood}</strong></span>
                 </div>
               </Tile>
 
               {/* Tile 3: Birds */}
-              <Tile title="Bird Detections" asOf={birdFixture.occurred_at}>
+              <Tile title="Bird Detections" asOf={birdState.occurred_at}>
                 <div className="bird-tile-content">
-                  <p className="bird-stat">Total today: <strong>{birdFixture.total_detections}</strong></p>
-                  {birdFixture.top_species.map((s, idx) => (
+                  <p className="bird-stat">Total today: <strong>{birdState.total_detections}</strong></p>
+                  {birdState.top_species.map((s, idx) => (
                     <div key={idx} className="bird-row">
                       <span>{s.name} (x{s.count})</span>
                       <span className="bird-conf">{(s.confidence_avg * 100).toFixed(0)}% conf</span>
@@ -678,9 +849,9 @@ export function App() {
               </Tile>
 
               {/* Tile 4: Aircraft */}
-              <Tile title="Overhead Aircraft" asOf={aircraftFixture.occurred_at}>
+              <Tile title="Overhead Aircraft" asOf={aircraftState.occurred_at}>
                 <div className="aircraft-tile-content">
-                  {aircraftFixture.nearby.map((a, idx) => (
+                  {aircraftState.nearby.map((a, idx) => (
                     <div key={idx} className="aircraft-row">
                       <span className="aircraft-call">{a.callsign}</span>
                       <span>{a.altitude_ft.toLocaleString()} ft</span>
@@ -691,29 +862,29 @@ export function App() {
               </Tile>
 
               {/* Tile 5: Satellite Pass */}
-              <Tile title="Next Satellite Pass" asOf={satelliteFixture.occurred_at}>
+              <Tile title="Next Satellite Pass" asOf={satelliteState.occurred_at}>
                 <div className="satellite-tile-content">
-                  <p>🛰️ <strong>{satelliteFixture.satellite}</strong></p>
-                  <p>Rise: {new Date(satelliteFixture.rise_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-                  <p>Direction: {satelliteFixture.direction} ({satelliteFixture.max_elevation_deg}° max elev)</p>
+                  <p>🛰️ <strong>{satelliteState.satellite}</strong></p>
+                  <p>Rise: {new Date(satelliteState.rise_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                  <p>Direction: {satelliteState.direction} ({satelliteState.max_elevation_deg}° max elev)</p>
                 </div>
               </Tile>
 
               {/* Tile 6: Printer Status */}
-              <Tile title="3D Printer" asOf={printerFixture.occurred_at}>
+              <Tile title="3D Printer" asOf={printerState.occurred_at}>
                 <div className="printer-tile-content">
-                  <p>Job: <strong>{printerFixture.job_name}</strong> ({printerFixture.state})</p>
+                  <p>Job: <strong>{printerState.job_name}</strong> ({printerState.state})</p>
                   <div className="progress-bar-container">
-                    <div className="progress-bar-fill" style={{ width: `${printerFixture.progress_pct}%` }} />
+                    <div className="progress-bar-fill" style={{ width: `${printerState.progress_pct}%` }} />
                   </div>
-                  <p className="printer-subtext">{printerFixture.progress_pct}% completed · ETA 15m</p>
+                  <p className="printer-subtext">{printerState.progress_pct}% completed</p>
                 </div>
               </Tile>
 
               {/* Tile 7: Roommate Scoreboard */}
-              <Tile title="Scoreboard" asOf={scoreboardFixture.occurred_at}>
+              <Tile title="Scoreboard" asOf={scoreboardState.occurred_at}>
                 <div className="scoreboard-tile-content">
-                  {scoreboardFixture.scores.map((s, idx) => (
+                  {scoreboardState.scores.map((s, idx) => (
                     <div key={idx} className="score-row">
                       <span>{s.name}</span>
                       <span className="score-points"><strong>{s.score}</strong> pts</span>
@@ -723,10 +894,10 @@ export function App() {
               </Tile>
 
               {/* Tile 8: Daily Food */}
-              <Tile title="Daily Food Recommendation" asOf={foodFixture.occurred_at}>
+              <Tile title="Daily Food Recommendation" asOf={foodState.occurred_at}>
                 <div className="food-tile-content">
-                  <h4>🍜 {foodFixture.title}</h4>
-                  <p>{foodFixture.detail}</p>
+                  <h4>🍜 {foodState.title}</h4>
+                  <p>{foodState.detail}</p>
                 </div>
               </Tile>
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import abc
 from datetime import date
-from typing import Literal
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel
 
 
 class Recommendation(BaseModel):

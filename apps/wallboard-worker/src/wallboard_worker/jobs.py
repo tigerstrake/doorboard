@@ -3,16 +3,17 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from datetime import datetime, UTC, timedelta
-import httpx
+from datetime import UTC, datetime, timedelta
 
+import httpx
 from doorboard_contracts.events import (
     AmbientFoodRecommendationEvent,
     AmbientFoodRecommendationPayload,
 )
+from food_recommendation.provider import FoodRecommendationProvider
+
 from wallboard_worker.settings import Settings
 from wallboard_worker.uuid7 import uuid7
-from food_recommendation.provider import FoodRecommendationProvider
 
 logger = logging.getLogger("doorboard.wallboard_worker.jobs")
 
@@ -35,9 +36,7 @@ def get_ingest_token(settings: Settings) -> str:
         if resp.status_code == 200:
             return resp.json()["token"]
         else:
-            logger.warning(
-                f"Failed to fetch ingest token, status {resp.status_code}: {resp.text}"
-            )
+            logger.warning(f"Failed to fetch ingest token, status {resp.status_code}: {resp.text}")
     except Exception as e:
         logger.warning(f"Failed to connect to control plane for token: {e}")
     return ""
@@ -54,7 +53,10 @@ def run_food_recommendation(
     try:
         recommendation = provider.get_daily_recommendation(target_date)
     except Exception as exc:
-        logger.warning(f"Failed to get daily food recommendation for {target_date}: {exc}. Trying yesterday's fallback.")
+        logger.warning(
+            f"Failed to get food recommendation for {target_date}: {exc}. "
+            "Trying yesterday's fallback."
+        )
         # Outage fallback: yesterday's recommendation
         try:
             recommendation = provider.get_daily_recommendation(target_date - timedelta(days=1))
@@ -67,6 +69,7 @@ def run_food_recommendation(
         date=recommendation.date,
         title=recommendation.title,
         detail=recommendation.detail,
+        provider=recommendation.provider,
     )
 
     # Construct event
@@ -94,12 +97,12 @@ def run_food_recommendation(
     try:
         resp = httpx.post(url, json=batch, headers=headers, timeout=5.0)
         if resp.status_code == 200:
-            logger.info(f"Ingested food recommendation event successfully. Title: {recommendation.title}")
+            logger.info(
+                f"Ingested food recommendation event successfully. Title: {recommendation.title}"
+            )
             return resp.json()
         else:
-            logger.error(
-                f"Ingestion failed with status {resp.status_code}: {resp.text}"
-            )
+            logger.error(f"Ingestion failed with status {resp.status_code}: {resp.text}")
     except Exception as exc:
         logger.error(f"Failed to post food recommendation event: {exc}")
 

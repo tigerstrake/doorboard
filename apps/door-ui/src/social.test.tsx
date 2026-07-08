@@ -56,11 +56,46 @@ describe("AdminSocialPanel renders untrusted guestbook text inertly", () => {
       { body: { polls: [] } },
       { body: { stat: null } },
       { body: { entries: [] } },
+      { body: {} }, // moods
+      { body: { boards: {} } }, // scoreboard
+      { body: {} }, // food
     ]);
 
     render(<AdminSocialPanel />);
 
     await waitFor(() => expect(screen.getByText(HOSTILE)).toBeTruthy());
+    expect(document.querySelector("script")).toBeNull();
+  });
+
+  it("renders hostile scoreboard entries and food recommendations inertly", async () => {
+    mockFetchSequence([
+      { body: { entries: [] } },
+      { body: { entries: [] } },
+      { body: { polls: [] } },
+      { body: { stat: null } },
+      { body: { entries: [] } },
+      { body: { owner: "chilling" } },
+      {
+        body: {
+          boards: {
+            foosball: [
+              {
+                entry_id: "entry-1",
+                title: HOSTILE,
+                notes: HOSTILE,
+                score: 5,
+                created_at: "now",
+              },
+            ],
+          },
+        },
+      },
+      { body: { title: HOSTILE, detail: HOSTILE, date: "2026-07-08" } },
+    ]);
+
+    render(<AdminSocialPanel />);
+
+    await waitFor(() => expect(screen.getAllByText(HOSTILE).length).toBeGreaterThan(0));
     expect(document.querySelector("script")).toBeNull();
   });
 });

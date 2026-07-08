@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
-import click
 
-from wallboard_worker.settings import Settings
-from wallboard_worker.jobs import run_food_recommendation
+import click
 from food_recommendation.provider import MockFoodRecommendationProvider
+
+from wallboard_worker.jobs import run_food_recommendation
+from wallboard_worker.settings import Settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("doorboard.wallboard_worker.cli")

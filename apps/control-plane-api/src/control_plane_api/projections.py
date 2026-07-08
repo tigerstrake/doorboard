@@ -20,6 +20,7 @@ e.g. `event.payload.session_id` actually exists on the payload it receives.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime
 
 from doorboard_contracts import DoorboardEvent
@@ -290,10 +291,8 @@ def _project_social_scoreboard_updated(
 
     current_score = 0
     if row.person_id:
-        try:
+        with contextlib.suppress(ValueError):
             current_score = int(row.person_id)
-        except ValueError:
-            pass
     new_score = current_score + event.payload.delta
     row.person_id = str(new_score)
     row.source_event_id = str(event.event_id)
