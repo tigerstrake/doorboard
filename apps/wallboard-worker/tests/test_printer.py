@@ -4,7 +4,10 @@ import inspect
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import pytest
 from printer.provider import MockPrinterProvider, OctoPrintProvider, PrinterConfig
+from wallboard_worker.jobs import run_printer_status
+from wallboard_worker.settings import Settings
 
 MOCK_OCTOPRINT_OPERATIONAL = {
     "state": "Operational",
@@ -179,3 +182,76 @@ def test_no_post_routes_exist_in_provider() -> None:
     methods = [m[0] for m in inspect.getmembers(OctoPrintProvider, predicate=inspect.isfunction)]
     # The only methods should be init and get_status
     assert set(methods).issubset({"__init__", "get_status"})
+
+
+@patch("httpx.post")
+def test_run_printer_status_ingests_event(mock_post, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FEATURE_PRINTER", "True")
+    monkeypatch.setenv("CONTROL_PLANE_URL", "http://127.0.0.1:8090")
+    monkeypatch.setenv("CONTROL_PLANE_ADMIN_TOKEN", "test-admin")
+
+    settings = Settings()
+    provider = MockPrinterProvider("printing")
+
+    token_response = MagicMock()
+    token_response.status_code = 200
+    token_response.json.return_value = {"token": "tok_ingest_123"}
+
+    ingest_response = MagicMock()
+    ingest_response.status_code = 200
+    ingest_response.json.return_value = {"status": "stored"}
+
+    mock_post.side_effect = [token_response, ingest_response]
+
+    res = run_printer_status(settings, provider)
+    assert res is not None
+
+    ingest_call = mock_post.mock_calls[1]
+    body = ingest_call.kwargs["json"]
+
+    batch_events = body["events"]
+    assert len(batch_events) == 1
+    event = batch_events[0]
+    assert event["type"] == "ambient.printer_status"
+
+    payload = event["payload"]
+    assert payload["state"] == "printing"
+    assert payload["job_name"] == "benchy_0.2mm_pla.gcode"
+    assert payload["progress_pct"] == 64.5
+    assert payload["eta"] is not None
+
+
+@patch("httpx.post")
+def test_run_printer_status_degrades_to_offline_on_provider_error(
+    mock_post, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FEATURE_PRINTER", "True")
+    monkeypatch.setenv("CONTROL_PLANE_URL", "http://127.0.0.1:8090")
+    monkeypatch.setenv("CONTROL_PLANE_ADMIN_TOKEN", "test-admin")
+
+    settings = Settings()
+
+    # Provider that fails to reach the printer: the job must still post an
+    # "offline" status event rather than crash or go silent.
+    provider = MagicMock()
+    provider.get_status.side_effect = Exception("connection refused")
+
+    token_response = MagicMock()
+    token_response.status_code = 200
+    token_response.json.return_value = {"token": "tok_ingest_123"}
+
+    ingest_response = MagicMock()
+    ingest_response.status_code = 200
+    ingest_response.json.return_value = {"status": "stored"}
+
+    mock_post.side_effect = [token_response, ingest_response]
+
+    res = run_printer_status(settings, provider)
+    assert res is not None
+
+    ingest_call = mock_post.mock_calls[1]
+    payload = ingest_call.kwargs["json"]["events"][0]["payload"]
+    assert payload["state"] == "offline"
+    assert payload["job_name"] is None
+    assert payload["progress_pct"] is None
+    assert payload["eta"] is None

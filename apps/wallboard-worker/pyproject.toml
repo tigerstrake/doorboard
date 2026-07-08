@@ -5,6 +5,9 @@ requires-python = ">=3.12"
 dependencies = [
     "doorboard-contracts",
     "doorboard-config",
+    "doorboard-birdnet",
+    "doorboard-satellites",
+    "doorboard-aircraft",
     "doorboard-printer",
     "httpx",
 ]

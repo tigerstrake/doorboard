@@ -22,16 +22,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import logging
 import shutil
 import socket
 import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
 from door_media._uuid7 import uuid7
-from door_media.adapters import ConsentContext, MediaRouter, RecordingKind
-from door_media.db import RecordingDB
+from door_media.adapters import CapturedPhoto, ConsentContext, MediaRouter, RecordingKind
+from door_media.db import RecordingDB, RecordingRow
 from door_media.emitter import (
     emit_recording_finalized,
     emit_recording_started,
@@ -49,6 +53,16 @@ _WARN_FREE_RATIO = 0.10  # warn when <10% free
 _CRIT_FREE_RATIO = 0.05  # critical when <5% free
 
 
+@dataclass(frozen=True)
+class PhotoReview:
+    recording_id: UUID
+    session_id: UUID
+    review_path: str
+    review_url_path: str
+    size_bytes: int
+    sha256: str
+
+
 class RecordingService:
     """Coordinates recording lifecycle, retention, and event emission."""
 
@@ -63,6 +77,7 @@ class RecordingService:
         self._db = db
         self._settings = settings
         self._active_handles: dict[UUID, object] = {}  # recording_id → handle
+        self._review_photos: dict[UUID, CapturedPhoto] = {}
         self._retention_task: asyncio.Task[None] | None = None
         self._storage_task: asyncio.Task[None] | None = None
         self._trace_id = uuid7()  # service-level trace; per-session traces override
@@ -76,6 +91,8 @@ class RecordingService:
         self._settings.recordings_root.mkdir(parents=True, exist_ok=True)
         self._settings.segments_root.mkdir(parents=True, exist_ok=True)
         self._settings.thumbnails_root.mkdir(parents=True, exist_ok=True)
+        self._review_dir().mkdir(parents=True, exist_ok=True)
+        self._cleanup_review_dir()
 
         self._retention_task = asyncio.create_task(self._retention_loop(), name="retention-loop")
         self._storage_task = asyncio.create_task(
@@ -269,6 +286,221 @@ class RecordingService:
         )
         return True
 
+    # ------------------------------------------------------------------
+    # Explicit photo-booth still capture
+    # ------------------------------------------------------------------
+
+    async def capture_photo_for_review(
+        self,
+        *,
+        session_id: UUID,
+        trace_id: UUID,
+    ) -> PhotoReview | None:
+        """Capture a still for local review without creating a durable artifact.
+
+        The file lives under ``photo-review/`` and is not inserted in the
+        recording registry until ``save_photo()``. Discarding a review capture
+        therefore leaves no sync-visible rows and only has one temporary file to
+        unlink.
+        """
+        self._prune_review_photos()
+        status = self._router.storage_status()
+        if not status.recording_allowed:
+            logger.warning(
+                "photo_capture_skipped_storage_full",
+                extra={"session_id": str(session_id), "free_bytes": status.free_bytes},
+            )
+            return None
+
+        try:
+            captured = await self._router.capture_photo(
+                session_id=session_id,
+                stream=self._settings.visitor_cam_stream,
+            )
+        except Exception as exc:
+            logger.exception("router_capture_photo_error", exc_info=exc)
+            return None
+
+        self._review_photos[captured.recording_id] = captured
+        self._prune_review_photos()
+        logger.info(
+            "photo_review_captured",
+            extra={
+                "recording_id": str(captured.recording_id),
+                "session_id": str(session_id),
+                "trace_id": str(trace_id),
+            },
+        )
+        return PhotoReview(
+            recording_id=captured.recording_id,
+            session_id=session_id,
+            review_path=captured.path,
+            review_url_path=f"/photos/{captured.recording_id}/review?session_id={session_id}",
+            size_bytes=captured.size_bytes,
+            sha256=captured.sha256,
+        )
+
+    async def save_photo(
+        self,
+        recording_id: UUID,
+        *,
+        session_id: UUID,
+        trace_id: UUID,
+    ) -> dict | None:
+        """Promote a reviewed still into the media artifact registry."""
+        captured = self._review_photos.pop(recording_id, None)
+        if captured is None or captured.session_id != session_id:
+            logger.warning(
+                "save_unknown_photo_review",
+                extra={"recording_id": str(recording_id), "session_id": str(session_id)},
+            )
+            return None
+
+        src = self._settings.ssd_data_root / captured.path
+        if not src.exists():
+            logger.warning("save_photo_missing_review_file", extra={"path": captured.path})
+            return None
+
+        final_abs = self._settings.recordings_root / f"photo_booth_{recording_id}.jpg"
+        final_abs.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), final_abs)
+        final_rel = str(final_abs.relative_to(self._settings.ssd_data_root))
+        sha256 = _sha256_file(final_abs)
+        size_bytes = final_abs.stat().st_size
+
+        thumb_abs = self._settings.thumbnails_root / f"photo_booth_{recording_id}.jpg"
+        thumb_abs.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(final_abs, thumb_abs)
+        thumb_rel = str(thumb_abs.relative_to(self._settings.ssd_data_root))
+
+        metadata_abs = self._settings.recordings_root / f"photo_booth_{recording_id}.consent.json"
+        metadata = {
+            "recording_id": str(recording_id),
+            "session_id": str(session_id),
+            "kind": "photo_booth",
+            "consent_context": "visitor_initiated",
+            "capture_mode": "explicit_photo_booth",
+            "source_stream": self._settings.visitor_cam_stream,
+            "captured_at_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "captured_monotonic_ms": captured.captured_monotonic_ms,
+            "saved_after_review": True,
+        }
+        metadata_abs.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
+        metadata_rel = str(metadata_abs.relative_to(self._settings.ssd_data_root))
+
+        try:
+            self._db.insert_started(
+                recording_id=recording_id,
+                session_id=session_id,
+                kind="photo_booth",
+                stream=self._settings.visitor_cam_stream,
+                started_mono_ms=captured.captured_monotonic_ms,
+            )
+            self._db.update_finalized(
+                recording_id=recording_id,
+                path=final_rel,
+                duration_s=0.0,
+                size_bytes=size_bytes,
+                sha256=sha256,
+                consent_context="visitor_initiated",
+            )
+            self._db.update_thumbnail(recording_id=recording_id, thumbnail_path=thumb_rel)
+            self._db.update_consent_metadata(
+                recording_id=recording_id,
+                metadata_path=metadata_rel,
+            )
+        except Exception as exc:
+            logger.exception("db_save_photo_error", exc_info=exc)
+
+        emit_recording_started(
+            recording_id=recording_id,
+            session_id=session_id,
+            kind="photo_booth",
+            stream=self._settings.visitor_cam_stream,
+            trace_id=trace_id,
+            door_id=self._settings.door_id,
+        )
+        emit_recording_finalized(
+            recording_id=recording_id,
+            path=final_rel,
+            duration_s=0.0,
+            size_bytes=size_bytes,
+            sha256=sha256,
+            consent_context="visitor_initiated",
+            trace_id=trace_id,
+            door_id=self._settings.door_id,
+        )
+        emit_thumbnail_ready(
+            recording_id=recording_id,
+            path=thumb_rel,
+            trace_id=trace_id,
+            door_id=self._settings.door_id,
+        )
+        logger.info(
+            "photo_saved",
+            extra={"recording_id": str(recording_id), "path": final_rel},
+        )
+        return self._recording_dict(self._db.get(recording_id))
+
+    async def discard_photo(self, recording_id: UUID, *, session_id: UUID) -> bool:
+        """Discard a review photo. Saved photos use delete_recording()."""
+        captured = self._review_photos.pop(recording_id, None)
+        if captured is None or captured.session_id != session_id:
+            return False
+        with contextlib.suppress(OSError):
+            (self._settings.ssd_data_root / captured.path).unlink(missing_ok=True)
+        logger.info("photo_review_discarded", extra={"recording_id": str(recording_id)})
+        return True
+
+    def review_photo(self, recording_id: UUID, *, session_id: UUID) -> CapturedPhoto | None:
+        """Return a pending review capture if it is still current."""
+        self._prune_review_photos()
+        captured = self._review_photos.get(recording_id)
+        if captured is None or captured.session_id != session_id:
+            return None
+        return captured
+
+    def _prune_review_photos(self) -> None:
+        now_ms = time.monotonic_ns() // 1_000_000
+        ttl_ms = max(self._settings.photo_review_ttl_s, 1) * 1000
+        stale = [
+            recording_id
+            for recording_id, captured in self._review_photos.items()
+            if now_ms - captured.captured_monotonic_ms > ttl_ms
+        ]
+        for recording_id in stale:
+            self._discard_review_recording_id(recording_id, reason="expired")
+
+        max_pending = max(self._settings.photo_review_max_pending, 1)
+        overflow = len(self._review_photos) - max_pending
+        if overflow <= 0:
+            return
+        oldest = sorted(
+            self._review_photos.items(),
+            key=lambda item: item[1].captured_monotonic_ms,
+        )[:overflow]
+        for recording_id, _captured in oldest:
+            self._discard_review_recording_id(recording_id, reason="overflow")
+
+    def _discard_review_recording_id(self, recording_id: UUID, *, reason: str) -> None:
+        captured = self._review_photos.pop(recording_id, None)
+        if captured is None:
+            return
+        with contextlib.suppress(OSError):
+            (self._settings.ssd_data_root / captured.path).unlink(missing_ok=True)
+        logger.info(
+            "photo_review_pruned",
+            extra={"recording_id": str(recording_id), "reason": reason},
+        )
+
+    def _cleanup_review_dir(self) -> None:
+        for path in self._review_dir().glob("photo_booth_*"):
+            with contextlib.suppress(OSError):
+                path.unlink()
+
+    def _review_dir(self) -> Path:
+        return self._settings.ssd_data_root / "photo-review"
+
     async def _generate_thumbnail(
         self, clip_path: Path, thumb_path: Path, duration_s: float
     ) -> bool:
@@ -455,6 +687,7 @@ class RecordingService:
                 "sha256": r.sha256,
                 "consent_context": r.consent_context,
                 "thumbnail_path": r.thumbnail_path,
+                "consent_metadata_path": r.consent_metadata_path,
                 "sync_status": r.sync_status,
             }
             for r in rows
@@ -498,6 +731,11 @@ class RecordingService:
             with contextlib.suppress(OSError):
                 thumb_path.unlink(missing_ok=True)
 
+        if row.consent_metadata_path:
+            metadata_path = self._settings.ssd_data_root / row.consent_metadata_path
+            with contextlib.suppress(OSError):
+                metadata_path.unlink(missing_ok=True)
+
         self._db.mark_deleted(recording_id=recording_id, reason=reason)
         emit_retention_deleted(
             recording_id=recording_id,
@@ -510,6 +748,26 @@ class RecordingService:
             extra={"recording_id": str(recording_id), "reason": reason},
         )
         return True
+
+    def _recording_dict(self, row: RecordingRow | None) -> dict | None:
+        if row is None:
+            return None
+        return {
+            "recording_id": row.recording_id,
+            "session_id": row.session_id,
+            "kind": row.kind,
+            "stream": row.stream,
+            "started_at_utc": row.started_at_utc,
+            "finalized_at_utc": row.finalized_at_utc,
+            "path": row.path,
+            "duration_s": row.duration_s,
+            "size_bytes": row.size_bytes,
+            "sha256": row.sha256,
+            "consent_context": row.consent_context,
+            "thumbnail_path": row.thumbnail_path,
+            "consent_metadata_path": row.consent_metadata_path,
+            "sync_status": row.sync_status,
+        }
 
     # ------------------------------------------------------------------
     # Retention loop
@@ -707,6 +965,17 @@ def _parse_iso_epoch(s: str) -> float:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt.timestamp()
+
+
+def _sha256_file(path: Path, *, chunk: int = 1 << 20) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        while True:
+            block = fh.read(chunk)
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
 
 
 def _write_thumbnail_stub(path: Path) -> None:
