@@ -16,6 +16,7 @@ members = [
     "doorboard-door-sync",
     "doorboard-door-visiond",
     "doorboard-esp32-link",
+    "doorboard-food-recommendation",
     "doorboard-media-client",
     "doorboard-observability",
     "doorboard-printer",
@@ -362,6 +363,17 @@ requires-dist = [
 ]
 
 [[package]]
+name = "doorboard-food-recommendation"
+version = "0.0.0"
+source = { editable = "integrations/food-recommendation" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic" }]
+
+[[package]]
 name = "doorboard-media-client"
 version = "0.0.0"
 source = { editable = "packages/media-client" }
@@ -443,6 +455,7 @@ dependencies = [
     { name = "doorboard-birdnet" },
     { name = "doorboard-config" },
     { name = "doorboard-contracts" },
+    { name = "doorboard-food-recommendation" },
     { name = "doorboard-printer" },
     { name = "doorboard-satellites" },
     { name = "httpx" },
@@ -454,6 +467,7 @@ requires-dist = [
     { name = "doorboard-birdnet", editable = "integrations/birdnet" },
     { name = "doorboard-config", editable = "packages/config" },
     { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "doorboard-food-recommendation", editable = "integrations/food-recommendation" },
     { name = "doorboard-printer", editable = "integrations/printer" },
     { name = "doorboard-satellites", editable = "integrations/satellites" },
     { name = "httpx" },

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from aircraft.provider import AircraftProvider
@@ -15,10 +15,17 @@ from doorboard_contracts.events import (
     AmbientBirdSpeciesSummary,
     AmbientBirdSummaryEvent,
     AmbientBirdSummaryPayload,
+    AmbientFoodRecommendationEvent,
+    AmbientFoodRecommendationPayload,
     AmbientPrinterStatusEvent,
     AmbientPrinterStatusPayload,
     AmbientSatellitePassEvent,
     AmbientSatellitePassPayload,
+)
+from food_recommendation.provider import (
+    FoodRecommendationCache,
+    FoodRecommendationProvider,
+    Recommendation,
 )
 from printer.provider import PrinterProvider
 from satellites.provider import SatelliteProvider
@@ -317,5 +324,75 @@ def run_printer_status(
             logger.error(f"Ingestion failed with status {resp.status_code}: {resp.text}")
     except Exception as exc:
         logger.error(f"Failed to post printer status event: {exc}")
+
+    return None
+
+
+def run_food_recommendation(
+    settings: Settings,
+    provider: FoodRecommendationProvider,
+    now: datetime | None = None,
+    cache: FoodRecommendationCache | None = None,
+) -> dict | None:
+    """Fetch the daily food recommendation and ingest it into the control plane."""
+    if now is None:
+        now = datetime.now(UTC)
+    if cache is None:
+        cache = FoodRecommendationCache(settings.food_cache_path)
+
+    recommendation: Recommendation | None
+    try:
+        recommendation = provider.get_daily_recommendation()
+        cache.save(recommendation)
+    except Exception as exc:
+        logger.error(f"Food recommendation job failed to retrieve data: {exc}")
+        yesterday = now.date() - timedelta(days=1)
+        recommendation = cache.load_for_date(yesterday)
+        if recommendation is None:
+            logger.warning("No yesterday food recommendation cache available for fallback.")
+            return None
+        logger.info(
+            "Using yesterday's cached food recommendation fallback: "
+            f"{recommendation.title} ({recommendation.date})"
+        )
+
+    payload = AmbientFoodRecommendationPayload(
+        date=recommendation.date,
+        title=recommendation.title,
+        detail=recommendation.detail,
+        provider=recommendation.provider,
+    )
+
+    event = AmbientFoodRecommendationEvent(
+        event_id=uuid7(),
+        type="ambient.food_recommendation",
+        source="wallboard-worker",
+        occurred_at=now,
+        monotonic_ms=int(time.monotonic() * 1000),
+        door_id=settings.door_id,
+        trace_id=uuid.uuid4(),
+        payload=payload,
+    )
+
+    url = f"{settings.control_plane_url.rstrip('/')}/ingest"
+    token = get_ingest_token(settings)
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    raw_event = event.model_dump(mode="json")
+    batch = {"batch_id": f"worker-food-{int(time.time())}", "events": [raw_event]}
+
+    try:
+        resp = httpx.post(url, json=batch, headers=headers, timeout=5.0)
+        if resp.status_code == 200:
+            logger.info(
+                f"Ingested food recommendation event successfully. Title: {recommendation.title}"
+            )
+            return resp.json()
+        else:
+            logger.error(f"Ingestion failed with status {resp.status_code}: {resp.text}")
+    except Exception as exc:
+        logger.error(f"Failed to post food recommendation event: {exc}")
 
     return None

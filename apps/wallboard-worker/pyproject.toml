@@ -9,6 +9,7 @@ dependencies = [
     "doorboard-satellites",
     "doorboard-aircraft",
     "doorboard-printer",
+    "doorboard-food-recommendation",
     "httpx",
 ]
 
