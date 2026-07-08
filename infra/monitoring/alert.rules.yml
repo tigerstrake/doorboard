@@ -1,0 +1,47 @@
+groups:
+  - name: doorboard_alerts
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service down: {{ $labels.job }}"
+          description: "Service {{ $labels.job }} is unreachable for more than 1 minute."
+
+      - alert: StorageLow
+        expr: door_media_ssd_free_bytes < 10737418240
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Storage low on SSD mount"
+          description: "Free space on the media SSD is {{ $value | humanize1024 }}."
+
+      - alert: SyncQueueAging
+        expr: (door_media_oldest_unsynced_s > 14400) or (door_sync_oldest_pending_s > 14400)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sync queue aging threshold exceeded"
+          description: "Sync backlog contains items older than 4 hours (current max age: {{ $value }}s)."
+
+      - alert: ESP32Offline
+        expr: esp32_link_connected == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ESP32 offline"
+          description: "The ESP32 link has been disconnected for more than 1 minute."
+
+      - alert: PiThrottling
+        expr: node_hwmon_temp_celsius{chip="platform_soc_thermal"} > 80
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pi thermal throttling"
+          description: "Pi CPU temperature is extremely high: {{ $value }}°C."

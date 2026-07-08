@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alert.rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "alertmanager:9093"
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: "control-plane-api"
+    static_configs:
+      - targets: ["control-plane-api:8090"]
+
+  - job_name: "door-api"
+    static_configs:
+      - targets: ["door-api:8000"]
+
+  - job_name: "door-visiond"
+    static_configs:
+      - targets: ["door-visiond:8081"]
+
+  - job_name: "door-media"
+    static_configs:
+      - targets: ["door-media:8082"]
+
+  - job_name: "door-sync"
+    static_configs:
+      - targets: ["door-sync:8083"]

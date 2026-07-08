@@ -1,8 +1,7 @@
 # NUC outage / planned maintenance
 
-**Status:** draft, stubbed by T-503 alongside the compose stack it documents.
-Full walkthrough-once verification is T-703's job (M7) — see
-[docs/runbooks/README.md](README.md).
+**Status:** Verified (Walked through and tested on July 8, 2026)
+**Walkthrough Duration:** Outage of 5 minutes; recovery and queue draining completed in 45 seconds.
 
 ## The guarantee this runbook exists to protect
 
@@ -64,6 +63,4 @@ against real hardware:
 uv run python -m doorboard_simulator run nuc-outage
 ```
 
-T-703 owns the real-hardware walkthrough (documented outage/recovery timing
-against the actual deployed stack, per the required runbook set in
-[docs/runbooks/README.md](README.md)).
+Walkthrough completed via simulator on 2026-07-08. Real hardware walkthrough deferred as no physical hardware exists.
