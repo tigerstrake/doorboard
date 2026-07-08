@@ -1,78 +1,72 @@
 # Token Rotation
 
-**Walkthrough Date:** July 8, 2026 (Verified successfully)
+**Status:** Verified
+**Walkthrough Date:** 2026-07-08 (Simulated/mock mode verified; hardware-specific steps marked and deferred)
+
+## The Guarantee This Runbook Protects
+
+Per the trust model ([ARCHITECTURE.md](../../ARCHITECTURE.md) §2), the hallway-facing door Pi is considered a medium-to-low trust device because it is physically stealable. To prevent a stolen Pi from accessing sensitive control plane APIs or the NAS backup share, the Pi is issued limited-scope service tokens. If the Pi is stolen or compromised, these tokens can be instantly revoked and rotated on the NUC.
+
+---
 
 ## Symptoms
 
-- Physical theft of the door Pi device (unauthorized access to the credentials stored on its SSD).
-- Suspicious activity logs in `control-plane-api` showing requests from unexpected IP addresses using the `ingest` or `config` scopes.
-- Suspected leakage of the admin token or service tokens (e.g. checked into git or shared in plaintext).
+- **Physical Theft:** The locked door enclosure is broken open and the Pi 5 or its USB SSD is missing.
+- **Credential Leak:** Admin or ingest tokens are accidentally committed to public repositories, or logs show unauthorized access attempts.
 
-## Diagnosis
+---
 
-1. **Verify Token Requests**: Search the `control-plane-api` logs for access logs with token mismatches or unknown IPs:
-   ```bash
-   docker compose -f infra/compose/docker-compose.yml logs control-plane-api | grep -i "token_auth_failed"
-   ```
-2. **List Active Tokens**: Access the control-plane database to list all currently active tokens:
-   ```bash
-   docker compose -f infra/compose/docker-compose.yml exec -T postgres psql -U doorboard -d doorboard -c "SELECT id, scope, door_id, created_at, status FROM service_tokens WHERE status='active';"
-   ```
+## Step-by-Step Rotation Procedure
 
-## Step-by-Step Fix
+### Step 1: List Active Tokens on the NUC
+Before revoking, identify the active service tokens assigned to the compromised door Pi:
+1. Log in to the NUC control plane.
+2. Run the admin CLI utility to list all registered service tokens:
+   ```bash
+   uv run python -m control_plane_api.cli list-tokens
+   ```
+3. Locate the `token_id` and labels for the tokens scoped to the stolen Pi (e.g., `ingest` or `config` scopes).
 
-### Step 1: Revoke the Compromised Token(s)
-You can revoke a specific token by updating its status to `revoked` in the database, rendering it immediately useless.
-1. Run the sql update query to revoke the Pi's token:
+### Step 2: Revoke the Compromised Tokens
+1. Revoke the config/ingest tokens immediately:
    ```bash
-   docker compose -f infra/compose/docker-compose.yml exec -T postgres psql -U doorboard -d doorboard -c "UPDATE service_tokens SET status='revoked', revoked_at=NOW() WHERE scope='ingest' AND door_id='primary';"
+   uv run python -m control_plane_api.cli revoke-token <stolen-token-id>
    ```
-2. If the admin token itself was leaked, change `CONTROL_PLANE_ADMIN_TOKEN` in the NUC's `.env` file to a newly generated secure token immediately:
+2. Repeat for all tokens that were stored on the compromised Pi.
+3. *Verification:* Verify they are removed from the database:
    ```bash
-   openssl rand -hex 32
-   # Edit .env and replace CONTROL_PLANE_ADMIN_TOKEN
+   uv run python -m control_plane_api.cli list-tokens
    ```
+   Any incoming connection using the old tokens will now immediately receive a `401 Unauthorized` or `403 Forbidden` response and be blocked from writing events or reading configuration details.
 
-### Step 2: Generate a New Service Token
-1. Generate a new `ingest` scope token using the control plane API:
+### Step 3: Rotate MQTT and NAS Passwords
+If the MQTT username/password and NAS limited credentials were saved in the Pi's `.env`:
+1. Change the MQTT passwords in the NUC's `.env` file (`MQTT_PI_PASSWORD`).
+2. Restart the NUC MQTT broker to load new credentials:
    ```bash
-   curl -X POST http://localhost:8090/admin/tokens \
-     -H "Authorization: Bearer <new-admin-token>" \
-     -H "Content-Type: application/json" \
-     -d '{"scope": "ingest", "door_id": "primary"}'
+   docker compose -f infra/compose/docker-compose.yml restart mosquitto
    ```
-   Save the returned `"token"` string from the JSON response.
+3. On the NAS manager interface (Hardware-specific step), change the password of the limited service account used by the Pi.
 
-### Step 3: Deploy the New Token to the Door Pi
-1. SSH into the Pi (or connect locally if network is isolated):
+### Step 4: Issue New Tokens for the Replacement Pi
+1. On the NUC, generate new tokens with specific scopes:
    ```bash
-   ssh owner@door-pi.local
+   # Issue new ingest token (for uploading events/messages)
+   uv run python -m control_plane_api.cli issue-token --door-id primary --scope ingest --label "pi-primary-ingest"
+
+   # Issue new config token (for syncing settings/presence)
+   uv run python -m control_plane_api.cli issue-token --door-id primary --scope config --label "pi-primary-config"
    ```
-2. Open the configuration file at `/etc/doorboard/tokens.env`:
-   ```bash
-   sudo nano /etc/doorboard/tokens.env
-   ```
-3. Update the token environment variable:
-   ```ini
-   DOORBOARD_INGEST_TOKEN="<new-ingest-token-here>"
-   ```
-4. Restart all sync and API services on the Pi to pick up the new configuration:
-   ```bash
-   sudo systemctl restart door-sync door-api
-   ```
+2. Copy the generated raw tokens.
+3. On the new Pi installation, write these values to `/mnt/ssd/doorboard/.env` as `SYNC_INGEST_TOKEN` and `SYNC_UPLOAD_TOKEN`.
+
+---
 
 ## Verification
 
-1. Verify the Pi's `door-sync` logs show successful event ingestion requests returning `200`:
+1. Verify that a client attempting to use the revoked token is rejected:
    ```bash
-   sudo journalctl -u door-sync -n 20 --no-pager
-   # Look for: "Ingested event successfully"
+   curl -I -H "Authorization: Bearer <revoked-token>" http://localhost:8090/config/door/primary
    ```
-2. Attempt a mock ingest call using the old revoked token and confirm it returns `401 Unauthorized`:
-   ```bash
-   curl -i -X POST http://localhost:8090/ingest \
-     -H "Authorization: Bearer <old-revoked-token>" \
-     -H "Content-Type: application/json" \
-     -d '{"batch_id": "test", "events": []}'
-   # Should return HTTP/1.1 401 Unauthorized
-   ```
+   *Expected output:* `HTTP/1.1 401 Unauthorized` or `HTTP/1.1 403 Forbidden`.
+2. Verify that the new replacement Pi successfully authenticates and syncs configurations using the newly issued tokens.

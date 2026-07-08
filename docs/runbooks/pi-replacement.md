@@ -1,70 +1,123 @@
 # Pi Replacement
 
-**Walkthrough Date:** July 8, 2026 (Verified successfully)
+**Status:** Verified
+**Walkthrough Date:** 2026-07-08 (Simulated/mock mode verified; hardware-specific steps marked and deferred)
 
 ## Symptoms
 
-- Pi hardware is dead (no LEDs, burnt smell, or board fails to post).
-- MicroSD card corruption (Green ACT LED blinks in a repetitive pattern, e.g., 4 long + 4 short flashes, indicating start.elf not found).
-- Pi cannot be reached via SSH (`ssh: connect to host door-pi.local port 22: Connection refused`).
-- Camera feed or ESP32 link reports disconnected continuously on the NUC wallboard.
+- The Door Pi 5 is completely dead (no power, no green LED status, no response on UART/SSH/Ping).
+- Multiple unrecoverable microSD/OS corruptions occur, requiring a clean OS re-install.
+- Upgrading to new Pi hardware.
 
-## Diagnosis
+---
 
-1. **Activity LED Check**: Observe the Pi's Green ACT LED. If it blinks in an error code, the SD card is corrupted or missing required boot files.
-2. **HDMI Console Output**: Connect a monitor/kiosk screen to the Pi's micro-HDMI port and watch the boot console. Look for `EXT4-fs error` or filesystem read failures.
-3. **LAN DHCP Verification**: Log into the router/switch management interface and check if the Pi's MAC address is listed or has been assigned an IP address.
+## Step-by-Step Replacement Procedure
 
-## Step-by-Step Fix
+### Step 1: Prepare the microSD OS Card
+1. Download and open the **Raspberry Pi Imager** on a laptop.
+2. Select **Raspberry Pi OS 64-bit Lite (Bookworm)**.
+3. Under OS Customization:
+   - Disable the default `pi` user. Create a dedicated administrative user (e.g., `doorboard-admin`).
+   - Set up SSH keys (disable password authentication entirely for security).
+   - Configure wireless network settings (SSID and passphrase) if not using Ethernet.
+4. Flash the microSD card.
 
-### Step 1: Flash a new microSD card
-1. Obtain a replacement high-end microSD card (minimum 32GB Class 10/U3, preferably endurance/industrial grade).
-2. Download the base Raspberry Pi OS Lite (64-bit) image.
-3. Open **Raspberry Pi Imager** on your laptop:
-   - Select OS: Raspberry Pi OS Lite (64-bit).
-   - Select Storage: The replacement microSD card.
-   - Click "Edit Settings" (Gear icon):
-     - Set hostname to `door-pi.local`.
-     - Enable SSH (use authorized keys).
-     - Set username to `owner` and generate a secure password.
-     - Save and flash.
+### Step 2: Enable Hardware Interfaces (Pi-specific, Hardware-only)
+Before putting the card in the Pi, edit the `config.txt` file on the boot partition to enable UART (for the ESP32) and the camera:
+```ini
+# Enable UART for ESP32 transport
+enable_uart=1
+dtoverlay=uart0
 
-### Step 2: Restore config bundle
-The door Pi relies on specific configurations (like device tokens, SSL certs, and port mapping).
-1. Copy the latest config bundle from the backups directory:
+# Enable CSI cameras
+camera_auto_detect=1
+```
+Insert the microSD card into the new Pi 5.
+
+### Step 3: Mount the USB SSD
+All visitor video/audio messages, thumbnails, session databases, and face enrollment biometrics live on the **USB SSD**, not the microSD (per ADR-0007).
+1. Plug the existing USB SSD into the Pi 5's USB 3.0 port.
+2. Find the UUID of the SSD partition:
    ```bash
-   tar -xzvf /mnt/nas-backups/doorboard-config-latest.tar.gz -C /tmp/pi-config
+   sudo blkid | grep ext4
    ```
-2. Mount the flashed microSD card on your laptop.
-3. Copy the configuration files to the Pi's root filesystem partition:
+3. Create the mount directory:
    ```bash
-   sudo cp -r /tmp/pi-config/etc/doorboard /volumes/rootfs/etc/
-   sudo cp /tmp/pi-config/etc/wpa_supplicant/wpa_supplicant.conf /volumes/rootfs/etc/wpa_supplicant/
+   sudo mkdir -p /mnt/ssd
    ```
-4. Unmount the microSD card, insert it into the new Pi, and power it up.
+4. Edit `/etc/fstab` and add the mount configuration:
+   ```ini
+   UUID=<your-ssd-uuid> /mnt/ssd ext4 defaults,noatime,nofail 0 2
+   ```
+5. Mount the drive:
+   ```bash
+   sudo mount -a
+   ```
 
-### Step 3: Re-enroll faces
+### Step 4: Clone Codebase and Install Dependencies
+1. Log in to the Pi 5 via SSH.
+2. Clone the codebase and install workspace dependencies (Python 3.12, Node, PNPM, UV):
+   ```bash
+   git clone https://github.com/tigerstrake/doorboard.git /home/doorboard-admin/doorboard
+   cd /home/doorboard-admin/doorboard
+   # Set up python venv and install
+   uv venv
+   uv pip install -e "apps/door-api" -e "apps/door-visiond" -e "apps/door-media" -e "apps/door-sync"
+   # Install node dependencies
+   pnpm install
+   ```
+3. Copy systemd unit templates to the Pi systemd folder:
+   ```bash
+   sudo cp infra/systemd/*.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   ```
+
+### Step 5: Restore Config Bundle from NUC
+The Pi's app settings must be restored from the control plane NUC.
+1. On the **NUC**, generate a new config-scoped token for the replacement Pi:
+   ```bash
+   uv run python -m control_plane_api.cli issue-token --door-id primary --scope config --label "replacement-pi"
+   ```
+2. Copy the output `token` value.
+3. On the **Pi**, create the local `.env` file from `.env.example`:
+   ```bash
+   cp .env.example .env
+   ```
+4. Set the following variables in `.env`:
+   - `DOORBOARD_ENV=pi-door`
+   - `SYNC_INGEST_TOKEN=<the-token-copied-from-nuc>`
+   - `CONTROL_PLANE_URL=http://<nuc-ip>:8090`
+5. Restart the Pi services to let them sync down settings from the NUC:
+   ```bash
+   sudo systemctl enable door-api door-visiond door-media door-sync
+   sudo systemctl start door-api door-visiond door-media door-sync
+   ```
+
+---
+
+## Biometrics and Face Re-Enrollment Rules
+
 > [!IMPORTANT]
-> Biometric face embeddings do not restore from backups. Under Privacy Invariant §9, raw face images and embeddings are stored locally on the Pi's secure SSD and are never backed up or transmitted to the network. Replacing the Pi requires visitors and roommates to re-enroll.
+> **Face biometrics and embeddings never leave the local SSD.** They are never backed up to the NUC or NAS for privacy reasons (ADR-0008).
 
-1. Once the Pi is up and SSH is working, connect to it and run the project installation setup:
-   ```bash
-   ssh owner@door-pi.local
-   cd ~/dev/doorboard && ./scripts/setup
-   ```
-2. Open the Admin UI console on the NUC or Wallboard.
-3. Instruct roommates and visitors to access the enrollment panel to re-enroll:
-   - Navigate to `/admin/enrollment` on the wallboard web UI.
-   - Enter name/subject ID.
-   - Follow the visual prompts to take 5 stable face snapshots.
-   - Embed and save.
+Depending on whether the physical USB SSD was also replaced:
+
+### Case A: Reused the old USB SSD
+- **No re-enrollment needed.** The face match database lives in `/mnt/ssd/doorboard/visiond/enrollment.sqlite`.
+- Once the mount is restored (Step 3) and `door-visiond` is restarted, recognition will function immediately with the existing profiles.
+
+### Case B: Replaced the USB SSD with a new/blank SSD
+- **Re-enrollment is required.**
+- All previously enrolled users must be manually re-enrolled through the Enrollment UI (`http://<pi-ip>:8080/admin/enrollment` or via the visitor PWA flow).
+- The new SSD will automatically create a fresh `/mnt/ssd/doorboard/visiond/enrollment.sqlite` on service start.
+
+---
 
 ## Verification
 
-1. Ping `door-pi.local` successfully.
-2. Confirm the `door-api` and `door-visiond` services are running:
+1. Verify that all systemd units are healthy:
    ```bash
-   sudo systemctl status door-api door-visiond
+   systemctl status door-api door-visiond door-media door-sync
    ```
-3. Check the camera stream liveness on the wallboard (Tile 3/4).
-4. Perform a test face detection: stand in front of the camera and confirm the screen recognizes your name and updates the visitor session to VISITOR_MODE.
+2. Verify local UI kiosk instances render correctly on HDMI-1 and HDMI-2.
+3. Walk by the camera to verify that your cached profile is loaded and custom effects fire on button press.

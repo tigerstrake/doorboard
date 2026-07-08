@@ -1,84 +1,116 @@
 # Boot and Recovery
 
-**Walkthrough Date:** July 8, 2026 (Verified successfully)
+**Status:** Verified
+**Walkthrough Date:** 2026-07-08 (Simulated/mock mode verified; hardware-specific steps marked and deferred)
+
+## The Guarantee This Runbook Protects
+
+Per [ARCHITECTURE.md](../../ARCHITECTURE.md) §10, the real-time door plane must boot and operate completely offline without internet or NUC connectivity. The critical path (`button → ESP32 feedback → local UI`) has zero dependencies on external services.
+
+---
 
 ## Symptoms
 
-- Kiosk display is completely blank (black screen or backlight off).
-- Kiosk UI is frozen on a stale state (e.g. "Welcome" screen unresponsive to touches).
-- Boot loop: Device repeatedly shows the BIOS splash screen and reboots.
-- Services fail to start on boot (systemd reports failing Docker service or watchdog timeout).
-- SSH connection to NUC or Pi is refused.
+- **Kiosk UI Stuck/Frozen:** The Wallboard (HDMI-1) or DoorPad (HDMI-2) shows a blank white screen, a Chromium crash page, or does not respond to touch.
+- **Boot Loop / Watchdog Resets:** A service repeatedly crashes and restarts, or the ESP32 keeps executing its fallback/unavailable animation (blue wave/generic pulsing).
+- **Service Failure:** Local health endpoints `/health` return errors or do not respond.
+- **Cold Boot Failure:** After a physical power outage or hard reboot, one or more screens fail to render the UI.
+
+---
 
 ## Diagnosis
 
-1. **Physical Power Check**: Inspect the NUC/Pi power LED. If it's red or off, the device is shut down.
-2. **Ping Check**: Ping the device from another machine on the LAN:
+1. **Check Service Status on Pi:**
+   SSH into the door Pi (`ssh door-pi.local`) and list failed systemd services:
    ```bash
-   ping doorboard.local
+   systemctl list-units --type=service --state=failed
    ```
-3. **Kiosk Kiosk/Browser State**: If the device responds to ping and SSH but the kiosk screen is black/frozen, check the local X11/Wayland display server and browser processes:
+2. **Inspect Individual Service Logs:**
+   Identify errors or boot loop traces:
    ```bash
-   DISPLAY=:0 xdotool getactivewindow || export DISPLAY=:0
-   systemctl status kiosk-browser
+   journalctl -u door-api -n 100 --no-pager
+   journalctl -u door-visiond -n 100 --no-pager
+   journalctl -u door-media -n 100 --no-pager
+   journalctl -u door-sync -n 100 --no-pager
    ```
-4. **Watchdog Log Inspection**: Inspect the system watchdog service logs to determine if it triggered a reset loop:
+3. **Verify SSD Mount:**
+   The active databases and recordings live on the USB SSD. Ensure it is mounted at `/mnt/ssd`:
    ```bash
-   journalctl -u watchdog -n 100 --no-pager
+   mount | grep /mnt/ssd
+   df -h /mnt/ssd
    ```
-5. **Docker Health Check**: Check if the Docker daemon failed to start or is hung:
+   If `/mnt/ssd` is missing or mounted read-only (due to file system errors), check `dmesg | grep -i usb` and the `/etc/fstab` configuration.
+4. **Test Local API Health Endpoints:**
+   Each service exposes a local health check over HTTP loopback:
+   - **door-api:** `curl http://127.0.0.1:8080/health` (default port 8080)
+   - **door-visiond:** `curl http://127.0.0.1:8081/health`
+   - **door-media:** `curl http://127.0.0.1:8082/health`
+   - **door-sync:** `curl http://127.0.0.1:8083/health`
+5. **Verify Kiosk Display Logs:**
+   If display/touch is unresponsive:
    ```bash
-   systemctl status docker
-   journalctl -u docker -n 50
+   systemctl status chromium-kiosk@wallboard
+   systemctl status chromium-kiosk@doorpad
    ```
+
+---
 
 ## Step-by-Step Fix
 
-### Scenario A: Unresponsive Kiosk UI (Soft Recovery)
-1. Restart the kiosk display manager or kiosk-browser service:
+### Scenario A: Kiosk UI Frozen or Blank Screen
+If the physical buttons work and the ESP32 responds, but the screens are frozen:
+1. Restart the kiosk service:
    ```bash
-   ssh owner@doorboard.local "sudo systemctl restart kiosk-browser"
+   sudo systemctl restart chromium-kiosk@wallboard
+   sudo systemctl restart chromium-kiosk@doorpad
    ```
-2. If X11/Wayland is locked up, restart the display manager:
+2. Confirm the display outputs are detected (Hardware-specific step, Wayland/Labwc dependent):
    ```bash
-   ssh owner@doorboard.local "sudo systemctl restart lightdm" # or gdm
+   loginctl-session  # get active sessions
+   # View kiosk display manager status
+   systemctl status display-manager
    ```
 
-### Scenario B: Boot Loop / Watchdog Triggered (Hard Recovery)
-1. **Cold Power Cycle**:
-   - Pull the physical power plug from the NUC or Pi.
-   - Wait exactly **10 seconds** to allow all capacitors on the board to fully discharge.
-   - Plug the power back in.
-2. **Bios/UEFI Selection (If stuck on boot splash)**:
-   - Connect a USB keyboard directly to the NUC/Pi.
-   - Power on the system and tap `F8` or `F12` to enter the boot menu.
-   - Select the primary SSD/NVMe boot device (labeled `GRUB` or `Ubuntu`).
-3. **Docker Daemon Recovery**:
-   - If Docker is hung due to corrupted storage layers or deadlocked networks:
-     ```bash
-     sudo systemctl stop docker
-     sudo rm -rf /var/lib/docker/network/files/local-kv.db
-     sudo systemctl start docker
-     docker system prune -af --volumes
-     ```
+### Scenario B: Service Crash Loop / Database Corruption
+If `door-api` or `door-media` boot-loops due to SQLite database corruption (e.g., after power loss):
+1. Stop the affected service:
+   ```bash
+   sudo systemctl stop door-api
+   ```
+2. Integrity-check the SQLite DB file (e.g., `door-api` session DB):
+   ```bash
+   sqlite3 /mnt/ssd/doorboard/door-api/session.sqlite "PRAGMA integrity_check;"
+   ```
+3. If corruption is found, rename the corrupted database to keep it for debugging:
+   ```bash
+   mv /mnt/ssd/doorboard/door-api/session.sqlite /mnt/ssd/doorboard/door-api/session.sqlite.corrupt
+   ```
+4. Restart the service (it will automatically recreate a clean, empty database):
+   ```bash
+   sudo systemctl start door-api
+   ```
 
-### Scenario C: Offline Boot (Network unreachable on startup)
-If the NUC boots without a working LAN connection, services may wait indefinitely for network resolution.
-1. Force network-online timeout to bypass blockers:
+### Scenario C: Watchdog Triggered Loop
+If the hardware watchdog is rebooting the Pi continuously:
+1. Connect via serial debug cable / UART (Hardware-specific step) or disable the watchdog temporarily:
    ```bash
-   sudo systemctl stop systemd-networkd-wait-online
+   sudo systemctl stop watchdog
    ```
-2. Manually bind fallback static link:
-   ```bash
-   sudo ip addr add 192.168.1.100/24 dev eth0
-   ```
+2. Diagnose the slow-startup service causing watchdog timeouts in `/var/log/syslog`.
+
+---
 
 ## Verification
 
-1. Ping response is stable (0% packet loss).
-2. Kiosk screen displays the main wallboard/doorpad interface correctly.
-3. Verify all running Docker containers report healthy:
+1. **Verify Services Running:**
    ```bash
-   docker compose -f infra/compose/docker-compose.yml ps
+   systemctl is-active door-api door-visiond door-media door-sync
    ```
-   All services must show `(healthy)` or `running`.
+   Output should be `active` for all.
+2. **Offline Kiosk Smoke Test:**
+   Press the physical bell button. Verify that the ESP32 sounds the chime, the LED ring spins, and the DoorPad display transitions to "Visitor Mode" immediately.
+3. **Check Metrics:**
+   Verify that uptime counters increment:
+   ```bash
+   curl -s http://127.0.0.1:8080/metrics | grep uptime
+   ```

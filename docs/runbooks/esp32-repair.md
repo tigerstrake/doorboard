@@ -1,67 +1,90 @@
-# ESP32 Repair
+# ESP32 Repair and Diagnostics
 
-**Walkthrough Date:** July 8, 2026 (Verified successfully)
+**Status:** Verified
+**Walkthrough Date:** 2026-07-08 (Simulated/mock mode verified; hardware-specific steps marked and deferred)
+
+## The Guarantee This Runbook Protects
+
+Button debouncing and real-time physical feedback (LED & buzzer/speaker) must occur within **30 ms** entirely on-chip. The ESP32 does not wait on the Pi or NUC to fire generic button press chimes and animations. If the Pi connection is lost, it falls back to a safe "unavailable" indicator while preserving button feedback.
+
+---
 
 ## Symptoms
 
-- Physical bell button presses do not ring the bell or trigger kiosk wakeups.
-- Kiosk/Wallboard reports "ESP32 Offline" or `esp32_link_connected == 0` on the status panel.
-- No LED feedback on the button ring or local status indicators.
-- Door API logs show `esp32_link_heartbeat_timeout` or `tx_timeouts_total` counting up continuously.
+- **No physical response:** Pressing the bell button does not light up the LED ring or sound the buzzer/speaker, but the DoorPad/kiosk UI works.
+- **Pi connection lost (Fallback State):** The LED ring displays a continuous pulsing amber/blue wave or generic indicator, showing that it cannot communicate with the Pi.
+- **Link errors logged on Pi:** `door-api` logs show UART link errors, checksum errors, or heartbeat timeout failures.
+- **Offline metric:** `esp32_link_connected` is `0` on the Pi `/metrics` endpoint.
+
+---
 
 ## Diagnosis
 
-1. **Physical Status LED**: Check if the ESP32 board's onboard power LED (red) is illuminated. If not, the board has no power.
-2. **Serial Connection Port Check**: SSH into the door Pi and list the connected USB devices to see if the serial bridge is detected:
+1. **Verify Serial Device presence:**
+   On the Pi, ensure the serial interface is detected:
    ```bash
-   lsusb | grep -i "cp210" || ls -la /dev/ttyUSB*
+   ls -la /dev/ttyAMA0
    ```
-3. **Heartbeat Timeout Count**: Query the `door-api` metrics endpoint to verify if timeouts are increasing:
+   Check group ownership. The user running `door-api` must be in the `dialout` group to write to UART:
    ```bash
-   curl -s http://localhost:8000/metrics | grep esp32_link
+   groups doorboard-admin  # should include dialout
+   ```
+2. **Check Link Metrics:**
+   Query the `/metrics` endpoint of the `door-api` service:
+   ```bash
+   curl -s http://127.0.0.1:8080/metrics | grep esp32_link
+   ```
+   - `esp32_link_connected`: Should be `1`. If `0`, communication is down.
+   - `esp32_link_rx_errors_total`: Increments on malformed frames or JSON parsing issues.
+   - `esp32_link_tx_timeouts_total` / `esp32_link_tx_retries_total`: Increments if the ESP32 is not acknowledging commands from the Pi.
+3. **Verify Wire Connection (Hardware-specific):**
+   - Check RX/TX cross-wiring: Pi TX (GPIO 14) connects to ESP32 RX; Pi RX (GPIO 15) connects to ESP32 TX.
+   - Ensure a common ground wire is securely connected between the Pi and ESP32.
+   - Verify external power: The amp and LED ring must be powered from an external 5V regulator, NOT the Pi's GPIO pins, to avoid voltage sags.
+
+---
+
+## Step-by-Step Fix (Firmware Reflash)
+
+If the ESP32 microcontroller is unresponsive, has corrupted flash, or needs a firmware update:
+
+1. **Setup Toolchain:**
+   Ensure the ESP-IDF toolchain (`v5.3.2`) is installed on the flashing machine (or the Pi if dev tools are available).
+2. **Build the Firmware:**
+   Navigate to the firmware directory:
+   ```bash
+   cd /home/doorboard-admin/doorboard/firmware/esp32-door-controller
+   idf.py set-target esp32s3
+   idf.py build
+   ```
+3. **Flash the Chip (Hardware-specific step):**
+   Connect the ESP32-S3's USB-to-UART port to the host system.
+   ```bash
+   idf.py -p /dev/ttyUSB0 flash
+   ```
+   *(Replace `/dev/ttyUSB0` with the actual serial port of the programmer on the host).*
+4. **Monitor Boot output:**
+   Run the serial monitor to check for boot loops or panics:
+   ```bash
+   idf.py -p /dev/ttyUSB0 monitor
    ```
 
-## Step-by-Step Fix
+---
 
-### Step 1: Power Cycle the ESP32
-1. Locate the physical ESP32 board inside the door enclosure.
-2. Unplug the micro-USB cable from the ESP32 power port.
-3. Wait exactly **5 seconds**.
-4. Plug the micro-USB cable back in. Watch the status LED strip; it should display the default startup wipe animation.
+## Fallback Verification
 
-### Step 2: Reflash ESP32 Firmware
-If the board is powered but unresponsive or has corrupted firmware:
-1. Connect the ESP32 to a laptop or keep it connected to the door Pi.
-2. Navigate to the firmware build directory:
+To verify that the ESP32 correctly enters degraded/fallback mode when the Pi is down:
+1. Stop the `door-api` service on the Pi:
    ```bash
-   cd ~/dev/doorboard/firmware
+   sudo systemctl stop door-api
    ```
-3. Flash the prebuilt firmware binary using `esptool.py` (ensure `esptool` is installed):
+2. Wait 5 seconds (heartbeat timeout).
+3. **Observation:**
+   - The ESP32 LED ring should transition to the "fallback/unavailable" animation (e.g., slow pulsing blue or amber).
+   - Press the physical bell button.
+   - **Result:** The ESP32 must still instantly trigger the local generic chime/LED response within 30 ms, proving the local fallback path is operational.
+4. Restart the `door-api` service:
    ```bash
-   # Auto-detect serial port and flash the bootloader, partition table, and app binary
-   esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 write_flash 0x10000 build/doorboard-firmware.bin
+   sudo systemctl start door-api
    ```
-4. Verify the console output ends with `Hash of data verified.` and `Leaving... Hard resetting via RTS pin...`
-
-### Step 3: Degraded Fallback Mode (If ESP32 hardware is broken)
-If the ESP32 board is fried and you do not have a spare:
-1. Configure `door-api` to run in mock mode so the kiosk touchscreen displays a virtual "Ring Bell" button:
-   - Edit the door-api service configuration at `/etc/doorboard/door-api.env`:
-     ```ini
-     ESP32_MOCK=true
-     ```
-2. Restart the door-api service:
-   ```bash
-   sudo systemctl restart door-api
-   ```
-3. The kiosk UI will now render a software ring button, allowing visitors to ring the bell without the physical hardware button.
-
-## Verification
-
-1. On reboot, the physical button LED ring displays a solid connection color.
-2. Run the test link script:
-   ```bash
-   curl -s http://localhost:8000/metrics | grep esp32_link_connected
-   # Should output: esp32_link_connected 1.0
-   ```
-3. Press the physical bell button once. The kiosk screen should transition to the visitor flow immediately.
+5. Wait 2 seconds. The LED ring must return to normal idle state, indicating the link has re-established.

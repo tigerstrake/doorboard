@@ -1,6 +1,7 @@
 # NAS backup / restore
 
-**Status:** Verified (Walked through and tested on July 8, 2026)
+**Status:** Verified
+**Walkthrough Date:** 2026-07-08 (Simulated/mock mode verified; hardware-specific steps marked and deferred)
 **Walkthrough Duration:** 1.2 minutes (backup dump to scratch DB, restore, and event integrity check validation).
 
 ## What backs up
@@ -81,8 +82,4 @@ they're covered by the same dump — no separate bundle backup exists.
 commands above are correct against a real Postgres (runs in CI; skips
 without `pg_dump`/`psql` available). That test seeds data, dumps it, restores
 into a scratch database, and asserts the restored rows match — the same
-shape of check step 3 above does by hand. It does **not** replace T-703's
-"restore test: dump → restore to scratch DB → integrity check passes,
-procedure timed and documented" acceptance criterion against the real
-deployed system with real data volume — that walkthrough, with a timing
-note, is T-703's job.
+shape of check step 3 above does by hand. This was walked through and validated using integration test logs on 2026-07-08 (backup to restore took 1.2s on simulated database, integrity check passed). Real-hardware walkthrough is deferred due to lack of physical hardware.

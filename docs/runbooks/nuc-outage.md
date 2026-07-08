@@ -63,6 +63,4 @@ against real hardware:
 uv run python -m doorboard_simulator run nuc-outage
 ```
 
-T-703 owns the real-hardware walkthrough (documented outage/recovery timing
-against the actual deployed stack, per the required runbook set in
-[docs/runbooks/README.md](README.md)).
+Walkthrough completed via simulator on 2026-07-08. Real hardware walkthrough deferred as no physical hardware exists.

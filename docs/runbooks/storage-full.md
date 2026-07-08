@@ -1,75 +1,102 @@
-# Storage Full
+# Storage Full (SSD Pressure)
 
-**Walkthrough Date:** July 8, 2026 (Verified successfully)
+**Status:** Verified
+**Walkthrough Date:** 2026-07-08 (Simulated/mock mode verified; hardware-specific steps marked and deferred)
+
+## The Guarantee This Runbook Protects
+
+The system must never write to the OS microSD card for media storage, and must stop recording safely before the USB SSD fills up completely. When free space drops below the threshold, recording shuts down gracefully to prevent data corruption, while core door interactions (button chimes and kiosk UIs) remain functional.
+
+---
 
 ## Symptoms
 
-- Visitors are unable to leave video messages (recording fails to start or cuts off immediately).
-- Media player/Streamer logs show `OSError: [Errno 28] No space left on device`.
-- Storage critical notification alerts (`system.storage_alert` status is FIRING) are pushed to the owner's phone.
-- Postgres fails to append new events, and database transactions are rolled back.
+- **Low Storage Alert:** The Prometheus alert `StorageLow` triggers (fires when free space is under 10 GiB).
+- **Recording Stopped:** `door-media` logs show `storage_low_disable_recording` or `disk_space_exhausted`.
+- **Sync Backlog:** `door-sync` metrics show high queue depth and media files are not uploading.
+- **Disk pressure:** Command `df -h /mnt/ssd` shows usage at >95%.
+
+---
 
 ## Diagnosis
 
-1. **Check Disk Space**: SSH into the Pi/NUC and run `df -h` to verify space on the SSD mounts:
+1. **Check Disk Space:**
+   On the Pi, query the disk usage of the SSD mount:
    ```bash
-   df -h /mnt/ssd/doorboard
+   df -h /mnt/ssd
    ```
-2. **Find Disk Space Hogs**: Locate the largest directories on the mount:
+2. **Identify Space Consumers:**
+   Locate where the disk usage is accumulated:
    ```bash
-   sudo du -sh /mnt/ssd/doorboard/* | sort -h
+   sudo du -sh /mnt/ssd/doorboard/*
    ```
-   Typically, `/mnt/ssd/doorboard/media/recordings/` (raw visitor video clips) is the primary user of disk space.
-3. **Verify Automatic Retention**: Review the current retention configuration settings in `/etc/doorboard/door-media.env`:
-   ```ini
-   MEDIA_RETENTION_DAYS=14
+   Typically, `/mnt/ssd/doorboard/recordings/` holds the bulk of the data.
+3. **Check Media Service Metrics:**
+   Query the `door-media` service for free space and queue depth:
+   ```bash
+   curl -s http://127.0.0.1:8082/metrics | grep -E "ssd_free|sync_queue_depth|oldest_unsynced"
    ```
+   If `door_media_sync_queue_depth` is high (e.g. hundreds of clips), it means recordings are not being uploaded to the NAS and cannot be safely pruned.
+
+---
 
 ## Step-by-Step Fix
 
-### Step 1: Trigger Automatic Pruning Manually
-Before deleting files by hand, invoke the media service's built-in cleanup script which cleanly updates the database and deletes matched files:
-```bash
-ssh owner@door-pi.local "cd ~/dev/doorboard && python -m door_media.cleanup --force"
-```
+### Scenario A: Large Backlog Due to NUC/NAS Outage
+If the NAS was offline, files could not be uploaded and therefore could not be pruned.
+1. Resolve the NUC/NAS connection first (see [network-outage.md](network-outage.md)).
+2. Once the network is up, check that `door-sync` is draining the queue.
+3. If space is critical (<4 GiB) and you cannot wait for the upload to complete, you can manually select and delete **non-critical** media (e.g., older photo booth images or standard visitor clips) that have NOT synced.
+   - Run a query to locate unsynced files:
+     ```bash
+     sqlite3 /mnt/ssd/doorboard/door_media.db "SELECT id, filepath FROM recordings WHERE synced = 0 ORDER BY created_at ASC LIMIT 20;"
+     ```
+   - Delete selected files using the admin API so the database updates:
+     ```bash
+     curl -X DELETE -H "Authorization: Bearer <admin-token>" http://127.0.0.1:8082/recordings/<id>
+     ```
 
-### Step 2: Safe Manual Cleanup (Emergency)
-If automatic pruning did not free enough space (e.g. because of a sudden spike in long recordings):
-1. Navigate to the recordings folder:
-   ```bash
-   cd /mnt/ssd/doorboard/media/recordings/
-   ```
-2. Find and safely delete unfinalized or temp recordings older than 3 days:
-   ```bash
-   sudo find . -name "*.tmp" -mtime +3 -delete
-   ```
-3. Locate fully synced recordings that have already been uploaded to the NUC/NAS. You can identify them by matching their database sync status:
-   ```bash
-   # Select IDs of synced recordings
-   sqlite3 /mnt/ssd/doorboard/media/media.db "SELECT path FROM recordings WHERE sync_status='synced' AND started_at_utc < date('now', '-7 days');" > /tmp/synced_files.txt
-   
-   # Safely delete these files
-   while read -r file; do
-     if [ -f "$file" ]; then
-       sudo rm "$file"
-       sqlite3 /mnt/ssd/doorboard/media/media.db "UPDATE recordings SET path=NULL WHERE path='$file';"
-     fi
-   done < /tmp/synced_files.txt
-   ```
-
-### Step 3: Configure More Aggressive Retention
-To prevent the issue from recurring:
-1. Decrease the retention days in `/etc/doorboard/door-media.env` (e.g. from 14 days to 7 days):
+### Scenario B: Synced Clips Not Being Cleaned Up
+If the automated pruner has not run:
+1. Trigger a manual prune cycle by lowering the retention limits temporarily in `/mnt/ssd/doorboard/.env`:
    ```ini
-   MEDIA_RETENTION_DAYS=7
+   # Lower bell clip retention from 3 days to 1 day (86400 seconds)
+   DOOR_MEDIA_BELL_CLIP_MAX_AGE_S=86400
    ```
-2. Restart the media service:
+2. Restart the media service to force immediate retention enforcement:
    ```bash
    sudo systemctl restart door-media
    ```
+3. Watch the logs to confirm deletions:
+   ```bash
+   journalctl -u door-media -f | grep prune
+   ```
+
+### Scenario C: Clean up Synced Files Manually
+To safely clean up space manually without database inconsistency:
+1. Locate files that are already successfully synced to the NAS:
+   ```bash
+   sqlite3 /mnt/ssd/doorboard/door_media.db "SELECT id, filepath FROM recordings WHERE synced = 1;"
+   ```
+2. Delete them safely via the API:
+   ```bash
+   # Iterate over the synced IDs and call DELETE
+   curl -X DELETE -H "Authorization: Bearer <admin-token>" http://127.0.0.1:8082/recordings/<recording_id>
+   ```
+
+---
 
 ## Verification
 
-1. Run `df -h` again and verify that the used disk space is now below **80%**.
-2. Trigger a test recording from the simulator or kiosk, and confirm that the recording finalizes and uploads successfully with no disk errors.
-3. Check the Prometheus metrics endpoint to verify `door_media_ssd_free_bytes` reports a healthy capacity.
+1. Verify that free space has increased:
+   ```bash
+   df -h /mnt/ssd
+   ```
+2. Check that the `/metrics` endpoint reports free space above the limit:
+   ```bash
+   curl -s http://127.0.0.1:8082/metrics | grep door_media_ssd_free_bytes
+   ```
+3. Verify that the media service has resumed recording:
+   - Walk in front of the camera or ring the bell.
+   - Confirm a new recording segment is created on the SSD.
+   - Check that `door-media` logs show successful segment closure and queue enqueue.

@@ -1,75 +1,83 @@
 # Network Outage
 
-**Walkthrough Date:** July 8, 2026 (Verified successfully)
+**Status:** Verified
+**Walkthrough Date:** 2026-07-08 (Simulated/mock mode verified; hardware-specific steps marked and deferred)
+
+## The Guarantee This Runbook Protects
+
+Per [ARCHITECTURE.md](../../ARCHITECTURE.md) §10, the system must support full offline operation. If the local network, VLAN routing, internet link, or control plane NUC goes offline:
+- The physical bell button, ESP32 feedback, and local kiosk UIs must function normally.
+- Video messages are recorded locally to the Pi's USB SSD.
+- Events and media uploads queue up in the Pi's local SQLite queue via `door-sync` and are never lost.
+
+---
 
 ## Symptoms
 
-- Kiosk interface shows stale room/mood states and scoreboard details.
-- Roommate check-ins or visitor bell rings do not publish notifications to the owner's mobile phone.
-- `door-sync` service logs on the Pi show connection timeouts (`httpx.ConnectError` or `ConnectTimeout`) trying to reach the NUC.
-- Prometheus shows the door Pi targets (e.g. `door-api`, `door-visiond`) as red/down.
+- **Alerts Firing:** `ServiceDown` for `control-plane-api` or `SyncQueueAging` triggers.
+- **Kiosk Status:** The kiosk display shows warning overlays indicating "Control Plane Unreachable" or stale presence data.
+- **No notifications:** Bell press does not trigger Home Assistant events or push notifications (via `ntfy`) on the owner's device.
+- **Growing Sync backlog:** `door_sync_queue_depth` increments continuously.
+
+---
 
 ## Diagnosis
 
-1. **Verify Interface Link**: SSH into the Pi (locally via direct monitor/keyboard if LAN is completely down) and check interface states:
+1. **Test Pi ↔ NUC Connectivity:**
+   From the Pi, ping the NUC IP or hostname:
    ```bash
-   ip link show eth0
-   ip addr show eth0
+   ping -c 4 nuc.local
    ```
-2. **Ping the NUC Gateways**: Check connectivity to the local router and NUC:
+2. **Check NUC API health:**
+   Query the control plane API health endpoint from the Pi:
    ```bash
-   ping -c 3 192.168.1.1       # Router
-   ping -c 3 NUC-IP-HERE      # NUC Control Plane
+   curl -I http://<nuc-ip>:8090/health
    ```
-3. **Inspect the Sync Backlog**: Query the SQLite sync queue database on the Pi to see if events are buffering:
+3. **Verify VLAN Routing (Hardware-specific):**
+   If ping fails, verify that the managed network switch ports for the Pi and NUC are on the correct VLANs and that routing between the secure control plane network and the hallway door plane network is active.
+4. **Check Sync Queue Metrics:**
+   Query the `door-sync` metrics to check queue growth:
    ```bash
-   sqlite3 /mnt/ssd/doorboard/sync/sync_queue.db "SELECT count(*), status FROM queue_item GROUP BY status;"
+   curl -s http://127.0.0.1:8083/metrics | grep door_sync_queue_depth
    ```
+   If this number grows but does not decrease, a network link is down.
 
-## Degraded Mode Expectations
-
-Under the two-plane architectural design (ARCHITECTURE.md §1 & §10):
-- **What keeps working**: The door plane (ESP32 bell button, camera pipeline, video recorders, and visitor session state machine) has **zero runtime network dependencies**. A visitor can still ring the bell, get immediate audio/LED feedback, see the screen transition, and record a video message.
-- **What queues**: All events (bell rings, recording finalized events, etc.) and raw video files are saved to the Pi's local SSD and queued in the SQLite `sync_queue.db`. They will queue indefinitely (with exponential backoff retries) until connectivity to the NUC is restored.
-- **What is lost temporarily**: Live wallboard web panels, real-time scoreboard modifications, and owner notifications.
+---
 
 ## Step-by-Step Fix
 
-### Step 1: Resolve LAN / Switch Connectivity
-1. Verify ethernet cables are securely plugged into the Pi, NUC, and router/switch.
-2. Check the port LEDs on the network switch.
-3. Restart the Pi network service:
+### Step 1: Inspect Physical and Interface Link State
+1. Check the physical Ethernet port LEDs on the Pi and NUC.
+2. Check local interface status:
    ```bash
-   sudo systemctl restart systemd-networkd
+   ip a
+   ip link show eth0
    ```
+3. If no IP is assigned, check the DHCP server status on the router/switch.
 
-### Step 2: Renew DHCP Lease
-If the Pi lost its IP address:
-```bash
-sudo dhclient -r eth0 && sudo dhclient eth0
-```
+### Step 2: Resolve NUC Service Status
+If the network is up but the NUC API is down, follow [nuc-outage.md](nuc-outage.md) to bring the control plane stack back up.
 
-### Step 3: Verify NUC Service Liveness
-If the network is fine but the sync continues to fail, check if the NUC control plane API is down:
-1. Log into the NUC:
+### Step 3: Monitor Queue Drain (Post-Restore)
+Once connectivity is restored between the Pi and the NUC:
+1. `door-sync` will automatically resume connection and begin draining the SQLite queue.
+2. Monitor the drain process on the Pi:
    ```bash
-   ssh owner@nuc.local
+   watch "curl -s http://127.0.0.1:8083/metrics | grep door_sync_queue_depth"
    ```
-2. Check if the container is running and healthy:
+3. Confirm that the oldest pending item age decreases:
    ```bash
-   docker ps | grep control-plane-api
+   curl -s http://127.0.0.1:8083/metrics | grep door_sync_oldest_pending_s
    ```
-3. If it's down, follow [nuc-outage.md](nuc-outage.md).
+4. Verify on the NUC event log that new visitor sessions and events have durably stored.
+
+---
 
 ## Verification
 
-1. Ping to `control-plane-api` succeeds.
-2. Monitor the `door-sync` log to verify that the queue is draining:
+1. Verify that the NUC is reachable:
    ```bash
-   sudo journalctl -u door-sync -f
-   # Look for: "Successfully uploaded backlog item"
+   ping nuc.local
    ```
-3. Confirm the SQLite sync queue depth is back to `0`:
-   ```bash
-   sqlite3 /mnt/ssd/doorboard/sync/sync_queue.db "SELECT count(*) FROM queue_item WHERE status='pending';"
-   ```
+2. Verify that the sync queue depth returns to `0` or near-zero baseline.
+3. Check the Home Assistant dash to confirm the door sensors and camera feeds have transitioned from "Unavailable" to live/active.
