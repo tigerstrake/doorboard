@@ -23,3 +23,17 @@ Fixing findings (separate issues, assigned by severity to the right tier), penet
 - Checklist merged with every item verified or converted to a blocking issue.
 - Stolen-Pi drill documented with measured revocation time and enumerated residual data — matches ADR-0007's claim or ADRs get corrected.
 - Zero credentials/secrets found in git history, images, config bundles, or Pi filesystem outside its scoped set (scripted scan, results attached).
+
+## Carry-forward from T-690 (M6 review)
+
+Ambient-adapter network-egress surface to include in the review (all NUC-side in `wallboard-worker`; none on the Pi):
+
+| Adapter | Outbound | Auth | Timeout |
+|---|---|---|---|
+| BirdNET | BirdNET-Go HTTP (local) | none | 5s |
+| Satellites | Celestrak TLE fetch | none | fetch + 7-day cache |
+| Aircraft | OpenSky `states/all` | optional basic (user/pass) | 10s |
+| Printer | OctoPrint `/api/job` (read-only) | `X-Api-Key` | 5s |
+| Food | none (local deterministic) | — | — |
+
+M6 review confirmed: integration credentials live only in `wallboard-worker` settings (never on the Pi), all real providers have mock counterparts, and no ambient payload carries PII/biometrics. T-701 should still adversarially re-verify credential scope and check for egress to the public internet from the Pi's own services.

@@ -4,7 +4,7 @@
 
 An open-source, self-hosted, door-mounted smart-door and smart-room system. A removable "door backpack" carries a large ambient display, a small visitor touchscreen, two cameras, a physical bell button with LED/audio feedback, and a Raspberry Pi 5 + Hailo AI accelerator — backed by an indoor NUC control plane, a BirdNET Pi, and a NAS archive.
 
-**Status: M0 complete (repository bootstrap).** Tooling, CI, the contracts package, the hardware-free simulator, and the mock UI shells are implemented; M1 (real-time I/O) is next. Implementation happens task-by-task via the multi-agent workflow described below.
+**Status: M0–M6 complete (implementation); M7 (hardening + acceptance) in progress.** All feature milestones are implemented and verified in the hardware-free simulator: real-time I/O, camera/media, face recognition, visitor sessions, control plane, and the M6 ambient features (birds, satellites, aircraft, printer, food, photo booth). M7 covers the security review, operational runbooks, and final acceptance. Hardware bring-up (Hailo, ESP32 flash, cameras, live external services) and on-hardware acceptance remain tracked as deferred debt. Implementation happens task-by-task via the multi-agent workflow described below.
 
 ## The one rule
 
