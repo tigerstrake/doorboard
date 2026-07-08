@@ -888,3 +888,32 @@ async def admin_update_scoreboard_entry(
 @app.delete("/admin/social/scoreboard/{entry_id}")
 async def admin_delete_scoreboard_entry(entry_id: str, request: Request, _auth: AdminAuth) -> dict:
     return _delete_social_item(request, "scoreboard", entry_id)
+
+
+@app.post("/admin/alerts")
+async def alertmanager_webhook(body: dict, request: Request, _auth: AdminAuth) -> dict:
+    from control_plane_api.notify import Notification
+
+    state = _state(request)
+    alerts = body.get("alerts", [])
+    for alert in alerts:
+        alert_status = alert.get("status", "unknown").upper()
+        labels = alert.get("labels", {})
+        annotations = alert.get("annotations", {})
+        alert_name = labels.get("alertname", "UnknownAlert")
+        summary = annotations.get("summary", "No summary provided")
+        description = annotations.get("description", "")
+
+        msg = f"{summary}"
+        if description:
+            msg += f"\n{description}"
+
+        state.notify_engine._notifier.notify(
+            Notification(
+                rule_key=f"alertmanager:{alert_name}",
+                title=f"[{alert_status}] {alert_name}",
+                message=msg,
+                priority="high" if alert_status == "FIRING" else "default",
+            )
+        )
+    return {"status": "processed"}

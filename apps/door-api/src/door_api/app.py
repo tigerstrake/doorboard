@@ -22,7 +22,15 @@ import httpx
 from doorboard_contracts.events import DoorboardEvent
 from doorboard_esp32_link import Esp32Transport, WireMessage
 from doorboard_esp32_link.esp32 import uuid7_now
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -250,7 +258,7 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/metrics")
-async def metrics() -> JSONResponse:
+async def metrics(request: Request) -> Response:
     data = {**state.machine.metrics.to_dict(), **state.social_service.metrics.to_dict()}
     data.update(
         {
@@ -259,6 +267,34 @@ async def metrics() -> JSONResponse:
             "door_api_media_forward_errors_total": state.media_forward_errors,
         }
     )
+
+    if state.esp32_transport is not None:
+        try:
+            m = state.esp32_transport.metrics()
+            data.update(
+                {
+                    "esp32_link_connected": float(m.connected),
+                    "esp32_link_last_heartbeat_mono_ms": float(m.last_heartbeat_mono_ms),
+                    "esp32_link_rx_errors_total": float(m.rx_errors),
+                    "esp32_link_tx_retries_total": float(m.tx_retries),
+                    "esp32_link_tx_timeouts_total": float(m.tx_timeouts),
+                    "esp32_link_duplicate_rx_total": float(m.duplicate_rx),
+                }
+            )
+        except Exception:
+            pass
+
+    accept = request.headers.get("accept", "")
+    if "text/plain" in accept or "application/openmetrics-text" in accept:
+        lines = []
+        for k, v in data.items():
+            lines.append(f"# TYPE {k} gauge")
+            lines.append(f"{k} {v}")
+        return Response(
+            content="\n".join(lines) + "\n",
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+
     return JSONResponse(content=data)
 
 

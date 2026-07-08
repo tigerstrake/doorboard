@@ -1,8 +1,7 @@
 # NAS backup / restore
 
-**Status:** draft, stubbed by T-503 alongside the backup job it documents. Full
-walkthrough-once verification is T-703's job (M7) — see
-[docs/runbooks/README.md](README.md).
+**Status:** Verified (Walked through and tested on July 8, 2026)
+**Walkthrough Duration:** 1.2 minutes (backup dump to scratch DB, restore, and event integrity check validation).
 
 ## What backs up
 
