@@ -276,6 +276,27 @@ class EnrollmentStore:
             ).fetchone()
         return row is not None
 
+    def list_people(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT p.person_id, p.display_name, p.consent_version, p.consent_at, "
+                "       p.created_at, pr.profile_id, pr.color, pr.sound "
+                "FROM person p LEFT JOIN profile pr ON pr.person_id = p.person_id"
+            ).fetchall()
+            return [
+                {
+                    "person_id": r[0],
+                    "display_name": r[1],
+                    "consent_version": r[2],
+                    "consent_at": r[3],
+                    "created_at": r[4],
+                    "profile_id": r[5],
+                    "color": r[6],
+                    "sound": r[7],
+                }
+                for r in rows
+            ]
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()

@@ -13,6 +13,9 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 
+from doorboard_contracts.events import DoorboardEvent
+from doorboard_esp32_link import Esp32Transport, wire_message_from_event
+
 from door_visiond._uuid7 import uuid7
 from door_visiond.clock import Clock, SystemClock
 from door_visiond.compat import CompatResult, check_compatibility
@@ -20,8 +23,14 @@ from door_visiond.consent import current_consent_version
 from door_visiond.embedder import Embedder, HailoEmbedder, MockEmbedder
 from door_visiond.embedding import Embedding
 from door_visiond.enrollment import EnrollmentStore, ProfileSpec
-from door_visiond.events import EventEmitter, make_pipeline_status, make_privacy_mode_changed
-from door_visiond.identity_cache import IdentityCache
+from door_visiond.events import (
+    EventEmitter,
+    make_door_profile_clear,
+    make_door_profile_update,
+    make_pipeline_status,
+    make_privacy_mode_changed,
+)
+from door_visiond.identity_cache import CurrentVisitor, IdentityCache
 from door_visiond.logging_setup import get_logger
 from door_visiond.matcher import Matcher
 from door_visiond.pipeline import (
@@ -81,10 +90,18 @@ class VisiondService:
         embedder: Embedder | None = None,
         backend: VisionBackend | None = None,
         emitter: EventEmitter | None = None,
+        esp32_transport: Esp32Transport | None = None,
     ) -> None:
         self._settings = settings
         self._clock: Clock = clock or SystemClock()
         self._emitter = emitter or EventEmitter(settings.door_id)
+        self._esp32_transport = esp32_transport
+        self._esp32_seq = 0
+        self._esp32_profile_updates_acked = 0
+        self._esp32_profile_clears_acked = 0
+        self._esp32_profile_send_failures = 0
+        self._esp32_profile_last_error: str | None = None
+        self._esp32_tasks: set[asyncio.Task[None]] = set()
 
         # Enrollment storage lives on the SSD under visiond/.
         self._store = EnrollmentStore(settings.enrollment_db_path)
@@ -118,6 +135,8 @@ class VisiondService:
             cooldown_ms=settings.greeting_cooldown_ms,
             stability_window=settings.stability_window,
             stability_required=settings.stability_required,
+            cache_update_sink=self._on_cache_refresh,
+            cache_clear_sink=self._on_cache_clear,
         )
 
         self._backend: VisionBackend = backend or self._build_backend()
@@ -184,6 +203,8 @@ class VisiondService:
             self._run_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._run_task
+        if self._esp32_tasks:
+            await asyncio.gather(*self._esp32_tasks, return_exceptions=True)
         await self._backend.close()
         self._store.close()
 
@@ -292,7 +313,7 @@ class VisiondService:
         # T-303 propagates the ESP32 profile_clear + NUC archive purge).
         current = self._cache.peek()
         if current is not None and current.person_id == person_id:
-            self._core.clear_cache_and_notify()
+            self._core.clear_cache_and_notify(reason="admin")
         logger.info(
             "unenroll_archive_purge_queued",
             extra={"person_id": person_id, "note": "remote purge wired in T-303/T-501"},
@@ -307,7 +328,7 @@ class VisiondService:
         # E-6: kill/enable capture at the frame source.
         self._backend.set_capturing(not enabled)
         if enabled:
-            self._core.clear_cache_and_notify()
+            self._core.clear_cache_and_notify(reason="privacy_mode")
         self._emitter.emit(
             make_privacy_mode_changed(
                 clock=self._clock,
@@ -338,6 +359,72 @@ class VisiondService:
             return 0.0
         return self._cache_hits / self._cache_lookups
 
+    # -- ESP32 profile mirroring ------------------------------------------
+
+    def _on_cache_refresh(self, visitor: CurrentVisitor, priority: str, trace_id) -> None:
+        event = make_door_profile_update(
+            clock=self._clock,
+            door_id=self._settings.door_id,
+            trace_id=trace_id,
+            profile_id=visitor.profile_id,
+            expires_at_monotonic_ms=visitor.expires_at_monotonic_ms,
+            priority=priority,
+        )
+        self._submit_esp32_profile_event(event)
+
+    def _on_cache_clear(self, _visitor: CurrentVisitor, reason: str, trace_id) -> None:
+        event = make_door_profile_clear(
+            clock=self._clock,
+            door_id=self._settings.door_id,
+            trace_id=trace_id,
+            reason=reason,
+        )
+        self._submit_esp32_profile_event(event)
+
+    def _submit_esp32_profile_event(self, event: DoorboardEvent) -> None:
+        if self._esp32_transport is None:
+            return
+
+        async def _send() -> None:
+            await self._send_esp32_profile_event(event)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(_send())
+            return
+
+        task = loop.create_task(_send(), name=f"visiond-esp32-{event.type}")
+        self._esp32_tasks.add(task)
+        task.add_done_callback(self._esp32_tasks.discard)
+
+    async def _send_esp32_profile_event(self, event: DoorboardEvent) -> None:
+        assert self._esp32_transport is not None
+        msg = wire_message_from_event(
+            event,
+            seq=self._next_esp32_seq(),
+            now_mono_ms=self._clock.monotonic_ms(),
+        )
+        try:
+            await self._esp32_transport.send(msg)
+        except Exception as exc:
+            self._esp32_profile_send_failures += 1
+            self._esp32_profile_last_error = exc.__class__.__name__
+            logger.warning(
+                "esp32_profile_send_failed",
+                extra={"event_type": event.type, "error_class": exc.__class__.__name__},
+            )
+            return
+        self._esp32_profile_last_error = None
+        if msg.message_type == "profile_update":
+            self._esp32_profile_updates_acked += 1
+        elif msg.message_type == "profile_clear":
+            self._esp32_profile_clears_acked += 1
+
+    def _next_esp32_seq(self) -> int:
+        self._esp32_seq += 1
+        return self._esp32_seq
+
     @property
     def effective_mode(self) -> str:
         return "disabled" if self._privacy_enabled else self._effective_mode
@@ -358,7 +445,13 @@ class VisiondService:
         status = self._backend.status()
         hailo_ok = status.hailo_ok and not self._privacy_enabled
         enrollment_locked = not self._settings.enrollment_db_path.exists()
-        healthy = True  # visiond never blocks the door; degraded modes are OK
+        esp32_status = self._esp32_transport.status() if self._esp32_transport is not None else None
+        esp32_profile_warning = (
+            f"profile push failed: {self._esp32_profile_last_error}"
+            if self._esp32_profile_last_error is not None
+            else None
+        )
+        healthy = esp32_profile_warning is None  # visiond still serves cache in degraded mode
         return {
             "service": "door-visiond",
             "status": "ok" if healthy else "degraded",
@@ -370,12 +463,18 @@ class VisiondService:
             "enrollment_locked": enrollment_locked,
             "compat": self._compat.detail,
             "door_id": self._settings.door_id,
+            "esp32_connected": esp32_status.connected if esp32_status is not None else None,
+            "esp32_profile_push_status": "degraded" if esp32_profile_warning else "ok",
+            "esp32_profile_warning": esp32_profile_warning,
         }
 
     def metrics_snapshot(self) -> dict[str, float]:
         snap = self._core.metrics_snapshot()
         snap["cache_hit_rate"] = self.cache_hit_rate()
         snap["enrolled"] = float(self._matcher.enrolled_count)
+        snap["esp32_profile_updates_acked"] = float(self._esp32_profile_updates_acked)
+        snap["esp32_profile_clears_acked"] = float(self._esp32_profile_clears_acked)
+        snap["esp32_profile_send_failures"] = float(self._esp32_profile_send_failures)
         return snap
 
     def now_utc(self) -> datetime:

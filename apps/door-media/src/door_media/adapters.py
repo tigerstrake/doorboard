@@ -38,6 +38,16 @@ class FinalizedRecording:
 
 
 @dataclass(frozen=True)
+class CapturedPhoto:
+    recording_id: UUID
+    session_id: UUID
+    path: str
+    size_bytes: int
+    sha256: str
+    captured_monotonic_ms: int
+
+
+@dataclass(frozen=True)
 class MediaStorageStatus:
     free_bytes: int
     queue_depth: int
@@ -84,6 +94,15 @@ class MediaRouter(Protocol):
 
     async def discard_recording(self, handle: RecordingHandle) -> None:
         """Abort an unfinalized recording without creating a clip."""
+        ...
+
+    async def capture_photo(
+        self,
+        *,
+        session_id: UUID,
+        stream: str,
+    ) -> CapturedPhoto:
+        """Capture a visitor-camera still image for explicit photo-booth review."""
         ...
 
     def storage_status(self) -> MediaStorageStatus:

@@ -21,11 +21,27 @@
       "type": "vision.identity_stable"
     },
     {
+      "monotonic_ms": 100,
+      "payload": {
+        "expires_at_monotonic_ms": 2600,
+        "priority": "high",
+        "profile_id": "wave_a"
+      },
+      "type": "door.profile_update"
+    },
+    {
       "monotonic_ms": 200,
       "payload": {
         "person_id": "prs_1"
       },
       "type": "vision.identity_expired"
+    },
+    {
+      "monotonic_ms": 200,
+      "payload": {
+        "reason": "expired"
+      },
+      "type": "door.profile_clear"
     },
     {
       "monotonic_ms": 300,
@@ -48,11 +64,27 @@
       "type": "vision.identity_stable"
     },
     {
+      "monotonic_ms": 300,
+      "payload": {
+        "expires_at_monotonic_ms": 2800,
+        "priority": "high",
+        "profile_id": "wave_b"
+      },
+      "type": "door.profile_update"
+    },
+    {
       "monotonic_ms": 400,
       "payload": {
         "person_id": "prs_2"
       },
       "type": "vision.identity_expired"
+    },
+    {
+      "monotonic_ms": 400,
+      "payload": {
+        "reason": "expired"
+      },
+      "type": "door.profile_clear"
     },
     {
       "monotonic_ms": 500,
@@ -65,9 +97,9 @@
     {
       "monotonic_ms": 600,
       "payload": {
-        "had_cached_profile": true,
+        "had_cached_profile": false,
         "press_id": "00000000-0000-0000-0000-000000000001",
-        "profile_id": "wave_b"
+        "profile_id": null
       },
       "type": "door.button_pressed"
     },
