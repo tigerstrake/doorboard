@@ -6,6 +6,7 @@ from typing import cast
 import click
 from aircraft.provider import AircraftConfig, MockAircraftProvider, OpenSkyAircraftProvider
 from birdnet.provider import BirdnetConfig, BirdnetGoProvider, MockBirdProvider
+from food_recommendation.provider import MockFoodRecommendationProvider
 from printer.provider import (
     MockPrinterProvider,
     OctoPrintProvider,
@@ -18,6 +19,7 @@ from wallboard_worker.jobs import (
     run_aircraft_summary,
     run_bird_summary,
     run_daily_collage,
+    run_food_recommendation,
     run_printer_status,
     run_satellite_passes,
 )
@@ -139,6 +141,21 @@ def printer_status(mock: bool, state: str | None) -> None:
         provider = OctoPrintProvider(config)
 
     run_printer_status(settings, provider)
+
+
+@cli.command()
+@click.option("--mock", is_flag=True, help="Force use of mock provider")
+def food_recommendation(mock: bool) -> None:
+    """Run the daily food recommendation ingestion job."""
+    settings = Settings()
+
+    if not settings.feature_food and not mock:
+        logger.info("FEATURE_FOOD disabled; using MockFoodRecommendationProvider")
+    else:
+        logger.info("Using MockFoodRecommendationProvider")
+    provider = MockFoodRecommendationProvider()
+
+    run_food_recommendation(settings, provider)
 
 
 if __name__ == "__main__":

@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     octoprint_api_key: str = Field(default="", alias="OCTOPRINT_API_KEY")
     printer_camera_stream_url: str = Field(default="", alias="PRINTER_CAMERA_STREAM_URL")
 
+    feature_food: bool = Field(default=False, alias="FEATURE_FOOD")
+    food_cache_path: str = Field(
+        default="/tmp/doorboard_food_recommendation_cache.json",
+        alias="FOOD_RECOMMENDATION_CACHE_PATH",
+    )
+
     @field_validator("birdnet_species_filter", mode="before")
     @classmethod
     def parse_species(cls, v: object) -> list[str]:
