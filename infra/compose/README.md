@@ -4,7 +4,7 @@ Docker Compose files for the NUC control plane (T-503). Two stacks:
 
 | File | Purpose |
 |---|---|
-| [`docker-compose.yml`](docker-compose.yml) | Production NUC stack: PostgreSQL, Mosquitto, control-plane-api, `wallboard-worker` (placeholder, see below), Home Assistant, an optional Caddy, and a Postgres backup job |
+| [`docker-compose.yml`](docker-compose.yml) | Production NUC stack: PostgreSQL, Mosquitto, control-plane-api, `wallboard-worker`, Home Assistant, an optional Caddy, and a Postgres backup job |
 | [`compose.dev.yml`](compose.dev.yml) | Laptop dev stack: the same control plane plus `doorboard-simulator` standing in for the entire door plane (ESP32/cameras/Hailo — see [apps/simulator/README.md](../../apps/simulator/README.md)) and a local `ntfy` container, so the full bell→notification path is demoable with zero real hardware and no internet accounts |
 
 Secrets live in `.env` at the repo root (never in git — see `.env.example`
@@ -30,13 +30,16 @@ docker compose -f infra/compose/docker-compose.yml --env-file .env up -d
 docker compose -f infra/compose/docker-compose.yml ps        # all healthy?
 ```
 
-Optional internal HTTPS and the (currently job-less) wallboard-worker are
-behind [Compose profiles](https://docs.docker.com/compose/how-tos/profiles/)
-so the base `up` above stays minimal and everything in it is expected to
-report healthy:
+On a fresh NUC, first follow the two-stage token bootstrap in
+[deploy/nuc/README.md](../../deploy/nuc/README.md). All worker features default
+off so the control plane can issue its dedicated ingest token before any worker
+job is enabled; enabling a job without that token makes the worker fail closed.
+
+Optional internal HTTPS remains behind a
+[Compose profile](https://docs.docker.com/compose/how-tos/profiles/):
 
 ```bash
-docker compose -f infra/compose/docker-compose.yml --profile https --profile future up -d
+docker compose -f infra/compose/docker-compose.yml --profile https up -d
 ```
 
 Laptop dev stack:
@@ -47,15 +50,18 @@ infra/compose/scripts/demo-bell-to-ha.sh   # walks the bell -> HA -> notify path
 docker compose -f infra/compose/compose.dev.yml down -v   # tear down + wipe volumes
 ```
 
-## Why `wallboard-worker` does nothing yet
+## wallboard-worker
 
-`apps/wallboard-worker` has no jobs until T-601–T-605 (M6, both depend on
-T-503). Writing that job logic now would be a service-code change outside
-this brief's fence (see [docs/tasks/T-503-nuc-stack.md](../../docs/tasks/T-503-nuc-stack.md)
-"Out of scope"). The compose service exists — image builds, workspace
-installs, package imports — so those tasks only need to replace one `CMD`
-line; it sits behind the `future` profile so it never affects the "all
-healthchecks green" acceptance bar in the meantime.
+The worker is an active NUC-only service. Every enabled production job requires
+a pre-issued `WALLBOARD_WORKER_INGEST_TOKEN`; feature flags determine which
+jobs run. The
+AvianVisitors bird provider polls only the dedicated bird Pi over the LAN.
+The laptop stack enables every job with `--mock` and uses its dev admin token
+to bootstrap one process-scoped ingest token. Its heartbeat healthcheck proves
+the scheduler loop is alive even when a provider is unavailable; job failures
+remain isolated. See
+[apps/wallboard-worker/README.md](../../apps/wallboard-worker/README.md) for the
+complete environment contract.
 
 ## Mosquitto: auth and per-device ACLs
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from wallboard_worker.jobs import get_ingest_token
 from wallboard_worker.scheduler import ScheduledJob, Scheduler, build_jobs
 from wallboard_worker.settings import Settings
@@ -53,6 +54,8 @@ def test_build_jobs_registers_avian_and_only_enabled_features() -> None:
         "aircraft-summary",
         "food-recommendation",
     }
+
+
 @patch("httpx.post")
 def test_bootstrap_ingest_token_is_reused(mock_post: MagicMock) -> None:
     response = MagicMock(status_code=200)
@@ -73,3 +76,23 @@ def test_preissued_ingest_token_never_uses_admin_endpoint() -> None:
     with patch("httpx.post") as post:
         assert get_ingest_token(settings) == "tok_preissued"
     post.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{}, {"token": ""}, {"token": None}, {"token": 123}, {"token": "x" * 4097}],
+)
+@patch("httpx.post")
+def test_invalid_bootstrap_token_is_not_cached(mock_post: MagicMock, payload: object) -> None:
+    response = MagicMock(status_code=200)
+    response.json.return_value = payload
+    mock_post.return_value = response
+    settings = Settings(CONTROL_PLANE_ADMIN_TOKEN="dev-admin")
+
+    assert get_ingest_token(settings) == ""
+    assert settings.ingest_token == ""
+
+
+def test_enabled_jobs_require_ingest_authentication() -> None:
+    with pytest.raises(ValueError, match="enabled wallboard jobs require"):
+        Settings(FEATURE_BIRDNET=True)

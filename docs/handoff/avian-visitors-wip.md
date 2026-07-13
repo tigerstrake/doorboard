@@ -1,6 +1,11 @@
-# AvianVisitors integration WIP handoff
+# AvianVisitors integration checkpoint (completed)
 
-Date: 2026-07-13 (Asia/Singapore)
+Checkpoint date: 2026-07-13 (Asia/Singapore)
+Completion date: 2026-07-14 (Asia/Singapore)
+
+This document records the saved WIP state at commit `3be8861`. The completion
+agent finished the checklist below; it is retained as implementation history,
+not as an active resume brief.
 
 ## User request
 
@@ -19,16 +24,16 @@ dependency to the door critical path.
 - A temporary upstream clone exists at `/tmp/AvianVisitors`; it is reference
   material only and must never be copied wholesale into Doorboard.
 
-This branch is intentionally a WIP checkpoint. Do not merge it until the
-remaining deployment, Compose, documentation, lint, type-check, and full-test
-work below is complete.
+Commit `3be8861` was intentionally a WIP checkpoint and was not merge-ready.
+The deployment, Compose, documentation, lint, type-check, and full-test work
+listed below has since been completed on the same branch.
 
 ## Required project context
 
 Before continuing, read these files in full, as required by `AGENTS.md`:
 
 1. `ARCHITECTURE.md`, especially sections 1, 4, 9, and 10.
-2. `docs/tasks/T-601-birdnet.md`.
+2. `docs/tasks/T-601-birdnet-adapter.md`.
 3. `integrations/birdnet/README.md` and `deploy/pi-bird/README.md`.
 4. `CONTRIBUTING.md`.
 
@@ -177,7 +182,7 @@ UV_CACHE_DIR=/tmp/doorboard-uv-cache uv run pytest \
 
 `git diff --check` also passed before this handoff file was added.
 
-## Remaining implementation
+## Completion checklist (completed 2026-07-14)
 
 1. Add a fresh-install-only `deploy/pi-bird/install-avian-visitors.sh`.
    Fetch the exact upstream commit above, verify the checked-out SHA, and run
@@ -240,14 +245,3 @@ git diff --check
 
 If dependency downloads fail in the sandbox, rerun `uv` with approved network
 access. Do not work around import failures with `PYTHONPATH`.
-
-## Resume prompt
-
-Use this prompt with the next account:
-
-> Continue the AvianVisitors integration in the Doorboard repository. Switch to
-> `task/T-601-avian-visitors`, read `AGENTS.md` and
-> `docs/handoff/avian-visitors-wip.md`, inspect the WIP commit, then complete
-> every item under "Remaining implementation". Preserve the dedicated bird-Pi
-> / NUC architecture, do not touch the door critical path, never set
-> `PYTHONPATH`, run all required verification, and push the completed branch.

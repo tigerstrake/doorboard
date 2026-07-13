@@ -31,15 +31,21 @@ why" overview the handoff's trust model expects a reader to find first.
 4. Copy the root `.env.example` to `.env`; fill in every NUC variable with
    freshly generated random values — **never** reuse the placeholder text,
    and never commit this file (enforced by `.gitignore` and a CI check).
-5. `docker compose -f infra/compose/docker-compose.yml --env-file .env up -d`;
-   confirm `docker compose ... ps` shows every service healthy.
-6. Issue the door Pi's first `ingest` token:
+5. Start only `postgres`, `mosquitto`, and `control-plane-api` first with
+   `docker compose -f infra/compose/docker-compose.yml --env-file .env up -d postgres mosquitto control-plane-api`.
+6. Issue a dedicated worker token with
+   `docker compose ... exec control-plane-api control-plane-api-admin issue-token --door-id primary --scope ingest`,
+   then store it only in the NUC `.env` as `WALLBOARD_WORKER_INGEST_TOKEN`.
+   The worker is a NUC service and must not receive the admin token.
+7. Start the full stack with `docker compose ... up -d`; confirm
+   `docker compose ... ps` shows every service healthy.
+8. Issue the door Pi's first `ingest` token:
    `docker compose ... exec control-plane-api control-plane-api-admin issue-token --door-id primary --scope ingest`
    — copy the printed `token=...` value into the Pi's own `.env` as
    `SYNC_UPLOAD_TOKEN` (out of git, lives on the Pi only; see the root
    `.env.example`'s Door Pi section). Repeat with `--scope config` if
    door-api needs to pull config bundles directly.
-7. If adopting internal HTTPS: set `DOORBOARD_INTERNAL_DOMAIN` in `.env`,
+9. If adopting internal HTTPS: set `DOORBOARD_INTERNAL_DOMAIN` in `.env`,
    start with `--profile https`, and trust Caddy's internal CA on client
    devices (`infra/caddy/README.md`).
 

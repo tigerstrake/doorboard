@@ -1,15 +1,5 @@
-# wallboard-worker packaging placeholder (T-503).
-#
-# wallboard-worker itself has no jobs yet — those land in T-601..T-605
-# (agent:gemini, M6, both depend on T-503). Writing that job logic now would
-# be a service-code change outside this brief's fence, so this image does
-# nothing beyond proving the workspace installs and the package imports.
-# T-601 replaces the CMD below with a real entrypoint; no other change to
-# this Dockerfile should be needed then.
-#
-# The compose service using this image is behind the `future` profile (see
-# infra/compose/README.md) — it does not start with a plain `docker compose
-# up` and is not part of the "all healthchecks green" acceptance bar.
+# wallboard-worker runtime for the NUC control plane. This image is never
+# deployed on the door Pi; every external/hardware adapter has a mock mode.
 
 FROM ghcr.io/astral-sh/uv:0.5-python3.12-bookworm-slim AS builder
 WORKDIR /src
@@ -28,8 +18,9 @@ COPY apps/door-media apps/door-media
 COPY apps/door-sync apps/door-sync
 COPY apps/wallboard-worker apps/wallboard-worker
 COPY apps/simulator apps/simulator
+COPY integrations integrations
 
-RUN uv sync --frozen --no-dev --package doorboard-wallboard-worker
+RUN uv sync --frozen --no-dev --no-editable --package doorboard-wallboard-worker
 
 FROM python:3.12-slim-bookworm AS runtime
 WORKDIR /app
@@ -43,4 +34,7 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 
 USER doorboard
 
-CMD ["python", "-c", "import wallboard_worker; print('wallboard-worker placeholder: no jobs until T-601..T-605'); import time; time.sleep(2**31)"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["python", "-c", "import os,sys,time; p='/tmp/wallboard-worker-heartbeat'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<120 else 1)"]
+
+CMD ["wallboard-worker", "run"]

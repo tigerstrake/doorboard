@@ -39,9 +39,7 @@ class Settings(BaseSettings):
     birdnet_url: str = Field(default="http://127.0.0.1:8080", alias="BIRDNET_URL")
     birdnet_confidence_threshold: float = Field(default=0.70, alias="BIRDNET_CONFIDENCE_THRESHOLD")
     birdnet_species_filter: list[str] = Field(default_factory=list, alias="BIRDNET_SPECIES_FILTER")
-    avian_visitors_url: str = Field(
-        default="http://birdnet.local", alias="AVIAN_VISITORS_URL"
-    )
+    avian_visitors_url: str = Field(default="http://birdnet.local", alias="AVIAN_VISITORS_URL")
     avian_visitors_recent_hours: int = Field(
         default=24, alias="AVIAN_VISITORS_RECENT_HOURS", ge=1, le=168
     )

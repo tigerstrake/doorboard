@@ -4,9 +4,10 @@ import abc
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 logger = logging.getLogger("doorboard.birdnet")
 
@@ -22,7 +23,7 @@ class AvianVisitorsConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    url: str = "http://birdnet.local"
+    url: str = Field(default="http://birdnet.local", min_length=1, max_length=2048)
     confidence_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
     species_filter: list[str] = Field(default_factory=list)
     recent_hours: int = Field(default=24, ge=1, le=168)
@@ -31,6 +32,18 @@ class AvianVisitorsConfig(BaseModel):
     timeout_s: float = Field(default=5.0, gt=0.0, le=30.0)
     max_response_bytes: int = Field(default=2_000_000, ge=1024, le=10_000_000)
     max_species_rows: int = Field(default=512, ge=1, le=4096)
+
+    @field_validator("url")
+    @classmethod
+    def url_is_lan_http_base(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("AvianVisitors URL must be an HTTP(S) base URL")
+        if parsed.username or parsed.password:
+            raise ValueError("AvianVisitors URL must not contain credentials")
+        if parsed.query or parsed.fragment:
+            raise ValueError("AvianVisitors URL must not contain a query or fragment")
+        return value
 
     @model_validator(mode="after")
     def auth_is_complete(self) -> AvianVisitorsConfig:
@@ -45,17 +58,47 @@ class _AvianSpeciesRow(BaseModel):
 
     sci: str = Field(min_length=1, max_length=200)
     com: str = Field(min_length=1, max_length=200)
-    n: int = Field(ge=1, le=1_000_000_000)
+    n: int = Field(ge=1, le=1_000_000_000, strict=True)
     best_conf: float = Field(ge=0.0, le=1.0)
-    last_seen: str = Field(min_length=1, max_length=64)
+    last_seen: datetime
+
+    @field_validator("best_conf", mode="before")
+    @classmethod
+    def confidence_is_a_json_number(cls, value: object) -> object:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("AvianVisitors best_conf must be a JSON number")
+        return value
+
+    @field_validator("last_seen", mode="before")
+    @classmethod
+    def last_seen_uses_the_native_timestamp_format(cls, value: object) -> object:
+        if not isinstance(value, str):
+            raise ValueError("AvianVisitors last_seen must be a timestamp string")
+        try:
+            datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+        except ValueError as exc:
+            raise ValueError("AvianVisitors last_seen has an invalid format") from exc
+        return value
 
 
 class _AvianRecentResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    hours: int = Field(ge=1, le=1_000_000)
+    hours: int = Field(ge=1, le=1_000_000, strict=True)
     species: list[_AvianSpeciesRow]
     as_of: datetime
+
+    @model_validator(mode="after")
+    def metadata_is_consistent(self) -> _AvianRecentResponse:
+        if self.as_of.tzinfo is None or self.as_of.utcoffset() is None:
+            raise ValueError("AvianVisitors as_of must include a UTC offset")
+        scientific_names: set[str] = set()
+        for row in self.species:
+            key = row.sci.casefold()
+            if key in scientific_names:
+                raise ValueError("AvianVisitors response contains a duplicate species")
+            scientific_names.add(key)
+        return self
 
 
 class BirdDetection(BaseModel):
@@ -203,13 +246,14 @@ class AvianVisitorsProvider(BirdProvider):
             else None
         )
         try:
-            with httpx.Client(
-                auth=auth,
-                follow_redirects=False,
-                timeout=self.config.timeout_s,
-                transport=self._transport,
-            ) as client:
-                with client.stream(
+            with (
+                httpx.Client(
+                    auth=auth,
+                    follow_redirects=False,
+                    timeout=self.config.timeout_s,
+                    transport=self._transport,
+                ) as client,
+                client.stream(
                     "GET",
                     url,
                     params={"action": "recent", "hours": self.config.recent_hours},
@@ -217,13 +261,14 @@ class AvianVisitorsProvider(BirdProvider):
                         "Accept": "application/json",
                         "User-Agent": "Doorboard-AvianVisitors/1.0",
                     },
-                ) as response:
-                    response.raise_for_status()
-                    body = bytearray()
-                    for chunk in response.iter_bytes():
-                        body.extend(chunk)
-                        if len(body) > self.config.max_response_bytes:
-                            raise ValueError("response exceeds configured size limit")
+                ) as response,
+            ):
+                response.raise_for_status()
+                body = bytearray()
+                for chunk in response.iter_bytes():
+                    body.extend(chunk)
+                    if len(body) > self.config.max_response_bytes:
+                        raise ValueError("response exceeds configured size limit")
             parsed = _AvianRecentResponse.model_validate_json(body)
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning(
@@ -243,11 +288,7 @@ class AvianVisitorsProvider(BirdProvider):
         for row in parsed.species:
             if row.best_conf < self.config.confidence_threshold:
                 continue
-            if (
-                allowed
-                and row.com.casefold() not in allowed
-                and row.sci.casefold() not in allowed
-            ):
+            if allowed and row.com.casefold() not in allowed and row.sci.casefold() not in allowed:
                 continue
             total += row.n
             top_species.append(
@@ -258,9 +299,7 @@ class AvianVisitorsProvider(BirdProvider):
                 }
             )
 
-        top_species.sort(
-            key=lambda item: (-item["count"], -item["confidence_avg"], item["name"])
-        )
+        top_species.sort(key=lambda item: (-item["count"], -item["confidence_avg"], item["name"]))
         return total, top_species
 
 

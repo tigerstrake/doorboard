@@ -54,10 +54,15 @@ def get_ingest_token(settings: Settings) -> str:
             timeout=5.0,
         )
         if resp.status_code == 200:
-            settings.ingest_token = str(resp.json()["token"])
+            payload = resp.json()
+            token = payload.get("token") if isinstance(payload, dict) else None
+            if not isinstance(token, str) or not token.strip() or len(token) > 4096:
+                logger.warning("Control plane returned an invalid ingest token")
+                return ""
+            settings.ingest_token = token
             return settings.ingest_token
         else:
-            logger.warning(f"Failed to fetch ingest token, status {resp.status_code}: {resp.text}")
+            logger.warning(f"Failed to fetch ingest token, status {resp.status_code}")
     except Exception as e:
         logger.warning(f"Failed to connect to control plane for token: {e}")
     return ""
