@@ -17,6 +17,7 @@ Public 21.5–24" display. Two modes; visitor mode takes over on `session.state_
 | Food | daily recommendation | `ambient.food_recommendation` |
 | Poll | current poll + results | door-api local |
 | Guestbook | *selected/approved* highlights only | door-api local (moderated) |
+| About | project summary + fun facts (lines of code, languages, structural counts) | static build-time facts (`tools/project-stats`, T-608) |
 
 Every ambient tile shows an `as_of` staleness hint when data is old (NUC-outage fallback uses last-cached bundle). Layout responsive portrait/landscape.
 

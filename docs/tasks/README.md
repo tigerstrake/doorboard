@@ -42,6 +42,7 @@ Briefs for M0–M2 are execution-ready. Briefs for M3+ are complete but get a fi
 | [T-604](T-604-printer.md) | Printer status adapter | gemini | M6 | T-501 |
 | [T-605](T-605-mood-scoreboard-food.md) | Mood/scoreboard/food providers + tiles | gemini | M6 | T-501, T-404 |
 | [T-606](T-606-photobooth-gallery.md) | Photo booth + gallery | codex | M6 | T-201, T-502 |
+| [T-608](T-608-about-project-tile.md) | "About this project" tile + admin panel | gemini | M6 | T-004, T-404 |
 | [T-690](T-x90-milestone-review.md) | M6 review | claude | M6 | all M6 |
 | [T-701](T-701-security-review.md) | Security review + deployment checklist | claude | M7 | all M0–M6 |
 | [T-702](T-702-performance-acceptance.md) | Performance acceptance suite (30-min soak) | codex | M7 | all M0–M4 |
