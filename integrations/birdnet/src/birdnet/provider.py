@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 logger = logging.getLogger("doorboard.birdnet")
 
@@ -15,6 +15,47 @@ class BirdnetConfig(BaseModel):
     url: str = "http://127.0.0.1:8080"
     confidence_threshold: float = 0.70
     species_filter: list[str] = Field(default_factory=list)
+
+
+class AvianVisitorsConfig(BaseModel):
+    """Connection settings for Twarner491/AvianVisitors' read-only API."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = "http://birdnet.local"
+    confidence_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
+    species_filter: list[str] = Field(default_factory=list)
+    recent_hours: int = Field(default=24, ge=1, le=168)
+    basic_user: str = ""
+    basic_password: SecretStr = Field(default_factory=lambda: SecretStr(""))
+    timeout_s: float = Field(default=5.0, gt=0.0, le=30.0)
+    max_response_bytes: int = Field(default=2_000_000, ge=1024, le=10_000_000)
+    max_species_rows: int = Field(default=512, ge=1, le=4096)
+
+    @model_validator(mode="after")
+    def auth_is_complete(self) -> AvianVisitorsConfig:
+        password = self.basic_password.get_secret_value()
+        if bool(self.basic_user) != bool(password):
+            raise ValueError("AvianVisitors basic auth requires both user and password")
+        return self
+
+
+class _AvianSpeciesRow(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    sci: str = Field(min_length=1, max_length=200)
+    com: str = Field(min_length=1, max_length=200)
+    n: int = Field(ge=1, le=1_000_000_000)
+    best_conf: float = Field(ge=0.0, le=1.0)
+    last_seen: str = Field(min_length=1, max_length=64)
+
+
+class _AvianRecentResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    hours: int = Field(ge=1, le=1_000_000)
+    species: list[_AvianSpeciesRow]
+    as_of: datetime
 
 
 class BirdDetection(BaseModel):
@@ -131,6 +172,96 @@ class BirdnetGoProvider(BirdProvider):
         top_species.sort(key=lambda x: (-x["count"], -x["confidence_avg"]))
 
         return len(filtered), top_species
+
+
+class AvianVisitorsProvider(BirdProvider):
+    """Consume the native AvianVisitors recent-species API.
+
+    AvianVisitors returns one row per species with a count and the best
+    confidence in the requested window. The existing Doorboard contract calls
+    its confidence statistic ``confidence_avg``; until upstream exposes an
+    average, the best confidence is the only truthful aggregate available and
+    is carried in that field.
+    """
+
+    def __init__(
+        self,
+        config: AvianVisitorsConfig,
+        *,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self.config = config
+        self._transport = transport
+
+    def get_summary(self, now: datetime) -> tuple[int, list[dict[str, Any]]]:
+        del now  # AvianVisitors applies its own local clock to the rolling window.
+        url = f"{self.config.url.rstrip('/')}/avian/api/birdnet-api.php"
+        password = self.config.basic_password.get_secret_value()
+        auth = (
+            httpx.BasicAuth(self.config.basic_user, password)
+            if self.config.basic_user and password
+            else None
+        )
+        try:
+            with httpx.Client(
+                auth=auth,
+                follow_redirects=False,
+                timeout=self.config.timeout_s,
+                transport=self._transport,
+            ) as client:
+                with client.stream(
+                    "GET",
+                    url,
+                    params={"action": "recent", "hours": self.config.recent_hours},
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "Doorboard-AvianVisitors/1.0",
+                    },
+                ) as response:
+                    response.raise_for_status()
+                    body = bytearray()
+                    for chunk in response.iter_bytes():
+                        body.extend(chunk)
+                        if len(body) > self.config.max_response_bytes:
+                            raise ValueError("response exceeds configured size limit")
+            parsed = _AvianRecentResponse.model_validate_json(body)
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning(
+                "avian_visitors_fetch_failed",
+                extra={"error_type": type(exc).__name__},
+            )
+            raise RuntimeError(f"AvianVisitors unavailable: {type(exc).__name__}") from exc
+
+        if parsed.hours != self.config.recent_hours:
+            raise RuntimeError("AvianVisitors response window does not match the request")
+        if len(parsed.species) > self.config.max_species_rows:
+            raise RuntimeError("AvianVisitors response has too many species rows")
+
+        allowed = {item.casefold() for item in self.config.species_filter}
+        top_species: list[dict[str, Any]] = []
+        total = 0
+        for row in parsed.species:
+            if row.best_conf < self.config.confidence_threshold:
+                continue
+            if (
+                allowed
+                and row.com.casefold() not in allowed
+                and row.sci.casefold() not in allowed
+            ):
+                continue
+            total += row.n
+            top_species.append(
+                {
+                    "name": row.com,
+                    "count": row.n,
+                    "confidence_avg": round(row.best_conf, 2),
+                }
+            )
+
+        top_species.sort(
+            key=lambda item: (-item["count"], -item["confidence_avg"], item["name"])
+        )
+        return total, top_species
 
 
 class MockBirdProvider(BirdProvider):

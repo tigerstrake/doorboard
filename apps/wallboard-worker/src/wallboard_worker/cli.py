@@ -5,7 +5,6 @@ from typing import cast
 
 import click
 from aircraft.provider import AircraftConfig, MockAircraftProvider, OpenSkyAircraftProvider
-from birdnet.provider import BirdnetConfig, BirdnetGoProvider, MockBirdProvider
 from food_recommendation.provider import MockFoodRecommendationProvider
 from printer.provider import (
     MockPrinterProvider,
@@ -23,6 +22,8 @@ from wallboard_worker.jobs import (
     run_printer_status,
     run_satellite_passes,
 )
+from wallboard_worker.providers import build_bird_provider
+from wallboard_worker.scheduler import Scheduler
 from wallboard_worker.settings import Settings
 
 logging.basicConfig(level=logging.INFO)
@@ -41,21 +42,20 @@ def bird_summary(mock: bool) -> None:
     """Run the bird summary ingestion job."""
     settings = Settings()
 
-    # Use mock provider if forced, if URL is 'mock', or if feature is disabled
-    # (Mocks are the fallback, matching: 'Mock mode always').
-    if mock or settings.birdnet_url == "mock" or not settings.feature_birdnet:
-        logger.info("Using MockBirdProvider")
-        provider = MockBirdProvider()
-    else:
-        logger.info(f"Using BirdnetGoProvider at {settings.birdnet_url}")
-        config = BirdnetConfig(
-            url=settings.birdnet_url,
-            confidence_threshold=settings.birdnet_confidence_threshold,
-            species_filter=settings.birdnet_species_filter,
-        )
-        provider = BirdnetGoProvider(config)
-
+    provider = build_bird_provider(settings, force_mock=mock or not settings.feature_birdnet)
     run_bird_summary(settings, provider)
+
+
+@cli.command()
+@click.option("--mock", is_flag=True, help="Force use of mock providers")
+@click.option("--once", is_flag=True, help="Run every enabled job once and exit")
+def run(mock: bool, once: bool) -> None:
+    """Run the configured wallboard job scheduler."""
+    scheduler = Scheduler(Settings(), force_mock=mock)
+    if once:
+        scheduler.run_once()
+    else:
+        scheduler.run_forever()
 
 
 @cli.command()

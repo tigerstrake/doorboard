@@ -1,0 +1,42 @@
+{
+  "hours": 24,
+  "species": [
+    {
+      "sci": "Haemorhous mexicanus",
+      "com": "House Finch",
+      "n": 4,
+      "best_conf": 0.91,
+      "last_seen": "2026-07-12 17:30:01",
+      "top_file": "2026-07-12-birdnet-91.wav",
+      "top_at": "2026-07-12 17:30:01"
+    },
+    {
+      "sci": "Zenaida macroura",
+      "com": "Mourning Dove",
+      "n": 2,
+      "best_conf": 0.78,
+      "last_seen": "2026-07-12 15:10:02",
+      "top_file": "2026-07-12-birdnet-78.wav",
+      "top_at": "2026-07-12 15:10:02"
+    },
+    {
+      "sci": "Corvus brachyrhynchos",
+      "com": "American Crow",
+      "n": 1,
+      "best_conf": 0.96,
+      "last_seen": "2026-07-12 14:01:55",
+      "top_file": "2026-07-12-birdnet-96.wav",
+      "top_at": "2026-07-12 14:01:55"
+    },
+    {
+      "sci": "Passer domesticus",
+      "com": "House Sparrow",
+      "n": 8,
+      "best_conf": 0.55,
+      "last_seen": "2026-07-12 12:00:00",
+      "top_file": "2026-07-12-birdnet-55.wav",
+      "top_at": "2026-07-12 12:00:00"
+    }
+  ],
+  "as_of": "2026-07-12T18:00:00-07:00"
+}

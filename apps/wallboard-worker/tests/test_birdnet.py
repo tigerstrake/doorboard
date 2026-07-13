@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
-from birdnet.provider import BirdnetConfig, BirdnetGoProvider, MockBirdProvider
+from birdnet.provider import (
+    AvianVisitorsConfig,
+    AvianVisitorsProvider,
+    BirdnetConfig,
+    BirdnetGoProvider,
+    MockBirdProvider,
+)
+from pydantic import ValidationError
 from wallboard_worker.jobs import run_bird_summary
+from wallboard_worker.providers import build_bird_provider
 from wallboard_worker.settings import Settings
+
+AVIAN_FIXTURE = Path(__file__).with_name("fixtures").joinpath("avian_recent.json").read_bytes()
 
 
 def test_mock_bird_provider() -> None:
@@ -98,9 +111,112 @@ def test_birdnet_go_provider_api_error_graceful() -> None:
             provider.get_summary(datetime.now(UTC))
 
 
+def test_avian_visitors_provider_uses_recorded_api_fixture() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/avian/api/birdnet-api.php"
+        assert dict(request.url.params) == {"action": "recent", "hours": "24"}
+        assert request.headers["authorization"].startswith("Basic ")
+        return httpx.Response(200, content=AVIAN_FIXTURE)
+
+    provider = AvianVisitorsProvider(
+        AvianVisitorsConfig(
+            url="http://birdnet.local",
+            confidence_threshold=0.70,
+            species_filter=["house finch", "Zenaida macroura"],
+            basic_user="doorboard",
+            basic_password="secret",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    total, top = provider.get_summary(datetime.now(UTC))
+
+    assert total == 6
+    assert top == [
+        {"name": "House Finch", "count": 4, "confidence_avg": 0.91},
+        {"name": "Mourning Dove", "count": 2, "confidence_avg": 0.78},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (503, b'{"error":"birds.db not found"}'),
+        (200, b'{"hours":24,"species":"not-a-list","as_of":"2026-07-12T18:00:00Z"}'),
+        (
+            200,
+            json.dumps(
+                {
+                    "hours": 24,
+                    "species": [
+                        {
+                            "sci": "Corvus brachyrhynchos",
+                            "com": "American Crow",
+                            "n": -1,
+                            "best_conf": 0.9,
+                            "last_seen": "2026-07-12 14:01:55",
+                        }
+                    ],
+                    "as_of": "2026-07-12T18:00:00Z",
+                }
+            ).encode(),
+        ),
+    ],
+)
+def test_avian_visitors_rejects_unavailable_or_invalid_responses(status: int, body: bytes) -> None:
+    transport = httpx.MockTransport(lambda _request: httpx.Response(status, content=body))
+    provider = AvianVisitorsProvider(AvianVisitorsConfig(), transport=transport)
+
+    with pytest.raises(RuntimeError, match="AvianVisitors unavailable"):
+        provider.get_summary(datetime.now(UTC))
+
+
+def test_avian_visitors_bounds_response_size_and_species_rows() -> None:
+    oversized = httpx.MockTransport(
+        lambda _request: httpx.Response(200, content=b"x" * 1025)
+    )
+    provider = AvianVisitorsProvider(
+        AvianVisitorsConfig(max_response_bytes=1024), transport=oversized
+    )
+    with pytest.raises(RuntimeError, match="AvianVisitors unavailable"):
+        provider.get_summary(datetime.now(UTC))
+
+    fixture = httpx.MockTransport(
+        lambda _request: httpx.Response(200, content=AVIAN_FIXTURE)
+    )
+    provider = AvianVisitorsProvider(
+        AvianVisitorsConfig(max_species_rows=1), transport=fixture
+    )
+    with pytest.raises(RuntimeError, match="too many species rows"):
+        provider.get_summary(datetime.now(UTC))
+
+
+def test_avian_visitors_rejects_wrong_window_and_partial_auth() -> None:
+    wrong_window = AVIAN_FIXTURE.replace(b'"hours": 24', b'"hours": 12', 1)
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(200, content=wrong_window)
+    )
+    provider = AvianVisitorsProvider(AvianVisitorsConfig(), transport=transport)
+    with pytest.raises(RuntimeError, match="window does not match"):
+        provider.get_summary(datetime.now(UTC))
+
+    with pytest.raises(ValidationError, match="requires both user and password"):
+        AvianVisitorsConfig(basic_user="doorboard")
+
+
+def test_bird_provider_factory_selects_avian_visitors_and_mock() -> None:
+    settings = Settings(
+        BIRD_PROVIDER="avian_visitors",
+        AVIAN_VISITORS_URL="http://bird-pi.local",
+    )
+    assert isinstance(build_bird_provider(settings), AvianVisitorsProvider)
+    assert isinstance(build_bird_provider(settings, force_mock=True), MockBirdProvider)
+
+
 def test_run_bird_summary_job_failure_degrades_gracefully(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FEATURE_BIRDNET", "True")
     monkeypatch.setenv("BIRDNET_URL", "http://127.0.0.1:8080")
+    monkeypatch.setenv("WALLBOARD_WORKER_INGEST_TOKEN", "test-ingest-token")
     settings = Settings()
     mock_provider = MagicMock()
     mock_provider.get_summary.side_effect = Exception("Bird Pi Unreachable")

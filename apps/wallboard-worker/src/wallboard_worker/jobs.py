@@ -37,9 +37,11 @@ logger = logging.getLogger("doorboard.wallboard_worker.jobs")
 
 
 def get_ingest_token(settings: Settings) -> str:
-    """Fetch an ingest token from the control plane API using the configured admin token."""
+    """Return one process-scoped ingest token, bootstrapping once in dev if needed."""
+    if settings.ingest_token:
+        return settings.ingest_token
     if not settings.control_plane_admin_token:
-        logger.debug("No CONTROL_PLANE_ADMIN_TOKEN configured, returning empty token")
+        logger.error("No WALLBOARD_WORKER_INGEST_TOKEN configured")
         return ""
 
     url = f"{settings.control_plane_url.rstrip('/')}/admin/tokens"
@@ -52,7 +54,8 @@ def get_ingest_token(settings: Settings) -> str:
             timeout=5.0,
         )
         if resp.status_code == 200:
-            return resp.json()["token"]
+            settings.ingest_token = str(resp.json()["token"])
+            return settings.ingest_token
         else:
             logger.warning(f"Failed to fetch ingest token, status {resp.status_code}: {resp.text}")
     except Exception as e:
