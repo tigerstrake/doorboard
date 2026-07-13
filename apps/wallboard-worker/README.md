@@ -22,3 +22,11 @@ Results are written to Postgres + pushed over MQTT/HTTP so control-plane-api can
 - Job failure degrades one tile, never the system; retries with backoff; stale data is labeled with `as_of`.
 - Do not promise data a source doesn't provide (e.g., aircraft route/destination on OpenSky).
 - API credentials/keys are NUC-only secrets.
+
+## Runtime
+
+`wallboard-worker run` starts the monotonic scheduler. Only enabled jobs are
+registered; one job failure is logged and does not stop the others. Production
+uses a pre-issued `WALLBOARD_WORKER_INGEST_TOKEN`, which is reused for the life
+of the process. `CONTROL_PLANE_ADMIN_TOKEN` is accepted only as a dev bootstrap
+fallback and is not passed to the production container.

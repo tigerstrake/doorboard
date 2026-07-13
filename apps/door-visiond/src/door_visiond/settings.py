@@ -44,6 +44,14 @@ class Settings(BaseSettings):
 
     # ── storage ───────────────────────────────────────────────────────────
     ssd_data_root: Path = Field(default=Path("/mnt/ssd/doorboard"), alias="SSD_DATA_ROOT")
+    enrollment_root_override: Path | None = Field(
+        default=None,
+        alias="VISIOND_ENROLLMENT_ROOT",
+    )
+    require_encrypted_enrollment: bool = Field(
+        default=False,
+        alias="VISIOND_REQUIRE_ENCRYPTED_STORAGE",
+    )
 
     # ── recognition tuning (ARCHITECTURE.md §5) ───────────────────────────
     identity_cache_ttl_ms: int = Field(default=2500, alias="VISIOND_IDENTITY_TTL_MS")
@@ -64,13 +72,29 @@ class Settings(BaseSettings):
     # ── consent (ADR-0009 §5 E-7) ─────────────────────────────────────────
     consent_version: str = Field(default="v1", alias="VISIOND_CONSENT_VERSION")
     consent_statement_path: Path | None = Field(
-        default=None, alias="VISIOND_CONSENT_STATEMENT_PATH"
+        default=Path("docs/policies/consent-statement.md"),
+        alias="VISIOND_CONSENT_STATEMENT_PATH",
     )
 
     # ── admin auth ────────────────────────────────────────────────────────
     # Shared bearer secret for /enroll, /unenroll, /privacy-mode.
-    # Empty = auth disabled (acceptable in dev; CI uses empty).
+    # Empty closes protected routes with 503.
     admin_token: str = Field(default="", alias="DOOR_VISIOND_ADMIN_TOKEN")
+
+    # ── durable archive purge delivery ───────────────────────────────────
+    sync_base_url: str = Field(default="http://127.0.0.1:8083", alias="DOOR_SYNC_BASE_URL")
+    sync_admin_token: str = Field(default="", alias="DOOR_SYNC_ADMIN_TOKEN")
+    sync_timeout_s: float = Field(default=2.0, alias="DOOR_VISIOND_SYNC_TIMEOUT_S", gt=0)
+    purge_worker_interval_s: float = Field(
+        default=1.0,
+        alias="DOOR_VISIOND_PURGE_WORKER_INTERVAL_S",
+        gt=0,
+    )
+    purge_retry_max_s: float = Field(
+        default=300.0,
+        alias="DOOR_VISIOND_PURGE_RETRY_MAX_S",
+        ge=1,
+    )
 
     # ── capture cadence (mock/hardware frame pacing) ──────────────────────
     frame_interval_ms: int = Field(default=100, alias="VISIOND_FRAME_INTERVAL_MS")
@@ -89,15 +113,23 @@ class Settings(BaseSettings):
 
     @property
     def enrollment_db_path(self) -> Path:
-        return self.visiond_root / "enrollment.sqlite"
+        return self.enrollment_root / "enrollment.sqlite"
 
     @property
     def enroll_tmp_root(self) -> Path:
-        return self.visiond_root / "tmp"
+        return self.enrollment_root / "tmp"
+
+    @property
+    def enrollment_root(self) -> Path:
+        return self.enrollment_root_override or self.visiond_root
 
     @property
     def privacy_state_path(self) -> Path:
         return self.visiond_root / "privacy_mode.json"
+
+    @property
+    def purge_outbox_path(self) -> Path:
+        return self.visiond_root / "purge_outbox.sqlite"
 
     @property
     def host(self) -> str:

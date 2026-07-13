@@ -1,0 +1,25 @@
+[Unit]
+Description=Doorboard local API and session service
+Requires=doorboard-storage-ready.service
+Wants=door-media.service door-visiond.service
+After=doorboard-storage-ready.service door-media.service door-visiond.service
+
+[Service]
+Type=simple
+User=doorboard
+Group=doorboard
+WorkingDirectory=/opt/doorboard
+EnvironmentFile=/etc/doorboard/doorboard.env
+ExecStart=/opt/doorboard/.venv/bin/python -m door_api
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=15s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/mnt/ssd/doorboard
+SupplementaryGroups=dialout
+
+[Install]
+WantedBy=multi-user.target

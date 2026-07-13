@@ -7,7 +7,7 @@ Routes:
   GET  /recordings      — list of recordings (admin-auth)
   DELETE /recordings/{id} — delete a recording (admin-auth)
 
-Auth: ``DOOR_MEDIA_ADMIN_TOKEN`` env var.  Empty = auth disabled (dev/CI).
+Auth: ``DOOR_MEDIA_ADMIN_TOKEN`` env var. Empty closes protected routes.
 
 Session event integration:
   - ``POST /internal/session_event`` accepts ``session.state_changed`` payloads
@@ -23,14 +23,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from typing import Annotated, Any, cast
 from uuid import UUID
 
 from doorboard_contracts.events import (
     SessionState,
+    SessionStateChangedEvent,
 )
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,7 +42,7 @@ from pydantic import BaseModel
 from door_media._uuid7 import uuid7
 from door_media.adapters import MediaRouter, StreamInfo
 from door_media.db import RecordingDB
-from door_media.emitter import get_broadcast_queue
+from door_media.emitter import subscribe_broadcast_queue, unsubscribe_broadcast_queue
 from door_media.mediamtx_router import MediaMTXRouter
 from door_media.mock_router import MockMediaRouter
 from door_media.service import RecordingService
@@ -150,7 +152,10 @@ def _router_dep(request: Request) -> MediaRouter:
 def _require_admin(request: Request) -> None:
     cfg: Settings = request.app.state.cfg
     if not cfg.admin_token:
-        return  # auth disabled in dev/CI
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="admin authentication is not configured",
+        )
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(
@@ -158,7 +163,7 @@ def _require_admin(request: Request) -> None:
             detail="Missing Authorization header",
         )
     token = auth.removeprefix("Bearer ")
-    if token != cfg.admin_token:
+    if not secrets.compare_digest(token, cfg.admin_token):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid admin token",
@@ -385,16 +390,13 @@ async def recording_file(
 
 
 class _SessionEventBody(BaseModel):
-    session_id: str
-    from_state: str
-    to_state: str
-    trigger: str
-    trace_id: str
+    event: SessionStateChangedEvent
 
 
 @app.post("/internal/session_event")
 async def session_event(
     body: _SessionEventBody,
+    _auth: AdminAuth,
     request: Request,
 ) -> dict:
     """Accept a session.state_changed payload to trigger recording windows.
@@ -404,18 +406,16 @@ async def session_event(
     critical button path (door-api calls this asynchronously, fire-and-forget).
     """
     svc: RecordingService = request.app.state.service
+    db: RecordingDB = request.app.state.db
+    event = body.event
+    if db.has_processed_session_event(event.event_id):
+        return {"accepted": True, "duplicate": True}
 
-    try:
-        session_id = UUID(body.session_id)
-        trace_id = UUID(body.trace_id)
-        to_state = SessionState(body.to_state)
-        from_state = SessionState(body.from_state)
-    except (ValueError, KeyError) as exc:
-        logger.warning(
-            "session_event_invalid",
-            extra={"error": str(exc), "body": body.model_dump()},
-        )
-        return {"accepted": False, "reason": "invalid_state"}
+    session_id = event.payload.session_id
+    trace_id = event.trace_id
+    to_state = event.payload.to_state
+    from_state = event.payload.from_state
+    trigger = event.payload.trigger
 
     logger.info(
         "session_event_received",
@@ -423,61 +423,52 @@ async def session_event(
             "session_id": str(session_id),
             "from_state": from_state,
             "to_state": to_state,
-            "trigger": body.trigger,
+            "trigger": trigger,
             "trace_id": str(trace_id),
         },
     )
 
-    if to_state == SessionState.BUTTON_PRESSED and body.trigger != "doorpad.video_message_offer":
-        asyncio.create_task(
-            svc.start_recording(
+    if to_state == SessionState.BUTTON_PRESSED and trigger != "doorpad.video_message_offer":
+        if not _active_recording_ids(svc, session_id=session_id, kind="bell_clip"):
+            await svc.start_recording(
                 session_id=session_id,
                 kind="bell_clip",
                 trace_id=trace_id,
-            ),
-            name=f"start_bell_clip_{session_id}",
-        )
+            )
 
     elif to_state == SessionState.VIDEO_MESSAGE_RECORDING:
-
-        async def _start_video_message() -> None:
-            if from_state == SessionState.VIDEO_MESSAGE_REVIEW:
-                await svc.discard_recordings_for_session(
-                    session_id=session_id,
-                    kind="video_message",
-                    trace_id=trace_id,
-                )
+        if from_state == SessionState.VIDEO_MESSAGE_REVIEW:
+            await svc.discard_recordings_for_session(
+                session_id=session_id,
+                kind="video_message",
+                trace_id=trace_id,
+            )
+        if not _active_recording_ids(svc, session_id=session_id, kind="video_message"):
             await svc.start_recording(
                 session_id=session_id,
                 kind="video_message",
                 trace_id=trace_id,
             )
 
-        asyncio.create_task(_start_video_message(), name=f"start_video_msg_{session_id}")
-
     elif to_state == SessionState.VIDEO_MESSAGE_REVIEW:
         for rid in _active_recording_ids(svc, session_id=session_id, kind="video_message"):
-            asyncio.create_task(
-                svc.finalize_recording(
-                    rid,
-                    consent_context="visitor_initiated",
-                    trace_id=trace_id,
-                ),
-                name=f"finalize_video_msg_{rid}",
+            finalized = await svc.finalize_recording(
+                rid,
+                consent_context="visitor_initiated",
+                trace_id=trace_id,
             )
+            if not finalized:
+                raise HTTPException(status_code=503, detail="video finalization failed")
 
-    elif to_state == SessionState.SESSION_END and body.trigger in (
+    elif to_state == SessionState.SESSION_END and trigger in (
         "visitor:discard",
         "timeout:review",
         "timeout:inactivity",
     ):
-        asyncio.create_task(
-            svc.discard_recordings_for_session(
-                session_id=session_id,
-                kind="video_message",
-                trace_id=trace_id,
-            ),
-            name=f"discard_video_msg_{session_id}",
+        await svc.discard_recordings_for_session(
+            session_id=session_id,
+            kind="video_message",
+            trace_id=trace_id,
         )
 
     elif to_state in (
@@ -486,16 +477,16 @@ async def session_event(
         SessionState.ANSWERED,
     ):
         for rid in _active_recording_ids(svc, session_id=session_id, kind="bell_clip"):
-            asyncio.create_task(
-                svc.finalize_recording(
-                    rid,
-                    consent_context="bell_event",
-                    trace_id=trace_id,
-                ),
-                name=f"finalize_bell_clip_{rid}",
+            finalized = await svc.finalize_recording(
+                rid,
+                consent_context="bell_event",
+                trace_id=trace_id,
             )
+            if not finalized:
+                raise HTTPException(status_code=503, detail="bell clip finalization failed")
 
-    return {"accepted": True}
+    db.mark_session_event_processed(event.event_id)
+    return {"accepted": True, "duplicate": False}
 
 
 def _active_recording_ids(
@@ -527,6 +518,7 @@ class _SyncCompletedBody(BaseModel):
 @app.post("/internal/sync_completed")
 async def sync_completed(
     body: _SyncCompletedBody,
+    _auth: AdminAuth,
     request: Request,
 ) -> dict:
     """Called by door-sync when a checksum-verified upload succeeds."""
@@ -700,36 +692,24 @@ async def saved_photo_file(
 
 
 @app.get("/events")
-async def events_sse(request: Request) -> StreamingResponse:
+async def events_sse(request: Request, _auth: AdminAuth) -> StreamingResponse:
     """Server-Sent Events stream of all media.* and system.* events."""
-    q: asyncio.Queue = get_broadcast_queue()
+    q = subscribe_broadcast_queue()
 
     async def _generate() -> AsyncGenerator[str, None]:
-        # Create a per-consumer sub-queue to avoid head-of-line blocking
-        local_q: asyncio.Queue = asyncio.Queue(maxsize=64)
-
-        async def _forwarder() -> None:
-            while True:
-                event = await q.get()
-                if local_q.full():
-                    with suppress(asyncio.QueueEmpty):
-                        local_q.get_nowait()
-                await local_q.put(event)
-
-        fwd = asyncio.create_task(_forwarder(), name="sse-forwarder")
         try:
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    event = await asyncio.wait_for(local_q.get(), timeout=30.0)
+                    event = await asyncio.wait_for(q.get(), timeout=30.0)
                     data = event.model_dump_json()
                     yield f"data: {data}\n\n"
                 except TimeoutError:
                     # Keepalive comment
                     yield ": keepalive\n\n"
         finally:
-            fwd.cancel()
+            unsubscribe_broadcast_queue(q)
 
     return StreamingResponse(
         _generate(),

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import cast
 
@@ -165,6 +167,12 @@ def test_malformed_payload_is_counted_and_read_loop_continues() -> None:
         assert str(event.payload.press_id) == good.payload["press_id"]
         assert transport.status().rx_errors == 1
         assert transport.health_check().status == "degraded"
+        acknowledgements = [
+            decode_wire_message((await bytes_.writes.get()).strip()),
+            decode_wire_message((await bytes_.writes.get()).strip()),
+        ]
+        assert [message.ack for message in acknowledgements] == [1, 3]
+        assert bytes_.writes.empty()
         await transport.close()
 
     asyncio.run(run())
@@ -348,6 +356,71 @@ def test_inbound_dedupe_state_stays_bounded() -> None:
             await _next_event(transport.events())
 
         assert transport.inbound_dedupe_entries <= 8
+        await transport.close()
+
+    asyncio.run(run())
+
+
+def test_inbound_event_queue_stays_bounded_and_counts_drops() -> None:
+    async def run() -> None:
+        bytes_ = QueueByteTransport()
+        options = replace(_options(), event_queue_size=2)
+        transport = Esp32ProtocolTransport(bytes_, options=options)
+        await transport.start()
+        await bytes_.feed(
+            WireMessage(
+                v=1,
+                seq=1,
+                message_type="hello",
+                ack=None,
+                payload={"fw_version": "sim", "proto_v": 1, "boot_id": "esp-boot-1"},
+            )
+        )
+        for seq in range(2, 12):
+            await bytes_.feed(
+                WireMessage(
+                    v=1,
+                    seq=seq,
+                    message_type="button_event",
+                    ack=None,
+                    payload={
+                        "press_id": f"00000000-0000-4000-8000-{seq:012d}",
+                        "pressed_at_mono_ms": seq,
+                        "had_cached_profile": False,
+                        "profile_id": None,
+                    },
+                )
+            )
+        await asyncio.sleep(0.05)
+
+        event_stream = transport.events()
+        received = [await anext(event_stream), await anext(event_stream)]
+        assert len(received) == 2
+        assert transport.metrics().event_queue_drops == 8
+        await transport.close()
+
+    asyncio.run(run())
+
+
+def test_pending_ack_map_rejects_unbounded_concurrency() -> None:
+    async def run() -> None:
+        bytes_ = QueueByteTransport()
+        options = replace(_options(max_retries=0), max_pending_acks=1, ack_timeout_ms=100)
+        transport = Esp32ProtocolTransport(bytes_, options=options)
+        await transport.start()
+        first = transport.make_message("effect_play", {"effect_id": "one", "duration_ms": 1})
+        second = transport.make_message("effect_play", {"effect_id": "two", "duration_ms": 1})
+        first_task = asyncio.create_task(transport.send(first))
+        await bytes_.writes.get()
+        try:
+            await transport.send(second)
+        except ValueError as exc:
+            assert "too many" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("expected bounded pending-ack rejection")
+        first_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await first_task
         await transport.close()
 
     asyncio.run(run())

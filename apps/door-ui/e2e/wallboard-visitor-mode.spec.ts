@@ -10,12 +10,27 @@ async function assertNoPrivacyLeak(page: Page) {
   expect(bodyText).not.toMatch(FORBIDDEN_TEXT);
 }
 
+async function assertVisitorQrReady(page: Page) {
+  await expect(page.getByAltText("Visitor link QR code")).toBeVisible();
+}
+
 // Freeze Date before the app's first script runs so the ambient clock and the
 // inactivity countdown always compute the same elapsed time (zero) — screenshots
 // don't race wall-clock-driven UI. Real timers still fire, they just see no
 // elapsed time, matching how a kiosk would look at a single instant.
 test.beforeEach(async ({ page }) => {
   await page.clock.setFixedTime(0);
+  await page.route("**/visitor-token", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        token: "e2e-visitor-token",
+        url: "http://door.local/visitor?token=e2e-visitor-token",
+        expires_at: 300,
+      }),
+    });
+  });
 });
 
 const VISITOR_STATES = [
@@ -58,6 +73,7 @@ test.describe("Wallboard — visitor-mode takeover, every session state", () => 
       await expect(page.locator(".wallboard-ambient-view")).toHaveCount(0);
 
       await assertNoPrivacyLeak(page);
+      if (state !== "SESSION_END") await assertVisitorQrReady(page);
 
       await expect(page).toHaveScreenshot(`visitor-${state}.png`, {
         animations: "disabled",
@@ -88,6 +104,7 @@ test.describe("Wallboard — personalization", () => {
     await expect(banner).toHaveClass(/db-greeting-banner--owner/);
     await expect(page.getByTestId("greeting-banner-sparkles")).toHaveCount(1);
     await assertNoPrivacyLeak(page);
+    await assertVisitorQrReady(page);
 
     await expect(page).toHaveScreenshot("visitor-personalized-owner.png", {
       animations: "disabled",

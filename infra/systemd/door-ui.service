@@ -1,0 +1,19 @@
+[Unit]
+Description=Doorboard built kiosk UI
+After=local-fs.target
+
+[Service]
+Type=simple
+User=doorboard
+Group=doorboard
+WorkingDirectory=/opt/doorboard
+ExecStart=/opt/doorboard/.venv/bin/python /opt/doorboard/scripts/serve_door_ui.py --directory /opt/doorboard/apps/door-ui/dist --host 127.0.0.1 --port 5173
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

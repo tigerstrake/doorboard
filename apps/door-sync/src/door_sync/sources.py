@@ -30,11 +30,13 @@ class MediaEventSource:
         engine: SyncEngine,
         *,
         base_url: str,
+        admin_token: str = "",
         reconnect_min_s: float = 1.0,
         reconnect_max_s: float = 30.0,
     ) -> None:
         self._engine = engine
         self._base_url = base_url.rstrip("/")
+        self._headers = {"Authorization": f"Bearer {admin_token}"} if admin_token else {}
         self._reconnect_min_s = reconnect_min_s
         self._reconnect_max_s = reconnect_max_s
         self._running = False
@@ -75,7 +77,7 @@ class MediaEventSource:
     async def _consume_once(self) -> None:
         async with (
             httpx.AsyncClient(timeout=None) as client,
-            client.stream("GET", f"{self._base_url}/events") as resp,
+            client.stream("GET", f"{self._base_url}/events", headers=self._headers) as resp,
         ):
             resp.raise_for_status()
             async for line in resp.aiter_lines():

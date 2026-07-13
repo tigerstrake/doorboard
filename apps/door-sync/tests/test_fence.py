@@ -13,6 +13,7 @@ import pytest
 from door_sync.engine import SyncEngine
 from door_sync.fence import FORBIDDEN_ROOTS, FenceViolation, resolve_syncable, validate_roots
 from door_sync.queue import UploadQueue
+from door_sync.settings import Settings
 
 ROOTS = ("recordings", "thumbnails")
 
@@ -101,6 +102,18 @@ def test_default_settings_syncable_roots_exclude_identity(tmp_path: Path, helper
     settings = helpers.make_settings(tmp_path)
     assert "visiond" not in settings.syncable_roots
     assert set(settings.syncable_roots) == {"recordings", "thumbnails"}
+
+
+def test_nas_mode_requires_explicit_absolute_target(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="NAS_SYNC_TARGET is required"):
+        Settings(SSD_DATA_ROOT=tmp_path, SYNC_MEDIA_TARGET="nas", NAS_SYNC_TARGET="")
+
+    with pytest.raises(ValueError, match="absolute path"):
+        Settings(
+            SSD_DATA_ROOT=tmp_path,
+            SYNC_MEDIA_TARGET="nas",
+            NAS_SYNC_TARGET="relative/nas",
+        )
 
 
 def test_sentinel_embedding_never_reaches_a_target(tmp_path: Path, helpers) -> None:

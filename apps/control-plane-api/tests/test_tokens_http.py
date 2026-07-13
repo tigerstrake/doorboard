@@ -42,6 +42,42 @@ def test_valid_ingest_token_is_accepted(client: TestClient) -> None:
     assert resp.json()["results"][0]["status"] == "stored"
 
 
+def test_ingest_token_cannot_submit_another_doors_event(client: TestClient) -> None:
+    token = _issue(client, scope="ingest", door_id="secondary")
+    event = build_event("system.service_health")
+
+    response = client.post(
+        "/ingest",
+        json={"batch_id": "cross-door", "events": [event]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_ingest_batch_size_is_bounded(client: TestClient) -> None:
+    token = _issue(client, scope="ingest")
+    event = build_event("system.service_health")
+
+    response = client.post(
+        "/ingest",
+        json={"batch_id": "too-many", "events": [event] * 201},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_http_request_body_size_is_bounded(client: TestClient) -> None:
+    response = client.post(
+        "/ingest",
+        content=b"x" * (1024 * 1024 + 1),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 413
+
+
 def test_wrong_scope_token_is_rejected(client: TestClient) -> None:
     upload_token = _issue(client, scope="upload")
     resp = client.post(

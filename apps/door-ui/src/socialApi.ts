@@ -6,15 +6,22 @@ const DOOR_API_BASE_URL =
   (import.meta.env.VITE_DOOR_API_BASE_URL as string | undefined) ||
   `http://${window.location.hostname}:8000`;
 
-const SESSION_TOKEN_KEY = "doorboard_social_session_token";
+let runtimeVisitorToken: string | null = null;
 
-export function getSessionToken(): string {
-  let token = window.localStorage.getItem(SESSION_TOKEN_KEY);
-  if (!token) {
-    token = crypto.randomUUID();
-    window.localStorage.setItem(SESSION_TOKEN_KEY, token);
-  }
-  return token;
+function tokenFromUrl(): string | null {
+  return new URLSearchParams(window.location.search).get("token");
+}
+
+export function setVisitorToken(token: string): void {
+  runtimeVisitorToken = token;
+}
+
+export async function getSessionToken(): Promise<string> {
+  const existing = tokenFromUrl() ?? runtimeVisitorToken;
+  if (existing) return existing;
+  const response = await request<{ token: string }>("/visitor-token");
+  runtimeVisitorToken = response.token;
+  return response.token;
 }
 
 export class ApiError extends Error {
@@ -119,11 +126,40 @@ export interface ModerationLogEntry {
   created_at: string;
 }
 
+export interface VisitorSession {
+  session_id: string;
+  expires_at: number;
+  state: SessionState;
+}
+
+type SessionState =
+  | "IDLE"
+  | "APPROACH_DETECTED"
+  | "IDENTITY_CACHED"
+  | "BUTTON_PRESSED"
+  | "VISITOR_MODE"
+  | "RINGING"
+  | "ANSWERED"
+  | "UNANSWERED_TIMEOUT"
+  | "VIDEO_MESSAGE_OFFERED"
+  | "VIDEO_MESSAGE_RECORDING"
+  | "VIDEO_MESSAGE_REVIEW"
+  | "VIDEO_MESSAGE_SAVED"
+  | "SESSION_END";
+
 export const socialApi = {
+  setVisitorToken,
+
+  async validateVisitorSession(): Promise<VisitorSession> {
+    const token = await getSessionToken();
+    return request<VisitorSession>(`/visitor-session?token=${encodeURIComponent(token)}`);
+  },
+
   async createGuestbookEntry(text: string, authorLabel: string | null): Promise<GuestbookEntry> {
+    const sessionToken = await getSessionToken();
     return request<GuestbookEntry>("/guestbook", {
       method: "POST",
-      body: { text, author_label: authorLabel, session_token: getSessionToken() },
+      body: { text, author_label: authorLabel, session_token: sessionToken },
     });
   },
 
@@ -143,9 +179,10 @@ export const socialApi = {
   },
 
   async castVote(pollId: string, optionId: string): Promise<void> {
+    const sessionToken = await getSessionToken();
     await request(`/polls/${pollId}/vote`, {
       method: "POST",
-      body: { option_id: optionId, session_token: getSessionToken() },
+      body: { option_id: optionId, session_token: sessionToken },
     });
   },
 
@@ -153,9 +190,10 @@ export const socialApi = {
   // session's cached identity (door-api SessionMachine), never trusted from
   // the client — see door_api/social/routes.py CheckinCreateRequest.
   async createCheckin(label: string | null): Promise<Checkin> {
+    const sessionToken = await getSessionToken();
     return request<Checkin>("/checkins", {
       method: "POST",
-      body: { label, session_token: getSessionToken() },
+      body: { label, session_token: sessionToken },
     });
   },
 
@@ -172,9 +210,10 @@ export const socialApi = {
   },
 
   async requestDeletion(targetKind: string, targetId: string): Promise<void> {
+    const sessionToken = await getSessionToken();
     await request("/social/deletion-requests", {
       method: "POST",
-      body: { target_kind: targetKind, target_id: targetId, session_token: getSessionToken() },
+      body: { target_kind: targetKind, target_id: targetId, session_token: sessionToken },
     });
   },
 

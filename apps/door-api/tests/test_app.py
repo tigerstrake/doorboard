@@ -34,15 +34,24 @@ def test_health() -> None:
     client = TestClient(app)
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"service": "door-api", "status": "ok", "detail": None}
 
 
 def test_metrics() -> None:
     client = TestClient(app)
     response = client.get("/metrics")
     assert response.status_code == 200
-    data = response.json()
-    assert "session_transitions_total" in data
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "session_transitions_total" in response.text
+    assert "door_api_media_outbox_depth" in response.text
+
+
+def test_admin_routes_fail_closed_without_configured_token() -> None:
+    client = TestClient(app)
+
+    response = client.get("/admin/media-inbox")
+
+    assert response.status_code == 503
 
 
 def test_websocket_broadcast_smoke() -> None:

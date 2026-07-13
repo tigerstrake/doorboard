@@ -8,16 +8,16 @@ Routes:
   POST /unenroll         — admin-auth, delete a person (E-5 semantics)
   POST /privacy-mode     — admin-auth, capture-layer kill switch (E-6)
 
-Auth: ``DOOR_VISIOND_ADMIN_TOKEN``.  Empty = auth disabled (dev/CI).
+Auth: ``DOOR_VISIOND_ADMIN_TOKEN``. Empty closes protected routes.
 None of these routes sit in the door button path.
 """
 
 from __future__ import annotations
 
+import secrets
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import (
@@ -34,10 +34,11 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from door_visiond.consent import current_consent_version
+from door_visiond.consent import ConsentStatementUnavailable, load_consent_statement
 from door_visiond.enrollment import ProfileSpec
 from door_visiond.logging_setup import get_logger
 from door_visiond.service import (
+    EnrollmentLockedError,
     PrivacyModeActiveError,
     QualityTooLowError,
     StaleConsentError,
@@ -92,14 +93,17 @@ def _svc(request: Request) -> VisiondService:
 def _require_admin(request: Request) -> None:
     cfg: Settings = request.app.state.cfg
     if not cfg.admin_token:
-        return  # auth disabled in dev/CI
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="admin authentication is not configured",
+        )
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing Authorization header",
         )
-    if auth.removeprefix("Bearer ") != cfg.admin_token:
+    if not secrets.compare_digest(auth.removeprefix("Bearer "), cfg.admin_token):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token")
 
 
@@ -162,6 +166,11 @@ async def enroll(
             images=image_bytes,
             profile=ProfileSpec(profile_id=profile_id, color=color, sound=sound),
         )
+    except EnrollmentLockedError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="encrypted enrollment storage is locked",
+        ) from None
     except PrivacyModeActiveError:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="privacy_mode") from None
     except StaleConsentError as exc:
@@ -187,7 +196,13 @@ class _UnenrollBody(BaseModel):
 
 @app.post("/unenroll")
 async def unenroll(_auth: AdminAuth, request: Request, body: _UnenrollBody) -> dict[str, object]:
-    return _svc(request).unenroll(body.person_id)
+    try:
+        return _svc(request).unenroll(body.person_id)
+    except EnrollmentLockedError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="encrypted enrollment storage is locked",
+        ) from None
 
 
 class _PrivacyBody(BaseModel):
@@ -208,31 +223,23 @@ async def privacy_mode(_auth: AdminAuth, request: Request, body: _PrivacyBody) -
 
 @app.get("/people")
 async def list_people(_auth: AdminAuth, request: Request) -> list[dict[str, Any]]:
-    return _svc(request)._store.list_people()
+    svc = _svc(request)
+    if svc.health()["enrollment_locked"]:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="encrypted enrollment storage is locked",
+        )
+    return svc._store.list_people()
 
 
 @app.get("/consent")
 async def get_consent(request: Request) -> dict[str, str]:
     svc = _svc(request)
-    path = svc._settings.consent_statement_path
-    version = current_consent_version(
-        statement_path=path,
-        fallback=svc._settings.consent_version,
-    )
-    text = ""
-    resolved_path = path
-    if resolved_path is None or not resolved_path.exists():
-        for p in [
-            Path("/Users/tigerstrake/dev/doorboard-T304/docs/policies/consent-statement.md"),
-            Path("docs/policies/consent-statement.md"),
-            Path("../docs/policies/consent-statement.md"),
-            Path("../../docs/policies/consent-statement.md"),
-        ]:
-            if p.exists():
-                resolved_path = p
-                break
-    if resolved_path and resolved_path.exists():
-        text = resolved_path.read_text(encoding="utf-8")
-    else:
-        text = "# Face-recognition consent statement\n\nVersion: v1\n\nBy enrolling, I confirm that:\n- I am enrolling my face.\n"  # noqa: E501
-    return {"text": text, "version": version}
+    try:
+        statement = load_consent_statement(svc._settings.consent_statement_path)
+    except ConsentStatementUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="canonical consent statement unavailable",
+        ) from exc
+    return {"text": statement.text, "version": statement.version}

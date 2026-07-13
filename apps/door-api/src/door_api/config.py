@@ -76,9 +76,20 @@ class SessionConfig:
 
     # Bounded timeout for door-api -> door-media local loopback calls.
     media_timeout_s: float = 1.0
+    media_admin_token: str = ""
+    media_outbox_max_rows: int = 4096
+    media_forward_poll_s: float = 0.25
+    media_retry_base_s: float = 0.5
+    media_retry_max_s: float = 30.0
 
     # door-sync local base URL for non-critical admin/gallery operations.
     sync_base_url: str = "http://127.0.0.1:8083"
+    sync_admin_token: str = ""
+    sync_timeout_s: float = 1.0
+    sync_outbox_max_rows: int = 4096
+    sync_forward_poll_s: float = 0.25
+    sync_retry_base_s: float = 0.5
+    sync_retry_max_s: float = 30.0
 
     # Feature gate for the explicit photo-booth + private gallery flow.
     feature_photobooth: bool = False
@@ -120,7 +131,18 @@ class SessionConfig:
                 os.environ.get("DOOR_API_MEDIA_BASE_URL", "http://127.0.0.1:8001"),
             ),
             media_timeout_s=_env_float("DOOR_API_MEDIA_TIMEOUT_S", 1.0),
+            media_admin_token=os.environ.get("DOOR_MEDIA_ADMIN_TOKEN", ""),
+            media_outbox_max_rows=int(_env_float("DOOR_API_MEDIA_OUTBOX_MAX_ROWS", 4096.0)),
+            media_forward_poll_s=_env_float("DOOR_API_MEDIA_FORWARD_POLL_S", 0.25),
+            media_retry_base_s=_env_float("DOOR_API_MEDIA_RETRY_BASE_S", 0.5),
+            media_retry_max_s=_env_float("DOOR_API_MEDIA_RETRY_MAX_S", 30.0),
             sync_base_url=os.environ.get("DOOR_API_SYNC_BASE_URL", "http://127.0.0.1:8083"),
+            sync_admin_token=os.environ.get("DOOR_SYNC_ADMIN_TOKEN", ""),
+            sync_timeout_s=_env_float("DOOR_API_SYNC_TIMEOUT_S", 1.0),
+            sync_outbox_max_rows=int(_env_float("DOOR_API_SYNC_OUTBOX_MAX_ROWS", 4096.0)),
+            sync_forward_poll_s=_env_float("DOOR_API_SYNC_FORWARD_POLL_S", 0.25),
+            sync_retry_base_s=_env_float("DOOR_API_SYNC_RETRY_BASE_S", 0.5),
+            sync_retry_max_s=_env_float("DOOR_API_SYNC_RETRY_MAX_S", 30.0),
             feature_photobooth=_env_bool("FEATURE_PHOTOBOOTH", False),
             visitor_token_secret=os.environ.get(
                 "DOOR_API_VISITOR_TOKEN_SECRET",

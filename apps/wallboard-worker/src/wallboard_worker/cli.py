@@ -27,6 +27,7 @@ from wallboard_worker.jobs import (
     run_printer_status,
     run_satellite_passes,
 )
+from wallboard_worker.scheduler import Scheduler
 from wallboard_worker.settings import Settings
 
 logging.basicConfig(level=logging.INFO)
@@ -37,6 +38,21 @@ logger = logging.getLogger("doorboard.wallboard_worker.cli")
 def cli() -> None:
     """wallboard-worker background job scheduler/runner CLI."""
     pass
+
+
+@cli.command("run")
+@click.option("--once", is_flag=True, help="Run every enabled job once and exit")
+@click.option("--mock", is_flag=True, help="Force mock providers for enabled jobs")
+def run_scheduler(once: bool, mock: bool) -> None:
+    """Run enabled ambient jobs on their configured schedules."""
+    scheduler = Scheduler(Settings(), force_mock=mock)
+    if once:
+        scheduler.run_once()
+        return
+    try:
+        scheduler.run_forever()
+    except KeyboardInterrupt:
+        scheduler.stop()
 
 
 @cli.command()

@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""Wait a bounded time for a local HTTP health endpoint."""
+
+from __future__ import annotations
+
+import argparse
+import time
+import urllib.request
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("url")
+    parser.add_argument("--deadline-s", type=float, default=60.0)
+    args = parser.parse_args()
+    deadline = time.monotonic() + args.deadline_s
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(args.url, timeout=2.0) as response:  # noqa: S310
+                if 200 <= response.status < 300:
+                    return 0
+        except OSError:
+            pass
+        time.sleep(1.0)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

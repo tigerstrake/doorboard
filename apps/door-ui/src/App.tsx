@@ -31,6 +31,14 @@ import { AdminEnrollmentPanel } from "./AdminEnrollmentPanel";
 import { AdminAboutPanel } from "./AdminAboutPanel";
 import { VisitorPage } from "./VisitorPage";
 import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
+import { WallboardFocusedView, WallboardLauncher } from "./wallboardChannels";
+import {
+  WALLBOARD_CONTROL_EVENT,
+  WALLBOARD_CONTROL_STORAGE_KEY,
+  createWallboardFocusRequest,
+  isWallboardFocusRequest,
+} from "./wallboardChannelModel";
+import type { WallboardFocusChannel, WallboardFocusRequest } from "./wallboardChannelModel";
 
 // Import CSS
 import "@doorboard/ui-kit/index.css";
@@ -42,6 +50,15 @@ const CANNED_GUESTBOOK_PHRASES = ["Hey, stopped by!", "Call me later!", "Awesome
 // real deletion path without needing a login/identity system.
 type MyContentRef = { kind: "guestbook" | "checkin"; id: string; label: string };
 const MY_CONTENT_KEY = "doorboard_my_social_content";
+const ADMIN_TOKEN_KEY = "doorboard_admin_social_token";
+
+function adminHeaders(json = false): Record<string, string> {
+  const token = window.localStorage.getItem(ADMIN_TOKEN_KEY);
+  return {
+    ...(json ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
 
 function loadMyContent(): MyContentRef[] {
   try {
@@ -69,6 +86,9 @@ const API_BASE = import.meta.env.VITE_DOOR_API_BASE_URL ?? "http://127.0.0.1:800
 const FEATURE_PHOTOBOOTH =
   ((import.meta.env.VITE_FEATURE_PHOTOBOOTH as string | undefined) ??
     (import.meta.env.FEATURE_PHOTOBOOTH as string | undefined)) === "true";
+const DEV_TOOLS_ENABLED =
+  ((import.meta.env.VITE_DOOR_UI_DEV_TOOLS as string | undefined) ??
+    (import.meta.env.VITE_ENABLE_SIM_PANEL as string | undefined)) === "true";
 
 const wsUrlFromApiBase = (base: string) => `${base.replace(/^http/, "ws")}/ws`;
 
@@ -80,7 +100,8 @@ type DoorPadScreen =
   | "guestbook"
   | "poll"
   | "checkin"
-  | "privacy";
+  | "privacy"
+  | "remote";
 type VideoStep = "offer" | "countdown" | "recording" | "review" | "saved" | "qr";
 type PhotoStep = "offer" | "countdown" | "review" | "saved";
 
@@ -155,8 +176,10 @@ export function App() {
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
   const [activeDisplayName, setActiveDisplayName] = useState<string | null>(null);
   const [mockSessionId, setMockSessionId] = useState<string>(() => crypto.randomUUID());
-  const [showSimPanel, setShowSimPanel] = useState<boolean>(true);
+  const [showSimPanel, setShowSimPanel] = useState<boolean>(DEV_TOOLS_ENABLED);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
+  const [wallboardFocusRequest, setWallboardFocusRequest] = useState<WallboardFocusRequest | null>(null);
+  const [wallboardLaunchStatus, setWallboardLaunchStatus] = useState<string>("Ambient grid");
   
   // DoorPad local state
   const [doorPadScreen, setDoorPadScreen] = useState<DoorPadScreen>("home");
@@ -197,6 +220,7 @@ export function App() {
   const [currentPoll, setCurrentPoll] = useState<Poll | null>(null);
   const [pollResults, setPollResults] = useState<PollResultRow[] | null>(null);
   const [pollVoteError, setPollVoteError] = useState<string | null>(null);
+  const [doorPadVotedOptionId, setDoorPadVotedOptionId] = useState<string | null>(null);
   const [checkinSubmitting, setCheckinSubmitting] = useState<boolean>(false);
   const [myContent, setMyContent] = useState<MyContentRef[]>(() => loadMyContent());
   const [approvedGuestbook, setApprovedGuestbook] = useState<GuestbookEntry[]>([]);
@@ -219,6 +243,50 @@ export function App() {
     }, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    const readStoredFocus = () => {
+      try {
+        const raw = window.localStorage.getItem(WALLBOARD_CONTROL_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as unknown;
+        if (isWallboardFocusRequest(parsed)) {
+          setWallboardFocusRequest(parsed);
+          setWallboardLaunchStatus(
+            parsed.mode === "ambient" ? "Ambient grid" : `Focused: ${parsed.channel}`
+          );
+        }
+      } catch {
+        setWallboardFocusRequest(null);
+      }
+    };
+
+    readStoredFocus();
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === WALLBOARD_CONTROL_STORAGE_KEY) readStoredFocus();
+    };
+    const handleLocalFocus = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (isWallboardFocusRequest(detail)) {
+        setWallboardFocusRequest(detail);
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener(WALLBOARD_CONTROL_EVENT, handleLocalFocus);
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener(WALLBOARD_CONTROL_EVENT, handleLocalFocus);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (wallboardFocusRequest?.mode !== "focus" || !wallboardFocusRequest.expiresAt) return undefined;
+    const remainingMs = Math.max(0, wallboardFocusRequest.expiresAt - Date.now());
+    const timeout = window.setTimeout(() => setWallboardFocusRequest(null), remainingMs);
+    return () => window.clearTimeout(timeout);
+  }, [wallboardFocusRequest]);
 
   // Initialize event client
   useEffect(() => {
@@ -244,6 +312,7 @@ export function App() {
       if (event && event.type === "session.state_changed" && event.payload) {
         const toState = event.payload.to_state;
         setSessionState(toState);
+        setMockSessionId(event.payload.session_id);
 
         if (toState === "IDLE") {
           setActiveProfile(null);
@@ -301,12 +370,53 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (!WALLBOARD_TAKEOVER_STATES.includes(sessionState)) {
+      if (sessionState === "IDLE") setVisitorQrUrl(null);
+      return undefined;
+    }
+    let cancelled = false;
+    void fetch(`${API_BASE}/visitor-token`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("visitor token unavailable");
+        return response.json() as Promise<{ token: string; url: string }>;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        socialApi.setVisitorToken(data.token);
+        setVisitorQrUrl(data.url);
+      })
+      .catch(() => {
+        if (!cancelled) setVisitorQrUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionState]);
+
+  useEffect(() => {
     const controller = new AbortController();
     fetch(`${API_BASE}/session`, { signal: controller.signal })
       .then((response) => (response.ok ? response.json() : null))
       .then((data: DoorApiSnapshot | null) => {
         if (data?.session?.state) {
           setSessionState(data.session.state);
+          if (data.session.state === "IDLE") {
+            setDoorPadScreen("home");
+          } else if (data.session.state === "VIDEO_MESSAGE_OFFERED") {
+            setDoorPadScreen("message");
+            setVideoStep("offer");
+          } else if (data.session.state === "VIDEO_MESSAGE_RECORDING") {
+            setDoorPadScreen("message");
+            setVideoStep("recording");
+          } else if (data.session.state === "VIDEO_MESSAGE_REVIEW") {
+            setDoorPadScreen("message");
+            setVideoStep("review");
+          } else if (data.session.state === "VIDEO_MESSAGE_SAVED") {
+            setDoorPadScreen("message");
+            setVideoStep("saved");
+          } else if (VISITOR_STATES.includes(data.session.state)) {
+            setDoorPadScreen("ringing");
+          }
         }
         if (typeof data?.config?.max_recording_s === "number") {
           setMaxRecordingS(data.config.max_recording_s);
@@ -319,7 +429,10 @@ export function App() {
   useEffect(() => {
     if (route !== "/admin" && route !== "/diagnostics") return undefined;
     const controller = new AbortController();
-    fetch(`${API_BASE}/admin/media-inbox`, { signal: controller.signal })
+    fetch(`${API_BASE}/admin/media-inbox`, {
+      signal: controller.signal,
+      headers: adminHeaders(),
+    })
       .then((response) => (response.ok ? response.json() : { recordings: [] }))
       .then((data: { recordings?: VideoRecording[] }) => {
         setAdminRecordings(data.recordings ?? []);
@@ -331,7 +444,10 @@ export function App() {
   useEffect(() => {
     if (!FEATURE_PHOTOBOOTH || (route !== "/admin" && route !== "/diagnostics")) return undefined;
     const controller = new AbortController();
-    fetch(`${API_BASE}/admin/gallery/photos`, { signal: controller.signal })
+    fetch(`${API_BASE}/admin/gallery/photos`, {
+      signal: controller.signal,
+      headers: adminHeaders(),
+    })
       .then((response) => (response.ok ? response.json() : { photos: [] }))
       .then((data: { photos?: GalleryPhoto[] }) => {
         setGalleryPhotos(data.photos ?? []);
@@ -349,6 +465,26 @@ export function App() {
   const navigateTo = (path: string) => {
     window.history.pushState(null, "", path);
     setRoute(path);
+  };
+
+  const returnDoorPadToContext = () => {
+    if (VISITOR_STATES.includes(sessionState)) {
+      setDoorPadScreen("ringing");
+    } else {
+      setDoorPadScreen("home");
+    }
+  };
+
+  const setWallboardChannel = (channel: "ambient" | WallboardFocusChannel) => {
+    const request = createWallboardFocusRequest(channel);
+    setWallboardFocusRequest(request);
+    setWallboardLaunchStatus(channel === "ambient" ? "Ambient grid" : `Focused: ${channel}`);
+    window.localStorage.setItem(WALLBOARD_CONTROL_STORAGE_KEY, JSON.stringify(request));
+    window.dispatchEvent(new CustomEvent(WALLBOARD_CONTROL_EVENT, { detail: request }));
+  };
+
+  const returnWallboardAmbient = () => {
+    setWallboardChannel("ambient");
   };
 
   const MEDIA_API_BASE = window.location.port === "5173" ? "http://127.0.0.1:8082" : "";
@@ -428,7 +564,9 @@ export function App() {
   const refreshGalleryPhotos = useCallback(async () => {
     if (!FEATURE_PHOTOBOOTH) return;
     try {
-      const response = await fetch(`${API_BASE}/admin/gallery/photos`);
+      const response = await fetch(`${API_BASE}/admin/gallery/photos`, {
+        headers: adminHeaders(),
+      });
       const data = response.ok ? ((await response.json()) as { photos?: GalleryPhoto[] }) : {};
       setGalleryPhotos(data.photos ?? []);
     } catch {
@@ -442,7 +580,7 @@ export function App() {
     try {
       const response = await fetch(`${API_BASE}/admin/gallery/photos/${photo.recording_id}/approve`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: adminHeaders(true),
         body: JSON.stringify({
           tags: tagText.split(",").map((tag) => tag.trim()).filter(Boolean),
           wallboard_moment: photo.wallboard_moment,
@@ -461,7 +599,7 @@ export function App() {
     try {
       const response = await fetch(`${API_BASE}/admin/gallery/photos/${photo.recording_id}/tags`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: adminHeaders(true),
         body: JSON.stringify({
           tags: tagText === null ? photo.tags : tagText.split(",").map((tag) => tag.trim()),
           wallboard_moment: wallboardMoment ?? photo.wallboard_moment,
@@ -479,6 +617,7 @@ export function App() {
     try {
       const response = await fetch(`${API_BASE}/admin/gallery/photos/${photo.recording_id}`, {
         method: "DELETE",
+        headers: adminHeaders(),
       });
       triggerToast(response.ok ? "Photo deleted" : "Couldn't delete photo");
       void refreshGalleryPhotos();
@@ -539,6 +678,8 @@ export function App() {
   useEffect(() => {
     if (doorPadScreen !== "poll") return;
     let cancelled = false;
+    setDoorPadVotedOptionId(null);
+    setPollVoteError(null);
     socialApi
       .getCurrentPoll()
       .then((poll) => {
@@ -573,7 +714,7 @@ export function App() {
       rememberMyContent({ kind: "guestbook", id: entry.id, label: text.slice(0, 40) });
       triggerToast("Note submitted! It'll show up once approved.");
       setGuestbookText("");
-      handleReset();
+      returnDoorPadToContext();
     } catch (err) {
       triggerToast(apiErrorMessage(err, "Couldn't submit your note — try again."));
     } finally {
@@ -584,12 +725,14 @@ export function App() {
   const handlePollVote = async (optionId: string) => {
     if (!currentPoll) return;
     setPollVoteError(null);
+    setDoorPadVotedOptionId(optionId);
     try {
       await socialApi.castVote(currentPoll.id, optionId);
       const results = await socialApi.getPollResults(currentPoll.id);
       setPollResults(results);
       triggerToast("Vote cast!");
     } catch (err) {
+      setDoorPadVotedOptionId(null);
       setPollVoteError(apiErrorMessage(err, "Couldn't cast your vote."));
     }
   };
@@ -605,10 +748,10 @@ export function App() {
       rememberMyContent({ kind: "checkin", id: checkin.id, label });
       triggerToast(
         checkin.person_id
-          ? `Checked in — recognized as ${checkin.person_id}!`
+          ? "Recognized check-in saved."
           : `Checked in as ${label}`
       );
-      setDoorPadScreen("home");
+      returnDoorPadToContext();
     } catch (err) {
       triggerToast(apiErrorMessage(err, "Couldn't check in — try again."));
     } finally {
@@ -625,6 +768,23 @@ export function App() {
       triggerToast("Deletion request honored.");
     } catch (err) {
       triggerToast(apiErrorMessage(err, "Couldn't process the deletion request."));
+    }
+  };
+
+  const handleDeletionRequestAll = async () => {
+    if (myContent.length === 0) {
+      triggerToast("No session submissions to delete.");
+      return;
+    }
+    const items = [...myContent];
+    try {
+      await Promise.all(items.map((item) => socialApi.requestDeletion(item.kind, item.id)));
+      setMyContent([]);
+      saveMyContent([]);
+      triggerToast("Deletion requests honored.");
+      returnDoorPadToContext();
+    } catch (err) {
+      triggerToast(apiErrorMessage(err, "Couldn't process every deletion request."));
     }
   };
 
@@ -703,10 +863,11 @@ export function App() {
 
   // Render Simulator panel overlay (for interactive dev)
   const renderSimPanel = () => {
+    if (!DEV_TOOLS_ENABLED) return null;
     if (!showSimPanel) {
       return (
         <button className="sim-panel-toggle-btn" onClick={() => setShowSimPanel(true)}>
-          ⚙️ Open Sim Control
+          Open Sim Control
         </button>
       );
     }
@@ -715,15 +876,15 @@ export function App() {
       <div className="sim-panel-overlay">
         <div className="sim-panel-header">
           <h3>Simulation Panel</h3>
-          <button onClick={() => setShowSimPanel(false)}>❌ Close</button>
+          <button onClick={() => setShowSimPanel(false)}>Close</button>
         </div>
         <div className="sim-panel-body">
           <p>Current Session State: <strong>{sessionState}</strong></p>
           <div className="sim-panel-buttons">
-            <button onClick={() => triggerEvent("VISITOR_MODE", null)}>🔔 Press Bell (Generic)</button>
-            <button onClick={() => triggerEvent("VISITOR_MODE", "owner")}>👤 Recognize Owner (Taylor)</button>
-            <button onClick={() => triggerEvent("VISITOR_MODE", "roommate")}>👥 Recognize Roommate (Alex)</button>
-            <button onClick={() => handleReset()}>🔄 Reset to IDLE</button>
+            <button onClick={() => triggerEvent("VISITOR_MODE", null)}>Press Bell (Generic)</button>
+            <button onClick={() => triggerEvent("VISITOR_MODE", "owner")}>Recognize Owner</button>
+            <button onClick={() => triggerEvent("VISITOR_MODE", "roommate")}>Recognize Roommate</button>
+            <button onClick={() => handleReset()}>Reset to IDLE</button>
           </div>
         </div>
       </div>
@@ -739,10 +900,16 @@ export function App() {
   // --- WALLBOARD SURFACE ---
   const renderWallboard = () => {
     const isVisitorMode = WALLBOARD_TAKEOVER_STATES.includes(sessionState);
-    const visitorUrl = `${window.location.origin}/visitor?token=${mockSessionId}`;
+    const focusedChannel =
+      !isVisitorMode &&
+      wallboardFocusRequest?.mode === "focus" &&
+      wallboardFocusRequest.channel &&
+      (!wallboardFocusRequest.expiresAt || wallboardFocusRequest.expiresAt > Date.now())
+        ? wallboardFocusRequest.channel
+        : null;
 
     return (
-      <CrossfadeSwitch activeKey={isVisitorMode ? "visitor" : "ambient"}>
+      <CrossfadeSwitch activeKey={isVisitorMode ? "visitor" : focusedChannel ?? "ambient"}>
         {isVisitorMode ? (
           <WallboardVisitorMode
             sessionState={sessionState}
@@ -751,8 +918,17 @@ export function App() {
             displayName={activeDisplayName}
             presence={presenceFixture}
             pollQuestion={currentPoll?.question ?? "No poll running right now."}
-            visitorUrl={visitorUrl}
+            visitorUrl={visitorQrUrl}
             onDone={endVisitorSession}
+          />
+        ) : focusedChannel ? (
+          <WallboardFocusedView
+            channel={focusedChannel}
+            poll={currentPoll}
+            pollResults={pollResults}
+            guestbookEntries={approvedGuestbook}
+            moments={wallboardMoments}
+            onReturnAmbient={returnWallboardAmbient}
           />
         ) : (
           // AMBIENT MODE - TILE DASHBOARD
@@ -772,11 +948,11 @@ export function App() {
               <Tile title="Presence" asOf={presenceFixture.owner.occurred_at}>
                 <div className="presence-tile-content">
                   <div className="presence-row">
-                    <span>Taylor:</span>
+                    <span>Owner:</span>
                     <StatusBadge label={presenceFixture.owner.label} />
                   </div>
                   <div className="presence-row">
-                    <span>Alex:</span>
+                    <span>Roommate:</span>
                     <StatusBadge label={presenceFixture.roommate.label} />
                   </div>
                 </div>
@@ -785,8 +961,8 @@ export function App() {
               {/* Tile 2: Mood */}
               <Tile title="Current Mood" asOf={moodFixture.occurred_at}>
                 <div className="mood-tile-content">
-                  <span className="mood-emoji">🎯</span>
-                  <span className="mood-text">Taylor is feeling <strong>{moodFixture.mood}</strong></span>
+                  <span className="mood-emoji" aria-hidden="true">Status</span>
+                  <span className="mood-text">Owner is feeling <strong>{moodFixture.mood}</strong></span>
                 </div>
               </Tile>
 
@@ -819,7 +995,7 @@ export function App() {
               {/* Tile 5: Satellite Pass */}
               <Tile title="Next Satellite Pass" asOf={satelliteFixture.occurred_at}>
                 <div className="satellite-tile-content">
-                  <p>🛰️ <strong>{satelliteFixture.satellite}</strong></p>
+                  <p><strong>{satelliteFixture.satellite}</strong></p>
                   <p>Rise: {new Date(satelliteFixture.rise_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
                   <p>Direction: {satelliteFixture.direction} ({satelliteFixture.max_elevation_deg}° max elev)</p>
                 </div>
@@ -841,7 +1017,7 @@ export function App() {
                 <div className="scoreboard-tile-content">
                   {scoreboardFixture.scores.map((s, idx) => (
                     <div key={idx} className="score-row">
-                      <span>{s.name}</span>
+                      <span>{idx === 0 ? "Owner" : "Roommate"}</span>
                       <span className="score-points"><strong>{s.score}</strong> pts</span>
                     </div>
                   ))}
@@ -851,7 +1027,7 @@ export function App() {
               {/* Tile 8: Daily Food */}
               <Tile title="Daily Food Recommendation" asOf={foodFixture.occurred_at}>
                 <div className="food-tile-content">
-                  <h4>🍜 {foodFixture.title}</h4>
+                  <h4>{foodFixture.title}</h4>
                   <p>{foodFixture.detail}</p>
                 </div>
               </Tile>
@@ -1124,7 +1300,8 @@ export function App() {
     try {
       const response = await fetch(`${API_BASE}/visitor-token`);
       if (response.ok) {
-        const data = (await response.json()) as { url: string };
+        const data = (await response.json()) as { token: string; url: string };
+        socialApi.setVisitorToken(data.token);
         setVisitorQrUrl(data.url);
       } else {
         triggerToast("QR token unavailable");
@@ -1135,7 +1312,7 @@ export function App() {
   };
 
   const ringDoorbell = () => {
-    setSessionState("VISITOR_MODE");
+    setSessionState("RINGING");
     setDoorPadScreen("ringing");
     void postDoorApi("/doorpad/ring");
   };
@@ -1157,15 +1334,15 @@ export function App() {
         <div className="doorpad-view db-app-theme">
           <header className="doorpad-header">
             <h2>Room 304 DoorPad</h2>
-            <p>Tap an action below to interact</p>
+            <p>Large-touch visitor controls</p>
           </header>
           
           <div className="doorpad-grid">
-            <BigButton id="btn-ring" variant="primary" icon={<span>🔔</span>} onClick={ringDoorbell}>
+            <BigButton id="btn-ring" variant="primary" icon={<span aria-hidden="true">R</span>} onClick={ringDoorbell}>
               Ring Bell
             </BigButton>
             
-            <BigButton id="btn-video" icon={<span>📹</span>} onClick={() => {
+            <BigButton id="btn-video" icon={<span aria-hidden="true">V</span>} onClick={() => {
               setDoorPadScreen("message");
               setVideoStep("offer");
             }}>
@@ -1173,24 +1350,28 @@ export function App() {
             </BigButton>
 
             {FEATURE_PHOTOBOOTH && (
-              <BigButton id="btn-photo-booth" icon={<span>📸</span>} onClick={startPhotoFlow}>
+              <BigButton id="btn-photo-booth" icon={<span aria-hidden="true">P</span>} onClick={startPhotoFlow}>
                 Photo Booth
               </BigButton>
             )}
 
-            <BigButton id="btn-guestbook" icon={<span>✍️</span>} onClick={() => handleActionClick("Guestbook", "guestbook")}>
+            <BigButton id="btn-guestbook" icon={<span aria-hidden="true">G</span>} onClick={() => handleActionClick("Guestbook", "guestbook")}>
               Guestbook
             </BigButton>
 
-            <BigButton id="btn-poll" icon={<span>📊</span>} onClick={() => handleActionClick("Poll Vote", "poll")}>
+            <BigButton id="btn-poll" icon={<span aria-hidden="true">Q</span>} onClick={() => handleActionClick("Poll Vote", "poll")}>
               Vote in Poll
             </BigButton>
 
-            <BigButton id="btn-checkin" icon={<span>✅</span>} onClick={() => handleActionClick("Check In", "checkin")}>
+            <BigButton id="btn-checkin" icon={<span aria-hidden="true">C</span>} onClick={() => handleActionClick("Check In", "checkin")}>
               Visitor Check-In
             </BigButton>
 
-            <BigButton id="btn-privacy" icon={<span>🔒</span>} onClick={() => handleActionClick("Privacy Notice", "privacy")}>
+            <BigButton id="btn-remote" icon={<span aria-hidden="true">W</span>} onClick={() => handleActionClick("Wallboard", "remote")}>
+              Wallboard Control
+            </BigButton>
+
+            <BigButton id="btn-privacy" icon={<span aria-hidden="true">I</span>} onClick={() => handleActionClick("Privacy Notice", "privacy")}>
               Privacy & Info
             </BigButton>
           </div>
@@ -1212,14 +1393,46 @@ export function App() {
         <div className="doorpad-view db-app-theme fade-in">
           {doorPadScreen === "ringing" && (
             <div className="doorpad-sub-content">
-              <div className="pulse-ring-icon">🔔</div>
-              <h2>Ringing Doorbell...</h2>
-              <p>Wallboard has flipped to Visitor Mode. Taylor & Alex have been notified.</p>
-              <div className="qr-inline">
-                <BigButton onClick={showVisitorQr}>Show QR Handoff</BigButton>
+              <div className="doorpad-journey-status">
+                <span className="doorpad-journey-status__mark" aria-hidden="true" />
+                <div>
+                  <p className="surface-eyebrow">Visitor session</p>
+                  <h2>
+                    {sessionState === "ANSWERED"
+                      ? "Someone answered"
+                      : sessionState === "UNANSWERED_TIMEOUT"
+                        ? "No answer yet"
+                        : "You rang"}
+                  </h2>
+                  <p>
+                    {sessionState === "ANSWERED"
+                      ? "You can still check in or leave a note before the session closes."
+                      : sessionState === "UNANSWERED_TIMEOUT"
+                        ? "Leave a message here, use your phone, or add a quick note."
+                        : "While you wait, check in or pick another quick action."}
+                  </p>
+                </div>
+              </div>
+
+              <div className="doorpad-next-actions">
+                <BigButton
+                  id="post-ring-checkin"
+                  variant="primary"
+                  onClick={() => setDoorPadScreen("checkin")}
+                >
+                  Check In
+                </BigButton>
+                {sessionState === "UNANSWERED_TIMEOUT" || sessionState === "VIDEO_MESSAGE_OFFERED" ? (
+                  <BigButton onClick={startVideoFlow}>Leave Video Message</BigButton>
+                ) : (
+                  <BigButton onClick={showVisitorQr}>Show Phone QR</BigButton>
+                )}
+                <BigButton onClick={() => setDoorPadScreen("guestbook")}>Guestbook</BigButton>
+                <BigButton onClick={() => setDoorPadScreen("poll")}>Vote in Poll</BigButton>
+                <BigButton onClick={() => setDoorPadScreen("remote")}>Wallboard</BigButton>
               </div>
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={handleReset}>Cancel / End Session</BigButton>
+                <BigButton onClick={handleReset}>End Session</BigButton>
               </div>
             </div>
           )}
@@ -1341,6 +1554,30 @@ export function App() {
             </div>
           )}
 
+          {doorPadScreen === "remote" && (
+            <div className="doorpad-sub-content doorpad-remote-content">
+              <div className="doorpad-section-heading">
+                <div>
+                  <p className="surface-eyebrow">Wallboard remote</p>
+                  <h2>Choose what the big display shows</h2>
+                </div>
+                <span className="doorpad-launch-status">{wallboardLaunchStatus}</span>
+              </div>
+              <WallboardLauncher
+                selectedChannel={wallboardFocusRequest?.mode === "focus" && wallboardFocusRequest.channel
+                  ? wallboardFocusRequest.channel
+                  : "ambient"}
+                onSelect={setWallboardChannel}
+              />
+              <p className="placeholder-subtext">
+                Local mock control only until the display-control contract escalation is approved.
+              </p>
+              <div className="action-button-group">
+                <BigButton variant="primary" onClick={returnDoorPadToContext}>Done</BigButton>
+              </div>
+            </div>
+          )}
+
           {doorPadScreen === "guestbook" && (
             <div className="doorpad-sub-content">
               <h2>Leave a Guestbook Note</h2>
@@ -1366,8 +1603,14 @@ export function App() {
                 onChange={(e) => setGuestbookText(e.target.value)}
               />
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={() => { triggerToast("Note Submitted!"); handleReset(); }}>Submit</BigButton>
-                <BigButton onClick={() => setDoorPadScreen("home")}>Cancel</BigButton>
+                <BigButton
+                  variant="primary"
+                  disabled={guestbookSubmitting || guestbookText.trim().length === 0}
+                  onClick={() => handleGuestbookSubmit(guestbookText)}
+                >
+                  Submit Note
+                </BigButton>
+                <BigButton onClick={returnDoorPadToContext}>Cancel</BigButton>
               </div>
             </div>
           )}
@@ -1388,6 +1631,8 @@ export function App() {
                           key={opt.id}
                           className="phrase-btn"
                           style={{ width: "100%", margin: "4px 0" }}
+                          disabled={doorPadVotedOptionId !== null}
+                          aria-pressed={doorPadVotedOptionId === opt.id}
                           onClick={() => handlePollVote(opt.id)}
                         >
                           {opt.text}
@@ -1400,9 +1645,12 @@ export function App() {
                   </div>
                 </>
               )}
+              {doorPadVotedOptionId && <p className="visitor-note-status">Vote submitted.</p>}
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={() => { triggerToast("Vote cast!"); handleReset(); }}>Submit Vote</BigButton>
-                <BigButton onClick={() => setDoorPadScreen("home")}>Cancel</BigButton>
+                <BigButton variant="primary" onClick={returnDoorPadToContext}>
+                  Done
+                </BigButton>
+                <BigButton onClick={returnDoorPadToContext}>Cancel</BigButton>
               </div>
             </div>
           )}
@@ -1428,7 +1676,7 @@ export function App() {
                 </button>
               </div>
               <div className="action-button-group">
-                <BigButton onClick={() => setDoorPadScreen("home")}>Back</BigButton>
+                <BigButton onClick={returnDoorPadToContext}>Back</BigButton>
               </div>
             </div>
           )}
@@ -1437,8 +1685,8 @@ export function App() {
             <div className="doorpad-sub-content">
               <h2>Camera Notice & Deletion Requests</h2>
               <div className="privacy-info-box">
-                <p>📸 This door pad utilizes physical cameras for proactive face recognition of enrolled users.</p>
-                <p>🔒 Embeddings for unknown visitors are never persisted or recorded. biometrics stay strictly offline on device.</p>
+                <p>This door pad uses local cameras for enrolled-resident recognition only.</p>
+                <p>Unknown visitors are never named, and biometric data stays offline on the device.</p>
               </div>
               {myContent.length > 0 && (
                 <div className="my-content-list">
@@ -1460,8 +1708,14 @@ export function App() {
                 </p>
               )}
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={() => { triggerToast("Deletion Requested"); handleReset(); }}>Request Deletion of My Data</BigButton>
-                <BigButton onClick={() => setDoorPadScreen("home")}>Back</BigButton>
+                <BigButton
+                  variant="primary"
+                  disabled={myContent.length === 0}
+                  onClick={handleDeletionRequestAll}
+                >
+                  Request Deletion of My Data
+                </BigButton>
+                <BigButton onClick={returnDoorPadToContext}>Back</BigButton>
               </div>
             </div>
           )}
@@ -1473,14 +1727,9 @@ export function App() {
   // --- VISITOR SURFACE ---
   const renderVisitor = () => {
     return (
-      <div className="placeholder-view db-app-theme">
-        <div className="placeholder-card">
-          <h1>Visitor Surface</h1>
-          <p className="subtitle-tag">Route: `/visitor`</p>
-          <VisitorPage sessionState={sessionState} />
-          <button className="back-home-btn" onClick={() => navigateTo("/")}>Back to Navigation</button>
-        </div>
-      </div>
+      <main className="visitor-shell db-app-theme">
+        <VisitorPage sessionState={sessionState} />
+      </main>
     );
   };
 
@@ -1521,18 +1770,37 @@ export function App() {
           <header className="admin-header">
             <div>
               <h1>Admin Control Panel</h1>
-              <p className="subtitle-tag">Route: `/admin` | `/diagnostics`</p>
+              <p className="subtitle-tag">Owner-only local controls</p>
             </div>
-            <button className="back-home-btn" onClick={() => navigateTo("/")}>Back to Navigation</button>
+            {DEV_TOOLS_ENABLED && (
+              <button className="back-home-btn" onClick={() => navigateTo("/")}>Back to Navigation</button>
+            )}
           </header>
 
-          <LiveVideoPreview title="Local Live View" showStats />
           <div className="admin-stats-grid">
-            <div className="stat-card"><span>Uptime:</span> <strong>3d 12h</strong></div>
-            <div className="stat-card"><span>SQLite WAL:</span> <strong>Active</strong></div>
-            <div className="stat-card"><span>Hailo NPU:</span> <strong>Degraded (Sim)</strong></div>
-            <div className="stat-card"><span>SSD Space:</span> <strong>84% free</strong></div>
+            <div className="stat-card">
+              <span>door-api</span>
+              <strong>Pi-local</strong>
+              <small>Session and social writes use local endpoints.</small>
+            </div>
+            <div className="stat-card">
+              <span>Media storage</span>
+              <strong>{storageStatus.recording_allowed ? "Recording allowed" : "Recording paused"}</strong>
+              <small>{freeGb.toFixed(1)} GiB free from latest storage event or fallback.</small>
+            </div>
+            <div className="stat-card">
+              <span>Vision pipeline</span>
+              <strong>Unavailable in this panel</strong>
+              <small>Diagnostics should report Hailo/camera status when connected.</small>
+            </div>
+            <div className="stat-card">
+              <span>Sync queue</span>
+              <strong>{storageStatus.queue_depth} pending</strong>
+              <small>Oldest unsynced: {oldestHrs.toFixed(1)} hours.</small>
+            </div>
           </div>
+
+          <LiveVideoPreview title="Local Live View" showStats />
 
           <section className="admin-inbox-section">
             <h2>Video Message Inbox</h2>
@@ -1773,6 +2041,10 @@ export function App() {
 
   // --- NAVIGATION PAGE (DEFAULT ROOT /) ---
   const renderNavigation = () => {
+    if (!DEV_TOOLS_ENABLED) {
+      return renderWallboard();
+    }
+
     return (
       <div className="navigation-view db-app-theme">
         <div className="nav-container">

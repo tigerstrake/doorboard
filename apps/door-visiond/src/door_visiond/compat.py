@@ -74,13 +74,19 @@ def check_compatibility(
             ),
             detected=found,
         )
-    if found.model_id is not None and found.model_id != expected_model_id:
+    if found.model_id is None or found.model_dim is None:
+        return CompatResult(
+            ok=False,
+            detail="Hailo model metadata could not be verified; degrading to disabled",
+            detected=found,
+        )
+    if found.model_id != expected_model_id:
         return CompatResult(
             ok=False,
             detail=(f"model mismatch: expected {expected_model_id!r}, found {found.model_id!r}"),
             detected=found,
         )
-    if found.model_dim is not None and found.model_dim != expected_dim:
+    if found.model_dim != expected_dim:
         return CompatResult(
             ok=False,
             detail=f"model dim mismatch: expected {expected_dim}, found {found.model_dim}",

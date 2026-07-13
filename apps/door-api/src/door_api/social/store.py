@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS guestbook_entries (
     author_label TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     ip_hash TEXT,
+    session_key_hash TEXT,
     created_at TEXT NOT NULL,
     deleted_at TEXT
 );
@@ -57,6 +58,7 @@ CREATE TABLE IF NOT EXISTS checkins (
     id TEXT PRIMARY KEY,
     person_id TEXT,
     label TEXT,
+    session_key_hash TEXT,
     created_at TEXT NOT NULL,
     deleted_at TEXT
 );
@@ -123,7 +125,14 @@ class SocialStore:
             self._conn.execute("PRAGMA journal_mode=WAL;")
             self._conn.execute("PRAGMA synchronous=NORMAL;")
             self._conn.executescript(_CREATE_TABLES)
+            self._ensure_column("guestbook_entries", "session_key_hash", "TEXT")
+            self._ensure_column("checkins", "session_key_hash", "TEXT")
             self._conn.commit()
+
+    def _ensure_column(self, table: str, column: str, sql_type: str) -> None:
+        columns = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
 
     # ------------------------------------------------------------------
     # Guestbook
@@ -137,14 +146,15 @@ class SocialStore:
         author_label: str | None,
         status: GuestbookStatus,
         ip_hash: str,
+        session_key_hash: str,
         created_at: str,
     ) -> None:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO guestbook_entries "
-                "(id, text, author_label, status, ip_hash, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (entry_id, text, author_label, status, ip_hash, created_at),
+                "(id, text, author_label, status, ip_hash, session_key_hash, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (entry_id, text, author_label, status, ip_hash, session_key_hash, created_at),
             )
             self._conn.commit()
 
@@ -187,13 +197,23 @@ class SocialStore:
             self._conn.commit()
             return cur.rowcount > 0
 
-    def soft_delete_guestbook_entry(self, entry_id: str, *, deleted_at: str) -> bool:
+    def soft_delete_guestbook_entry(
+        self,
+        entry_id: str,
+        *,
+        deleted_at: str,
+        session_key_hash: str | None = None,
+    ) -> bool:
         with self._lock:
-            cur = self._conn.execute(
+            query = (
                 "UPDATE guestbook_entries SET status = 'deleted', deleted_at = ? "
-                "WHERE id = ? AND status != 'deleted'",
-                (deleted_at, entry_id),
+                "WHERE id = ? AND status != 'deleted'"
             )
+            values: tuple[str, ...] = (deleted_at, entry_id)
+            if session_key_hash is not None:
+                query += " AND session_key_hash = ?"
+                values += (session_key_hash,)
+            cur = self._conn.execute(query, values)
             self._conn.commit()
             return cur.rowcount > 0
 
@@ -340,12 +360,14 @@ class SocialStore:
         checkin_id: str,
         person_id: str | None,
         label: str | None,
+        session_key_hash: str,
         created_at: str,
     ) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT INTO checkins (id, person_id, label, created_at) VALUES (?, ?, ?, ?)",
-                (checkin_id, person_id, label, created_at),
+                "INSERT INTO checkins "
+                "(id, person_id, label, session_key_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+                (checkin_id, person_id, label, session_key_hash, created_at),
             )
             self._conn.commit()
 
@@ -373,12 +395,20 @@ class SocialStore:
                 ).fetchall()
         return [self._row_to_checkin(row) for row in rows]
 
-    def soft_delete_checkin(self, checkin_id: str, *, deleted_at: str) -> bool:
+    def soft_delete_checkin(
+        self,
+        checkin_id: str,
+        *,
+        deleted_at: str,
+        session_key_hash: str | None = None,
+    ) -> bool:
         with self._lock:
-            cur = self._conn.execute(
-                "UPDATE checkins SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
-                (deleted_at, checkin_id),
-            )
+            query = "UPDATE checkins SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL"
+            values: tuple[str, ...] = (deleted_at, checkin_id)
+            if session_key_hash is not None:
+                query += " AND session_key_hash = ?"
+                values += (session_key_hash,)
+            cur = self._conn.execute(query, values)
             self._conn.commit()
             return cur.rowcount > 0
 

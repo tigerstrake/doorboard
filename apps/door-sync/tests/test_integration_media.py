@@ -27,12 +27,13 @@ async def test_finalized_clip_syncs_and_is_licensed_for_deletion(tmp_path: Path,
     from door_sync.targets import FilesystemNasTarget, MockNucTarget
 
     ssd = tmp_path / "ssd"
+    media_admin_token = "integration-media-token"
     media_settings.override_settings(
         media_settings.Settings(
             DOOR_MEDIA_BIND="127.0.0.1:8082",
             MEDIA_MODE="mock",
             SSD_DATA_ROOT=ssd,
-            DOOR_MEDIA_ADMIN_TOKEN="",
+            DOOR_MEDIA_ADMIN_TOKEN=media_admin_token,
         )
     )
     try:
@@ -58,7 +59,11 @@ async def test_finalized_clip_syncs_and_is_licensed_for_deletion(tmp_path: Path,
             )
             queue = UploadQueue(settings.queue_db_path)
             transport = httpx.ASGITransport(app=media_app)
-            media_client = HttpMediaClient("http://door-media", transport=transport)
+            media_client = HttpMediaClient(
+                "http://door-media",
+                admin_token=media_admin_token,
+                transport=transport,
+            )
             engine = SyncEngine(
                 queue=queue,
                 settings=settings,

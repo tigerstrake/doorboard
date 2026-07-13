@@ -117,3 +117,23 @@ def test_privacy_mode_survives_restart(ssd_settings: Settings) -> None:
     # No capture has occurred, and none will until the flag is cleared.
     _pump(svc, spy, 5)
     assert svc.core.frame_count == 0
+
+
+def test_corrupt_privacy_state_fails_closed_and_degrades_health(
+    ssd_settings: Settings,
+) -> None:
+    ssd_settings.privacy_state_path.parent.mkdir(parents=True, exist_ok=True)
+    ssd_settings.privacy_state_path.write_text('{"enabled":"not-a-bool"}', encoding="utf-8")
+
+    svc, spy, _emitter = _build(ssd_settings)
+    svc.startup()
+
+    assert svc.privacy_enabled is True
+    assert svc.health()["status"] == "degraded"
+    assert svc.health()["privacy_state_status"] == "invalid_fail_closed"
+    _pump(svc, spy, 2)
+    assert svc.core.frame_count == 0
+
+    svc.set_privacy_mode(enabled=False, changed_by="admin")
+    assert PrivacyStore(ssd_settings.privacy_state_path).load().enabled is False
+    assert svc.health()["privacy_state_status"] == "ok"

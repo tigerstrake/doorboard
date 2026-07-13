@@ -22,13 +22,13 @@ The simulator uses `packages/contracts` types and the same adapter interfaces as
 Run a deterministic headless scenario:
 
 ```bash
-PYTHONPATH=apps/door-api/src:apps/door-media/src:apps/door-visiond/src:apps/simulator/src:packages/contracts/src uv run python -m doorboard_simulator run basic-bell
+uv run doorboard-sim run basic-bell
 ```
 
 List scenarios:
 
 ```bash
-PYTHONPATH=apps/door-api/src:apps/door-media/src:apps/door-visiond/src:apps/simulator/src:packages/contracts/src uv run python -m doorboard_simulator list
+uv run doorboard-sim list
 ```
 
 Start the local control panel:

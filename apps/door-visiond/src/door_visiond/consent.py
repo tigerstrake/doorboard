@@ -9,9 +9,20 @@ enrollment request's ``consent_version`` (stale → 409).
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 _VERSION_RE = re.compile(r"Version:\s*(v\d+)", re.IGNORECASE)
+
+
+class ConsentStatementUnavailable(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class ConsentStatement:
+    text: str
+    version: str
 
 
 def parse_consent_version(text: str) -> str | None:
@@ -33,3 +44,16 @@ def current_consent_version(*, statement_path: Path | None, fallback: str) -> st
         except OSError:
             pass
     return fallback
+
+
+def load_consent_statement(statement_path: Path | None) -> ConsentStatement:
+    if statement_path is None:
+        raise ConsentStatementUnavailable("consent statement path is not configured")
+    try:
+        text = statement_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConsentStatementUnavailable("consent statement is unreadable") from exc
+    version = parse_consent_version(text)
+    if version is None:
+        raise ConsentStatementUnavailable("consent statement has no version tag")
+    return ConsentStatement(text=text, version=version)

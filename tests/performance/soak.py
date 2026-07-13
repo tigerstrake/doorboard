@@ -319,6 +319,8 @@ def evaluate_soak(
 def result_to_json(result: SoakResult) -> dict[str, Any]:
     return {
         "generated_at": datetime.now(UTC).isoformat(),
+        "measurement_mode": "simulator",
+        "hardware_acceptance": False,
         "passed": result.passed,
         "failures": result.failures,
         "config": asdict(result.config),
@@ -331,8 +333,10 @@ def result_to_json(result: SoakResult) -> dict[str, Any]:
 
 def build_soak_report(result: SoakResult) -> str:
     lines = [
-        "Doorboard simulator soak verdict",
-        "=================================",
+        "Doorboard simulator regression soak",
+        "===================================",
+        "Not valid for physical performance or hardware acceptance.",
+        "",
         f"Verdict: {'PASS' if result.passed else 'FAIL'}",
         f"Duration: {result.config.duration_s}s simulated",
         "",
@@ -445,7 +449,7 @@ async def _main(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Doorboard simulator soak acceptance runner.")
+    parser = argparse.ArgumentParser(description="Doorboard simulator regression soak runner.")
     parser.add_argument("--profile", choices=["ci", "full"], default="ci")
     parser.add_argument(
         "--output-dir",

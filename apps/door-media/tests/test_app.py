@@ -1,8 +1,38 @@
 import uuid
+from datetime import UTC, datetime
 from typing import Any, cast
 
+from door_media._uuid7 import uuid7
 from doorboard_contracts.events import SessionState
 from fastapi.testclient import TestClient
+
+
+def _session_event(
+    *,
+    session_id: str,
+    from_state: SessionState,
+    to_state: SessionState,
+    trigger: str,
+    trace_id: str,
+    event_id: str | None = None,
+) -> dict[str, object]:
+    return {
+        "event": {
+            "event_id": event_id or str(uuid7()),
+            "type": "session.state_changed",
+            "source": "door-api",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "monotonic_ms": 1234,
+            "door_id": "primary",
+            "trace_id": trace_id,
+            "payload": {
+                "session_id": session_id,
+                "from_state": from_state,
+                "to_state": to_state,
+                "trigger": trigger,
+            },
+        }
+    }
 
 
 def test_health(client: TestClient):
@@ -17,6 +47,13 @@ def test_metrics(client: TestClient):
     resp = client.get("/metrics")
     assert resp.status_code == 200
     assert "door_media_uptime_s" in resp.text
+
+
+def test_admin_routes_fail_closed_without_configured_token(client: TestClient) -> None:
+    cfg = cast(Any, client.app).state.cfg
+    cfg.admin_token = ""
+
+    assert client.get("/recordings").status_code == 503
 
 
 def test_streams(client: TestClient):
@@ -35,13 +72,13 @@ def test_session_event_lifecycle(client: TestClient):
     # 1. Trigger bell recording
     resp = client.post(
         "/internal/session_event",
-        json={
-            "session_id": session_id,
-            "from_state": SessionState.IDLE,
-            "to_state": SessionState.BUTTON_PRESSED,
-            "trigger": "test",
-            "trace_id": trace_id,
-        },
+        json=_session_event(
+            session_id=session_id,
+            from_state=SessionState.IDLE,
+            to_state=SessionState.BUTTON_PRESSED,
+            trigger="test",
+            trace_id=trace_id,
+        ),
     )
     assert resp.status_code == 200
     assert resp.json()["accepted"] is True
@@ -62,13 +99,13 @@ def test_session_event_lifecycle(client: TestClient):
     # 2. Trigger finalize
     resp = client.post(
         "/internal/session_event",
-        json={
-            "session_id": session_id,
-            "from_state": SessionState.VISITOR_MODE,
-            "to_state": SessionState.SESSION_END,
-            "trigger": "test",
-            "trace_id": trace_id,
-        },
+        json=_session_event(
+            session_id=session_id,
+            from_state=SessionState.VISITOR_MODE,
+            to_state=SessionState.SESSION_END,
+            trigger="test",
+            trace_id=trace_id,
+        ),
     )
     assert resp.status_code == 200
     time.sleep(0.1)
@@ -103,6 +140,42 @@ def test_session_event_lifecycle(client: TestClient):
     assert len(resp.json()["recordings"]) == 0
 
 
+def test_session_event_duplicate_is_idempotent(client: TestClient) -> None:
+    session_id = str(uuid.uuid4())
+    trace_id = str(uuid.uuid4())
+    event_id = str(uuid7())
+    body = _session_event(
+        session_id=session_id,
+        from_state=SessionState.IDLE,
+        to_state=SessionState.BUTTON_PRESSED,
+        trigger="test",
+        trace_id=trace_id,
+        event_id=event_id,
+    )
+
+    first = client.post("/internal/session_event", json=body)
+    duplicate = client.post("/internal/session_event", json=body)
+
+    assert first.json() == {"accepted": True, "duplicate": False}
+    assert duplicate.json() == {"accepted": True, "duplicate": True}
+    assert len(client.get("/recordings").json()["recordings"]) == 1
+
+
+def test_session_event_rejects_ad_hoc_payload(client: TestClient) -> None:
+    response = client.post(
+        "/internal/session_event",
+        json={
+            "session_id": str(uuid.uuid4()),
+            "from_state": "IDLE",
+            "to_state": "BUTTON_PRESSED",
+            "trigger": "test",
+            "trace_id": str(uuid.uuid4()),
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_video_message_discard_deletes_finalized_clip(client: TestClient):
     session_id = str(uuid.uuid4())
     trace_id = str(uuid.uuid4())
@@ -110,26 +183,26 @@ def test_video_message_discard_deletes_finalized_clip(client: TestClient):
 
     start = client.post(
         "/internal/session_event",
-        json={
-            "session_id": session_id,
-            "from_state": SessionState.VIDEO_MESSAGE_OFFERED,
-            "to_state": SessionState.VIDEO_MESSAGE_RECORDING,
-            "trigger": "visitor:record_start",
-            "trace_id": trace_id,
-        },
+        json=_session_event(
+            session_id=session_id,
+            from_state=SessionState.VIDEO_MESSAGE_OFFERED,
+            to_state=SessionState.VIDEO_MESSAGE_RECORDING,
+            trigger="visitor:record_start",
+            trace_id=trace_id,
+        ),
     )
     assert start.status_code == 200
     time.sleep(0.1)
 
     review = client.post(
         "/internal/session_event",
-        json={
-            "session_id": session_id,
-            "from_state": SessionState.VIDEO_MESSAGE_RECORDING,
-            "to_state": SessionState.VIDEO_MESSAGE_REVIEW,
-            "trigger": "visitor:record_stop",
-            "trace_id": trace_id,
-        },
+        json=_session_event(
+            session_id=session_id,
+            from_state=SessionState.VIDEO_MESSAGE_RECORDING,
+            to_state=SessionState.VIDEO_MESSAGE_REVIEW,
+            trigger="visitor:record_stop",
+            trace_id=trace_id,
+        ),
     )
     assert review.status_code == 200
     time.sleep(0.1)
@@ -147,13 +220,13 @@ def test_video_message_discard_deletes_finalized_clip(client: TestClient):
 
     discard = client.post(
         "/internal/session_event",
-        json={
-            "session_id": session_id,
-            "from_state": SessionState.VIDEO_MESSAGE_REVIEW,
-            "to_state": SessionState.SESSION_END,
-            "trigger": "visitor:discard",
-            "trace_id": trace_id,
-        },
+        json=_session_event(
+            session_id=session_id,
+            from_state=SessionState.VIDEO_MESSAGE_REVIEW,
+            to_state=SessionState.SESSION_END,
+            trigger="visitor:discard",
+            trace_id=trace_id,
+        ),
     )
     assert discard.status_code == 200
     time.sleep(0.1)

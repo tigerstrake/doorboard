@@ -54,6 +54,9 @@ jobs:
               - 'tools/**'
               - 'firmware/**'
               - 'integrations/**'
+              - 'infra/**'
+              - 'deploy/**'
+              - '.env.example'
               - 'pyproject.toml'
               - 'tsconfig.base.json'
               - 'tsconfig.json'
@@ -147,7 +150,10 @@ jobs:
       - name: Test
         run: scripts/test
 
-      - name: Performance Regression Check
+      - name: Door UI browser tests
+        run: pnpm --filter @doorboard/door-ui test:e2e
+
+      - name: Simulator code-path regression check (not hardware acceptance)
         run: |
-          uv run python -m tests.performance.harness --report-out latency-report.txt
+          .venv/bin/python -m tests.performance.harness --report-out latency-report.txt
           cat latency-report.txt >> $GITHUB_STEP_SUMMARY

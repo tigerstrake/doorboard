@@ -31,9 +31,14 @@ def _neuter_background(monkeypatch) -> None:  # noqa: ANN001
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch, helpers) -> Generator[TestClient, None, None]:
-    settings_module.override_settings(helpers.make_settings(tmp_path, media_target="mock"))
+    settings_module.override_settings(
+        helpers.make_settings(tmp_path, media_target="mock", admin_token="test-admin-token")
+    )
     _neuter_background(monkeypatch)
-    with TestClient(app_module.app) as c:
+    with TestClient(
+        app_module.app,
+        headers={"Authorization": "Bearer test-admin-token"},
+    ) as c:
         yield c
     settings_module.reset_settings()
 
@@ -91,5 +96,17 @@ def test_queue_admin_token_enforced(tmp_path: Path, monkeypatch, helpers) -> Non
             assert c.get("/queue").status_code == 401
             ok = c.get("/queue", headers={"Authorization": "Bearer secret"})
             assert ok.status_code == 200
+    finally:
+        settings_module.reset_settings()
+
+
+def test_queue_fails_closed_without_configured_token(tmp_path: Path, monkeypatch, helpers) -> None:
+    settings_module.override_settings(
+        helpers.make_settings(tmp_path, media_target="mock", admin_token="")
+    )
+    _neuter_background(monkeypatch)
+    try:
+        with TestClient(app_module.app) as c:
+            assert c.get("/queue").status_code == 503
     finally:
         settings_module.reset_settings()

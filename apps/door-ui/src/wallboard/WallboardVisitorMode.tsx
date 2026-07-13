@@ -26,7 +26,7 @@ export interface WallboardVisitorModeProps {
     roommate: { label: PresenceLabel };
   };
   pollQuestion: string;
-  visitorUrl: string;
+  visitorUrl: string | null;
   autoResetMs?: number;
   onDone: () => void;
 }
@@ -144,7 +144,7 @@ export function WallboardVisitorMode({
           </Tile>
 
           <Tile title="Scan Visitor QR">
-            <QRPlaceholder url={visitorUrl} />
+            {visitorUrl ? <QRPlaceholder url={visitorUrl} /> : <p>Preparing visitor link...</p>}
           </Tile>
         </div>
 

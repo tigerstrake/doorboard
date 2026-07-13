@@ -34,7 +34,13 @@ from pathlib import Path
 from uuid import UUID
 
 from door_media._uuid7 import uuid7
-from door_media.adapters import CapturedPhoto, ConsentContext, MediaRouter, RecordingKind
+from door_media.adapters import (
+    CapturedPhoto,
+    ConsentContext,
+    FinalizedRecording,
+    MediaRouter,
+    RecordingKind,
+)
 from door_media.db import RecordingDB, RecordingRow
 from door_media.emitter import (
     emit_recording_finalized,
@@ -77,6 +83,7 @@ class RecordingService:
         self._db = db
         self._settings = settings
         self._active_handles: dict[UUID, object] = {}  # recording_id → handle
+        self._pending_finalized: dict[UUID, FinalizedRecording] = {}
         self._review_photos: dict[UUID, CapturedPhoto] = {}
         self._retention_task: asyncio.Task[None] | None = None
         self._storage_task: asyncio.Task[None] | None = None
@@ -128,6 +135,13 @@ class RecordingService:
         Never raises — any error is logged and None is returned so the
         session state machine keeps flowing.
         """
+        if len(self._active_handles) >= self._settings.max_active_recordings:
+            logger.warning(
+                "recording_skipped_active_limit",
+                extra={"active_recordings": len(self._active_handles)},
+            )
+            return None
+
         # Guard: check storage before starting
         status = self._router.storage_status()
         if not status.recording_allowed:
@@ -147,7 +161,16 @@ class RecordingService:
             logger.exception("router_start_recording_error", exc_info=exc)
             return None
 
-        self._active_handles[handle.recording_id] = handle
+        # Re-check after the await so concurrent starts cannot grow the map
+        # beyond the configured limit.
+        if len(self._active_handles) >= self._settings.max_active_recordings:
+            logger.warning(
+                "recording_discarded_active_limit",
+                extra={"active_recordings": len(self._active_handles)},
+            )
+            with contextlib.suppress(Exception):
+                await self._router.discard_recording(handle)
+            return None
 
         # Persist to DB
         try:
@@ -160,7 +183,11 @@ class RecordingService:
             )
         except Exception as exc:
             logger.exception("db_insert_started_error", exc_info=exc)
-            # Non-fatal: recording continues, but DB is inconsistent — log and continue.
+            with contextlib.suppress(Exception):
+                await self._router.discard_recording(handle)
+            return None
+
+        self._active_handles[handle.recording_id] = handle
 
         # Emit event (contract-typed, broadcast to queue)
         emit_recording_started(
@@ -201,7 +228,7 @@ class RecordingService:
 
         Returns True on success.  Never raises.
         """
-        handle = self._active_handles.pop(recording_id, None)
+        handle = self._active_handles.get(recording_id)
         if handle is None:
             logger.warning(
                 "finalize_unknown_recording",
@@ -209,14 +236,17 @@ class RecordingService:
             )
             return False
 
-        try:
-            finalized = await self._router.finalize_recording(
-                handle,  # type: ignore[arg-type]
-                consent_context=consent_context,
-            )
-        except Exception as exc:
-            logger.exception("router_finalize_error", exc_info=exc)
-            return False
+        finalized = self._pending_finalized.get(recording_id)
+        if finalized is None:
+            try:
+                finalized = await self._router.finalize_recording(
+                    handle,  # type: ignore[arg-type]
+                    consent_context=consent_context,
+                )
+            except Exception as exc:
+                logger.exception("router_finalize_error", exc_info=exc)
+                return False
+            self._pending_finalized[recording_id] = finalized
 
         # Persist
         try:
@@ -230,6 +260,10 @@ class RecordingService:
             )
         except Exception as exc:
             logger.exception("db_update_finalized_error", exc_info=exc)
+            return False
+
+        self._pending_finalized.pop(recording_id, None)
+        self._active_handles.pop(recording_id, None)
 
         # Emit finalized
         emit_recording_finalized(

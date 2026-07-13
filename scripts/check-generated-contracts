@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Keep the venv outside the repo: cloud-synced folders (iCloud) corrupt
-# .pth files in .venv via eviction/conflict copies. Override if needed.
-export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$HOME/.venvs/doorboard}"
+source "$(dirname "$0")/_uv-env"
 
-uv run contracts export-schemas
-uv run contracts generate-ts
+"$UV_PROJECT_ENVIRONMENT/bin/contracts" export-schemas
+"$UV_PROJECT_ENVIRONMENT/bin/contracts" generate-ts
 git diff --exit-code -- packages/contracts/schemas packages/contracts/types

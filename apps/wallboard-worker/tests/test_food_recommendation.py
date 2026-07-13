@@ -143,6 +143,7 @@ def test_run_food_recommendation_without_fallback_goes_stale_silently(
     mock_post, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     monkeypatch.setenv("FEATURE_FOOD", "True")
+    monkeypatch.setenv("WALLBOARD_WORKER_INGEST_TOKEN", "test-ingest-token")
     monkeypatch.setenv("FOOD_RECOMMENDATION_CACHE_PATH", str(tmp_path / "food.json"))
 
     settings = Settings()

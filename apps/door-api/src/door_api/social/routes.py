@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Callable
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -144,6 +144,7 @@ def _checkin_to_dict(checkin: Checkin) -> dict:
 def build_social_router(
     get_service: Callable[[], SocialService],
     get_current_person_id: Callable[[], str | None],
+    verify_visitor_token: Callable[[str], UUID],
 ) -> APIRouter:
     """Build the public + admin social router.
 
@@ -156,6 +157,17 @@ def build_social_router(
     """
 
     router = APIRouter()
+
+    def verified_session_key(token: str, trace_id: str) -> str:
+        try:
+            return str(verify_visitor_token(token))
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=401,
+                detail=_error("invalid_visitor_token", "invalid visitor token", trace_id),
+            ) from exc
 
     def require_admin(authorization: str | None = Header(default=None)) -> None:
         configured = get_service().config.admin_token
@@ -186,12 +198,13 @@ def build_social_router(
     def create_guestbook_entry(body: GuestbookCreateRequest, request: Request) -> dict:
         service = get_service()
         trace_id = _trace_id(request)
+        session_key = verified_session_key(body.session_token, trace_id)
         try:
             entry = service.create_guestbook_entry(
                 text=body.text,
                 author_label=body.author_label,
                 ip=_client_ip(request),
-                session_token=body.session_token,
+                session_token=session_key,
                 trace_id=trace_id,
             )
         except (RateLimitedError, SanitizationError) as exc:
@@ -234,12 +247,13 @@ def build_social_router(
     def cast_vote(poll_id: str, body: PollVoteRequest, request: Request) -> dict:
         service = get_service()
         trace_id = _trace_id(request)
+        session_key = verified_session_key(body.session_token, trace_id)
         try:
             service.cast_vote(
                 poll_id=poll_id,
                 option_id=body.option_id,
                 ip=_client_ip(request),
-                session_token=body.session_token,
+                session_token=session_key,
                 trace_id=trace_id,
             )
         except (RateLimitedError, NotFoundError, AlreadyVotedError, PollClosedError) as exc:
@@ -255,12 +269,13 @@ def build_social_router(
     def create_checkin(body: CheckinCreateRequest, request: Request) -> dict:
         service = get_service()
         trace_id = _trace_id(request)
+        session_key = verified_session_key(body.session_token, trace_id)
         try:
             checkin = service.create_checkin(
                 person_id=get_current_person_id(),
                 label=body.label,
                 ip=_client_ip(request),
-                session_token=body.session_token,
+                session_token=session_key,
                 trace_id=trace_id,
             )
         except (RateLimitedError, SanitizationError) as exc:
@@ -287,12 +302,13 @@ def build_social_router(
     def request_deletion(body: DeletionRequest, request: Request) -> dict:
         service = get_service()
         trace_id = _trace_id(request)
+        session_key = verified_session_key(body.session_token, trace_id)
         try:
             service.request_deletion(
                 target_kind=body.target_kind,
                 target_id=body.target_id,
                 ip=_client_ip(request),
-                session_token=body.session_token,
+                session_token=session_key,
                 trace_id=trace_id,
                 actor="visitor",
             )

@@ -48,7 +48,7 @@ def scan_tree_for(root: Path, needle: bytes) -> list[Path]:
 def ssd_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("SSD_DATA_ROOT", str(tmp_path / "ssd"))
     monkeypatch.setenv("VISION_MODE", "mock")
-    monkeypatch.setenv("DOOR_VISIOND_ADMIN_TOKEN", "")
+    monkeypatch.setenv("DOOR_VISIOND_ADMIN_TOKEN", "test-admin-token")
     monkeypatch.setenv("VISIOND_MODEL_DIM", str(TEST_DIM))
     return Settings()
 
@@ -115,7 +115,7 @@ def capture_logs(name: str = "door_visiond") -> Iterator[list[logging.LogRecord]
 def client(ssd_settings: Settings) -> Generator[TestClient, None, None]:
     override_settings(ssd_settings)
     try:
-        with TestClient(app) as c:
+        with TestClient(app, headers={"Authorization": "Bearer test-admin-token"}) as c:
             yield c
     finally:
         reset_settings()

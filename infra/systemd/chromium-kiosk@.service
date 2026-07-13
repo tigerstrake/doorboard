@@ -1,0 +1,21 @@
+[Unit]
+Description=Doorboard Chromium kiosk (%i)
+Wants=door-api.service door-ui.service
+After=door-api.service door-ui.service graphical.target
+
+[Service]
+Type=simple
+User=doorboard
+Group=doorboard
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/doorboard/.Xauthority
+EnvironmentFile=/etc/doorboard/kiosk-%i.env
+ExecStartPre=/opt/doorboard/.venv/bin/python /opt/doorboard/scripts/wait-http http://127.0.0.1:8080/health --deadline-s 60
+ExecStartPre=/opt/doorboard/.venv/bin/python /opt/doorboard/scripts/wait-http http://127.0.0.1:5173/healthz --deadline-s 60
+ExecStart=/usr/bin/chromium --kiosk --no-first-run --disable-session-crashed-bubble --disable-infobars --user-data-dir=/var/lib/doorboard/kiosk-%i ${KIOSK_URL}
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=graphical.target

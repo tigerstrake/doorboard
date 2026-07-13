@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="${1:-/opt/doorboard}"
+env_file=/etc/doorboard/doorboard.env
+
+if [[ $EUID -ne 0 ]]; then
+  echo "run as root: sudo bash deploy/pi-door/install-systemd [repo-root]" >&2
+  exit 1
+fi
+if [[ ! -f "$env_file" ]]; then
+  echo "missing $env_file; install deploy/pi-door/doorboard.env.example first" >&2
+  exit 1
+fi
+if [[ ! -d "$repo_root/infra/systemd" ]]; then
+  echo "invalid repo root: $repo_root" >&2
+  exit 1
+fi
+
+required_secrets=(
+  DOOR_API_VISITOR_TOKEN_SECRET
+  DOOR_API_SOCIAL_ADMIN_TOKEN
+  DOOR_VISIOND_ADMIN_TOKEN
+  DOOR_MEDIA_ADMIN_TOKEN
+  DOOR_SYNC_ADMIN_TOKEN
+  SYNC_INGEST_TOKEN
+)
+for key in "${required_secrets[@]}"; do
+  value="$(awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$env_file")"
+  if [[ -z "$value" || "$value" == CHANGE_ME* ]]; then
+    echo "$env_file: set a non-placeholder value for $key before installation" >&2
+    exit 1
+  fi
+done
+
+install -d -m 0755 /etc/doorboard /var/lib/doorboard
+install -m 0644 "$repo_root"/infra/systemd/*.service /etc/systemd/system/
+install -m 0644 "$repo_root"/infra/systemd/*.timer /etc/systemd/system/
+chown root:doorboard "$env_file"
+chmod 0640 "$env_file"
+
+systemctl daemon-reload
+systemctl enable \
+  doorboard-storage-ready.service \
+  mediamtx.service \
+  door-ui.service \
+  door-media.service \
+  door-visiond.service \
+  door-api.service \
+  door-sync.service \
+  doorboard-health-agent.timer
+
+echo "Units installed. Start with: systemctl start door-ui door-api door-sync doorboard-health-agent.timer"

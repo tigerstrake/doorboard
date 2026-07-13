@@ -13,6 +13,7 @@ Coverage targets from the T-401 brief:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -336,6 +337,35 @@ class TestRestartMidSession:
         assert machine.state == SessionState.IDLE
         assert machine.session_id is None
 
+    def test_os_reboot_expires_persisted_session_conservatively(self) -> None:
+        machine, _collector, store = make_machine(mono_ms=50_000)
+        machine.set_boot_id_fn(lambda: "boot-one")
+        machine.handle_button_pressed()
+        machine.transition(SessionState.RINGING, "auto:visitor_mode_ring")
+
+        machine2, _collector2, _ = make_machine(mono_ms=1_000)
+        machine2.store = store
+        machine2.set_boot_id_fn(lambda: "boot-two")
+        machine2.restore_from_persistence()
+
+        assert machine2.state == SessionState.IDLE
+        assert machine2.session_id is None
+
+    def test_monotonic_counter_reset_expires_legacy_session(self) -> None:
+        machine, _collector, store = make_machine(mono_ms=50_000)
+        machine.handle_button_pressed()
+        machine.transition(SessionState.RINGING, "auto:visitor_mode_ring")
+        persisted = store.load()
+        assert persisted is not None
+        legacy = replace(persisted, meta_json="{}")
+        store.save(legacy)
+
+        machine2, _collector2, _ = make_machine(mono_ms=1_000)
+        machine2.store = store
+        machine2.restore_from_persistence()
+
+        assert machine2.state == SessionState.IDLE
+
 
 # ---------------------------------------------------------------------------
 # §5 — Kiosk reload rejoin
@@ -496,8 +526,9 @@ class TestIdentityFlow:
         assert machine.snapshot().profile_id == "blue_wave"
         changed = collector.of_type("session.state_changed")
         started = collector.of_type("session.started")
-        assert all(event["had_cached_profile"] is True for event in changed)
-        assert started[0]["had_cached_profile"] is True
+        assert all(event["source"] == "door-api" for event in changed)
+        assert started[0]["door_id"] == machine.config.door_id
+        assert "had_cached_profile" not in changed[0]
         assert "had_cached_profile" not in changed[0]["payload"]
 
     def test_late_identity_mid_session_updates_display_only(self) -> None:

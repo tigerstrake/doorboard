@@ -36,15 +36,21 @@ class HttpMediaClient:
         base_url: str,
         *,
         timeout_s: float = 10.0,
+        admin_token: str = "",
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_s
+        self._headers = {"Authorization": f"Bearer {admin_token}"} if admin_token else {}
         # Injection seam for tests (httpx.ASGITransport); None in prod.
         self._transport = transport
 
     def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(timeout=self._timeout, transport=self._transport)
+        return httpx.AsyncClient(
+            timeout=self._timeout,
+            transport=self._transport,
+            headers=self._headers,
+        )
 
     async def list_pending_clips(self) -> list[dict]:
         out: list[dict] = []

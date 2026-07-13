@@ -16,8 +16,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 def setup_test_env(tmp_path_factory):
     tmp_dir = tmp_path_factory.mktemp("cli_test_ssd")
     os.environ["SSD_DATA_ROOT"] = str(tmp_dir)
-    os.environ["DOOR_VISIOND_ADMIN_TOKEN"] = ""
-    os.environ["DOOR_MEDIA_ADMIN_TOKEN"] = ""
+    os.environ["DOOR_VISIOND_ADMIN_TOKEN"] = "test-vision-admin"
+    os.environ["DOOR_MEDIA_ADMIN_TOKEN"] = "test-media-admin"
     os.environ["VISION_MODE"] = "mock"
     os.environ["DOOR_VISIOND_BIND"] = "127.0.0.1:8089"
     os.environ["DOOR_MEDIA_BIND"] = "127.0.0.1:8092"
@@ -88,6 +88,10 @@ def test_cli_guided_enroll_and_unenroll(run_servers):
             media_url,
             "--images-count",
             "3",
+            "--token",
+            "test-vision-admin",
+            "--media-token",
+            "test-media-admin",
         ],
         input="\n".join(inputs) + "\n",
     )
@@ -115,6 +119,8 @@ def test_cli_guided_enroll_and_unenroll(run_servers):
             person_id,
             "--visiond-url",
             visiond_url,
+            "--token",
+            "test-vision-admin",
         ],
     )
     assert unenroll_result.exit_code == 0, f"Unenroll failed: {unenroll_result.output}"

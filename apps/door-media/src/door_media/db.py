@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS recordings (
 CREATE INDEX IF NOT EXISTS idx_recordings_sync_status ON recordings(sync_status);
 CREATE INDEX IF NOT EXISTS idx_recordings_started_at  ON recordings(started_at_utc);
 CREATE INDEX IF NOT EXISTS idx_recordings_session_kind ON recordings(session_id, kind);
+
+CREATE TABLE IF NOT EXISTS processed_session_events (
+    event_id TEXT PRIMARY KEY,
+    processed_at_utc TEXT NOT NULL
+);
 """
 
 _ROW_COLUMNS = (
@@ -125,9 +130,10 @@ class RecordingDB:
     than a few microseconds.
     """
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, processed_event_max_rows: int = 4096) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
+        self._processed_event_max_rows = max(processed_event_max_rows, 1)
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -143,6 +149,36 @@ class RecordingDB:
         }
         if name not in existing:
             self._conn.execute(f"ALTER TABLE recordings ADD COLUMN {name} {decl}")
+
+    def has_processed_session_event(self, event_id: UUID) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM processed_session_events WHERE event_id = ?",
+                (str(event_id),),
+            ).fetchone()
+        return row is not None
+
+    def mark_session_event_processed(self, event_id: UUID) -> None:
+        with self._lock:
+            inserted = self._conn.execute(
+                "INSERT OR IGNORE INTO processed_session_events(event_id, processed_at_utc) "
+                "VALUES (?, ?)",
+                (str(event_id), datetime.now(UTC).isoformat()),
+            )
+            if inserted.rowcount:
+                count = int(
+                    self._conn.execute("SELECT COUNT(*) FROM processed_session_events").fetchone()[
+                        0
+                    ]
+                )
+                excess = count - self._processed_event_max_rows
+                if excess > 0:
+                    self._conn.execute(
+                        "DELETE FROM processed_session_events WHERE event_id IN "
+                        "(SELECT event_id FROM processed_session_events ORDER BY rowid LIMIT ?)",
+                        (excess,),
+                    )
+            self._conn.commit()
 
     # ------------------------------------------------------------------
     # Write operations
@@ -187,7 +223,7 @@ class RecordingDB:
     ) -> None:
         now = datetime.now(UTC).isoformat()
         with self._lock:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 """UPDATE recordings SET
                    finalized_at_utc=?, path=?, duration_s=?,
                    size_bytes=?, sha256=?, consent_context=?
@@ -195,6 +231,8 @@ class RecordingDB:
                 (now, path, duration_s, size_bytes, sha256, consent_context, str(recording_id)),
             )
             self._conn.commit()
+            if cursor.rowcount != 1:
+                raise KeyError(f"unknown recording {recording_id}")
 
     def update_thumbnail(self, *, recording_id: UUID, thumbnail_path: str) -> None:
         with self._lock:

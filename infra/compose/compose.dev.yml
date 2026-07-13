@@ -143,10 +143,24 @@ services:
       context: ../..
       dockerfile: infra/compose/docker/wallboard-worker.Dockerfile
     restart: unless-stopped
-    profiles: ["future"]
     depends_on:
-      postgres:
+      control-plane-api:
         condition: service_healthy
+    command: ["wallboard-worker", "run", "--mock"]
+    environment:
+      DOORBOARD_DOOR_ID: primary
+      CONTROL_PLANE_URL: http://control-plane-api:8090
+      CONTROL_PLANE_ADMIN_TOKEN: ${CONTROL_PLANE_ADMIN_TOKEN:-dev-admin-token}
+      FEATURE_BIRDNET: "true"
+      FEATURE_SATELLITES: "true"
+      FEATURE_AIRCRAFT: "true"
+      FEATURE_PRINTER: "true"
+      FEATURE_FOOD: "true"
+      WALLBOARD_BIRD_INTERVAL_S: 30
+      WALLBOARD_SATELLITE_INTERVAL_S: 60
+      WALLBOARD_AIRCRAFT_INTERVAL_S: 30
+      WALLBOARD_PRINTER_INTERVAL_S: 30
+      WALLBOARD_FOOD_INTERVAL_S: 60
 
   simulator:
     build:

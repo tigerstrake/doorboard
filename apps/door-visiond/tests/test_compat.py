@@ -55,6 +55,18 @@ def test_hardware_mode_matching_version_ok() -> None:
     assert result.ok
 
 
+def test_hardware_mode_requires_verified_model_metadata() -> None:
+    result = check_compatibility(
+        mode="hardware",
+        expected_runtime=PINNED_HAILO_RUNTIME,
+        expected_model_id=PINNED_MODEL_ID,
+        expected_dim=PINNED_MODEL_DIM,
+        detected=DetectedVersions(PINNED_HAILO_RUNTIME, None, None),
+    )
+    assert not result.ok
+    assert "metadata" in result.detail
+
+
 def test_service_degrades_hardware_to_disabled(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("SSD_DATA_ROOT", str(tmp_path / "ssd"))
     monkeypatch.setenv("VISION_MODE", "hardware")  # no Hailo present in this env

@@ -4,6 +4,9 @@ version = "0.0.0"
 requires-python = ">=3.12"
 dependencies = ["doorboard-contracts", "doorboard-esp32-link", "fastapi", "uvicorn", "websockets", "httpx"]
 
+[project.scripts]
+door-api = "door_api.__main__:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

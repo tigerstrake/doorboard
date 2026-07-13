@@ -96,6 +96,24 @@ class Settings(BaseSettings):
     )
     # rpicam-vid segment length (seconds) for the rolling recording buffer.
     segment_s: int = Field(default=2, alias="DOOR_MEDIA_SEGMENT_S")
+    # Raw MediaMTX segments are a rolling buffer, not durable recordings.
+    # Keep enough history to finalize long interactions, then prune them so
+    # continuous capture cannot consume the SSD indefinitely.
+    segment_retention_s: int = Field(
+        default=60 * 60,
+        alias="DOOR_MEDIA_SEGMENT_RETENTION_S",
+        ge=60,
+    )
+    segment_cleanup_interval_s: int = Field(
+        default=60,
+        alias="DOOR_MEDIA_SEGMENT_CLEANUP_INTERVAL_S",
+        ge=1,
+    )
+    max_active_recordings: int = Field(
+        default=8,
+        alias="DOOR_MEDIA_MAX_ACTIVE_RECORDINGS",
+        ge=1,
+    )
 
     # ── admin auth ────────────────────────────────────────────────────────────
     # Shared secret for /recordings admin endpoints. Empty = admin auth disabled

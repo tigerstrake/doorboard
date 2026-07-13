@@ -27,20 +27,38 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from doorboard_contracts import LEGAL_SESSION_TRANSITIONS, SessionState
 from doorboard_contracts.events import (
+    SessionEndedEvent,
     SessionEndedPayload,
+    SessionStartedEvent,
     SessionStartedPayload,
+    SessionStateChangedEvent,
     SessionStateChangedPayload,
 )
+from doorboard_esp32_link.esp32 import uuid7_now
 
 from door_api.config import SessionConfig
 from door_api.persistence import PersistedSession, SessionStore
 
 logger = logging.getLogger("door-api.session")
+
+
+def _system_boot_id() -> str:
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        if boot_id:
+            return boot_id
+    except OSError:
+        pass
+    boot_epoch_s = round((time.time_ns() - time.monotonic_ns()) / 1_000_000_000)
+    return f"boot-epoch-{boot_epoch_s}"
+
 
 # ---------------------------------------------------------------------------
 # Types
@@ -147,9 +165,11 @@ class SessionMachine:
     _last_transition_mono_ms: int = field(default=0, init=False)
     _timer: _TimerState = field(default_factory=_TimerState, init=False)
     _monotonic_ms_fn: Callable[[], int] = field(init=False)
+    _boot_id_fn: Callable[[], str] = field(init=False)
 
     def __post_init__(self) -> None:
         self._monotonic_ms_fn = lambda: int(time.monotonic() * 1000)
+        self._boot_id_fn = _system_boot_id
 
     # ---------------------------------------------------------------------------
     # Lifecycle
@@ -158,6 +178,10 @@ class SessionMachine:
     def set_monotonic_fn(self, fn: Callable[[], int]) -> None:
         """Override the monotonic clock source (for testing / simulation)."""
         self._monotonic_ms_fn = fn
+
+    def set_boot_id_fn(self, fn: Callable[[], str]) -> None:
+        """Override the OS boot identity source for tests."""
+        self._boot_id_fn = fn
 
     def restore_from_persistence(self) -> None:
         """Load persisted state and reconstruct timers. Call once at startup."""
@@ -184,11 +208,30 @@ class SessionMachine:
         self._profile_id = persisted.profile_id
         self._started_at_mono_ms = persisted.started_at_monotonic_ms
         self._last_transition_mono_ms = persisted.last_transition_monotonic_ms
+        meta: dict[str, object] = {}
         with contextlib.suppress(json.JSONDecodeError, TypeError):
-            meta = json.loads(persisted.meta_json)
-            self._had_cached_profile = bool(meta.get("had_cached_profile", False))
+            loaded_meta = json.loads(persisted.meta_json)
+            if isinstance(loaded_meta, dict):
+                meta = loaded_meta
+                self._had_cached_profile = bool(meta.get("had_cached_profile", False))
 
         now_ms = self._monotonic_ms_fn()
+        persisted_boot_id = meta.get("boot_id")
+        boot_changed = (
+            isinstance(persisted_boot_id, str) and persisted_boot_id != self._boot_id_fn()
+        )
+        monotonic_reset = now_ms < persisted.last_transition_monotonic_ms
+        if boot_changed or monotonic_reset:
+            logger.warning(
+                "session_expired_after_boot_epoch_change",
+                extra={
+                    "session_id": str(persisted.session_id),
+                    "boot_changed": boot_changed,
+                    "monotonic_reset": monotonic_reset,
+                },
+            )
+            self._expire_to_idle("boot_epoch_changed_on_restore")
+            return
         elapsed_s = (now_ms - persisted.last_transition_monotonic_ms) / 1000.0
 
         logger.info(
@@ -313,21 +356,24 @@ class SessionMachine:
         assert self._session_id is not None
         assert self._trace_id is not None
 
-        payload = SessionStateChangedPayload(
-            session_id=self._session_id,
-            from_state=from_state,
-            to_state=to_state,
-            trigger=trigger,
+        state_event = SessionStateChangedEvent(
+            event_id=uuid7_now(),
+            type="session.state_changed",
+            source="door-api",
+            occurred_at=datetime.now(UTC),
+            monotonic_ms=now_ms,
+            door_id=self.config.door_id,
+            trace_id=self._trace_id,
+            payload=SessionStateChangedPayload(
+                session_id=self._session_id,
+                from_state=from_state,
+                to_state=to_state,
+                trigger=trigger,
+            ),
         )
-        self.on_event(
-            {
-                "type": "session.state_changed",
-                "payload": payload.model_dump(mode="json"),
-                "session_id": str(self._session_id),
-                "trace_id": str(self._trace_id),
-                "had_cached_profile": self._had_cached_profile,
-            }
-        )
+        state_event_dict = state_event.model_dump(mode="json")
+        sync_events = [state_event_dict]
+        self.on_event(state_event_dict)
 
         # Emit session.started on first non-IDLE transition.
         if from_state == SessionState.IDLE:
@@ -335,19 +381,22 @@ class SessionMachine:
             entry = session_entry or (
                 "button" if to_state == SessionState.BUTTON_PRESSED else "approach"
             )
-            started_payload = SessionStartedPayload(
-                session_id=self._session_id,
-                entry=entry,
+            started_event = SessionStartedEvent(
+                event_id=uuid7_now(),
+                type="session.started",
+                source="door-api",
+                occurred_at=datetime.now(UTC),
+                monotonic_ms=now_ms,
+                door_id=self.config.door_id,
+                trace_id=self._trace_id,
+                payload=SessionStartedPayload(
+                    session_id=self._session_id,
+                    entry=entry,
+                ),
             )
-            self.on_event(
-                {
-                    "type": "session.started",
-                    "payload": started_payload.model_dump(mode="json"),
-                    "session_id": str(self._session_id),
-                    "trace_id": str(self._trace_id),
-                    "had_cached_profile": self._had_cached_profile,
-                }
-            )
+            started_event_dict = started_event.model_dump(mode="json")
+            sync_events.append(started_event_dict)
+            self.on_event(started_event_dict)
 
         # Emit session.ended on transition to SESSION_END, or direct to IDLE from active.
         if to_state == SessionState.SESSION_END or (
@@ -356,34 +405,46 @@ class SessionMachine:
         ):
             self.metrics.sessions_ended += 1
             outcome = self._outcome_for_trigger(trigger)
-            ended_payload = SessionEndedPayload(
-                session_id=self._session_id,
-                outcome=outcome,
+            ended_event = SessionEndedEvent(
+                event_id=uuid7_now(),
+                type="session.ended",
+                source="door-api",
+                occurred_at=datetime.now(UTC),
+                monotonic_ms=now_ms,
+                door_id=self.config.door_id,
+                trace_id=self._trace_id,
+                payload=SessionEndedPayload(
+                    session_id=self._session_id,
+                    outcome=outcome,
+                ),
             )
-            self.on_event(
-                {
-                    "type": "session.ended",
-                    "payload": ended_payload.model_dump(mode="json"),
-                    "session_id": str(self._session_id),
-                    "trace_id": str(self._trace_id),
-                    "had_cached_profile": self._had_cached_profile,
-                }
-            )
+            ended_event_dict = ended_event.model_dump(mode="json")
+            sync_events.append(ended_event_dict)
+            self.on_event(ended_event_dict)
 
         # Persist.
         if to_state == SessionState.IDLE:
-            self.store.clear()
+            media_dropped, sync_dropped = self.store.clear_with_delivery_events(
+                media_event=state_event_dict,
+                sync_events=sync_events,
+            )
             self._session_id = None
             self._trace_id = None
             self._person_id = None
             self._display_name = None
             self._profile_id = None
             self._had_cached_profile = False
-        elif to_state == SessionState.SESSION_END:
-            # Persist SESSION_END so restart knows to transition to IDLE.
-            self._persist()
         else:
-            self._persist()
+            # Persist SESSION_END as well so restart can finish its transition.
+            media_dropped, sync_dropped = self._persist(
+                media_event=state_event_dict,
+                sync_events=sync_events,
+            )
+
+        if media_dropped:
+            logger.error("media_outbox_capacity_drop", extra={"dropped": media_dropped})
+        if sync_dropped:
+            logger.error("sync_outbox_capacity_drop", extra={"dropped": sync_dropped})
 
         # Schedule auto-transition timer for the new state.
         self._schedule_timer_for_state(to_state)
@@ -754,30 +815,42 @@ class SessionMachine:
     # Internal helpers
     # ---------------------------------------------------------------------------
 
-    def _persist(self) -> None:
+    def _persist(
+        self,
+        *,
+        media_event: dict[str, Any] | None = None,
+        sync_events: list[dict[str, Any]] | None = None,
+    ) -> tuple[int, int]:
         """Write current state to SQLite."""
         assert self._session_id is not None
         assert self._trace_id is not None
-        self.store.save(
-            PersistedSession(
-                session_id=self._session_id,
-                state=self._state,
-                trace_id=self._trace_id,
-                person_id=self._person_id,
-                display_name=self._display_name,
-                profile_id=self._profile_id,
-                started_at_monotonic_ms=self._started_at_mono_ms,
-                last_transition_monotonic_ms=self._last_transition_mono_ms,
-                meta_json=json.dumps(
-                    {
-                        "timer_target": (
-                            self._timer.target_state.value if self._timer.target_state else None
-                        ),
-                        "timer_trigger": self._timer.trigger or None,
-                        "had_cached_profile": self._had_cached_profile,
-                    }
-                ),
-            )
+        persisted = PersistedSession(
+            session_id=self._session_id,
+            state=self._state,
+            trace_id=self._trace_id,
+            person_id=self._person_id,
+            display_name=self._display_name,
+            profile_id=self._profile_id,
+            started_at_monotonic_ms=self._started_at_mono_ms,
+            last_transition_monotonic_ms=self._last_transition_mono_ms,
+            meta_json=json.dumps(
+                {
+                    "timer_target": (
+                        self._timer.target_state.value if self._timer.target_state else None
+                    ),
+                    "timer_trigger": self._timer.trigger or None,
+                    "had_cached_profile": self._had_cached_profile,
+                    "boot_id": self._boot_id_fn(),
+                }
+            ),
+        )
+        if media_event is None:
+            self.store.save(persisted)
+            return 0, 0
+        return self.store.save_with_delivery_events(
+            persisted,
+            media_event=media_event,
+            sync_events=sync_events or [],
         )
 
     def _expire_to_idle(self, trigger: str) -> None:

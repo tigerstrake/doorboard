@@ -95,7 +95,8 @@ paths:
 @dataclass
 class _ActiveRecording:
     handle: RecordingHandle
-    started_wall: float = field(default_factory=time.monotonic)
+    started_monotonic: float = field(default_factory=time.monotonic)
+    started_epoch: float = field(default_factory=time.time)
     # Segment files captured during this window (collected at finalize time)
     captured_segments: list[Path] = field(default_factory=list)
 
@@ -118,6 +119,7 @@ class MediaMTXRouter:
             timeout=httpx.Timeout(5.0),
         )
         self._supervisor_task: asyncio.Task[None] | None = None
+        self._segment_cleanup_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -129,13 +131,17 @@ class MediaMTXRouter:
         self._supervisor_task = asyncio.create_task(
             self._supervisor_loop(), name="mediamtx-supervisor"
         )
+        self._segment_cleanup_task = asyncio.create_task(
+            self._segment_cleanup_loop(), name="mediamtx-segment-cleanup"
+        )
 
     async def stop(self) -> None:
         """Shut down MediaMTX and cancel the supervisor."""
-        if self._supervisor_task:
-            self._supervisor_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._supervisor_task
+        for task in (self._supervisor_task, self._segment_cleanup_task):
+            if task:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         await self._kill_mediamtx()
         await self._http.aclose()
 
@@ -176,6 +182,28 @@ class MediaMTXRouter:
                     await self._proc.wait()
             except ProcessLookupError:
                 pass
+
+    async def _segment_cleanup_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(self._settings.segment_cleanup_interval_s)
+                self.prune_segments()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("segment_cleanup_failed")
+
+    def prune_segments(self, *, now_epoch: float | None = None) -> int:
+        """Delete expired raw segments without touching active windows."""
+        now = time.time() if now_epoch is None else now_epoch
+        cutoff = now - self._settings.segment_retention_s
+        if self._active:
+            earliest_active = min(item.started_epoch for item in self._active.values())
+            cutoff = min(cutoff, earliest_active - self._settings.segment_s)
+        deleted = _prune_segments(self._settings.segments_root, older_than_epoch=cutoff)
+        if deleted:
+            logger.info("segments_pruned", extra={"count": deleted, "cutoff_epoch": cutoff})
+        return deleted
 
     def _write_config(self) -> None:
         cfg_path = self._settings.mediamtx_config_path
@@ -226,26 +254,29 @@ class MediaMTXRouter:
         consent_context: ConsentContext,
     ) -> FinalizedRecording:
         """Cut and remux the recording window into a single MP4."""
-        active = self._active.pop(handle.recording_id, None)
-        elapsed_s = (time.monotonic() - active.started_wall) if active else 0.0
+        active = self._active.get(handle.recording_id)
+        if active is None:
+            raise RuntimeError(f"recording {handle.recording_id} is not active")
+        elapsed_s = time.monotonic() - active.started_monotonic
 
         out_path = self._settings.recordings_root / f"{handle.kind}_{handle.recording_id}.mp4"
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Find segments that overlap the recording window
         seg_dir = self._settings.segments_root / handle.stream
-        segments = _find_segments(seg_dir, handle.started_monotonic_ms)
+        ended_epoch = time.time()
+        segments = _find_segments(
+            seg_dir,
+            started_epoch=active.started_epoch - self._settings.segment_s,
+            ended_epoch=ended_epoch + self._settings.segment_s,
+        )
 
-        if segments:
-            await _concat_segments(segments, out_path)
-        else:
-            # No segments found — write an empty valid-ish placeholder so
-            # we can still compute sha256 and hand off to sync
-            logger.warning(
-                "no_segments_found",
-                extra={"recording_id": str(handle.recording_id)},
-            )
-            out_path.write_bytes(b"")
+        if not segments:
+            raise RuntimeError(f"no media segments found for recording {handle.recording_id}")
+        await _concat_segments(segments, out_path)
+        if not out_path.exists() or out_path.stat().st_size == 0:
+            raise RuntimeError(f"ffmpeg produced an empty recording {handle.recording_id}")
+        self._active.pop(handle.recording_id, None)
 
         size_bytes = out_path.stat().st_size
         sha256 = _sha256_file(out_path)
@@ -390,15 +421,44 @@ class MediaMTXRouter:
 # ---------------------------------------------------------------------------
 
 
-def _find_segments(seg_dir: Path, started_mono_ms: int) -> list[Path]:
-    """Return all segment files created after started_mono_ms (approx)."""
+def _find_segments(
+    seg_dir: Path,
+    *,
+    started_epoch: float,
+    ended_epoch: float,
+) -> list[Path]:
+    """Return segment files whose modification time overlaps the wall-clock window."""
     if not seg_dir.exists():
         return []
-    # MediaMTX names segments by timestamp; we take all that exist, as we
-    # cannot reliably correlate monotonic time with file mtime in all cases.
-    # In production we'd filter by mtime; here we take all *.mp4 files.
-    segs = sorted(seg_dir.rglob("*.mp4"))
-    return segs
+    segments: list[tuple[float, Path]] = []
+    for path in seg_dir.rglob("*.mp4"):
+        try:
+            modified = path.stat().st_mtime
+        except OSError:
+            continue
+        if started_epoch <= modified <= ended_epoch:
+            segments.append((modified, path))
+    return [path for _, path in sorted(segments)]
+
+
+def _prune_segments(root: Path, *, older_than_epoch: float) -> int:
+    deleted = 0
+    if not root.exists():
+        return deleted
+    for path in root.rglob("*.mp4"):
+        try:
+            if path.stat().st_mtime >= older_than_epoch:
+                continue
+            path.unlink()
+            deleted += 1
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("segment_delete_failed", extra={"path": str(path), "error": str(exc)})
+    for directory in sorted((p for p in root.rglob("*") if p.is_dir()), reverse=True):
+        with contextlib.suppress(OSError):
+            directory.rmdir()
+    return deleted
 
 
 async def _concat_segments(segments: list[Path], out_path: Path) -> None:
@@ -427,10 +487,8 @@ async def _concat_segments(segments: list[Path], out_path: Path) -> None:
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
-            logger.error(
-                "ffmpeg_concat_failed",
-                extra={"returncode": proc.returncode, "stderr": stderr.decode()[:500]},
-            )
+            message = stderr.decode(errors="replace")[:500]
+            raise RuntimeError(f"ffmpeg concat failed ({proc.returncode}): {message}")
     finally:
         with contextlib.suppress(OSError):
             concat_list.unlink()
