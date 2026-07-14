@@ -1,0 +1,41 @@
+{
+  "generated_at": "2026-07-13",
+  "lines_of_code": 41882,
+  "tracked_files": 600,
+  "languages": [
+    {
+      "name": "Python",
+      "lines": 32960,
+      "files": 210
+    },
+    {
+      "name": "TypeScript",
+      "lines": 6321,
+      "files": 41
+    },
+    {
+      "name": "C/C++",
+      "lines": 2358,
+      "files": 8
+    },
+    {
+      "name": "Shell",
+      "lines": 220,
+      "files": 4
+    },
+    {
+      "name": "JavaScript",
+      "lines": 23,
+      "files": 1
+    }
+  ],
+  "counts": {
+    "services": 8,
+    "packages": 8,
+    "integrations": 7,
+    "adrs": 9,
+    "task_briefs": 33,
+    "contract_event_types": 40,
+    "milestones": 8
+  }
+}

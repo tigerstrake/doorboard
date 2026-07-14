@@ -22,11 +22,13 @@ import {
   moodFixture,
   scoreboardFixture,
   foodFixture,
+  aboutFixture,
 } from "./fixtures";
 import { socialApi, ApiError } from "./socialApi";
 import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
 import { AdminSocialPanel } from "./AdminSocialPanel";
 import { AdminEnrollmentPanel } from "./AdminEnrollmentPanel";
+import { AdminAboutPanel } from "./AdminAboutPanel";
 import { VisitorPage } from "./VisitorPage";
 import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
 
@@ -851,6 +853,34 @@ export function App() {
                 <div className="food-tile-content">
                   <h4>🍜 {foodFixture.title}</h4>
                   <p>{foodFixture.detail}</p>
+                </div>
+              </Tile>
+
+              {/* Tile 8b: About this project — static, build-time project facts */}
+              <Tile title="About Doorboard">
+                <div className="about-tile-content">
+                  <p className="about-tagline">{aboutFixture.tagline}</p>
+                  <div className="about-stat-chips">
+                    <span className="about-chip">
+                      <strong>{aboutFixture.stats.lines_of_code.toLocaleString()}</strong> lines
+                    </span>
+                    <span className="about-chip">
+                      <strong>{aboutFixture.stats.languages.length}</strong> languages
+                    </span>
+                    <span className="about-chip">
+                      <strong>{aboutFixture.stats.counts.services}</strong> services
+                    </span>
+                    <span className="about-chip">
+                      <strong>{aboutFixture.stats.counts.contract_event_types}</strong> event types
+                    </span>
+                    <span className="about-chip">
+                      <strong>{aboutFixture.stats.counts.adrs}</strong> ADRs
+                    </span>
+                  </div>
+                  <p className="about-langs">
+                    {aboutFixture.stats.languages.map((l) => l.name).join(" · ")}
+                  </p>
+                  <p className="about-asof">Stats as of {aboutFixture.stats.generated_at}</p>
                 </div>
               </Tile>
 
@@ -1735,6 +1765,7 @@ export function App() {
 
           <AdminSocialPanel />
           <AdminEnrollmentPanel />
+          <AdminAboutPanel />
         </div>
       </div>
     );

@@ -1121,3 +1121,101 @@
   color: var(--db-text-muted);
   padding: 2px 0;
 }
+
+/* About this project (T-608): wallboard tile + admin panel */
+
+.about-tile-content .about-tagline {
+  font-size: 0.9rem;
+  color: var(--db-text-secondary);
+  margin: 0 0 var(--db-spacing-sm) 0;
+}
+
+.about-stat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--db-spacing-xs);
+  margin-bottom: var(--db-spacing-sm);
+}
+
+.about-chip {
+  font-size: 0.75rem;
+  color: var(--db-text-secondary);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--db-border-color);
+  border-radius: 9999px;
+  padding: 2px 10px;
+}
+
+.about-chip strong {
+  color: var(--db-text-primary);
+}
+
+.about-langs {
+  font-size: 0.8rem;
+  color: var(--db-text-muted);
+  margin: 0 0 var(--db-spacing-xs) 0;
+}
+
+.about-asof {
+  font-size: 0.72rem;
+  color: var(--db-text-muted);
+  margin: 0;
+}
+
+.admin-about-panel {
+  width: 100%;
+  max-width: 860px;
+  margin-top: 20px;
+  text-align: left;
+}
+
+.admin-about-panel h2 {
+  margin: 0 0 12px;
+  font-size: 1.25rem;
+}
+
+.about-lang-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 16px;
+  font-size: 0.9rem;
+}
+
+.about-lang-table th,
+.about-lang-table td {
+  text-align: left;
+  padding: 6px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.about-lang-table td:nth-child(2),
+.about-lang-table td:nth-child(3),
+.about-lang-table th:nth-child(2),
+.about-lang-table th:nth-child(3) {
+  text-align: right;
+}
+
+.about-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 6px 24px;
+  margin: 0 0 16px;
+}
+
+.about-count-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 4px 0;
+}
+
+.about-count-row dt {
+  color: var(--db-text-secondary);
+}
+
+.about-count-row dd {
+  margin: 0;
+  font-weight: 700;
+  color: var(--db-text-primary);
+}
