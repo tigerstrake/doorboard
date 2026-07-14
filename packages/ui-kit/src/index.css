@@ -108,6 +108,14 @@ body {
   overflow: hidden;
 }
 
+.db-tile--stale {
+  border-color: rgba(234, 179, 8, 0.38);
+}
+
+.db-tile--stale .db-tile__staleness {
+  color: var(--db-presence-away);
+}
+
 /* Cyan corner brackets: top-left + bottom-right, the core HUD motif. */
 .db-tile::before,
 .db-tile::after {

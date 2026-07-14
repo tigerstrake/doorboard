@@ -585,6 +585,20 @@ class SessionMachine:
             return self.transition(SessionState.ANSWERED, trigger)
         return False
 
+    def handle_unanswered(self, *, trigger: str = "owner:cannot_answer") -> bool:
+        """Move an active ring to the existing unanswered visitor path."""
+        if self._state == SessionState.RINGING:
+            return self.transition(SessionState.UNANSWERED_TIMEOUT, trigger)
+        return False
+
+    def handle_session_end(self, *, trigger: str) -> bool:
+        """End an active session without inventing a new state or event shape."""
+        if self._state == SessionState.IDLE:
+            return False
+        if self._state == SessionState.SESSION_END:
+            return self.transition(SessionState.IDLE, trigger)
+        return self.transition(SessionState.SESSION_END, trigger)
+
     def handle_video_message_offer(
         self,
         *,
@@ -744,8 +758,8 @@ class SessionMachine:
             trigger = "timeout:ring"
         elif state == SessionState.ANSWERED:
             timeout_s = self.config.offer_delay_s
-            target = SessionState.VIDEO_MESSAGE_OFFERED
-            trigger = "auto:answer_to_offer"
+            target = SessionState.SESSION_END
+            trigger = "auto:answered_to_end"
         elif state == SessionState.UNANSWERED_TIMEOUT:
             timeout_s = self.config.offer_delay_s
             target = SessionState.VIDEO_MESSAGE_OFFERED
@@ -879,6 +893,9 @@ class SessionMachine:
             "timeout:ring": "unanswered_timeout",
             "door.answered": "answered",
             "door.contact_changed": "answered",
+            "owner:answered": "answered",
+            "auto:answered_to_end": "answered",
+            "visitor:end": "abandoned",
             "visitor:discard": "abandoned",
             "timeout:review": "abandoned",
             "timeout:max_recording": "abandoned",

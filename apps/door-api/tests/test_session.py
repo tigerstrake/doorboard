@@ -832,6 +832,22 @@ class TestTimerAsync:
 
         asyncio.run(run())
 
+    def test_answered_session_ends_instead_of_auto_offering_a_message(self) -> None:
+        config = SessionConfig(db_path=":memory:", offer_delay_s=0.05)
+        machine, collector, _ = make_machine(config=config)
+
+        async def run() -> None:
+            machine.handle_button_pressed()
+            machine.transition(SessionState.RINGING, "test:ring")
+            machine.handle_answered(trigger="owner:answered")
+            assert machine.state == SessionState.ANSWERED
+            await asyncio.sleep(0.1)
+            assert machine.state == SessionState.SESSION_END
+            ended = collector.of_type("session.ended")
+            assert ended[-1]["payload"]["outcome"] == "answered"
+
+        asyncio.run(run())
+
 
 # ---------------------------------------------------------------------------
 # §17 — Pairing invariant

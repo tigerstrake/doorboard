@@ -187,7 +187,7 @@ describe("T-405 public kiosk regressions", () => {
     });
   });
 
-  it("uses poll option taps as the only DoorPad vote submission path", async () => {
+  it("requires a poll selection before the DoorPad submits a vote", async () => {
     window.history.pushState(null, "", "/doorpad");
     mockFetchSequence([
       { body: { session: { state: "IDLE" }, config: {} } },
@@ -211,7 +211,10 @@ describe("T-405 public kiosk regressions", () => {
     await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
     fireEvent.click(screen.getByText("Vote in Poll"));
     await waitFor(() => expect(screen.getByText("Pick one")).toBeTruthy());
-    expect(screen.queryByText("Submit Vote")).toBeNull();
+    const submit = screen.getByText("Submit Vote").closest("button");
+    expect(submit?.disabled).toBe(true);
+    fireEvent.click(screen.getByText("A"));
+    expect(submit?.disabled).toBe(false);
   });
 
   it("does not offer a fake privacy deletion success when no local content exists", async () => {
@@ -226,16 +229,97 @@ describe("T-405 public kiosk regressions", () => {
     expect(deleteButton?.disabled).toBe(true);
   });
 
-  it("shows Check In immediately after ringing without waiting for the network", async () => {
+  it("shows post-ring choices immediately and permits retry after a local service failure", async () => {
     window.history.pushState(null, "", "/doorpad");
-    mockFetchSequence([{ body: { session: { state: "IDLE" }, config: {} } }, { status: 500, body: {} }]);
+    const fetchMock = mockFetchSequence([
+      { body: { session: { state: "IDLE" }, config: {} } },
+      { status: 500, body: {} },
+    ]);
 
     render(<App />);
 
     await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
     fireEvent.click(screen.getByText("Ring Bell"));
-    expect(screen.getByText("You rang")).toBeTruthy();
+    expect(screen.getByText("Bell sent")).toBeTruthy();
+    expect(screen.getByText("Live view at the door")).toBeTruthy();
+    expect(screen.getByText("Wait for Someone to Open")).toBeTruthy();
+    expect(screen.getByText("Send a Video Message")).toBeTruthy();
     expect(document.querySelector("#post-ring-checkin")).toBeTruthy();
+    expect(screen.queryByText("Camera Notice & Deletion Requests")).toBeNull();
+    await waitFor(() => expect(screen.getByText("Retry Bell")).toBeTruthy());
+    fireEvent.click(screen.getByText("Retry Bell"));
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(([url]) => String(url).includes("/doorpad/ring"))
+      ).toHaveLength(2);
+    });
+  });
+
+  it("ignores malformed and oversized kiosk-local content history", async () => {
+    window.history.pushState(null, "", "/doorpad");
+    const oversizedStore: Record<string, unknown> = Object.fromEntries(
+      Array.from({ length: 24 }, (_, index) => [
+        `old-session-${index}`,
+        [{ kind: "guestbook", id: `entry-${index}`, label: `Note ${index}` }],
+      ])
+    );
+    oversizedStore["bad-session"] = [{ kind: "guestbook", id: "", label: {} }];
+    window.localStorage.setItem("doorboard_my_social_content_v2", JSON.stringify(oversizedStore));
+    mockFetchSequence([
+      { body: { session: { state: "IDLE" }, config: {} } },
+      {
+        body: {
+          id: "entry-current",
+          text: "Current note",
+          author_label: null,
+          created_at: "2026-07-14T00:00:00Z",
+        },
+      },
+    ]);
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
+    fireEvent.click(screen.getByText("Guestbook"));
+    fireEvent.change(screen.getByPlaceholderText("Or write your own note..."), {
+      target: { value: "Current note" },
+    });
+    fireEvent.click(screen.getByText("Submit Note"));
+
+    await waitFor(() => {
+      const stored = JSON.parse(
+        window.localStorage.getItem("doorboard_my_social_content_v2") ?? "{}"
+      ) as Record<string, unknown>;
+      expect(Object.keys(stored).length).toBeLessThanOrEqual(16);
+      expect(stored["bad-session"]).toBeUndefined();
+    });
+  });
+
+  it("rolls a failed video-message offer back to the reviewable offer screen", async () => {
+    window.history.pushState(null, "", "/doorpad");
+    mockFetchSequence([
+      { body: { session: { state: "IDLE" }, config: {} } },
+      { status: 503, body: {} },
+    ]);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
+    fireEvent.click(screen.getByText("Video Message"));
+    fireEvent.click(screen.getByText("Start Recording"));
+    await waitFor(() => expect(screen.getByText("Start Recording")).toBeTruthy());
+    expect(screen.queryByText("Recording Starts In")).toBeNull();
+  });
+
+  it("keeps the camera notice behind Privacy & Info", async () => {
+    window.history.pushState(null, "", "/doorpad");
+    mockFetchSequence([{ body: { session: { state: "IDLE" }, config: {} } }]);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
+    expect(screen.queryByText("Camera Notice & Deletion Requests")).toBeNull();
+    fireEvent.click(screen.getByText("Privacy & Info"));
+    expect(screen.getByText("Camera Notice & Deletion Requests")).toBeTruthy();
   });
 
   it("lets DoorPad choose a mock Wallboard focused channel locally", async () => {

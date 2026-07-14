@@ -1,15 +1,14 @@
 import React from "react";
 import { BigButton, StatusBadge } from "@doorboard/ui-kit";
+import type {
+  AmbientAircraftSummaryPayload,
+  AmbientBirdSummaryPayload,
+  AmbientFoodRecommendationPayload,
+  AmbientPrinterStatusPayload,
+  AmbientSatellitePassPayload,
+} from "@doorboard/contracts";
 import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
 import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
-import {
-  aircraftFixture,
-  birdFixture,
-  foodFixture,
-  printerFixture,
-  satelliteFixture,
-  scoreboardFixture,
-} from "./fixtures";
 import { WALLBOARD_CHANNELS } from "./wallboardChannelModel";
 import type { WallboardFocusChannel } from "./wallboardChannelModel";
 
@@ -44,6 +43,14 @@ interface WallboardFocusedViewProps {
   pollResults: PollResultRow[] | null;
   guestbookEntries: GuestbookEntry[];
   moments: Array<{ recording_id: string; tags: string[]; approved_at: string | null }>;
+  ambient: {
+    aircraft: AmbientAircraftSummaryPayload | null;
+    birds: AmbientBirdSummaryPayload | null;
+    satellite: AmbientSatellitePassPayload | null;
+    printer: AmbientPrinterStatusPayload | null;
+    food: AmbientFoodRecommendationPayload | null;
+    scoreboard: Array<{ score: number; occurredAt: string }> | null;
+  };
   onReturnAmbient: () => void;
 }
 
@@ -53,6 +60,7 @@ export function WallboardFocusedView({
   pollResults,
   guestbookEntries,
   moments,
+  ambient,
   onReturnAmbient,
 }: WallboardFocusedViewProps) {
   const title = WALLBOARD_CHANNELS.find((item) => item.id === channel)?.title ?? "Focused view";
@@ -68,7 +76,9 @@ export function WallboardFocusedView({
           Ambient grid
         </BigButton>
       </header>
-      <main className="wallboard-focus-main">{renderFocusContent(channel, poll, pollResults, guestbookEntries, moments)}</main>
+      <main className="wallboard-focus-main">
+        {renderFocusContent(channel, poll, pollResults, guestbookEntries, moments, ambient)}
+      </main>
       <footer className="wallboard-focus-footer">
         Focused from DoorPad. Returns to ambient automatically.
       </footer>
@@ -81,81 +91,89 @@ function renderFocusContent(
   poll: Poll | null,
   pollResults: PollResultRow[] | null,
   guestbookEntries: GuestbookEntry[],
-  moments: Array<{ recording_id: string; tags: string[]; approved_at: string | null }>
+  moments: Array<{ recording_id: string; tags: string[]; approved_at: string | null }>,
+  ambient: WallboardFocusedViewProps["ambient"]
 ) {
+  const safeText = (value: string | null | undefined, maxLength = 80) =>
+    (value ?? "").trim().replace(/\s+/g, " ").slice(0, maxLength);
+  const clampPercentage = (value: number | null) =>
+    value === null || !Number.isFinite(value) ? 0 : Math.min(100, Math.max(0, value));
+
   switch (channel) {
     case "aircraft":
-      return (
+      return ambient.aircraft ? (
         <div className="focus-list focus-list--large">
-          {aircraftFixture.nearby.map((aircraft) => (
-            <div className="focus-row" key={aircraft.callsign}>
-              <strong>{aircraft.callsign}</strong>
+          {ambient.aircraft.nearby.slice(0, 8).map((aircraft, index) => (
+            <div className="focus-row" key={`${aircraft.callsign}-${index}`}>
+              <strong>{safeText(aircraft.callsign, 16) || "Aircraft"}</strong>
               <span>{aircraft.altitude_ft.toLocaleString()} ft</span>
               <span>{aircraft.distance_km} km away</span>
               <span>Heading {aircraft.heading}°</span>
             </div>
           ))}
+          {ambient.aircraft.nearby.length === 0 && <p className="focus-empty">No nearby aircraft in the latest update.</p>}
         </div>
-      );
+      ) : <p className="focus-empty">Aircraft data is unavailable.</p>;
     case "satellite":
-      return (
+      return ambient.satellite ? (
         <div className="focus-hero-stat">
           <p className="surface-eyebrow">Next visible pass</p>
-          <strong>{satelliteFixture.satellite}</strong>
+          <strong>{ambient.satellite.satellite}</strong>
           <span>
-            {new Date(satelliteFixture.rise_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            {new Date(ambient.satellite.rise_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             {" · "}
-            {satelliteFixture.direction} · {satelliteFixture.max_elevation_deg}° max
+            {ambient.satellite.direction} · {ambient.satellite.max_elevation_deg}° max
           </span>
-          <StatusBadge label={satelliteFixture.visible ? "available" : "unknown"} />
+          <StatusBadge label={ambient.satellite.visible ? "available" : "unknown"} />
         </div>
-      );
+      ) : <p className="focus-empty">Satellite pass data is unavailable.</p>;
     case "scoreboard":
-      return (
+      return ambient.scoreboard ? (
         <div className="focus-list focus-list--scores">
-          {scoreboardFixture.scores.map((score, index) => (
-            <div className="focus-row" key={score.name}>
+          {ambient.scoreboard.slice(0, 16).map((entry, index) => (
+            <div className="focus-row" key={index}>
               <strong>Resident {index + 1}</strong>
-              <span>{score.score} pts</span>
+              <span>{entry.score} pts</span>
             </div>
           ))}
         </div>
-      );
+      ) : <p className="focus-empty">Scoreboard data is unavailable.</p>;
     case "birds":
-      return (
+      return ambient.birds ? (
         <div className="focus-list">
           <div className="focus-hero-stat focus-hero-stat--inline">
             <span>Total today</span>
-            <strong>{birdFixture.total_detections}</strong>
+            <strong>{ambient.birds.total_detections}</strong>
           </div>
-          {birdFixture.top_species.map((species) => (
-            <div className="focus-row" key={species.name}>
-              <strong>{species.name}</strong>
+          {ambient.birds.top_species.slice(0, 8).map((species, index) => (
+            <div className="focus-row" key={`${species.name}-${index}`}>
+              <strong>{safeText(species.name) || "Unknown bird"}</strong>
               <span>{species.count} detections</span>
               <span>{(species.confidence_avg * 100).toFixed(0)}% confidence</span>
             </div>
           ))}
+          {ambient.birds.top_species.length === 0 && <p className="focus-empty">No bird detections yet today.</p>}
         </div>
-      );
+      ) : <p className="focus-empty">Bird summary is unavailable.</p>;
     case "printer":
-      return (
+      return ambient.printer ? (
         <div className="focus-printer">
-          <p className="surface-eyebrow">{printerFixture.state}</p>
-          <h2>{printerFixture.job_name}</h2>
-          <div className="focus-progress" aria-label={`${printerFixture.progress_pct}% complete`}>
-            <span style={{ width: `${printerFixture.progress_pct}%` }} />
+          <p className="surface-eyebrow">{ambient.printer.state}</p>
+          <h2>{ambient.printer.job_name ? safeText(ambient.printer.job_name) : "No active print"}</h2>
+          <div className="focus-progress" aria-label={`${ambient.printer.progress_pct ?? 0}% complete`}>
+            <span style={{ width: `${clampPercentage(ambient.printer.progress_pct)}%` }} />
           </div>
-          <strong>{printerFixture.progress_pct}% complete</strong>
+          <strong>{ambient.printer.progress_pct === null ? "Progress unavailable" : `${ambient.printer.progress_pct}% complete`}</strong>
         </div>
-      );
+      ) : <p className="focus-empty">Printer status is unavailable.</p>;
     case "food":
-      return (
+      return ambient.food ? (
         <div className="focus-hero-stat">
-          <p className="surface-eyebrow">{foodFixture.provider}</p>
-          <strong>{foodFixture.title}</strong>
-          <span>{foodFixture.detail}</span>
+          <p className="surface-eyebrow">{safeText(ambient.food.provider, 40)}</p>
+          <strong>{safeText(ambient.food.title)}</strong>
+          <span>{safeText(ambient.food.detail, 160)}</span>
         </div>
-      );
+      ) : <p className="focus-empty">Food recommendation is unavailable.</p>;
     case "poll":
       return poll ? (
         <div className="focus-list">

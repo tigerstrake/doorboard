@@ -1,5 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
-import { publishSessionState, publishIdentityStable, gotoWallboard, screenshotMasks } from "./helpers";
+import {
+  publishSessionState,
+  publishIdentityStable,
+  publishAircraftSummary,
+  publishBirdSummary,
+  gotoWallboard,
+  screenshotMasks,
+} from "./helpers";
 
 const FORBIDDEN_TEXT = /hailo|sqlite|uptime|diagnostic|ssd space|admin console/i;
 
@@ -57,6 +64,19 @@ test.describe("Wallboard — ambient mode", () => {
       animations: "disabled",
       mask: screenshotMasks(page),
     });
+  });
+
+  test("prioritizes an overhead-aircraft alert over a bird update", async ({ page }) => {
+    await gotoWallboard(page);
+    await publishBirdSummary(page, 8);
+    await expect(page.locator(".ambient-alert")).toContainText(
+      "New in the latest bird update: Pacific Swift"
+    );
+
+    await publishAircraftSummary(page, 1.2);
+    const alert = page.locator(".ambient-alert");
+    await expect(alert).toContainText("TEST123 is overhead");
+    await expect(alert).toContainText("4,200 ft · 1.2 km away · heading 87°");
   });
 });
 

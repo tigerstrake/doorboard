@@ -474,6 +474,30 @@ async def doorpad_ring() -> dict[str, Any]:
     return {"accepted": accepted, "effect": effect, **state.snapshot_response()}
 
 
+@app.post("/doorpad/session/end")
+async def doorpad_session_end() -> dict[str, Any]:
+    accepted = state.machine.handle_session_end(trigger="visitor:end")
+    return {"accepted": accepted, **state.snapshot_response()}
+
+
+@app.post("/admin/session/answer", dependencies=[Depends(_require_admin)])
+async def admin_session_answer() -> dict[str, Any]:
+    accepted = state.machine.handle_answered(trigger="owner:answered")
+    return {"accepted": accepted, **state.snapshot_response()}
+
+
+@app.post("/admin/session/cannot-answer", dependencies=[Depends(_require_admin)])
+async def admin_session_cannot_answer() -> dict[str, Any]:
+    accepted = state.machine.handle_unanswered(trigger="owner:cannot_answer")
+    return {"accepted": accepted, **state.snapshot_response()}
+
+
+@app.post("/admin/session/end", dependencies=[Depends(_require_admin)])
+async def admin_session_end() -> dict[str, Any]:
+    accepted = state.machine.handle_session_end(trigger="admin:reset")
+    return {"accepted": accepted, **state.snapshot_response()}
+
+
 @app.post("/doorpad/video-message/offer")
 async def video_message_offer() -> dict[str, Any]:
     trace_id = uuid4()
@@ -649,6 +673,84 @@ async def admin_media_inbox() -> dict[str, Any]:
     return {
         "recordings": [row for row in rows if row.get("kind") == "video_message"],
     }
+
+
+@app.get(
+    "/admin/media-inbox/{recording_id}/file",
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_media_inbox_file(recording_id: str) -> Response:
+    row = await _media_recording(recording_id)
+    if row is None or row.get("kind") != "video_message" or not row.get("session_id"):
+        raise HTTPException(status_code=404, detail="video message not found")
+    try:
+        async with httpx.AsyncClient(timeout=state.config.media_timeout_s) as client:
+            response = await client.get(
+                f"{state.config.media_base_url.rstrip('/')}/recordings/{recording_id}/file",
+                params={"session_id": row["session_id"]},
+                headers=_media_auth_headers(),
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="door-media unavailable") from exc
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="video message file not found")
+    if response.status_code >= 400:
+        raise HTTPException(status_code=503, detail="door-media unavailable")
+    return Response(
+        content=response.content,
+        media_type="video/mp4",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.get("/admin/recordings", dependencies=[Depends(_require_admin)])
+async def admin_recordings(
+    kind: str | None = None,
+    sync_status: str | None = None,
+    limit: int = 20,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    params: dict[str, str | int] = {"limit": max(1, min(limit, 100))}
+    if kind:
+        params["kind"] = kind
+    if sync_status:
+        params["sync_status"] = sync_status
+    if cursor:
+        params["cursor"] = cursor
+    try:
+        async with httpx.AsyncClient(timeout=state.config.media_timeout_s) as client:
+            response = await client.get(
+                f"{state.config.media_base_url.rstrip('/')}/recordings",
+                params=params,
+                headers=_media_auth_headers(),
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="door-media unavailable") from exc
+
+
+@app.delete(
+    "/admin/recordings/{recording_id}",
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_recording_delete(recording_id: str) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=state.config.media_timeout_s) as client:
+            response = await client.delete(
+                f"{state.config.media_base_url.rstrip('/')}/recordings/{recording_id}",
+                headers=_media_auth_headers(),
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="door-media unavailable") from exc
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="recording not found")
+    if response.status_code >= 400:
+        raise HTTPException(status_code=503, detail="door-media unavailable")
+    return response.json()
 
 
 @app.get("/admin/gallery/photos", dependencies=[Depends(_require_admin)])

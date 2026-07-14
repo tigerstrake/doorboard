@@ -129,6 +129,30 @@ describe("CountdownAutoReset", () => {
     });
     expect(onResetMock).toHaveBeenCalledTimes(1);
   });
+
+  it("does not reset while paused and restarts the timeout after resuming", () => {
+    const onResetMock = vi.fn();
+    const { rerender } = render(
+      <CountdownAutoReset onReset={onResetMock} timeoutMs={2000} paused>
+        <div>Recording</div>
+      </CountdownAutoReset>
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(onResetMock).not.toHaveBeenCalled();
+
+    rerender(
+      <CountdownAutoReset onReset={onResetMock} timeoutMs={2000} paused={false}>
+        <div>Review</div>
+      </CountdownAutoReset>
+    );
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(onResetMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("Gauge", () => {

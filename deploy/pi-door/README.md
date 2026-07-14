@@ -14,7 +14,10 @@ Raspberry Pi OS 64-bit on the Pi 5. Hardware-facing services run under **systemd
 1. Create the `doorboard` system user and the `video`, `render`, and `dialout`
    group memberships. Install the repo at `/opt/doorboard` and create its uv
    environment with `uv sync --locked --no-dev`, install the pnpm workspace,
-   and build the kiosk bundle with `pnpm --filter @doorboard/door-ui build`.
+   and build the kiosk bundle with
+   `VITE_AMBIENT_MOCK=false pnpm --filter @doorboard/door-ui build`. Set
+   `VITE_AIRCRAFT_ALERT_DISTANCE_KM` at build time if the default 3 km hallway
+   alert threshold is not appropriate for the deployment.
 2. Mount the SSD below `/mnt/ssd` and the limited NAS share at
    `/mnt/nas/doorboard`. The storage gate refuses to run services when
    `SSD_DATA_ROOT` resolves to the root filesystem.

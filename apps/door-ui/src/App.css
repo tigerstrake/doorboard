@@ -1733,3 +1733,211 @@ input:focus-visible {
     grid-template-columns: 1fr;
   }
 }
+
+/* T-405 workflow hardening: post-ring live journey, ambient alerts, admin auth */
+
+.doorpad-waiting-content {
+  gap: 0.75rem;
+}
+
+.doorpad-waiting-layout {
+  width: min(960px, 100%);
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(340px, 0.8fr);
+  gap: var(--db-spacing-lg);
+  align-items: center;
+}
+
+.doorpad-waiting-video .db-live-video__frame {
+  min-height: 0;
+  max-height: 320px;
+}
+
+.doorpad-waiting-panel {
+  display: grid;
+  gap: var(--db-spacing-md);
+}
+
+.doorpad-waiting-panel .doorpad-journey-status {
+  padding: var(--db-spacing-md);
+}
+
+.doorpad-waiting-panel .doorpad-journey-status h2 {
+  font-size: clamp(1.8rem, 4vw, 3rem);
+}
+
+.doorpad-waiting-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--db-spacing-sm);
+}
+
+.doorpad-waiting-actions .db-big-button {
+  min-height: 76px;
+  min-width: 0;
+  padding: 0.7rem;
+}
+
+.doorpad-waiting-footer .db-big-button {
+  min-height: 52px;
+}
+
+.character-count {
+  width: 100%;
+  margin: -0.4rem 0 0;
+  color: var(--db-text-muted);
+  text-align: right;
+  font-family: var(--db-font-mono);
+  font-size: 0.8rem;
+}
+
+.ambient-alert {
+  position: fixed;
+  z-index: 50;
+  top: 7.25rem;
+  left: 50%;
+  width: min(920px, calc(100vw - 4rem));
+  transform: translateX(-50%);
+  display: grid;
+  gap: 0.35rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid rgba(103, 232, 249, 0.55);
+  border-radius: var(--db-radius-md);
+  background: rgba(3, 14, 29, 0.96);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55), var(--db-glow-cyan);
+  animation: db-boot-in 0.3s ease-out both;
+}
+
+.ambient-alert strong {
+  font-family: var(--db-font-display);
+  font-size: clamp(2rem, 4vw, 3.75rem);
+  line-height: 1;
+}
+
+.ambient-alert span {
+  color: var(--db-text-secondary);
+  font-size: clamp(1rem, 1.8vw, 1.4rem);
+}
+
+.ambient-alert--aircraft {
+  border-color: rgba(251, 191, 36, 0.8);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.65), 0 0 36px rgba(251, 191, 36, 0.28);
+}
+
+.admin-auth-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--db-spacing-lg);
+  box-sizing: border-box;
+}
+
+.admin-auth-card {
+  width: min(480px, 100%);
+  display: grid;
+  gap: var(--db-spacing-md);
+  padding: clamp(1.5rem, 5vw, 3rem);
+  border: 1px solid var(--db-border-color);
+  border-radius: var(--db-radius-md);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.admin-auth-card h1,
+.admin-auth-card p {
+  margin: 0;
+}
+
+.admin-auth-card input {
+  min-height: 48px;
+  padding: 0 0.9rem;
+  border: 1px solid var(--db-border-color);
+  border-radius: var(--db-radius-sm);
+  background: rgba(3, 14, 29, 0.8);
+  color: var(--db-text-primary);
+}
+
+.admin-live-session {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.8fr) minmax(420px, 1.2fr);
+  gap: var(--db-spacing-lg);
+  align-items: center;
+  margin-bottom: var(--db-spacing-xl);
+  padding: var(--db-spacing-lg);
+  border: 1px solid var(--db-border-color);
+  border-radius: var(--db-radius-md);
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.admin-live-session__summary h2 {
+  margin: 0.25rem 0;
+  font-family: var(--db-font-display);
+  font-size: clamp(1.8rem, 3vw, 3rem);
+}
+
+.admin-unavailable {
+  padding: var(--db-spacing-md);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: var(--db-radius-sm);
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.2);
+}
+
+.admin-recording-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--db-spacing-sm);
+}
+
+.admin-recording-actions .db-big-button {
+  min-height: 48px;
+}
+
+.admin-message-video {
+  width: min(360px, 38vw);
+  max-height: 210px;
+  border-radius: var(--db-radius-sm);
+  background: #020617;
+}
+
+.my-content-row > span {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.my-content-row small {
+  color: var(--db-text-muted);
+}
+
+.admin-poll-preview {
+  padding: var(--db-spacing-md);
+  border: 1px solid var(--db-border-color);
+  border-radius: var(--db-radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+@media (max-width: 900px) {
+  .doorpad-waiting-layout {
+    grid-template-columns: minmax(0, 1.1fr) minmax(310px, 0.9fr);
+    gap: var(--db-spacing-md);
+  }
+
+  .doorpad-waiting-video .db-live-video__frame {
+    max-height: 265px;
+  }
+
+  .admin-live-session {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  .doorpad-waiting-layout,
+  .doorpad-waiting-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .ambient-alert {
+    top: 1rem;
+    width: calc(100vw - 2rem);
+  }
+}

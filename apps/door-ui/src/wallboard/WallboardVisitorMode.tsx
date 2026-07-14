@@ -96,7 +96,7 @@ export function WallboardVisitorMode({
   const greetingTitle = displayName ? `Welcome back, ${displayName}!` : "Hello, Visitor!";
   const greetingSubtitle = displayName
     ? "You've been recognized — thanks for stopping by."
-    : "Press the bell or leave a video message on the DoorPad.";
+    : "The DoorPad below shows your live self-view and next steps.";
 
   return (
     <CountdownAutoReset onReset={onDone} timeoutMs={autoResetMs}>
@@ -122,7 +122,7 @@ export function WallboardVisitorMode({
                 Touch the <strong>7" DoorPad screen</strong> below to:
               </p>
               <ul>
-                <li>Ring the doorbell again</li>
+                <li>Wait for someone to come to the door</li>
                 <li>Leave a short video message</li>
                 <li>Sign our digital guestbook</li>
                 <li>Answer the roommate poll</li>

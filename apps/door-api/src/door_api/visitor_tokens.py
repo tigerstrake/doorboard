@@ -63,5 +63,13 @@ def _b64encode(raw: bytes) -> str:
 
 
 def _b64decode(encoded: str) -> bytes:
+    if not encoded or "=" in encoded:
+        raise ValueError("non-canonical base64url")
     padding = "=" * (-len(encoded) % 4)
-    return base64.b64decode(encoded + padding, altchars=b"-_", validate=True)
+    decoded = base64.b64decode(encoded + padding, altchars=b"-_", validate=True)
+    # RFC 4648 permits decoders to ignore unused low bits in the final
+    # character. Signed tokens must have exactly one textual representation,
+    # otherwise a changed token string can still decode to the signed bytes.
+    if _b64encode(decoded) != encoded:
+        raise ValueError("non-canonical base64url")
+    return decoded

@@ -63,3 +63,43 @@ Until that ADR lands, UI code may keep a typed local/mock model and optimistic r
 - Public routes do not render simulation controls unless explicitly enabled and never show forbidden privacy content.
 - Wallboard focused views auto-return to ambient after an idle timeout and remain legible at 1920×1080.
 - DoorPad touch targets are at least 48 px at 1024×600, with visible focus/active/disabled states and reduced-motion-safe transitions.
+
+## UX audit findings and disposition
+
+The implementation pass audited each action through its next useful choice, including loading,
+offline, timeout, duplicate-action, invalid-data, and storage-unavailable behavior.
+
+- **Ring and waiting:** the old ring acknowledgement was a dead end. Ring now advances locally to
+  a DoorPad-only live self-view with an explicit waiting state, a primary “Wait for Someone to
+  Open” choice, immediate video-message, check-in, phone handoff, guestbook, poll, and end-session
+  actions. The wallboard remains camera-free and the phone route does not gain live video.
+- **Answer outcomes:** “Someone Is Coming,” “Can’t Answer,” and “End Session” now perform real
+  authenticated/session API transitions. An answered session ends instead of misleadingly offering
+  a video message. API rejection is shown as a retryable failure rather than optimistic success.
+- **Media:** video and photo actions no longer advance until the local media/session API accepts the
+  transition. Save, discard, review, retry, recording limits, storage pause, and playback failure all
+  retain a truthful recovery path. Auto-reset pauses during consent, recording, and review.
+- **Phone handoff:** the signed QR page is deliberately limited to status, text note, poll, and
+  deletion. It clearly directs video recording back to the DoorPad and handles expiry without
+  exposing another route or token.
+- **Social actions:** canned guestbook text and poll choices require explicit confirmation. Results
+  appear only after a vote. Character limits, duplicate submits, service-unavailable states, and
+  same-session deletion are visible and actionable.
+- **Identity and privacy:** public surfaces never show opaque profile/person identifiers. Named
+  check-in is offered only when a consented display name exists. The camera notice remains behind
+  **Privacy & Info** by product decision; it is not persistently shown in the DoorPad footer.
+- **Ambient wallboard:** presence, mood, scoreboard, birds, aircraft, satellite, printer, and food
+  consume existing typed events. Production does not present fixtures as live data. Tiles show
+  empty/unavailable/stale state, and bounded alert priority lets an overhead aircraft displace a
+  lower-priority bird notice without interrupting visitor mode.
+- **Long-running and hostile-input behavior:** presence/scoreboard collections and rendered summary
+  lists are bounded; numeric progress/distance values are validated or clamped; external labels are
+  trimmed and length-limited; duplicate alerts are rate-limited. A well-formed but unusable update
+  therefore cannot permanently stop the event loop or grow the UI without bound.
+- **Admin:** diagnostics and media inboxes distinguish loading, empty, stale, and unreachable states.
+  Existing bearer authentication protects live controls, playback, and deletion; public navigation
+  does not reveal the admin route.
+- **Accessibility and layouts:** workflows move focus after screen changes, status announcements use
+  polite live regions, controls have visible disabled/focus states, reduced motion is respected, and
+  the post-ring journey is covered at the physical 1024×600 DoorPad viewport plus phone and 1080p
+  wallboard orientations.

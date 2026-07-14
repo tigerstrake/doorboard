@@ -254,7 +254,14 @@ def test_cli_defaults_to_mock_provider(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_cli_selects_stanford_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = _run_food_cli(monkeypatch, {"FEATURE_FOOD": "true", "FOOD_PROVIDER": "stanford"})
+    provider = _run_food_cli(
+        monkeypatch,
+        {
+            "FEATURE_FOOD": "true",
+            "FOOD_PROVIDER": "stanford",
+            "WALLBOARD_WORKER_INGEST_TOKEN": "test-ingest-token",
+        },
+    )
     assert isinstance(provider, StanfordDiningProvider)
 
 

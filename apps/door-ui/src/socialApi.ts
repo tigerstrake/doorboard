@@ -16,6 +16,10 @@ export function setVisitorToken(token: string): void {
   runtimeVisitorToken = token;
 }
 
+export function clearVisitorToken(): void {
+  runtimeVisitorToken = null;
+}
+
 export async function getSessionToken(): Promise<string> {
   const existing = tokenFromUrl() ?? runtimeVisitorToken;
   if (existing) return existing;
@@ -149,6 +153,7 @@ type SessionState =
 
 export const socialApi = {
   setVisitorToken,
+  clearVisitorToken,
 
   async validateVisitorSession(): Promise<VisitorSession> {
     const token = await getSessionToken();

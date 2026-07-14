@@ -15,7 +15,7 @@ os.environ["DOOR_API_DB_PATH"] = ":memory:"
 os.environ["DOOR_API_SOCIAL_DB_PATH"] = ":memory:"
 
 from door_api.app import app, state
-from door_api.visitor_tokens import encode_visitor_token
+from door_api.visitor_tokens import decode_visitor_token, encode_visitor_token
 
 
 @pytest.fixture(autouse=True)
@@ -222,6 +222,18 @@ def test_public_write_rejects_tampered_and_expired_tokens(client: TestClient) ->
     )
     expired_response = client.post("/guestbook", json={"text": "hi", "session_token": expired})
     assert expired_response.status_code == 401
+
+
+def test_visitor_token_rejects_noncanonical_signature_alias(client: TestClient) -> None:
+    token = _visitor_token(client)
+    payload, signature = token.split(".", maxsplit=1)
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    last_index = alphabet.index(signature[-1])
+    assert last_index % 4 == 0
+    alias = f"{payload}.{signature[:-1]}{alphabet[last_index + 1]}"
+
+    with pytest.raises(ValueError, match="malformed visitor token"):
+        decode_visitor_token(alias, secret=state.config.visitor_token_secret)
 
 
 def test_visitor_can_only_delete_content_from_same_session(client: TestClient) -> None:

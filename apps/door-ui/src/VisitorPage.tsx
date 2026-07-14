@@ -43,6 +43,7 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
   const [poll, setPoll] = useState<Poll | null>(null);
   const [pollResults, setPollResults] = useState<PollResultRow[] | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
+  const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   const [votedOptionId, setVotedOptionId] = useState<string | null>(null);
 
   const [deletionRequested, setDeletionRequested] = useState(false);
@@ -61,7 +62,6 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
         if (cancelled) return;
         if (p === null) return;
         setPoll(p);
-        return socialApi.getPollResults(p.id).then((r) => !cancelled && setPollResults(r));
       })
       .catch(() => {
         if (!cancelled) setAccessState("invalid");
@@ -70,6 +70,26 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (accessState !== "valid") return undefined;
+    let cancelled = false;
+    const refresh = () => {
+      void socialApi
+        .validateVisitorSession()
+        .then((session) => {
+          if (!cancelled) setVerifiedSessionState(session.state);
+        })
+        .catch(() => {
+          if (!cancelled) setAccessState("invalid");
+        });
+    };
+    const interval = window.setInterval(refresh, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [accessState]);
 
   const effectiveSessionState = verifiedSessionState ?? sessionState;
   const ringStatus = RING_STATUS_COPY[effectiveSessionState] ?? "Waiting for a visitor session…";
@@ -94,12 +114,12 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
     }
   };
 
-  const castVote = async (optionId: string) => {
-    if (!poll) return;
+  const castVote = async () => {
+    if (!poll || !selectedOptionId || votedOptionId) return;
     setPollError(null);
     try {
-      await socialApi.castVote(poll.id, optionId);
-      setVotedOptionId(optionId);
+      await socialApi.castVote(poll.id, selectedOptionId);
+      setVotedOptionId(selectedOptionId);
       const results = await socialApi.getPollResults(poll.id);
       setPollResults(results);
     } catch (err) {
@@ -150,6 +170,7 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
             value={noteText}
             onChange={(e) => setNoteText(e.target.value)}
           />
+          <p className="character-count">{noteText.length} / 280</p>
           {noteStatus && <p className="visitor-note-status">{noteStatus}</p>}
           <BigButton
             variant="primary"
@@ -174,14 +195,20 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
                   className="phrase-btn"
                   style={{ width: "100%", margin: "4px 0" }}
                   disabled={votedOptionId !== null}
-                  onClick={() => castVote(opt.id)}
+                  aria-pressed={votedOptionId === opt.id || selectedOptionId === opt.id}
+                  onClick={() => setSelectedOptionId(opt.id)}
                 >
                   {opt.text}
-                  {result !== undefined && <span> — {result.votes} votes</span>}
+                  {votedOptionId && result !== undefined && <span> — {result.votes} votes</span>}
                 </button>
               );
             })}
           </div>
+          {!votedOptionId && (
+            <BigButton variant="primary" disabled={!selectedOptionId} onClick={castVote}>
+              Submit vote
+            </BigButton>
+          )}
           {votedOptionId && <p>Thanks for voting!</p>}
         </section>
       )}
