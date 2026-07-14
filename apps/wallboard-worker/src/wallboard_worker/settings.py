@@ -56,6 +56,21 @@ class Settings(BaseSettings):
         default="/tmp/doorboard_food_recommendation_cache.json",
         alias="FOOD_RECOMMENDATION_CACHE_PATH",
     )
+    # "mock" (default) or "stanford" for the real Stanford R&DE dining provider.
+    food_provider: str = Field(default="mock", alias="FOOD_PROVIDER")
+    # Comma-separated hall filter (e.g. "Wilbur,Stern"); empty = all halls. Kept
+    # as a plain string because pydantic-settings JSON-decodes list-typed env
+    # vars before validators run; the CLI splits it.
+    food_hall_ids: str = Field(default="", alias="FOOD_HALL_IDS")
+    food_meal_override: str = Field(default="", alias="FOOD_MEAL_OVERRIDE")
+    food_preferences_path: str = Field(default="", alias="FOOD_PREFERENCES_PATH")
+    # LLM refinement is opt-in and only used when an API key is present.
+    food_use_ai: bool = Field(default=False, alias="FOOD_USE_AI")
+    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
+
+    def food_hall_id_list(self) -> list[str]:
+        return [h.strip() for h in self.food_hall_ids.split(",") if h.strip()]
 
     @field_validator("birdnet_species_filter", mode="before")
     @classmethod

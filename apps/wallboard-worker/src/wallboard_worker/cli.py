@@ -6,7 +6,11 @@ from typing import cast
 import click
 from aircraft.provider import AircraftConfig, MockAircraftProvider, OpenSkyAircraftProvider
 from birdnet.provider import BirdnetConfig, BirdnetGoProvider, MockBirdProvider
-from food_recommendation.provider import MockFoodRecommendationProvider
+from food_recommendation.provider import (
+    FoodRecommendationProvider,
+    MockFoodRecommendationProvider,
+)
+from food_recommendation.stanford.provider import StanfordDiningConfig, StanfordDiningProvider
 from printer.provider import (
     MockPrinterProvider,
     OctoPrintProvider,
@@ -149,11 +153,24 @@ def food_recommendation(mock: bool) -> None:
     """Run the daily food recommendation ingestion job."""
     settings = Settings()
 
-    if not settings.feature_food and not mock:
-        logger.info("FEATURE_FOOD disabled; using MockFoodRecommendationProvider")
-    else:
+    provider: FoodRecommendationProvider
+    # Mock is the fallback whenever the feature is off, forced, or the real
+    # provider isn't selected. The real Stanford provider scrapes + optionally
+    # calls an LLM, so it only runs when explicitly configured.
+    if mock or not settings.feature_food or settings.food_provider != "stanford":
         logger.info("Using MockFoodRecommendationProvider")
-    provider = MockFoodRecommendationProvider()
+        provider = MockFoodRecommendationProvider()
+    else:
+        logger.info("Using StanfordDiningProvider (ai=%s)", settings.food_use_ai)
+        config = StanfordDiningConfig(
+            hall_ids=settings.food_hall_id_list(),
+            meal_override=settings.food_meal_override or None,
+            preferences_path=settings.food_preferences_path or None,
+            use_ai=settings.food_use_ai,
+            openai_api_key=settings.openai_api_key,
+            openai_model=settings.openai_model,
+        )
+        provider = StanfordDiningProvider(config)
 
     run_food_recommendation(settings, provider)
 
