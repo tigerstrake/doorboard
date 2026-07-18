@@ -33,9 +33,20 @@ class Notification:
     title: str
     message: str
     priority: str = "default"
+    # Per-notification cooldown override (seconds); falls back to the engine
+    # default when None. Lets a high-frequency rule (aircraft overhead) throttle
+    # independently of the slow ones (missed bell, storage).
+    cooldown_s: int | None = None
 
 
-def evaluate_rules(event: DoorboardEvent, *, sync_stall_alert_s: int) -> Notification | None:
+def evaluate_rules(
+    event: DoorboardEvent,
+    *,
+    sync_stall_alert_s: int,
+    aircraft_alert_radius_km: float = 0.0,
+    aircraft_alert_max_altitude_ft: int = 0,
+    aircraft_alert_cooldown_s: int = 600,
+) -> Notification | None:
     if event.type == "session.ended" and event.payload.outcome == "unanswered_timeout":
         return Notification(
             rule_key=f"missed_bell:{event.door_id}",
@@ -62,6 +73,35 @@ def evaluate_rules(event: DoorboardEvent, *, sync_stall_alert_s: int) -> Notific
             title="Sync falling behind",
             message=f"Oldest unsynced clip is {hours:.1f}h old on door {event.door_id}.",
         )
+    # Aircraft overhead: an ambient.aircraft_summary carries every plane in the
+    # (wide) page box with its ground distance from the observer centre, so a
+    # proximity alert is a pure distance/altitude filter here — the *page* keeps
+    # its wide box; only this alert is restricted to the radius. Disabled when
+    # radius is 0. Distances are measured from AIRCRAFT_OBSERVER_LAT/LON, so set
+    # that to the address you want the radius centred on.
+    if event.type == "ambient.aircraft_summary" and aircraft_alert_radius_km > 0:
+        overhead = [
+            a
+            for a in event.payload.nearby
+            if a.distance_km <= aircraft_alert_radius_km
+            and (
+                aircraft_alert_max_altitude_ft <= 0
+                or a.altitude_ft <= aircraft_alert_max_altitude_ft
+            )
+        ]
+        if overhead:
+            nearest = min(overhead, key=lambda a: a.distance_km)
+            extra = f" (+{len(overhead) - 1} more)" if len(overhead) > 1 else ""
+            call = nearest.callsign.strip() or "An aircraft"
+            return Notification(
+                rule_key=f"aircraft_overhead:{event.door_id}",
+                title="Plane overhead",
+                message=(
+                    f"{call} is ~{nearest.distance_km:.1f} km away at "
+                    f"{nearest.altitude_ft} ft{extra}."
+                ),
+                cooldown_s=aircraft_alert_cooldown_s,
+            )
     return None
 
 
@@ -105,26 +145,100 @@ class NtfyNotifier:
             )
 
 
-def build_notifier(*, ntfy_url: str, ntfy_topic: str) -> Notifier:
-    if not ntfy_url or not ntfy_topic:
+class TelegramNotifier:
+    """Owner notifications via Telegram, reusing the T-609 bot client (ADR-0012)."""
+
+    def __init__(self, *, bot_token: str, chat_ids: list[str], api_base_url: str) -> None:
+        from control_plane_api.telegram import TelegramClient
+
+        self._client = TelegramClient(
+            bot_token=bot_token, chat_ids=chat_ids, api_base_url=api_base_url
+        )
+
+    def notify(self, notification: Notification) -> None:
+        self._client.send_message(text=f"{notification.title}: {notification.message}")
+
+
+class MultiNotifier:
+    """Fans out to every configured channel; one channel failing never blocks the rest."""
+
+    def __init__(self, notifiers: list[Notifier]) -> None:
+        self._notifiers = notifiers
+
+    def notify(self, notification: Notification) -> None:
+        for notifier in self._notifiers:
+            try:
+                notifier.notify(notification)
+            except Exception:
+                logger.warning(
+                    "notifier_failed", extra={"rule_key": notification.rule_key}, exc_info=True
+                )
+
+
+def build_notifier(
+    *,
+    ntfy_url: str = "",
+    ntfy_topic: str = "",
+    telegram_bot_token: str = "",
+    telegram_chat_ids: list[str] | None = None,
+    telegram_api_base_url: str = "https://api.telegram.org",
+) -> Notifier:
+    """Route owner notifications to whichever channels are configured (ntfy and/or Telegram)."""
+    notifiers: list[Notifier] = []
+    if ntfy_url and ntfy_topic:
+        notifiers.append(NtfyNotifier(base_url=ntfy_url, topic=ntfy_topic))
+    if telegram_bot_token and telegram_chat_ids:
+        notifiers.append(
+            TelegramNotifier(
+                bot_token=telegram_bot_token,
+                chat_ids=telegram_chat_ids,
+                api_base_url=telegram_api_base_url,
+            )
+        )
+    if not notifiers:
         return NullNotifier()
-    return NtfyNotifier(base_url=ntfy_url, topic=ntfy_topic)
+    if len(notifiers) == 1:
+        return notifiers[0]
+    return MultiNotifier(notifiers)
 
 
 class NotifyEngine:
     """Applies the per-rule cooldown on top of a `Notifier`."""
 
-    def __init__(self, notifier: Notifier, *, cooldown_s: int, sync_stall_alert_s: int) -> None:
+    def __init__(
+        self,
+        notifier: Notifier,
+        *,
+        cooldown_s: int,
+        sync_stall_alert_s: int,
+        aircraft_alert_radius_km: float = 0.0,
+        aircraft_alert_max_altitude_ft: int = 0,
+        aircraft_alert_cooldown_s: int = 600,
+    ) -> None:
         self._notifier = notifier
         self._cooldown = timedelta(seconds=cooldown_s)
         self._sync_stall_alert_s = sync_stall_alert_s
+        self._aircraft_alert_radius_km = aircraft_alert_radius_km
+        self._aircraft_alert_max_altitude_ft = aircraft_alert_max_altitude_ft
+        self._aircraft_alert_cooldown_s = aircraft_alert_cooldown_s
 
     def on_event(self, session: Session, event: DoorboardEvent, *, now: datetime) -> None:
-        notification = evaluate_rules(event, sync_stall_alert_s=self._sync_stall_alert_s)
+        notification = evaluate_rules(
+            event,
+            sync_stall_alert_s=self._sync_stall_alert_s,
+            aircraft_alert_radius_km=self._aircraft_alert_radius_km,
+            aircraft_alert_max_altitude_ft=self._aircraft_alert_max_altitude_ft,
+            aircraft_alert_cooldown_s=self._aircraft_alert_cooldown_s,
+        )
         if notification is None:
             return
+        cooldown = (
+            timedelta(seconds=notification.cooldown_s)
+            if notification.cooldown_s is not None
+            else self._cooldown
+        )
         state = session.get(NotificationStateRow, notification.rule_key)
-        if state is not None and now - state.last_notified_at < self._cooldown:
+        if state is not None and now - state.last_notified_at < cooldown:
             return
         try:
             self._notifier.notify(notification)

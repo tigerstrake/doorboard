@@ -28,9 +28,23 @@ class AppState:
         self.mqtt_publisher = mqtt_publisher or build_publisher(
             url=cfg.mqtt_url, username=cfg.mqtt_username, password=cfg.mqtt_password
         )
-        notifier = build_notifier(ntfy_url=cfg.ntfy_url, ntfy_topic=cfg.ntfy_topic)
+        # Owner notifications go to whichever channels are configured — ntfy
+        # and/or Telegram (the T-609 bot). The aircraft-proximity rule (T-610)
+        # is gated by AIRCRAFT_ALERT_RADIUS_MI (0 = off).
+        notifier = build_notifier(
+            ntfy_url=cfg.ntfy_url,
+            ntfy_topic=cfg.ntfy_topic,
+            telegram_bot_token=cfg.telegram_bot_token,
+            telegram_chat_ids=cfg.telegram_chat_id_list,
+            telegram_api_base_url=cfg.telegram_api_base_url,
+        )
         self.notify_engine = NotifyEngine(
-            notifier, cooldown_s=cfg.notify_cooldown_s, sync_stall_alert_s=cfg.sync_stall_alert_s
+            notifier,
+            cooldown_s=cfg.notify_cooldown_s,
+            sync_stall_alert_s=cfg.sync_stall_alert_s,
+            aircraft_alert_radius_km=cfg.aircraft_alert_radius_km,
+            aircraft_alert_max_altitude_ft=cfg.aircraft_alert_max_altitude_ft,
+            aircraft_alert_cooldown_s=cfg.aircraft_alert_cooldown_s,
         )
         # Telegram video-message delivery (ADR-0012). Disabled unless a bot
         # token, chat id(s), and door-api media creds are all configured.

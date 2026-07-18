@@ -55,6 +55,18 @@ class Settings(BaseSettings):
     # a persistently bad condition doesn't page on every ingested event.
     notify_cooldown_s: int = Field(default=3600, alias="CONTROL_PLANE_NOTIFY_COOLDOWN_S")
 
+    # ── aircraft proximity alert (T-610) ─────────────────────────────────
+    # Notify when a plane is within this radius (miles) of the aircraft
+    # observer centre (AIRCRAFT_OBSERVER_LAT/LON on the wallboard-worker — set
+    # that to the address you want the radius around). 0 disables the alert.
+    # This is ONLY the alert filter; the dedicated aircraft page keeps the
+    # worker's own wide bounding box. Optional altitude ceiling (ft; 0 = no
+    # ceiling) drops high cruisers, and this alert has its own short cooldown
+    # so overhead traffic can't spam.
+    aircraft_alert_radius_mi: float = Field(default=0.0, alias="AIRCRAFT_ALERT_RADIUS_MI")
+    aircraft_alert_max_altitude_ft: int = Field(default=0, alias="AIRCRAFT_ALERT_MAX_ALTITUDE_FT")
+    aircraft_alert_cooldown_s: int = Field(default=600, alias="AIRCRAFT_ALERT_COOLDOWN_S")
+
     # ── Telegram video-message delivery (NUC-only; ADR-0012) ─────────────
     # When a visitor SAVES a video message, the clip is pulled from door-api's
     # admin media endpoint and sent to these Telegram chats. Disabled (silent
@@ -98,6 +110,10 @@ class Settings(BaseSettings):
     @property
     def telegram_chat_id_list(self) -> list[str]:
         return [c.strip() for c in self.telegram_chat_ids.split(",") if c.strip()]
+
+    @property
+    def aircraft_alert_radius_km(self) -> float:
+        return self.aircraft_alert_radius_mi * 1.60934
 
     @property
     def host(self) -> str:
