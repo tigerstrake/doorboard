@@ -1980,6 +1980,20 @@ input:focus-visible {
 .doorpad-sub-content.osk-open {
   padding-bottom: 320px;
 }
+/* While typing, the keyboard covers the bottom ~half of the 1024x600 kiosk, so
+   collapse the not-needed pickers and pin the note editor to the top. This keeps
+   the textarea, character count and Submit/Cancel all visible above the keyboard. */
+.doorpad-sub-content.osk-open {
+  justify-content: flex-start;
+}
+.doorpad-sub-content.osk-open .placeholder-subtext,
+.doorpad-sub-content.osk-open .phrase-grid {
+  display: none;
+}
+/* Leave a little room above the field when it scrolls up, so its label shows. */
+.guestbook-freetext {
+  scroll-margin-top: 0.75rem;
+}
 /* Dark theme override for react-simple-keyboard. */
 .osk-panel .simple-keyboard.hg-theme-default {
   background: transparent;

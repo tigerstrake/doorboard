@@ -2294,7 +2294,10 @@ export function App() {
                 value={guestbookText}
                 onFocus={(e) => {
                   setGuestbookKeyboardOpen(true);
-                  window.setTimeout(() => e.target.scrollIntoView({ block: "center" }), 0);
+                  // Scroll the field to the top of the view so it sits ABOVE the
+                  // fixed on-screen keyboard (which covers the bottom ~half of the
+                  // 1024x600 kiosk). `center` used to land it behind the keyboard.
+                  window.setTimeout(() => e.target.scrollIntoView({ block: "start" }), 0);
                 }}
                 onChange={(e) => {
                   setGuestbookText(e.target.value);
