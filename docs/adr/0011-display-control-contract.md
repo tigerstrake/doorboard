@@ -1,6 +1,6 @@
 # ADR-0011: Pi-local display-control contract (`display.wallboard_view_requested`)
 
-**Status:** Proposed · **Date:** 2026-07-18
+**Status:** Accepted · **Date:** 2026-07-18
 
 Resolves escalation #93 (raised from T-405). Supersedes the interim local/mock
 model that T-405 shipped in `docs/tasks/T-405-wallboard-control-escalation.md`.
