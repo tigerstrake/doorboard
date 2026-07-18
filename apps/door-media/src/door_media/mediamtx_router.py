@@ -393,9 +393,7 @@ class MediaMTXRouter:
         return [
             StreamInfo(
                 name=self._settings.visitor_cam_stream,
-                whep_url=(
-                    f"http://127.0.0.1:8889/{self._settings.visitor_cam_stream}/whep"
-                ),
+                whep_url=(f"http://127.0.0.1:8889/{self._settings.visitor_cam_stream}/whep"),
                 stream_up=False,  # updated by async path
                 webrtc_clients=0,
             )

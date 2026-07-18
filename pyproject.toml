@@ -84,6 +84,12 @@ extend-exclude = [
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+# mediamtx_router.py embeds the Pi 5 rpicam-vid | ffmpeg pipeline as a single
+# YAML folded-scalar line inside the MediaMTX config template. It must stay on
+# one line (it's the exact command MediaMTX runs); wrapping it risks the stream.
+"apps/door-media/src/door_media/mediamtx_router.py" = ["E501"]
+
 [tool.pytest.ini_options]
 addopts = "-q --import-mode=importlib"
 testpaths = [

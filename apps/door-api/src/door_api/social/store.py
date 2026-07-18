@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 GuestbookStatus = Literal["pending", "approved", "deleted"]
