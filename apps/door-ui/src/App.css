@@ -1941,3 +1941,89 @@ input:focus-visible {
     width: calc(100vw - 2rem);
   }
 }
+
+/* --- Kiosk viewport fit (1024x600 touch) — added 2026-07-18 -----------------
+   Doorpad sub-screens (Video Message, Guestbook, ...) were overflowing a fixed
+   100vh view with overflow:hidden + centered content: the live preview grew to
+   ~900x506 and clipped the header + pushed action buttons off-screen. Cap the
+   preview, drop the forced min-height, and fall back to scrolling with
+   `safe center` so content never clips off the top. */
+.doorpad-view {
+  overflow-y: auto;
+  justify-content: safe center;
+}
+.doorpad-sub-content {
+  min-height: 0;
+}
+.doorpad-sub-content .db-live-video {
+  max-width: 520px;
+  margin-inline: auto;
+}
+
+/* --- On-screen keyboard (touch kiosk, no physical keyboard) — 2026-07-18 ---- */
+.osk-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  padding: 8px 12px 12px;
+  background: rgba(6, 10, 20, 0.98);
+  border-top: 1px solid var(--db-border-color, rgba(255, 255, 255, 0.15));
+  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.55);
+}
+.osk-inner {
+  max-width: 940px;
+  margin: 0 auto;
+}
+/* Reserve space so the focused field can scroll clear of the keyboard. */
+.doorpad-sub-content.osk-open {
+  padding-bottom: 320px;
+}
+/* While typing, the keyboard covers the bottom ~half of the 1024x600 kiosk, so
+   collapse the not-needed pickers and pin the note editor to the top. This keeps
+   the textarea, character count and Submit/Cancel all visible above the keyboard. */
+.doorpad-sub-content.osk-open {
+  justify-content: flex-start;
+}
+.doorpad-sub-content.osk-open .placeholder-subtext,
+.doorpad-sub-content.osk-open .phrase-grid {
+  display: none;
+}
+/* Leave a little room above the field when it scrolls up, so its label shows. */
+.guestbook-freetext {
+  scroll-margin-top: 0.75rem;
+}
+/* Dark theme override for react-simple-keyboard. */
+.osk-panel .simple-keyboard.hg-theme-default {
+  background: transparent;
+  padding: 0;
+}
+.osk-panel .hg-row {
+  margin-bottom: 6px;
+}
+.osk-panel .hg-button {
+  height: 52px;
+  background: #1b2436;
+  color: #e6edf6;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 2px solid rgba(0, 0, 0, 0.45);
+  border-radius: 8px;
+  font-size: 1.15rem;
+}
+.osk-panel .hg-button:active {
+  background: #2a3550;
+}
+.osk-panel .hg-button.hg-functionBtn {
+  background: #263149;
+}
+.osk-panel .hg-button[data-skbtn="{space}"] {
+  max-width: none;
+  flex-grow: 6;
+}
+.osk-panel .hg-button[data-skbtn="{done}"] {
+  background: var(--db-accent, #16a34a);
+  color: #ffffff;
+  max-width: 180px;
+  font-weight: 600;
+}

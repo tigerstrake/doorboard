@@ -177,7 +177,7 @@ describe("T-405 public kiosk regressions", () => {
 
     await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
     fireEvent.click(screen.getByText("Guestbook"));
-    fireEvent.change(screen.getByPlaceholderText("Or write your own note..."), {
+    fireEvent.change(screen.getByPlaceholderText("Tap here to type your own note..."), {
       target: { value: "I stopped by" },
     });
     fireEvent.click(screen.getByText("Submit Note"));
@@ -280,7 +280,7 @@ describe("T-405 public kiosk regressions", () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
     fireEvent.click(screen.getByText("Guestbook"));
-    fireEvent.change(screen.getByPlaceholderText("Or write your own note..."), {
+    fireEvent.change(screen.getByPlaceholderText("Tap here to type your own note..."), {
       target: { value: "Current note" },
     });
     fireEvent.click(screen.getByText("Submit Note"));
