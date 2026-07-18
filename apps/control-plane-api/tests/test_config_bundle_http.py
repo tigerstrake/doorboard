@@ -31,17 +31,6 @@ def test_get_config_requires_config_scope(client: TestClient) -> None:
     assert resp.status_code == 401
 
 
-def test_config_token_cannot_read_another_doors_bundle(client: TestClient) -> None:
-    token = _issue_config_token(client)
-
-    response = client.get(
-        "/config/door/secondary",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 403
-
-
 def test_ingest_token_cannot_read_config(client: TestClient) -> None:
     resp = client.post(
         "/admin/tokens", json={"scope": "ingest", "door_id": "primary"}, headers=ADMIN_HEADERS

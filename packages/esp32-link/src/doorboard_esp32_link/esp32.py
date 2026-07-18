@@ -78,8 +78,6 @@ class Esp32TransportMetrics:
     tx_retries: int
     tx_timeouts: int
     duplicate_rx: int
-    event_queue_drops: int
-    link_state_queue_drops: int
 
 
 class Esp32Transport(Protocol):
@@ -224,9 +222,6 @@ class Esp32TransportOptions:
     monitor_interval_ms: int = 250
     auto_start_tasks: bool = True
     dedupe_recent_window: int = DEFAULT_DEDUPE_RECENT_WINDOW
-    event_queue_size: int = 256
-    link_state_queue_size: int = 64
-    max_pending_acks: int = 64
 
 
 class Esp32ProtocolTransport:
@@ -249,8 +244,6 @@ class Esp32ProtocolTransport:
         self._tx_retries = 0
         self._tx_timeouts = 0
         self._duplicate_rx = 0
-        self._event_queue_drops = 0
-        self._link_state_queue_drops = 0
         self._protocol_error: str | None = None
         self._closed = False
         self._started = False
@@ -260,12 +253,8 @@ class Esp32ProtocolTransport:
         self._dedupe_high_water_seq = -1
         self._dedupe_recent_seqs: set[int] = set()
         self._pending_acks: dict[int, asyncio.Future[WireMessage]] = {}
-        self._events: asyncio.Queue[DoorboardEvent] = asyncio.Queue(
-            maxsize=max(1, self._options.event_queue_size)
-        )
-        self._link_states: asyncio.Queue[Esp32LinkState] = asyncio.Queue(
-            maxsize=max(1, self._options.link_state_queue_size)
-        )
+        self._events: asyncio.Queue[DoorboardEvent] = asyncio.Queue()
+        self._link_states: asyncio.Queue[Esp32LinkState] = asyncio.Queue()
         self._tasks: list[asyncio.Task[None]] = []
         self._send_lock = asyncio.Lock()
 
@@ -348,10 +337,6 @@ class Esp32ProtocolTransport:
         if msg.message_type not in ACK_REQUIRED:
             await self._write_message(msg)
             return msg
-        if msg.seq in self._pending_acks:
-            raise Esp32ProtocolError(f"sequence {msg.seq} is already awaiting an ack")
-        if len(self._pending_acks) >= self._options.max_pending_acks:
-            raise Esp32ProtocolError("too many ESP32 messages awaiting acknowledgement")
         future = asyncio.get_running_loop().create_future()
         self._pending_acks[msg.seq] = future
         try:
@@ -412,8 +397,6 @@ class Esp32ProtocolTransport:
             tx_retries=self._tx_retries,
             tx_timeouts=self._tx_timeouts,
             duplicate_rx=self._duplicate_rx,
-            event_queue_drops=self._event_queue_drops,
-            link_state_queue_drops=self._link_state_queue_drops,
         )
 
     def metrics_text(self) -> str:
@@ -425,8 +408,6 @@ class Esp32ProtocolTransport:
             "esp32_link_tx_retries_total": metrics.tx_retries,
             "esp32_link_tx_timeouts_total": metrics.tx_timeouts,
             "esp32_link_duplicate_rx_total": metrics.duplicate_rx,
-            "esp32_link_event_queue_drops_total": metrics.event_queue_drops,
-            "esp32_link_state_queue_drops_total": metrics.link_state_queue_drops,
         }
         return "".join(f"{name} {value}\n" for name, value in values.items())
 
@@ -446,16 +427,14 @@ class Esp32ProtocolTransport:
         while not self._closed:
             try:
                 chunk = await self._bytes.read()
-                if chunk == b"":
-                    self._set_connected(False, "byte transport closed")
-                    return
-                await self._receive_bytes(chunk)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
+            except OSError as exc:
                 self._protocol_error = f"ESP32 byte transport read failed: {exc}"
                 self._set_connected(False, "byte transport read failed")
-                await asyncio.sleep(self._options.monitor_interval_ms / 1000)
+                return
+            if chunk == b"":
+                self._set_connected(False, "byte transport closed")
+                return
+            await self._receive_bytes(chunk)
 
     async def _heartbeat_loop(self) -> None:
         while not self._closed:
@@ -511,55 +490,40 @@ class Esp32ProtocolTransport:
         if msg.message_type == "ack":
             self._handle_ack(msg)
             return
-        peer_boot_id = self._peer_boot_id
-        event: DoorboardEvent | None = None
-        try:
-            if msg.message_type == "hello":
-                raw_boot_id = msg.payload.get("boot_id")
-                raw_fw_version = msg.payload.get("fw_version")
-                raw_proto_v = msg.payload.get("proto_v")
-                if not isinstance(raw_boot_id, str) or not raw_boot_id:
-                    raise Esp32ProtocolError("hello boot_id must be a non-empty string")
-                if not isinstance(raw_fw_version, str) or not raw_fw_version:
-                    raise Esp32ProtocolError("hello fw_version must be a non-empty string")
-                if raw_proto_v != PROTO_V:
-                    raise Esp32ProtocolError("hello proto_v is unsupported")
-                peer_boot_id = raw_boot_id
-            elif msg.message_type in INBOUND_EVENT_TYPES:
-                event = self._to_contract_event(msg)
-            else:
-                raise Esp32ProtocolError(f"unsupported inbound ESP32 message: {msg.message_type}")
-        except (KeyError, Esp32ProtocolError, ValidationError) as exc:
-            self._rx_errors += 1
-            self._protocol_error = f"invalid ESP32 {msg.message_type} payload: {exc}"
-            return
-
-        duplicate = self._is_duplicate_inbound(peer_boot_id or "unknown", msg.seq)
         if msg.message_type in ACK_REQUIRED:
             await self._write_message(
                 WireMessage(
                     v=PROTO_V, seq=self._next_seq(), message_type="ack", ack=msg.seq, payload={}
                 )
             )
-        if duplicate:
-            self._duplicate_rx += 1
-            return
 
+        peer_boot_id = self._peer_boot_id
         if msg.message_type == "hello":
-            self._peer_boot_id = peer_boot_id
-            self._fw_version = str(msg.payload["fw_version"])
+            raw_boot_id = msg.payload.get("boot_id")
+            if isinstance(raw_boot_id, str) and raw_boot_id != self._peer_boot_id:
+                peer_boot_id = raw_boot_id
+                self._peer_boot_id = raw_boot_id
+            raw_fw_version = msg.payload.get("fw_version")
+            if isinstance(raw_fw_version, str):
+                self._fw_version = raw_fw_version
             self._last_heartbeat_mono_ms = self._now_mono_ms()
             self._set_connected(True, "hello")
-        elif msg.message_type == "heartbeat":
+        if msg.message_type == "heartbeat":
             self._last_heartbeat_mono_ms = self._now_mono_ms()
             self._set_connected(True, "heartbeat")
 
-        if event is not None:
-            if self._events.full():
-                with contextlib.suppress(asyncio.QueueEmpty):
-                    self._events.get_nowait()
-                self._event_queue_drops += 1
-            self._events.put_nowait(event)
+        if self._is_duplicate_inbound(peer_boot_id or "unknown", msg.seq):
+            self._duplicate_rx += 1
+            return
+
+        if msg.message_type in INBOUND_EVENT_TYPES:
+            try:
+                event = self._to_contract_event(msg)
+            except (KeyError, Esp32ProtocolError, ValidationError) as exc:
+                self._rx_errors += 1
+                self._protocol_error = f"invalid ESP32 {msg.message_type} payload: {exc}"
+                return
+            await self._events.put(event)
 
     def _handle_ack(self, msg: WireMessage) -> None:
         if msg.ack is None:
@@ -636,23 +600,20 @@ class Esp32ProtocolTransport:
             await self._bytes.write(encode_wire_message(msg))
 
     def _next_seq(self) -> int:
-        self._seq = (self._seq % 0xFFFFFFFF) + 1
+        self._seq += 1
         return self._seq
 
     def _set_connected(self, connected: bool, reason: str) -> None:
         if self._connected == connected:
             return
         self._connected = connected
-        state = Esp32LinkState(
-            connected=connected,
-            changed_at_mono_ms=self._now_mono_ms(),
-            reason=reason,
+        self._link_states.put_nowait(
+            Esp32LinkState(
+                connected=connected,
+                changed_at_mono_ms=self._now_mono_ms(),
+                reason=reason,
+            )
         )
-        if self._link_states.full():
-            with contextlib.suppress(asyncio.QueueEmpty):
-                self._link_states.get_nowait()
-            self._link_state_queue_drops += 1
-        self._link_states.put_nowait(state)
 
     def _apply_heartbeat_timeout(self) -> None:
         if not self._connected:
@@ -682,11 +643,9 @@ class StreamByteTransport:
 
 
 class UdpByteTransport(asyncio.DatagramProtocol):
-    _QUEUE_SIZE = 256
-
     def __init__(self, remote_addr: tuple[str, int]) -> None:
         self._remote_addr = remote_addr
-        self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=self._QUEUE_SIZE)
+        self._queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._transport: asyncio.DatagramTransport | None = None
 
     @classmethod
@@ -704,16 +663,10 @@ class UdpByteTransport(asyncio.DatagramProtocol):
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         if addr == self._remote_addr:
-            self._put_latest(data)
+            self._queue.put_nowait(data)
 
     def connection_lost(self, exc: Exception | None) -> None:
-        self._put_latest(b"")
-
-    def _put_latest(self, data: bytes) -> None:
-        if self._queue.full():
-            with contextlib.suppress(asyncio.QueueEmpty):
-                self._queue.get_nowait()
-        self._queue.put_nowait(data)
+        self._queue.put_nowait(b"")
 
     async def read(self) -> bytes:
         return await self._queue.get()
@@ -730,7 +683,6 @@ class UdpByteTransport(asyncio.DatagramProtocol):
 
 
 class PosixSerialByteTransport:
-    _QUEUE_SIZE = 256
     _BAUD_RATES = {
         9_600: termios.B9600,
         19_200: termios.B19200,
@@ -745,7 +697,7 @@ class PosixSerialByteTransport:
     def __init__(self, fd: int) -> None:
         self._fd = fd
         self._loop = asyncio.get_running_loop()
-        self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=self._QUEUE_SIZE)
+        self._queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._closed = False
         self._loop.add_reader(self._fd, self._read_ready)
 
@@ -776,7 +728,7 @@ class PosixSerialByteTransport:
         self._closed = True
         self._loop.remove_reader(self._fd)
         os.close(self._fd)
-        self._put_latest(b"")
+        self._queue.put_nowait(b"")
 
     def _read_ready(self) -> None:
         try:
@@ -785,12 +737,6 @@ class PosixSerialByteTransport:
             return
         except OSError:
             data = b""
-        self._put_latest(data)
-
-    def _put_latest(self, data: bytes) -> None:
-        if self._queue.full():
-            with contextlib.suppress(asyncio.QueueEmpty):
-                self._queue.get_nowait()
         self._queue.put_nowait(data)
 
     @classmethod

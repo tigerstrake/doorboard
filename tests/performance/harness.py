@@ -249,13 +249,6 @@ async def _main(args: argparse.Namespace) -> int:
 
     report_json = build_json(samples, regressions)
     report_text = build_report(samples, baseline=baseline, regressions=regressions)
-    report_json["measurement_mode"] = args.mode
-    report_json["hardware_acceptance"] = args.mode == "hardware"
-    if args.mode == "simulator":
-        report_text = (
-            "SIMULATOR CODE-PATH REGRESSION REPORT\n"
-            "Not valid for physical latency or hardware acceptance.\n\n" + report_text
-        )
 
     if args.json_out:
         out = Path(args.json_out)

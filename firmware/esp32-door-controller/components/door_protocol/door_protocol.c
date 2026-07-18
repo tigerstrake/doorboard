@@ -466,9 +466,6 @@ door_protocol_rx_result_t door_protocol_receive_from_pi(
     if ((dedupe_boot_id == NULL || dedupe_boot_id[0] == '\0') && msg.boot_id[0] != '\0') {
         dedupe_boot_id = msg.boot_id;
     }
-    if ((dedupe_boot_id == NULL || dedupe_boot_id[0] == '\0') && ctx->peer_boot_id[0] != '\0') {
-        dedupe_boot_id = ctx->peer_boot_id;
-    }
     duplicate = remember_seen(ctx, dedupe_boot_id, msg.seq);
     if (!duplicate) {
         apply_message_once(ctx, &msg, now_mono_ms);

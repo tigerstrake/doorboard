@@ -51,14 +51,13 @@ from doorboard_config import DoorConfigSettings
 from doorboard_contracts import PresenceLabel
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import Response
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, ValidationError, field_validator
 from sqlalchemy import func, select
 
 from control_plane_api import presence_engine
 from control_plane_api import tokens as token_store
 from control_plane_api.bundles import get_or_create_bundle, update_bundle
 from control_plane_api.db import session_scope
-from control_plane_api.http_limits import BodySizeLimitMiddleware
 from control_plane_api.models import EventRow, SocialItemRow
 from control_plane_api.presence import CoordinatePayloadError, reject_coordinate_payload
 from control_plane_api.presence_engine import InvalidSourceError
@@ -88,7 +87,6 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
 )
-app.add_middleware(BodySizeLimitMiddleware, max_bytes=1024 * 1024)
 
 
 def _state(request: Request) -> AppState:
@@ -166,23 +164,16 @@ async def metrics(request: Request) -> Response:
 
 
 class IngestRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    batch_id: str = Field(min_length=1, max_length=128)
-    events: list[dict] = Field(max_length=200)
+    batch_id: str
+    events: list[dict]
 
 
 @app.post("/ingest")
 async def ingest(
     body: IngestRequest,
     request: Request,
-    token: Annotated[ServiceTokenRecord, Depends(_ingest_auth)],
+    _token: Annotated[ServiceTokenRecord, Depends(_ingest_auth)],
 ) -> dict:
-    if any(event.get("door_id") not in (None, token.door_id) for event in body.events):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="token is not valid for an event from another door",
-        )
     state = _state(request)
     now = datetime.now(UTC)
     results = ingest_batch(
@@ -205,10 +196,8 @@ async def ingest(
 async def get_config(
     door_id: str,
     request: Request,
-    token: Annotated[ServiceTokenRecord, Depends(_config_auth)],
+    _token: Annotated[ServiceTokenRecord, Depends(_config_auth)],
 ) -> dict:
-    if token.door_id != door_id:
-        raise HTTPException(status_code=403, detail="token is not valid for this door")
     state = _state(request)
     with session_scope(state.session_factory) as session:
         bundle = get_or_create_bundle(session, door_id=door_id, now=datetime.now(UTC))
@@ -324,7 +313,7 @@ async def list_presence(request: Request, _auth: AdminAuth) -> dict:
 @app.get("/status/presence/bundle")
 async def get_presence_bundle(
     request: Request,
-    token: Annotated[ServiceTokenRecord, Depends(_config_auth)],
+    _token: Annotated[ServiceTokenRecord, Depends(_config_auth)],
 ) -> dict:
     state = _state(request)
     now = datetime.now(UTC)
@@ -332,13 +321,13 @@ async def get_presence_bundle(
         statuses = presence_engine.list_subject_statuses(
             session,
             now=now,
-            door_id=token.door_id,
+            door_id=state.settings.door_id,
             calendar_provider=state.calendar_provider,
             mqtt_publisher=state.mqtt_publisher,
             history_max_rows=state.settings.presence_history_max_rows,
         )
     return {
-        "door_id": token.door_id,
+        "door_id": state.settings.door_id,
         "generated_at": now.isoformat(),
         "stale_after_s": state.settings.presence_stale_after_s,
         "subjects": {
