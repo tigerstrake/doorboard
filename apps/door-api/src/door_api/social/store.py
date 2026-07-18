@@ -14,6 +14,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 GuestbookStatus = Literal["pending", "approved", "deleted"]
@@ -120,6 +121,8 @@ class SocialStore:
 
     def __init__(self, db_path: str = ":memory:") -> None:
         self._lock = threading.Lock()
+        if db_path not in (":memory:", "") and not db_path.startswith("file:"):
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, isolation_level="DEFERRED", check_same_thread=False)
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL;")
