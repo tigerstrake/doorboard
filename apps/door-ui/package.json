@@ -18,7 +18,8 @@
     "@doorboard/event-client": "workspace:*",
     "@doorboard/ui-kit": "workspace:*",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "react-simple-keyboard": "^3.8.240"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

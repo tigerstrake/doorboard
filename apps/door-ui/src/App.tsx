@@ -40,6 +40,7 @@ import { AdminAboutPanel } from "./AdminAboutPanel";
 import { VisitorPage } from "./VisitorPage";
 import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
 import { WallboardFocusedView, WallboardLauncher } from "./wallboardChannels";
+import { OnScreenKeyboard } from "./OnScreenKeyboard";
 import {
   WALLBOARD_CONTROL_EVENT,
   WALLBOARD_CONTROL_STORAGE_KEY,
@@ -389,6 +390,7 @@ export function App() {
   // Social feature state (T-403)
   const [guestbookText, setGuestbookText] = useState<string>("");
   const [selectedGuestbookPhrase, setSelectedGuestbookPhrase] = useState<string | null>(null);
+  const [guestbookKeyboardOpen, setGuestbookKeyboardOpen] = useState(false);
   const [guestbookSubmitting, setGuestbookSubmitting] = useState<boolean>(false);
   const [currentPoll, setCurrentPoll] = useState<Poll | null>(null);
   const [pollResults, setPollResults] = useState<PollResultRow[] | null>(null);
@@ -2256,7 +2258,7 @@ export function App() {
           )}
 
           {doorPadScreen === "guestbook" && (
-            <div className="doorpad-sub-content">
+            <div className={`doorpad-sub-content${guestbookKeyboardOpen ? " osk-open" : ""}`}>
               <h2>Leave a Guestbook Note</h2>
               <p className="placeholder-subtext">Pick a phrase or write a short note (280 chars max)</p>
               <div className="phrase-grid">
@@ -2288,8 +2290,12 @@ export function App() {
                 className="guestbook-freetext"
                 maxLength={280}
                 rows={3}
-                placeholder="Or write your own note..."
+                placeholder="Tap here to type your own note..."
                 value={guestbookText}
+                onFocus={(e) => {
+                  setGuestbookKeyboardOpen(true);
+                  window.setTimeout(() => e.target.scrollIntoView({ block: "center" }), 0);
+                }}
                 onChange={(e) => {
                   setGuestbookText(e.target.value);
                   setSelectedGuestbookPhrase(null);
@@ -2300,12 +2306,33 @@ export function App() {
                 <BigButton
                   variant="primary"
                   disabled={guestbookSubmitting || guestbookText.trim().length === 0}
-                  onClick={() => handleGuestbookSubmit(guestbookText)}
+                  onClick={() => {
+                    setGuestbookKeyboardOpen(false);
+                    handleGuestbookSubmit(guestbookText);
+                  }}
                 >
                   Submit Note
                 </BigButton>
-                <BigButton onClick={returnDoorPadToContext}>Cancel</BigButton>
+                <BigButton
+                  onClick={() => {
+                    setGuestbookKeyboardOpen(false);
+                    returnDoorPadToContext();
+                  }}
+                >
+                  Cancel
+                </BigButton>
               </div>
+              {guestbookKeyboardOpen && (
+                <OnScreenKeyboard
+                  value={guestbookText}
+                  maxLength={280}
+                  onChange={(v) => {
+                    setGuestbookText(v);
+                    setSelectedGuestbookPhrase(null);
+                  }}
+                  onClose={() => setGuestbookKeyboardOpen(false)}
+                />
+              )}
             </div>
           )}
 
