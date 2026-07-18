@@ -18,6 +18,7 @@ from control_plane_api.db import session_scope
 from control_plane_api.ingest import ingest_one
 from control_plane_api.mqtt import MqttPublisher
 from control_plane_api.notify import NotifyEngine
+from control_plane_api.telegram import VideoMessageDelivery
 
 logger = logging.getLogger("control_plane_api.service")
 
@@ -30,6 +31,7 @@ def ingest_batch(
     now: datetime,
     mqtt_publisher: MqttPublisher,
     notify_engine: NotifyEngine,
+    video_delivery: VideoMessageDelivery | None = None,
 ) -> list[dict]:
     results = []
     for raw in raw_events:
@@ -51,5 +53,11 @@ def ingest_batch(
                     notify_engine.on_event(notify_session, outcome.event, now=now)
             except Exception:
                 logger.warning("notify_fanout_failed", exc_info=True)
+            if video_delivery is not None:
+                try:
+                    with session_scope(session_factory) as delivery_session:
+                        video_delivery.on_event(delivery_session, outcome.event, now=now)
+                except Exception:
+                    logger.warning("video_delivery_fanout_failed", exc_info=True)
 
     return results
