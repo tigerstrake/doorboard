@@ -101,6 +101,7 @@ def test_birdnet_go_provider_api_error_graceful() -> None:
 def test_run_bird_summary_job_failure_degrades_gracefully(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FEATURE_BIRDNET", "True")
     monkeypatch.setenv("BIRDNET_URL", "http://127.0.0.1:8080")
+    monkeypatch.setenv("WALLBOARD_WORKER_INGEST_TOKEN", "test-ingest-token")
     settings = Settings()
     mock_provider = MagicMock()
     mock_provider.get_summary.side_effect = Exception("Bird Pi Unreachable")

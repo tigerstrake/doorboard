@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import Field, field_validator
+from pathlib import Path
+
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,6 +16,20 @@ class Settings(BaseSettings):
     door_id: str = Field(default="primary", alias="DOORBOARD_DOOR_ID")
     control_plane_url: str = Field(default="http://127.0.0.1:8090", alias="CONTROL_PLANE_URL")
     control_plane_admin_token: str = Field(default="", alias="CONTROL_PLANE_ADMIN_TOKEN")
+    ingest_token: str = Field(default="", alias="WALLBOARD_WORKER_INGEST_TOKEN")
+    scheduler_heartbeat_path: Path = Field(
+        default=Path("/tmp/wallboard-worker-heartbeat"),
+        alias="WALLBOARD_WORKER_HEARTBEAT_PATH",
+    )
+
+    bird_summary_interval_s: float = Field(default=300.0, alias="WALLBOARD_BIRD_INTERVAL_S", gt=0)
+    satellite_interval_s: float = Field(
+        default=3600.0, alias="WALLBOARD_SATELLITE_INTERVAL_S", gt=0
+    )
+    aircraft_interval_s: float = Field(default=30.0, alias="WALLBOARD_AIRCRAFT_INTERVAL_S", gt=0)
+    printer_interval_s: float = Field(default=30.0, alias="WALLBOARD_PRINTER_INTERVAL_S", gt=0)
+    food_interval_s: float = Field(default=86400.0, alias="WALLBOARD_FOOD_INTERVAL_S", gt=0)
+    collage_interval_s: float = Field(default=86400.0, alias="WALLBOARD_COLLAGE_INTERVAL_S", gt=0)
 
     feature_birdnet: bool = Field(default=False, alias="FEATURE_BIRDNET")
     birdnet_url: str = Field(default="http://127.0.0.1:8080", alias="BIRDNET_URL")
@@ -93,3 +109,18 @@ class Settings(BaseSettings):
         if isinstance(v, list):
             return [str(item) for item in v]
         return ["ISS (ZARYA)"]
+
+    @model_validator(mode="after")
+    def enabled_jobs_require_ingest_auth(self) -> Settings:
+        enabled = any(
+            (
+                self.feature_birdnet,
+                self.feature_satellites,
+                self.feature_aircraft,
+                self.feature_printer,
+                self.feature_food,
+            )
+        )
+        if enabled and not (self.ingest_token or self.control_plane_admin_token):
+            raise ValueError("enabled wallboard jobs require WALLBOARD_WORKER_INGEST_TOKEN")
+        return self

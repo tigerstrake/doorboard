@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Keep the venv outside the repo: cloud-synced folders (iCloud) corrupt
-# .pth files in .venv via eviction/conflict copies. Override if needed.
-export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$HOME/.venvs/doorboard}"
+source "$(dirname "$0")/_uv-env"
 
 pnpm_cmd=(pnpm)
 if ! command -v pnpm >/dev/null 2>&1; then
   pnpm_cmd=(corepack pnpm)
 fi
 
-uv run ruff format --check .
-uv run ruff check .
+"$UV_PROJECT_ENVIRONMENT/bin/ruff" format --check .
+"$UV_PROJECT_ENVIRONMENT/bin/ruff" check .
 "${pnpm_cmd[@]}" exec eslint .

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import shutil
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -19,7 +20,7 @@ from doorboard_esp32_link import Esp32Transport, wire_message_from_event
 from door_visiond._uuid7 import uuid7
 from door_visiond.clock import Clock, SystemClock
 from door_visiond.compat import CompatResult, check_compatibility
-from door_visiond.consent import current_consent_version
+from door_visiond.consent import load_consent_statement
 from door_visiond.embedder import Embedder, HailoEmbedder, MockEmbedder
 from door_visiond.embedding import Embedding
 from door_visiond.enrollment import EnrollmentStore, ProfileSpec
@@ -42,7 +43,9 @@ from door_visiond.pipeline import (
     default_mock_script,
 )
 from door_visiond.privacy_store import PrivacyStore
+from door_visiond.purge_outbox import PurgeOutbox
 from door_visiond.settings import Settings
+from door_visiond.storage_security import is_luks_backed
 
 logger = get_logger("door_visiond.service")
 
@@ -60,6 +63,10 @@ class EnrollError(Exception):
 
 class PrivacyModeActiveError(EnrollError):
     """Enrollment refused because privacy mode is active (409)."""
+
+
+class EnrollmentLockedError(EnrollError):
+    """Encrypted enrollment storage is unavailable (503)."""
 
 
 class StaleConsentError(EnrollError):
@@ -103,9 +110,24 @@ class VisiondService:
         self._esp32_profile_last_error: str | None = None
         self._esp32_tasks: set[asyncio.Task[None]] = set()
 
-        # Enrollment storage lives on the SSD under visiond/.
-        self._store = EnrollmentStore(settings.enrollment_db_path)
+        self._enrollment_locked = settings.require_encrypted_enrollment and not is_luks_backed(
+            settings.enrollment_root
+        )
+        # Never fall through to the unencrypted parent filesystem while the
+        # dedicated volume is locked. The in-memory store keeps read paths
+        # operational but cannot retain biometric data.
+        self._store = EnrollmentStore(
+            ":memory:" if self._enrollment_locked else settings.enrollment_db_path
+        )
         self._privacy_store = PrivacyStore(settings.privacy_state_path)
+        self._purge_outbox = PurgeOutbox(settings.purge_outbox_path)
+        self._purge_task: asyncio.Task[None] | None = None
+        self._purges_delivered = 0
+        self._purges_failed = 0
+        self._privacy_state_degraded = False
+        self._pipeline_errors = 0
+        self._pipeline_consecutive_errors = 0
+        self._runtime_degraded_detail: str | None = None
 
         # Startup compatibility check → effective mode.
         self._compat: CompatResult = check_compatibility(
@@ -119,6 +141,9 @@ class VisiondService:
             logger.warning("hailo_incompatible_degraded", extra={"detail": self._compat.detail})
         else:
             self._effective_mode = settings.vision_mode
+        if self._enrollment_locked:
+            self._effective_mode = "disabled"
+            logger.warning("encrypted_enrollment_storage_locked")
 
         self._embedder: Embedder = embedder or self._build_embedder()
 
@@ -172,12 +197,14 @@ class VisiondService:
     def startup(self) -> None:
         """Prepare storage and restore privacy state BEFORE any frame is captured."""
         self._settings.visiond_root.mkdir(parents=True, exist_ok=True)
-        self._wipe_enroll_tmp()
+        if not self._enrollment_locked:
+            self._wipe_enroll_tmp()
 
         # Restore persisted privacy flag first (P-8): the backend must not
         # capture until this is applied.
         state = self._privacy_store.load()
         self._privacy_enabled = state.enabled
+        self._privacy_state_degraded = state.changed_by == "fail_closed"
         self._backend.set_capturing(not self._privacy_enabled)
 
         self._reload_matcher()
@@ -196,6 +223,7 @@ class VisiondService:
         self.startup()
         self._running = True
         self._run_task = asyncio.create_task(self._run_loop(), name="visiond-run-loop")
+        self._purge_task = asyncio.create_task(self._purge_loop(), name="visiond-purge-outbox")
 
     async def stop(self) -> None:
         self._running = False
@@ -203,10 +231,60 @@ class VisiondService:
             self._run_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._run_task
+        if self._purge_task is not None:
+            self._purge_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._purge_task
         if self._esp32_tasks:
             await asyncio.gather(*self._esp32_tasks, return_exceptions=True)
         await self._backend.close()
+        self._purge_outbox.close()
         self._store.close()
+
+    async def _purge_loop(self) -> None:
+        while self._running:
+            for item in self._purge_outbox.pending():
+                try:
+                    await asyncio.to_thread(self._deliver_purge, item.person_id)
+                except Exception as exc:
+                    attempts = item.attempts + 1
+                    delay = min(2 ** min(attempts, 8), self._settings.purge_retry_max_s)
+                    self._purge_outbox.mark_failed(
+                        item.person_id,
+                        attempts=attempts,
+                        delay_s=delay,
+                        error=str(exc),
+                    )
+                    self._purges_failed += 1
+                    logger.warning(
+                        "archive_purge_delivery_failed",
+                        extra={"person_id": item.person_id, "attempts": attempts},
+                    )
+                else:
+                    self._purge_outbox.mark_delivered(item.person_id)
+                    self._purges_delivered += 1
+            await asyncio.sleep(self._settings.purge_worker_interval_s)
+
+    def _deliver_purge(self, person_id: str) -> None:
+        from urllib.parse import quote
+
+        url = (
+            f"{self._settings.sync_base_url.rstrip('/')}/internal/purge/{quote(person_id, safe='')}"
+        )
+        headers = (
+            {"Authorization": f"Bearer {self._settings.sync_admin_token}"}
+            if self._settings.sync_admin_token
+            else {}
+        )
+        request = urllib.request.Request(  # noqa: S310
+            url,
+            data=b"",
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self._settings.sync_timeout_s) as response:  # noqa: S310
+            if not 200 <= response.status < 300:
+                raise RuntimeError(f"door-sync purge returned HTTP {response.status}")
 
     async def _run_loop(self) -> None:
         logger.info("visiond_run_loop_started")
@@ -216,11 +294,37 @@ class VisiondService:
                 self._core.tick()
                 if capture is not None:
                     self._core.process_capture(capture)
+                self._pipeline_consecutive_errors = 0
             except asyncio.CancelledError:
                 break
             except Exception as exc:  # a bad frame must never kill the loop
-                logger.exception("run_loop_error", exc_info=exc)
+                self._pipeline_errors += 1
+                self._pipeline_consecutive_errors += 1
+                if self._pipeline_consecutive_errors >= 3:
+                    await self._degrade_failed_backend(exc)
+                    continue
+                logger.warning(
+                    "vision_backend_frame_failed",
+                    extra={
+                        "error_class": type(exc).__name__,
+                        "consecutive": self._pipeline_consecutive_errors,
+                    },
+                )
                 await asyncio.sleep(0.05)
+
+    async def _degrade_failed_backend(self, exc: Exception) -> None:
+        failed_backend = self._backend
+        self._backend = DisabledBackend(interval_ms=self._settings.frame_interval_ms)
+        self._effective_mode = "disabled"
+        self._runtime_degraded_detail = f"vision backend failed: {type(exc).__name__}"
+        self._pipeline_consecutive_errors = 0
+        with contextlib.suppress(Exception):
+            await failed_backend.close()
+        self._emit_pipeline_status()
+        logger.error(
+            "vision_backend_degraded_to_disabled",
+            extra={"error_class": type(exc).__name__},
+        )
 
     def _wipe_enroll_tmp(self) -> None:
         root = self._settings.enroll_tmp_root
@@ -258,13 +362,12 @@ class VisiondService:
         images: list[bytes],
         profile: ProfileSpec,
     ) -> EnrollResult:
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
         if self._privacy_enabled:
             raise PrivacyModeActiveError
 
-        expected = current_consent_version(
-            statement_path=self._settings.consent_statement_path,
-            fallback=self._settings.consent_version,
-        )
+        expected = load_consent_statement(self._settings.consent_statement_path).version
         if not consent_confirmed or consent_version != expected:
             raise StaleConsentError(expected)
         if not images:
@@ -307,6 +410,9 @@ class VisiondService:
         )
 
     def unenroll(self, person_id: str) -> dict[str, object]:
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        newly_queued = self._purge_outbox.enqueue(person_id)
         existed = self._store.unenroll(person_id)
         self._reload_matcher()
         # Flush the cache if the unenrolled person is the current visitor (E-5 →
@@ -316,7 +422,7 @@ class VisiondService:
             self._core.clear_cache_and_notify(reason="admin")
         logger.info(
             "unenroll_archive_purge_queued",
-            extra={"person_id": person_id, "note": "remote purge wired in T-303/T-501"},
+            extra={"person_id": person_id, "newly_queued": newly_queued},
         )
         return {"deleted": existed, "archive_purge": "queued"}
 
@@ -324,6 +430,7 @@ class VisiondService:
 
     def set_privacy_mode(self, *, enabled: bool, changed_by: str) -> None:
         self._privacy_store.save(enabled=enabled, changed_by=changed_by)
+        self._privacy_state_degraded = False
         self._privacy_enabled = enabled
         # E-6: kill/enable capture at the frame source.
         self._backend.set_capturing(not enabled)
@@ -444,14 +551,19 @@ class VisiondService:
     def health(self) -> dict[str, object]:
         status = self._backend.status()
         hailo_ok = status.hailo_ok and not self._privacy_enabled
-        enrollment_locked = not self._settings.enrollment_db_path.exists()
+        enrollment_locked = self._enrollment_locked
         esp32_status = self._esp32_transport.status() if self._esp32_transport is not None else None
         esp32_profile_warning = (
             f"profile push failed: {self._esp32_profile_last_error}"
             if self._esp32_profile_last_error is not None
             else None
         )
-        healthy = esp32_profile_warning is None  # visiond still serves cache in degraded mode
+        healthy = (
+            esp32_profile_warning is None
+            and not self._privacy_state_degraded
+            and self._runtime_degraded_detail is None
+            and not self._enrollment_locked
+        )
         return {
             "service": "door-visiond",
             "status": "ok" if healthy else "degraded",
@@ -462,10 +574,13 @@ class VisiondService:
             "enrolled": self._matcher.enrolled_count,
             "enrollment_locked": enrollment_locked,
             "compat": self._compat.detail,
+            "runtime_warning": self._runtime_degraded_detail,
             "door_id": self._settings.door_id,
             "esp32_connected": esp32_status.connected if esp32_status is not None else None,
             "esp32_profile_push_status": "degraded" if esp32_profile_warning else "ok",
             "esp32_profile_warning": esp32_profile_warning,
+            "privacy_state_status": "invalid_fail_closed" if self._privacy_state_degraded else "ok",
+            "archive_purge_queue_depth": self._purge_outbox.depth(),
         }
 
     def metrics_snapshot(self) -> dict[str, float]:
@@ -475,6 +590,10 @@ class VisiondService:
         snap["esp32_profile_updates_acked"] = float(self._esp32_profile_updates_acked)
         snap["esp32_profile_clears_acked"] = float(self._esp32_profile_clears_acked)
         snap["esp32_profile_send_failures"] = float(self._esp32_profile_send_failures)
+        snap["archive_purge_queue_depth"] = float(self._purge_outbox.depth())
+        snap["archive_purges_delivered"] = float(self._purges_delivered)
+        snap["archive_purges_failed"] = float(self._purges_failed)
+        snap["pipeline_errors"] = float(self._pipeline_errors)
         return snap
 
     def now_utc(self) -> datetime:

@@ -28,6 +28,39 @@ async function publish(page: Page, event: Record<string, unknown>) {
   }, event);
 }
 
+export async function publishAircraftSummary(page: Page, distanceKm: number) {
+  await publish(page, {
+    event_id: nextId("evt"),
+    type: "ambient.aircraft_summary",
+    source: "e2e",
+    occurred_at: new Date(0).toISOString(),
+    monotonic_ms: 0,
+    door_id: "primary",
+    trace_id: nextId("trace"),
+    payload: {
+      as_of: new Date(0).toISOString(),
+      nearby: [{ callsign: "TEST123", altitude_ft: 4200, distance_km: distanceKm, heading: 87 }],
+    },
+  });
+}
+
+export async function publishBirdSummary(page: Page, totalDetections: number) {
+  await publish(page, {
+    event_id: nextId("evt"),
+    type: "ambient.bird_summary",
+    source: "e2e",
+    occurred_at: new Date(0).toISOString(),
+    monotonic_ms: 0,
+    door_id: "primary",
+    trace_id: nextId("trace"),
+    payload: {
+      window: "today",
+      total_detections: totalDetections,
+      top_species: [{ name: "Pacific Swift", count: totalDetections, confidence_avg: 0.91 }],
+    },
+  });
+}
+
 let counter = 0;
 function nextId(prefix: string) {
   counter += 1;

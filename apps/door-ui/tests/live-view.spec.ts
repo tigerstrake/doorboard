@@ -109,7 +109,9 @@ async function stopDoorMedia(): Promise<void> {
 }
 
 async function waitForHealth(): Promise<void> {
-  const deadline = Date.now() + 10_000;
+  // The first `uv run` in a clean kiosk/CI environment may spend several
+  // seconds warming its package cache before uvicorn begins listening.
+  const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     try {
       const response = await fetch(`${DOOR_MEDIA_URL}/health`);

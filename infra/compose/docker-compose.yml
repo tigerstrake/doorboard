@@ -5,8 +5,7 @@
 # latency-tolerant, holds admin secrets (in `.env`, never in git), and never
 # sits in the door critical path (ADR-0002). `docker compose up` with no
 # `--profile` flags starts the services required for the acceptance bar
-# ("all healthchecks green"); `caddy` (optional internal HTTPS) and
-# `wallboard-worker` (no jobs until T-601..T-605) are behind profiles.
+# ("all healthchecks green"); `caddy` is optional internal HTTPS.
 #
 # Run from the repo root:
 #   docker compose -f infra/compose/docker-compose.yml --env-file .env up -d
@@ -158,10 +157,27 @@ services:
       context: ../..
       dockerfile: infra/compose/docker/wallboard-worker.Dockerfile
     restart: unless-stopped
-    profiles: ["future"]
     depends_on:
-      postgres:
+      control-plane-api:
         condition: service_healthy
+    environment:
+      DOORBOARD_DOOR_ID: ${DOORBOARD_DOOR_ID:-primary}
+      CONTROL_PLANE_URL: http://control-plane-api:8090
+      WALLBOARD_WORKER_INGEST_TOKEN: ${WALLBOARD_WORKER_INGEST_TOKEN:-}
+      FEATURE_BIRDNET: ${FEATURE_BIRDNET:-false}
+      FEATURE_SATELLITES: ${FEATURE_SATELLITES:-false}
+      FEATURE_AIRCRAFT: ${FEATURE_AIRCRAFT:-false}
+      FEATURE_PRINTER: ${FEATURE_PRINTER:-false}
+      FEATURE_FOOD: ${FEATURE_FOOD:-false}
+      BIRDNET_URL: ${BIRDNET_GO_URL:-http://bird-pi.local:8080}
+      OPENSKY_USERNAME: ${OPENSKY_CLIENT_ID:-}
+      OPENSKY_PASSWORD: ${OPENSKY_CLIENT_SECRET:-}
+      SATELLITES_OBSERVER_LAT: ${OBSERVER_LAT:-0}
+      SATELLITES_OBSERVER_LON: ${OBSERVER_LON:-0}
+      SATELLITES_OBSERVER_ELEVATION: ${OBSERVER_ALT_M:-0}
+      AIRCRAFT_OBSERVER_LAT: ${OBSERVER_LAT:-0}
+      AIRCRAFT_OBSERVER_LON: ${OBSERVER_LON:-0}
+      OCTOPRINT_URL: ${PRINTER_API_URL:-http://octopi.local}
 
   caddy:
     image: caddy:2-alpine

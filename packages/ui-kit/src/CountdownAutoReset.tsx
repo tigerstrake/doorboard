@@ -6,6 +6,11 @@ export interface CountdownAutoResetProps {
   children?: React.ReactNode;
   showProgress?: boolean;
   className?: string;
+  /**
+   * Suspend inactivity expiry while an explicit capture/review workflow is in
+   * progress. The remaining timeout restarts when the wrapper resumes.
+   */
+  paused?: boolean;
 }
 
 export function CountdownAutoReset({
@@ -14,6 +19,7 @@ export function CountdownAutoReset({
   children,
   showProgress = true,
   className = "",
+  paused = false,
 }: CountdownAutoResetProps) {
   const [timeLeftMs, setTimeLeftMs] = useState<number>(timeoutMs);
   const onResetRef = useRef(onReset);
@@ -21,6 +27,10 @@ export function CountdownAutoReset({
 
   useEffect(() => {
     setTimeLeftMs(timeoutMs);
+
+    if (paused) {
+      return undefined;
+    }
 
     let lastActivity = Date.now();
     const handleActivity = () => {
@@ -50,14 +60,14 @@ export function CountdownAutoReset({
       });
       clearInterval(interval);
     };
-  }, [timeoutMs]);
+  }, [paused, timeoutMs]);
 
   const percentage = (timeLeftMs / timeoutMs) * 100;
 
   return (
     <div className={`db-auto-reset-wrapper ${className}`} style={{ position: "relative" }}>
       {children}
-      {showProgress && timeLeftMs < timeoutMs && (
+      {showProgress && !paused && timeLeftMs < timeoutMs && (
         <div
           className="db-auto-reset-bar"
           style={{ width: `${percentage}%` }}

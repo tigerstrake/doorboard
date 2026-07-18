@@ -73,6 +73,7 @@ export function AdminSocialPanel() {
   };
 
   const remove = (id: string) => {
+    if (!window.confirm("Delete this guestbook entry from every public surface?")) return;
     socialApi.admin
       .deleteGuestbook(id, token)
       .then(() => loadAll(token))
@@ -126,7 +127,10 @@ export function AdminSocialPanel() {
       <h3>Pending guestbook entries ({pending.length})</h3>
       {pending.map((entry) => (
         <div key={entry.id} className="my-content-row">
-          <span>{entry.text}</span>
+          <span>
+            <strong>{entry.text}</strong>
+            <small>{entry.author_label ?? "Visitor"} · {new Date(entry.created_at).toLocaleString()}</small>
+          </span>
           <div>
             <button className="phrase-btn" onClick={() => approve(entry.id)}>Approve</button>
             <button className="phrase-btn" onClick={() => remove(entry.id)}>Delete</button>
@@ -138,7 +142,10 @@ export function AdminSocialPanel() {
       <h3>Approved guestbook entries ({approved.length})</h3>
       {approved.map((entry) => (
         <div key={entry.id} className="my-content-row">
-          <span>{entry.text}</span>
+          <span>
+            <strong>{entry.text}</strong>
+            <small>{entry.author_label ?? "Visitor"} · {new Date(entry.created_at).toLocaleString()}</small>
+          </span>
           <button className="phrase-btn" onClick={() => remove(entry.id)}>Delete</button>
         </div>
       ))}
@@ -167,6 +174,16 @@ export function AdminSocialPanel() {
         <button className="phrase-btn" onClick={() => setNewOptions([...newOptions, ""])}>
           + Option
         </button>
+        {newQuestion.trim() && newOptions.filter((option) => option.trim()).length >= 2 && (
+          <div className="admin-poll-preview" aria-label="Poll preview">
+            <strong>{newQuestion.trim()}</strong>
+            <ul>
+              {newOptions.filter((option) => option.trim()).map((option) => (
+                <li key={option}>{option.trim()}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         <button className="phrase-btn" onClick={createPoll}>Create poll</button>
       </div>
       {polls.map((p) => (
@@ -180,7 +197,7 @@ export function AdminSocialPanel() {
 
       <h3>Most frequent visitor</h3>
       {stat ? (
-        <p>{stat.label ?? stat.person_id} has checked in {stat.count} times! 🎉</p>
+        <p>{stat.label ?? "An enrolled visitor"} has checked in {stat.count} times!</p>
       ) : (
         <p className="placeholder-subtext">No enrolled check-ins yet.</p>
       )}

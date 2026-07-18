@@ -101,8 +101,9 @@ class Tombstone:
 class EnrollmentStore:
     """Thread-safe SQLite enrollment registry with secure-delete semantics."""
 
-    def __init__(self, db_path: Path) -> None:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, db_path: Path | str) -> None:
+        if isinstance(db_path, Path):
+            db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)

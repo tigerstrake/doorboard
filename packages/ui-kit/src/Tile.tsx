@@ -5,14 +5,23 @@ export interface TileProps {
   asOf?: string | null;
   children?: React.ReactNode;
   className?: string;
+  staleAfterMs?: number;
 }
 
-export function Tile({ title, asOf, children, className = "" }: TileProps) {
+export function Tile({
+  title,
+  asOf,
+  children,
+  className = "",
+  staleAfterMs = 15 * 60 * 1000,
+}: TileProps) {
   const [stalenessText, setStalenessText] = useState<string>("");
+  const [isStale, setIsStale] = useState(false);
 
   useEffect(() => {
     if (!asOf) {
       setStalenessText("");
+      setIsStale(false);
       return;
     }
 
@@ -24,8 +33,10 @@ export function Tile({ title, asOf, children, className = "" }: TileProps) {
 
       if (isNaN(diffMins)) {
         setStalenessText("");
+        setIsStale(false);
         return;
       }
+      setIsStale(diffMs > staleAfterMs);
 
       if (diffMins < 1) {
         setStalenessText("Just now");
@@ -40,15 +51,19 @@ export function Tile({ title, asOf, children, className = "" }: TileProps) {
     updateStaleness();
     const interval = setInterval(updateStaleness, 30000);
     return () => clearInterval(interval);
-  }, [asOf]);
+  }, [asOf, staleAfterMs]);
 
   return (
-    <div className={`db-tile ${className}`} data-testid="tile">
+    <div
+      className={`db-tile ${isStale ? "db-tile--stale" : ""} ${className}`}
+      data-testid="tile"
+      data-stale={isStale ? "true" : "false"}
+    >
       <div className="db-tile__header">
         <h3 className="db-tile__title">{title}</h3>
         {stalenessText && (
           <span className="db-tile__staleness" title={`Updated: ${asOf}`}>
-            {stalenessText}
+            {isStale ? `Stale · ${stalenessText}` : stalenessText}
           </span>
         )}
       </div>

@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Fail unless SSD_DATA_ROOT is on a non-root writable mount."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+
+def _unescape_mount(value: str) -> str:
+    return value.replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\")
+
+
+def main() -> int:
+    root_raw = os.environ.get("SSD_DATA_ROOT", "")
+    if not root_raw:
+        raise SystemExit("SSD_DATA_ROOT is not configured")
+    root = Path(root_raw).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+
+    mounts: list[Path] = []
+    for line in Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines():
+        fields = line.split()
+        if len(fields) > 4:
+            mounts.append(Path(_unescape_mount(fields[4])).resolve())
+    candidates = [mount for mount in mounts if root == mount or mount in root.parents]
+    mountpoint = max(candidates, key=lambda path: len(path.parts), default=Path("/"))
+    if mountpoint == Path("/"):
+        raise SystemExit(f"{root} is on the root filesystem, not the SSD")
+
+    probe = root / ".doorboard-storage-probe"
+    fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        os.write(fd, b"ok\n")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+        probe.unlink(missing_ok=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,40 +1,59 @@
 :root {
-  /* Core Colors */
-  --db-bg-app: #030712;
-  --db-bg-card: rgba(17, 24, 39, 0.7);
-  --db-bg-card-hover: rgba(31, 41, 55, 0.8);
-  --db-border-color: rgba(255, 255, 255, 0.08);
-  --db-border-hover: rgba(255, 255, 255, 0.15);
-  
-  --db-text-primary: #f9fafb;
-  --db-text-secondary: #9ca3af;
-  --db-text-muted: #6b7280;
+  /* ── Core surface: deep "arc-reactor" blue-ink, never slate-black ── */
+  --db-bg-app: #060b14;
+  --db-bg-card: rgba(12, 22, 38, 0.72);
+  --db-bg-card-hover: rgba(18, 33, 55, 0.85);
+  --db-bg-inset: rgba(4, 9, 18, 0.6);
+  --db-border-color: rgba(96, 178, 224, 0.16);
+  --db-border-hover: rgba(96, 200, 255, 0.45);
+  --db-grid-line: rgba(80, 160, 220, 0.05);
 
-  /* Typography */
-  --db-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* ── The two signatures: arc-reactor cyan + Stark gold ── */
+  --db-accent: #35d6ff;
+  --db-accent-strong: #7ceaff;
+  --db-accent-dim: rgba(53, 214, 255, 0.16);
+  --db-gold: #ffc247;
+  --db-gold-strong: #ffd884;
+  --db-gold-dim: rgba(255, 194, 71, 0.16);
 
-  /* Presence Colors */
-  --db-presence-available: #10b981;
-  --db-presence-busy: #f97316;
-  --db-presence-dnd: #ef4444;
-  --db-presence-sleeping: #8b5cf6;
-  --db-presence-class: #3b82f6;
-  --db-presence-library: #06b6d4;
-  --db-presence-away: #eab308;
-  --db-presence-unknown: #6b7280;
+  --db-text-primary: #eaf4ff;
+  --db-text-secondary: #8fb0cc;
+  --db-text-muted: #56748f;
 
-  /* Profile Gradient Accents */
-  --db-gradient-generic: linear-gradient(135deg, #374151, #1f2937);
-  --db-gradient-owner: linear-gradient(135deg, #2563eb, #1d4ed8);
-  --db-gradient-roommate: linear-gradient(135deg, #7c3aed, #6d28d9);
-  --db-gradient-visitor: linear-gradient(135deg, #059669, #047857);
+  /* ── Typography: HUD display + mono readouts, no Inter ──
+     (self-host 'Chakra Petch' + 'JetBrains Mono' for the canonical look;
+      the stacks below degrade to squared/mono system faces meanwhile) */
+  --db-font-display: 'Chakra Petch', 'Rajdhani', 'Bahnschrift', 'DIN Alternate',
+    'Saira Semi Condensed', 'Oswald', ui-sans-serif, system-ui, sans-serif;
+  --db-font-mono: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, 'Cascadia Code',
+    Menlo, Consolas, monospace;
+  --db-font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 
-  /* Shadows & Glassmorphism */
-  --db-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --db-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  --db-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-  --db-shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-  --db-backdrop-blur: blur(12px);
+  /* ── Presence: retuned to live inside the HUD palette (no stock Tailwind) ── */
+  --db-presence-available: #2fe0b6;
+  --db-presence-busy: #ffb347;
+  --db-presence-dnd: #ff5d73;
+  --db-presence-sleeping: #9b8cff;
+  --db-presence-class: #35c2ff;
+  --db-presence-library: #35d6ff;
+  --db-presence-away: #ffd15c;
+  --db-presence-unknown: #5f7d95;
+
+  /* ── Profile accents: Taylor = arc cyan, Alex = Stark gold, visitor = steel ── */
+  --db-gradient-generic: linear-gradient(135deg, #1a3350, #0e1c30);
+  --db-gradient-owner: linear-gradient(135deg, #2fbdf0, #1177b8);
+  --db-gradient-roommate: linear-gradient(135deg, #ffcf6b, #f0982a);
+  --db-gradient-visitor: linear-gradient(135deg, #2bd6c0, #148f9a);
+
+  /* ── Depth + emissive glow (glow is reserved for emphasis/active) ── */
+  --db-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --db-shadow-md: 0 6px 18px rgba(0, 6, 16, 0.5);
+  --db-shadow-lg: 0 18px 44px rgba(0, 6, 16, 0.6);
+  --db-shadow-glass: 0 10px 34px rgba(0, 6, 16, 0.55);
+  --db-glow-cyan: 0 0 0 1px rgba(53, 214, 255, 0.4), 0 0 22px rgba(53, 214, 255, 0.28);
+  --db-glow-gold: 0 0 0 1px rgba(255, 194, 71, 0.4), 0 0 22px rgba(255, 194, 71, 0.26);
+  /* HUD is line-work, not frosted glass — neutralises every backdrop-filter usage */
+  --db-backdrop-blur: none;
 
   /* Spacing */
   --db-spacing-xs: 0.25rem;
@@ -42,6 +61,9 @@
   --db-spacing-md: 1rem;
   --db-spacing-lg: 1.5rem;
   --db-spacing-xl: 2rem;
+  --db-radius-sm: 2px;
+  --db-radius-md: 6px;
+  --db-focus-ring: 0 0 0 2px rgba(6, 11, 20, 0.9), 0 0 0 4px rgba(53, 214, 255, 0.7);
 }
 
 /* Base Styles */
@@ -57,6 +79,13 @@ body {
 .db-app-theme {
   font-family: var(--db-font-sans);
   background-color: var(--db-bg-app);
+  /* Static, GPU-cheap ambience: a soft top vignette over a faint HUD grid. */
+  background-image:
+    radial-gradient(120% 80% at 50% -10%, rgba(24, 66, 108, 0.4), transparent 60%),
+    linear-gradient(var(--db-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--db-grid-line) 1px, transparent 1px);
+  background-size: 100% 100%, 44px 44px, 44px 44px;
+  background-attachment: fixed;
   color: var(--db-text-primary);
   min-height: 100vh;
   margin: 0;
@@ -64,16 +93,14 @@ body {
   box-sizing: border-box;
 }
 
-/* Glass Tile Component */
+/* HUD Panel (was "glass tile") — emissive line-work + corner brackets */
 .db-tile {
   background: var(--db-bg-card);
-  backdrop-filter: var(--db-backdrop-blur);
-  -webkit-backdrop-filter: var(--db-backdrop-blur);
   border: 1px solid var(--db-border-color);
-  border-radius: 16px;
+  border-radius: var(--db-radius-md);
   padding: var(--db-spacing-lg);
-  box-shadow: var(--db-shadow-glass);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: var(--db-shadow-md);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease, background 0.25s ease;
   display: flex;
   flex-direction: column;
   gap: var(--db-spacing-sm);
@@ -81,11 +108,42 @@ body {
   overflow: hidden;
 }
 
+.db-tile--stale {
+  border-color: rgba(234, 179, 8, 0.38);
+}
+
+.db-tile--stale .db-tile__staleness {
+  color: var(--db-presence-away);
+}
+
+/* Cyan corner brackets: top-left + bottom-right, the core HUD motif. */
+.db-tile::before,
+.db-tile::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--db-accent);
+  opacity: 0.5;
+  pointer-events: none;
+}
+.db-tile::before {
+  top: 7px;
+  left: 7px;
+  border-right: 0;
+  border-bottom: 0;
+}
+.db-tile::after {
+  right: 7px;
+  bottom: 7px;
+  border-left: 0;
+  border-top: 0;
+}
+
 .db-tile:hover {
   border-color: var(--db-border-hover);
   background: var(--db-bg-card-hover);
-  transform: translateY(-2px);
-  box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.5);
+  box-shadow: var(--db-shadow-md), 0 0 24px rgba(53, 214, 255, 0.14);
 }
 
 .db-tile__header {
@@ -96,12 +154,24 @@ body {
 }
 
 .db-tile__title {
-  font-size: 0.875rem;
+  font-family: var(--db-font-mono);
+  font-size: 0.8rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--db-text-secondary);
+  letter-spacing: 0.12em;
+  color: var(--db-accent);
   margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5ch;
+}
+.db-tile__title::before {
+  content: "";
+  width: 3px;
+  height: 0.9em;
+  background: var(--db-accent);
+  box-shadow: 0 0 8px var(--db-accent);
+  border-radius: 1px;
 }
 
 .db-tile__staleness {
@@ -196,18 +266,36 @@ body {
   min-height: 80px;
   min-width: 120px;
   padding: var(--db-spacing-md) var(--db-spacing-lg);
-  border-radius: 16px;
+  border-radius: var(--db-radius-md);
   border: 1px solid var(--db-border-color);
   background: var(--db-bg-card);
   color: var(--db-text-primary);
-  font-family: var(--db-font-sans);
+  font-family: var(--db-font-display);
   font-size: 1.1rem;
   font-weight: 600;
+  letter-spacing: 0.03em;
   cursor: pointer;
   touch-action: manipulation;
   user-select: none;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: var(--db-shadow-md);
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.12s ease, border-color 0.2s ease, box-shadow 0.2s ease,
+    background 0.2s ease;
+  box-shadow: var(--db-shadow-sm);
+}
+
+/* Arc-reactor press pulse: a ring expands from the button on tap. */
+.db-big-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 0 0 rgba(53, 214, 255, 0.5);
+  opacity: 0;
+  pointer-events: none;
+}
+.db-big-button:active::after {
+  animation: db-press-pulse 0.45s ease-out;
 }
 
 /* Kiosk min target requirement */
@@ -221,18 +309,29 @@ body {
 .db-big-button:hover {
   background: var(--db-bg-card-hover);
   border-color: var(--db-border-hover);
-  transform: translateY(-1px);
+  box-shadow: var(--db-shadow-sm), 0 0 18px rgba(53, 214, 255, 0.12);
 }
 
 .db-big-button:active {
   transform: scale(0.96);
-  background: rgba(31, 41, 55, 0.9);
+  background: rgba(18, 33, 55, 0.95);
 }
 
 .db-big-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
   transform: none;
+}
+
+.db-big-button:focus-visible {
+  outline: none;
+  box-shadow: var(--db-shadow-md), var(--db-focus-ring);
+}
+
+.db-big-button__text {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  line-height: 1.15;
 }
 
 .db-big-button__icon {
@@ -243,14 +342,30 @@ body {
 }
 
 .db-big-button--primary {
-  background: var(--db-gradient-owner);
-  border-color: rgba(255, 255, 255, 0.1);
+  background: linear-gradient(135deg, #3fd8ff, #1799d6);
+  border-color: rgba(124, 234, 255, 0.6);
+  color: #04121d;
+  font-weight: 700;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.2);
+  box-shadow: var(--db-glow-cyan);
 }
 .db-big-button--primary:hover {
-  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  background: linear-gradient(135deg, #5fe0ff, #2aa9e6);
+  box-shadow: var(--db-glow-cyan), 0 0 30px rgba(53, 214, 255, 0.35);
 }
 .db-big-button--primary:active {
-  background: #1d4ed8;
+  background: linear-gradient(135deg, #34cdf5, #1287c2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
 }
 
 /* Live video preview */
@@ -376,59 +491,76 @@ body {
   font-weight: 700;
 }
 
-/* Greeting Banner Component */
+/* Greeting Banner — HUD identity panel with a glowing profile rail */
 .db-greeting-banner {
-  border-radius: 20px;
+  --db-profile: var(--db-accent);
+  border-radius: var(--db-radius-md);
   padding: var(--db-spacing-xl);
+  padding-left: calc(var(--db-spacing-xl) + 8px);
   display: flex;
   flex-direction: column;
   gap: var(--db-spacing-sm);
-  background: var(--db-gradient-generic);
+  background: var(--db-bg-card);
   border: 1px solid var(--db-border-color);
-  box-shadow: var(--db-shadow-lg);
+  border-left: 4px solid var(--db-profile);
+  box-shadow: var(--db-shadow-md), inset 0 0 40px rgba(53, 214, 255, 0.04);
   color: var(--db-text-primary);
   position: relative;
   overflow: hidden;
 }
 
+/* One-shot scan line that sweeps down as the identity "locks in". */
 .db-greeting-banner::before {
   content: '';
   position: absolute;
-  top: 0;
   left: 0;
   right: 0;
-  bottom: 0;
-  background: radial-gradient(circle at 10% 20%, rgba(255, 255, 255, 0.05) 0%, transparent 80%);
+  top: 0;
+  height: 40%;
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--db-profile) 22%, transparent), transparent);
+  pointer-events: none;
+  animation: db-scan-in 0.9s ease-out 1;
+}
+
+/* Faint radial wash in the profile colour, top-left. */
+.db-greeting-banner::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 6% 0%, color-mix(in srgb, var(--db-profile) 16%, transparent) 0%, transparent 55%);
   pointer-events: none;
 }
 
 .db-greeting-banner--owner {
-  background: var(--db-gradient-owner);
+  --db-profile: var(--db-accent);
 }
 
 .db-greeting-banner--roommate {
-  background: var(--db-gradient-roommate);
+  --db-profile: var(--db-gold);
 }
 
 .db-greeting-banner--visitor {
-  background: var(--db-gradient-visitor);
+  --db-profile: var(--db-presence-available);
 }
 
 .db-greeting-banner__title {
-  font-size: 2.25rem;
-  font-weight: 800;
+  font-family: var(--db-font-display);
+  font-size: 2.6rem;
+  font-weight: 700;
   margin: 0;
-  letter-spacing: -0.025em;
-  line-height: 1.2;
+  letter-spacing: 0.01em;
+  line-height: 1.1;
+  position: relative;
 }
 
 .db-greeting-banner__subtitle {
   font-size: 1.125rem;
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--db-text-secondary);
   margin: 0;
+  position: relative;
 }
 
-/* QR Placeholder Component */
+/* QR code component */
 .db-qr-placeholder {
   display: flex;
   flex-direction: column;
@@ -438,8 +570,9 @@ body {
   padding: var(--db-spacing-lg);
   background: var(--db-bg-card);
   border: 1px solid var(--db-border-color);
-  border-radius: 16px;
-  width: fit-content;
+  border-radius: 8px;
+  width: min(100%, 320px);
+  box-sizing: border-box;
   margin: 0 auto;
 }
 
@@ -447,26 +580,16 @@ body {
   width: 160px;
   height: 160px;
   background: #ffffff;
-  padding: var(--db-spacing-md);
-  border-radius: 12px;
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  grid-template-rows: repeat(4, 1fr);
-  gap: 8px;
+  padding: 8px;
+  border-radius: 4px;
+  display: block;
   box-shadow: var(--db-shadow-md);
 }
 
-/* Dummy QR block layouts */
-.db-qr-placeholder__graphic > div {
-  background: #0f172a;
-  border-radius: 4px;
-}
-.db-qr-placeholder__graphic > div:nth-child(2),
-.db-qr-placeholder__graphic > div:nth-child(5),
-.db-qr-placeholder__graphic > div:nth-child(8),
-.db-qr-placeholder__graphic > div:nth-child(11),
-.db-qr-placeholder__graphic > div:nth-child(14) {
-  background: transparent;
+.db-qr-placeholder__graphic img {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .db-qr-placeholder__text {
@@ -481,6 +604,8 @@ body {
 .db-qr-placeholder__url {
   font-size: 0.75rem;
   color: var(--db-text-muted);
+  max-width: 100%;
+  text-align: center;
   word-break: break-all;
 }
 
@@ -522,41 +647,61 @@ body {
 }
 
 .gauge-value {
-  font-size: 1.25rem;
+  font-family: var(--db-font-mono);
+  font-size: 1.3rem;
   font-weight: 700;
   color: var(--db-text-primary);
+  font-variant-numeric: tabular-nums;
 }
 
 .gauge-unit {
-  font-size: 0.85rem;
+  font-family: var(--db-font-mono);
+  font-size: 0.8rem;
   font-weight: 500;
   color: var(--db-text-muted);
 }
 
 .gauge-track {
-  height: 8px;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 4px;
+  height: 10px;
+  background: var(--db-bg-inset);
+  border: 1px solid var(--db-border-color);
+  border-radius: 2px;
   overflow: hidden;
   position: relative;
 }
 
+/* Tick marks etched across the track. */
+.gauge-track::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0 calc(10% - 1px),
+    rgba(6, 11, 20, 0.7) calc(10% - 1px) 10%
+  );
+  pointer-events: none;
+}
+
 .gauge-bar-fill {
   height: 100%;
-  border-radius: 4px;
-  transition: width 0.3s ease-in-out;
+  border-radius: 2px;
+  transition: width 0.5s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
 .gauge-bar-fill.normal {
-  background: var(--db-presence-available);
+  background: var(--db-accent);
+  box-shadow: 0 0 12px var(--db-accent-dim);
 }
 
 .gauge-bar-fill.warning {
-  background: var(--db-presence-away);
+  background: var(--db-gold);
+  box-shadow: 0 0 12px var(--db-gold-dim);
 }
 
 .gauge-bar-fill.critical {
   background: var(--db-presence-dnd);
+  box-shadow: 0 0 12px rgba(255, 93, 115, 0.3);
 }
 
 /* Ring Status Component */
@@ -574,10 +719,32 @@ body {
 .db-ring-status__icon {
   font-size: 2.5rem;
   line-height: 1;
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 3.4rem;
+  height: 3.4rem;
+  flex: 0 0 auto;
 }
 
 .db-ring-status--ringing .db-ring-status__icon {
   animation: db-pulse 1.2s infinite ease-in-out;
+}
+
+/* Arc-reactor rings radiating out while the bell is ringing. */
+.db-ring-status--ringing .db-ring-status__icon::before,
+.db-ring-status--ringing .db-ring-status__icon::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid var(--db-accent);
+  animation: db-arc-ring 1.8s ease-out infinite;
+  pointer-events: none;
+}
+
+.db-ring-status--ringing .db-ring-status__icon::after {
+  animation-delay: 0.9s;
 }
 
 .db-ring-status__title {
@@ -700,10 +867,11 @@ body {
 .db-greeting-banner__sparkles span {
   position: absolute;
   top: 100%;
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: #ffffff;
+  background: var(--db-profile, var(--db-accent));
+  box-shadow: 0 0 8px var(--db-profile, var(--db-accent));
   opacity: 0;
   animation: db-sparkle-rise 1.6s ease-out forwards;
 }
@@ -754,8 +922,8 @@ body {
 }
 
 @keyframes db-upgrade-glow {
-  0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.6); }
-  100% { box-shadow: 0 0 0 24px rgba(255, 255, 255, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(53, 214, 255, 0.65); }
+  100% { box-shadow: 0 0 0 26px rgba(53, 214, 255, 0); }
 }
 
 @keyframes db-sparkle-rise {
@@ -764,12 +932,41 @@ body {
   100% { opacity: 0; transform: translateY(-140px) scale(1.1); }
 }
 
+/* Arc-reactor press pulse for buttons. */
+@keyframes db-press-pulse {
+  0% { opacity: 0.8; box-shadow: 0 0 0 0 rgba(53, 214, 255, 0.55); }
+  100% { opacity: 0; box-shadow: 0 0 0 22px rgba(53, 214, 255, 0); }
+}
+
+/* Radiating rings for the ring/bell status. */
+@keyframes db-arc-ring {
+  0% { transform: scale(0.7); opacity: 0.7; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+
+/* One-shot scan sweep as an identity locks into the greeting. */
+@keyframes db-scan-in {
+  0% { transform: translateY(-100%); opacity: 0; }
+  30% { opacity: 1; }
+  100% { transform: translateY(260%); opacity: 0; }
+}
+
+/* Ambient tiles powering on, staggered. */
+@keyframes db-boot-in {
+  0% { opacity: 0; transform: translateY(10px) scale(0.99); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 /* Kiosk CPU budget: skip continuous animation loops for users/systems that ask for it */
 @media (prefers-reduced-motion: reduce) {
   .db-ring-status--ringing .db-ring-status__icon,
+  .db-ring-status--ringing .db-ring-status__icon::before,
+  .db-ring-status--ringing .db-ring-status__icon::after,
   .db-video-message-status__icon--recording,
   .db-greeting-banner--upgraded,
+  .db-greeting-banner::before,
   .db-greeting-banner__sparkles span,
+  .db-big-button:active::after,
   .fade-in {
     animation: none !important;
   }

@@ -1,0 +1,11 @@
+[Unit]
+Description=Doorboard bounded local health check
+After=door-api.service door-media.service door-visiond.service door-sync.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/doorboard/.venv/bin/python /opt/doorboard/scripts/doorboard-health-agent
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run/doorboard

@@ -108,3 +108,17 @@ def test_list_recordings_pagination_does_not_drop_duplicate_timestamps(db: Recor
 
     assert sorted(seen) == sorted(str(rid) for rid in ids)
     assert len(seen) == len(set(seen))
+
+
+def test_processed_session_event_dedupe_window_is_bounded(tmp_path):
+    db = RecordingDB(tmp_path / "bounded.db", processed_event_max_rows=2)
+    try:
+        event_ids = [uuid4() for _ in range(3)]
+        for event_id in event_ids:
+            db.mark_session_event_processed(event_id)
+
+        assert not db.has_processed_session_event(event_ids[0])
+        assert db.has_processed_session_event(event_ids[1])
+        assert db.has_processed_session_event(event_ids[2])
+    finally:
+        db.close()

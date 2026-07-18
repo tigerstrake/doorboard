@@ -1,0 +1,216 @@
+import React from "react";
+import { BigButton, StatusBadge } from "@doorboard/ui-kit";
+import type {
+  AmbientAircraftSummaryPayload,
+  AmbientBirdSummaryPayload,
+  AmbientFoodRecommendationPayload,
+  AmbientPrinterStatusPayload,
+  AmbientSatellitePassPayload,
+} from "@doorboard/contracts";
+import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
+import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
+import { WALLBOARD_CHANNELS } from "./wallboardChannelModel";
+import type { WallboardFocusChannel } from "./wallboardChannelModel";
+
+interface WallboardLauncherProps {
+  selectedChannel: "ambient" | WallboardFocusChannel;
+  onSelect: (channel: "ambient" | WallboardFocusChannel) => void;
+}
+
+export function WallboardLauncher({ selectedChannel, onSelect }: WallboardLauncherProps) {
+  return (
+    <div className="wallboard-launcher-grid" role="list" aria-label="Wallboard channels">
+      {WALLBOARD_CHANNELS.map((channel) => (
+        <button
+          key={channel.id}
+          type="button"
+          className="wallboard-launcher-card"
+          aria-pressed={selectedChannel === channel.id}
+          onClick={() => onSelect(channel.id)}
+        >
+          <span className="wallboard-launcher-card__eyebrow">{channel.eyebrow}</span>
+          <strong>{channel.title}</strong>
+          <span>{channel.description}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+interface WallboardFocusedViewProps {
+  channel: WallboardFocusChannel;
+  poll: Poll | null;
+  pollResults: PollResultRow[] | null;
+  guestbookEntries: GuestbookEntry[];
+  moments: Array<{ recording_id: string; tags: string[]; approved_at: string | null }>;
+  ambient: {
+    aircraft: AmbientAircraftSummaryPayload | null;
+    birds: AmbientBirdSummaryPayload | null;
+    satellite: AmbientSatellitePassPayload | null;
+    printer: AmbientPrinterStatusPayload | null;
+    food: AmbientFoodRecommendationPayload | null;
+    scoreboard: Array<{ score: number; occurredAt: string }> | null;
+  };
+  onReturnAmbient: () => void;
+}
+
+export function WallboardFocusedView({
+  channel,
+  poll,
+  pollResults,
+  guestbookEntries,
+  moments,
+  ambient,
+  onReturnAmbient,
+}: WallboardFocusedViewProps) {
+  const title = WALLBOARD_CHANNELS.find((item) => item.id === channel)?.title ?? "Focused view";
+
+  return (
+    <div className={`wallboard-focus-view wallboard-focus-view--${channel} db-app-theme`}>
+      <header className="wallboard-focus-header">
+        <div>
+          <p className="surface-eyebrow">Wallboard channel</p>
+          <h1>{title}</h1>
+        </div>
+        <BigButton className="wallboard-focus-return" onClick={onReturnAmbient}>
+          Ambient grid
+        </BigButton>
+      </header>
+      <main className="wallboard-focus-main">
+        {renderFocusContent(channel, poll, pollResults, guestbookEntries, moments, ambient)}
+      </main>
+      <footer className="wallboard-focus-footer">
+        Focused from DoorPad. Returns to ambient automatically.
+      </footer>
+    </div>
+  );
+}
+
+function renderFocusContent(
+  channel: WallboardFocusChannel,
+  poll: Poll | null,
+  pollResults: PollResultRow[] | null,
+  guestbookEntries: GuestbookEntry[],
+  moments: Array<{ recording_id: string; tags: string[]; approved_at: string | null }>,
+  ambient: WallboardFocusedViewProps["ambient"]
+) {
+  const safeText = (value: string | null | undefined, maxLength = 80) =>
+    (value ?? "").trim().replace(/\s+/g, " ").slice(0, maxLength);
+  const clampPercentage = (value: number | null) =>
+    value === null || !Number.isFinite(value) ? 0 : Math.min(100, Math.max(0, value));
+
+  switch (channel) {
+    case "aircraft":
+      return ambient.aircraft ? (
+        <div className="focus-list focus-list--large">
+          {ambient.aircraft.nearby.slice(0, 8).map((aircraft, index) => (
+            <div className="focus-row" key={`${aircraft.callsign}-${index}`}>
+              <strong>{safeText(aircraft.callsign, 16) || "Aircraft"}</strong>
+              <span>{aircraft.altitude_ft.toLocaleString()} ft</span>
+              <span>{aircraft.distance_km} km away</span>
+              <span>Heading {aircraft.heading}°</span>
+            </div>
+          ))}
+          {ambient.aircraft.nearby.length === 0 && <p className="focus-empty">No nearby aircraft in the latest update.</p>}
+        </div>
+      ) : <p className="focus-empty">Aircraft data is unavailable.</p>;
+    case "satellite":
+      return ambient.satellite ? (
+        <div className="focus-hero-stat">
+          <p className="surface-eyebrow">Next visible pass</p>
+          <strong>{ambient.satellite.satellite}</strong>
+          <span>
+            {new Date(ambient.satellite.rise_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            {" · "}
+            {ambient.satellite.direction} · {ambient.satellite.max_elevation_deg}° max
+          </span>
+          <StatusBadge label={ambient.satellite.visible ? "available" : "unknown"} />
+        </div>
+      ) : <p className="focus-empty">Satellite pass data is unavailable.</p>;
+    case "scoreboard":
+      return ambient.scoreboard ? (
+        <div className="focus-list focus-list--scores">
+          {ambient.scoreboard.slice(0, 16).map((entry, index) => (
+            <div className="focus-row" key={index}>
+              <strong>Resident {index + 1}</strong>
+              <span>{entry.score} pts</span>
+            </div>
+          ))}
+        </div>
+      ) : <p className="focus-empty">Scoreboard data is unavailable.</p>;
+    case "birds":
+      return ambient.birds ? (
+        <div className="focus-list">
+          <div className="focus-hero-stat focus-hero-stat--inline">
+            <span>Total today</span>
+            <strong>{ambient.birds.total_detections}</strong>
+          </div>
+          {ambient.birds.top_species.slice(0, 8).map((species, index) => (
+            <div className="focus-row" key={`${species.name}-${index}`}>
+              <strong>{safeText(species.name) || "Unknown bird"}</strong>
+              <span>{species.count} detections</span>
+              <span>{(species.confidence_avg * 100).toFixed(0)}% confidence</span>
+            </div>
+          ))}
+          {ambient.birds.top_species.length === 0 && <p className="focus-empty">No bird detections yet today.</p>}
+        </div>
+      ) : <p className="focus-empty">Bird summary is unavailable.</p>;
+    case "printer":
+      return ambient.printer ? (
+        <div className="focus-printer">
+          <p className="surface-eyebrow">{ambient.printer.state}</p>
+          <h2>{ambient.printer.job_name ? safeText(ambient.printer.job_name) : "No active print"}</h2>
+          <div className="focus-progress" aria-label={`${ambient.printer.progress_pct ?? 0}% complete`}>
+            <span style={{ width: `${clampPercentage(ambient.printer.progress_pct)}%` }} />
+          </div>
+          <strong>{ambient.printer.progress_pct === null ? "Progress unavailable" : `${ambient.printer.progress_pct}% complete`}</strong>
+        </div>
+      ) : <p className="focus-empty">Printer status is unavailable.</p>;
+    case "food":
+      return ambient.food ? (
+        <div className="focus-hero-stat">
+          <p className="surface-eyebrow">{safeText(ambient.food.provider, 40)}</p>
+          <strong>{safeText(ambient.food.title)}</strong>
+          <span>{safeText(ambient.food.detail, 160)}</span>
+        </div>
+      ) : <p className="focus-empty">Food recommendation is unavailable.</p>;
+    case "poll":
+      return poll ? (
+        <div className="focus-list">
+          <h2>{poll.question}</h2>
+          {poll.options.map((option) => (
+            <PollOptionRow
+              key={option.id}
+              text={option.text}
+              votes={pollResults?.find((row) => row.option_id === option.id)?.votes ?? 0}
+            />
+          ))}
+        </div>
+      ) : (
+        <p className="focus-empty">No poll is running right now.</p>
+      );
+    case "guestbook":
+      return guestbookEntries.length > 0 ? (
+        <div className="focus-guestbook">
+          {guestbookEntries.slice(0, 4).map((entry) => (
+            <GuestbookQuote key={entry.id} text={entry.text} authorLabel={entry.author_label} />
+          ))}
+        </div>
+      ) : (
+        <p className="focus-empty">No approved guestbook notes yet.</p>
+      );
+    case "moments":
+      return moments.length > 0 ? (
+        <div className="focus-moments">
+          {moments.slice(0, 6).map((moment) => (
+            <div className="focus-moment" key={moment.recording_id}>
+              <strong>{moment.tags.length > 0 ? moment.tags.join(", ") : "Photo Booth"}</strong>
+              <span>{moment.recording_id.slice(0, 8)}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="focus-empty">No approved moments yet.</p>
+      );
+  }
+}

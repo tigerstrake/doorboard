@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
@@ -50,7 +51,10 @@ def build_engine(cfg: Settings, queue: UploadQueue) -> SyncEngine:
     else:
         media_target = FilesystemNasTarget(Path(cfg.nas_sync_target))
     nuc_target = HttpNucTarget(cfg.control_plane_url, ingest_token=cfg.ingest_token)
-    media_client = HttpMediaClient(cfg.door_media_url)
+    media_client = HttpMediaClient(
+        cfg.door_media_url,
+        admin_token=cfg.door_media_admin_token,
+    )
     return SyncEngine(
         queue=queue,
         settings=cfg,
@@ -73,7 +77,11 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             ssd_data_root=cfg.ssd_data_root,
             syncable_roots=cfg.syncable_roots,
         )
-    source = MediaEventSource(engine, base_url=cfg.door_media_url)
+    source = MediaEventSource(
+        engine,
+        base_url=cfg.door_media_url,
+        admin_token=cfg.door_media_admin_token,
+    )
 
     app.state.cfg = cfg
     app.state.queue = queue
@@ -129,9 +137,13 @@ def _gallery(request: Request) -> GalleryStore:
 def _require_admin(request: Request) -> None:
     cfg: Settings = request.app.state.cfg
     if not cfg.admin_token:
-        return  # auth disabled in dev/CI (same stopgap as door-media)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="admin authentication is not configured",
+        )
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer ") or auth.removeprefix("Bearer ") != cfg.admin_token:
+    token = auth.removeprefix("Bearer ") if auth.startswith("Bearer ") else ""
+    if not token or not secrets.compare_digest(token, cfg.admin_token):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid admin token")
 
 
@@ -240,7 +252,7 @@ class _EnqueueEventBody(BaseModel):
 
 
 @app.post("/internal/enqueue")
-async def internal_enqueue(body: _EnqueueEventBody, request: Request) -> dict:
+async def internal_enqueue(body: _EnqueueEventBody, request: Request, _auth: AdminAuth) -> dict:
     """Mirror one contract event to the NUC. door-api posts session/social events
     here fire-and-forget; a bad event is rejected now, not dead-lettered later."""
     engine = _engine(request)
@@ -252,7 +264,7 @@ async def internal_enqueue(body: _EnqueueEventBody, request: Request) -> dict:
 
 
 @app.post("/internal/purge/{person_id}")
-async def internal_purge(person_id: str, request: Request) -> dict:
+async def internal_purge(person_id: str, request: Request, _auth: AdminAuth) -> dict:
     """Durably forward an ADR-0009 person-purge to the NUC. Never blocks unenroll:
     local deletion already happened in door-visiond; this is eventually-consistent."""
     engine = _engine(request)
@@ -285,12 +297,12 @@ class _DeletionEventBody(BaseModel):
 
 
 @app.get("/internal/gallery/photos")
-async def internal_gallery_photos(request: Request) -> dict:
+async def internal_gallery_photos(request: Request, _auth: AdminAuth) -> dict:
     return {"photos": [p.to_dict() for p in _gallery(request).list_photos()]}
 
 
 @app.get("/internal/gallery/moments")
-async def internal_gallery_moments(request: Request) -> dict:
+async def internal_gallery_moments(request: Request, _auth: AdminAuth) -> dict:
     return {"photos": [p.to_dict() for p in _gallery(request).list_wallboard_moments()]}
 
 
@@ -299,6 +311,7 @@ async def internal_gallery_approve(
     recording_id: str,
     body: _GalleryApproveBody,
     request: Request,
+    _auth: AdminAuth,
 ) -> dict:
     row = _gallery(request).ingest_approved_photo(
         GalleryPhotoInput(
@@ -320,6 +333,7 @@ async def internal_gallery_tags(
     recording_id: str,
     body: _GalleryTagsBody,
     request: Request,
+    _auth: AdminAuth,
 ) -> dict:
     row = _gallery(request).update_tags(
         recording_id,
@@ -332,13 +346,21 @@ async def internal_gallery_tags(
 
 
 @app.delete("/internal/gallery/photos/{recording_id}")
-async def internal_gallery_delete(recording_id: str, request: Request) -> dict:
+async def internal_gallery_delete(
+    recording_id: str,
+    request: Request,
+    _auth: AdminAuth,
+) -> dict:
     deleted = _gallery(request).delete_photo(recording_id)
     return {"deleted": deleted, "recording_id": recording_id}
 
 
 @app.post("/internal/social-deletion")
-async def internal_social_deletion(body: _DeletionEventBody, request: Request) -> dict:
+async def internal_social_deletion(
+    body: _DeletionEventBody,
+    request: Request,
+    _auth: AdminAuth,
+) -> dict:
     try:
         event = parse_event(body.event)
         if not isinstance(event, SocialDeletionRequestedEvent):

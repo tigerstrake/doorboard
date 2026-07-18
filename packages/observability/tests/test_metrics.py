@@ -5,10 +5,22 @@ from __future__ import annotations
 from doorboard_contracts import EVENT_ADAPTER
 from doorboard_observability.metrics import (
     drain_latency_events,
+    get_samples,
     latency_sample_payload,
     record_sample,
     reset_samples,
 )
+
+
+def test_latency_sample_window_is_bounded() -> None:
+    reset_samples()
+    for i in range(4_097):
+        record_sample("button_to_generic_feedback", float(i))
+
+    samples = get_samples("button_to_generic_feedback")
+    assert len(samples) == 4_096
+    assert samples[0] == 1.0
+    assert samples[-1] == 4_096.0
 
 
 def test_latency_sample_payload_empty() -> None:

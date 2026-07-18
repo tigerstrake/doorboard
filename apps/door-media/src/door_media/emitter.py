@@ -44,6 +44,7 @@ logger = logging.getLogger("door_media.events")
 # ---------------------------------------------------------------------------
 _EVENT_QUEUE_SIZE = 256
 _broadcast_queue: asyncio.Queue[Any] | None = None
+_subscribers: set[asyncio.Queue[Any]] = set()
 
 
 def get_broadcast_queue() -> asyncio.Queue[Any]:
@@ -51,6 +52,16 @@ def get_broadcast_queue() -> asyncio.Queue[Any]:
     if _broadcast_queue is None:
         _broadcast_queue = asyncio.Queue(maxsize=_EVENT_QUEUE_SIZE)
     return _broadcast_queue
+
+
+def subscribe_broadcast_queue() -> asyncio.Queue[Any]:
+    queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=_EVENT_QUEUE_SIZE)
+    _subscribers.add(queue)
+    return queue
+
+
+def unsubscribe_broadcast_queue(queue: asyncio.Queue[Any]) -> None:
+    _subscribers.discard(queue)
 
 
 def _now_utc() -> datetime:
@@ -83,13 +94,13 @@ def _emit(event: Any, door_id: str = "primary") -> None:
             "payload": data["payload"],
         },
     )
-    q = get_broadcast_queue()
-    if q.full():
-        # Drop the oldest event to make room (never block the recording path).
-        with contextlib.suppress(asyncio.QueueEmpty):
-            q.get_nowait()
-    with contextlib.suppress(asyncio.QueueFull):
-        q.put_nowait(event)
+    queues = (get_broadcast_queue(), *_subscribers)
+    for queue in queues:
+        if queue.full():
+            with contextlib.suppress(asyncio.QueueEmpty):
+                queue.get_nowait()
+        with contextlib.suppress(asyncio.QueueFull):
+            queue.put_nowait(event)
 
 
 # ---------------------------------------------------------------------------

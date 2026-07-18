@@ -42,6 +42,10 @@ export default defineConfig({
       url: VISITOR_URL,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
+      env: {
+        VITE_AMBIENT_MOCK: "true",
+        VITE_AIRCRAFT_ALERT_DISTANCE_KM: "3",
+      },
     },
   ],
   projects: [

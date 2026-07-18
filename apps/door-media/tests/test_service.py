@@ -75,6 +75,24 @@ async def test_service_lifecycle(service_env):
 
 
 @pytest.mark.anyio
+async def test_active_recording_limit_refuses_new_windows(service_env):
+    svc, _db, cfg = service_env
+    cfg.max_active_recordings = 1
+    await svc.start()
+
+    first = await svc.start_recording(session_id=uuid4(), kind="bell_clip", trace_id=uuid4())
+    assert first is not None
+    assert await svc.start_recording(session_id=uuid4(), kind="bell_clip", trace_id=uuid4()) is None
+
+    assert await svc.discard_recording(first, trace_id=uuid4())
+    assert (
+        await svc.start_recording(session_id=uuid4(), kind="bell_clip", trace_id=uuid4())
+        is not None
+    )
+    await svc.stop()
+
+
+@pytest.mark.anyio
 async def test_thumbnail_failure_does_not_block_finalization(service_env):
     svc, db, cfg = service_env
     await svc.start()
@@ -106,6 +124,91 @@ async def test_thumbnail_failure_does_not_block_finalization(service_env):
     row = db.get(rid)
     assert row.thumbnail_path is None  # Marked missing!
 
+    await svc.stop()
+
+
+@pytest.mark.anyio
+async def test_finalize_failure_keeps_handle_retryable(service_env):
+    svc, _db, _cfg = service_env
+    await svc.start()
+    recording_id = await svc.start_recording(
+        session_id=uuid4(),
+        kind="video_message",
+        trace_id=uuid4(),
+    )
+    assert recording_id is not None
+    original_finalize = svc._router.finalize_recording
+    attempts = 0
+
+    async def fail_once(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient finalization failure")
+        return await original_finalize(*args, **kwargs)
+
+    svc._router.finalize_recording = fail_once
+    assert not await svc.finalize_recording(
+        recording_id,
+        consent_context="visitor_initiated",
+        trace_id=uuid4(),
+    )
+    assert recording_id in svc._active_handles
+    assert await svc.finalize_recording(
+        recording_id,
+        consent_context="visitor_initiated",
+        trace_id=uuid4(),
+    )
+    assert recording_id not in svc._active_handles
+    await svc.stop()
+
+
+@pytest.mark.anyio
+async def test_db_finalize_failure_reuses_completed_router_result(service_env):
+    svc, db, _cfg = service_env
+    await svc.start()
+    recording_id = await svc.start_recording(
+        session_id=uuid4(),
+        kind="video_message",
+        trace_id=uuid4(),
+    )
+    assert recording_id is not None
+
+    router_finalize = svc._router.finalize_recording
+    router_calls = 0
+
+    async def count_router_calls(*args, **kwargs):
+        nonlocal router_calls
+        router_calls += 1
+        return await router_finalize(*args, **kwargs)
+
+    db_update = db.update_finalized
+    db_calls = 0
+
+    def fail_db_once(*args, **kwargs):
+        nonlocal db_calls
+        db_calls += 1
+        if db_calls == 1:
+            raise OSError("transient sqlite failure")
+        return db_update(*args, **kwargs)
+
+    svc._router.finalize_recording = count_router_calls
+    db.update_finalized = fail_db_once
+
+    assert not await svc.finalize_recording(
+        recording_id,
+        consent_context="visitor_initiated",
+        trace_id=uuid4(),
+    )
+    assert recording_id in svc._active_handles
+    assert await svc.finalize_recording(
+        recording_id,
+        consent_context="visitor_initiated",
+        trace_id=uuid4(),
+    )
+    assert router_calls == 1
+    assert db_calls == 2
+    assert recording_id not in svc._active_handles
     await svc.stop()
 
 

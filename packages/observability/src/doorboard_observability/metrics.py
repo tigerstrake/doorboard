@@ -21,7 +21,7 @@ system.latency_sample event emission path.
 from __future__ import annotations
 
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
@@ -88,7 +88,8 @@ LATENCY_PATHS: dict[str, dict[str, object]] = {
 # In-memory sample store (always active; used for system.latency_sample events)
 # ---------------------------------------------------------------------------
 
-_samples: dict[str, list[float]] = defaultdict(list)
+_MAX_SAMPLES_PER_PATH = 4096
+_samples: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=_MAX_SAMPLES_PER_PATH))
 
 
 def record_sample(path: str, duration_ms: float) -> None:

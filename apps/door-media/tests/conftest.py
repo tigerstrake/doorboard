@@ -17,6 +17,7 @@ class TestSettings(Settings):
     # Shorten retention loop defaults for testing if needed
     min_free_bytes: int = Field(default=1024 * 1024)
     storage_status_interval_s: int = Field(default=3600)  # Don't let loop spam logs
+    admin_token: str = Field(default="test-admin-token")
 
 
 @pytest.fixture(autouse=True)
@@ -38,5 +39,5 @@ def anyio_backend():
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
     """Return a TestClient. The app's lifespan will pick up the overridden settings."""
-    with TestClient(app) as c:
+    with TestClient(app, headers={"Authorization": "Bearer test-admin-token"}) as c:
         yield c

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Keep the venv outside the repo: cloud-synced folders (iCloud) corrupt
-# .pth files in .venv via eviction/conflict copies. Override if needed.
-export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$HOME/.venvs/doorboard}"
+source "$(dirname "$0")/_uv-env"
 
 pnpm_cmd=(pnpm)
 if ! command -v pnpm >/dev/null 2>&1; then
   pnpm_cmd=(corepack pnpm)
 fi
 
-uv run pyright --project pyrightconfig.json
-uv run pyright --project packages/pyrightconfig.json
+"$UV_PROJECT_ENVIRONMENT/bin/pyright" \
+  --pythonpath "$UV_PROJECT_ENVIRONMENT/bin/python" \
+  --project pyrightconfig.json
+"$UV_PROJECT_ENVIRONMENT/bin/pyright" \
+  --pythonpath "$UV_PROJECT_ENVIRONMENT/bin/python" \
+  --project packages/pyrightconfig.json
 "${pnpm_cmd[@]}" -r --if-present typecheck

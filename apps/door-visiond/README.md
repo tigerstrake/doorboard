@@ -4,7 +4,7 @@
 
 Sole owner of the Hailo accelerator and the recognition camera (ADR-0004). Detects faces, matches against the small enrolled set, maintains the short-lived `current_visitor` cache, and pushes profile updates to the ESP32.
 
-## Pipeline (hardware mode)
+## Pipeline (hardware target)
 
 ```text
 recognition camera (libcamera) → face detect → landmarks/align → embed (Hailo)
@@ -15,6 +15,12 @@ recognition camera (libcamera) → face detect → landmarks/align → embed (Ha
 ```
 
 Greeting cooldown 30 s per person. Unknown faces: `vision.face_visible` only — no identity event, no persisted embedding, ever (ADR-0005).
+
+The repository currently contains the complete privacy/matching pipeline and a
+hardware adapter boundary, but not a verified Hailo camera/model implementation.
+Hardware modes therefore fail closed to `disabled` unless runtime and model
+metadata can both be verified. Hardware bring-up remains gated by issue #84;
+the service must never claim `hailo_ok` while the placeholder adapter is active.
 
 ## Modes
 

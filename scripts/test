@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Keep the venv outside the repo: cloud-synced folders (iCloud) corrupt
-# .pth files in .venv via eviction/conflict copies. Override if needed.
-export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$HOME/.venvs/doorboard}"
+source "$(dirname "$0")/_uv-env"
 
 
-uv run pytest "$@"
+"$UV_PROJECT_ENVIRONMENT/bin/pytest" "$@"
 
 if command -v pnpm &> /dev/null; then
   pnpm -r --if-present test

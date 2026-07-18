@@ -23,3 +23,8 @@ One Vite/React app, four surfaces (full specs in [docs/ui/](../../docs/ui/)):
 ## Kiosk deployment
 
 Two Chromium instances launched by systemd after door-api is healthy (deploy/pi-door). Screens map: HDMI-1 → `/wallboard`, HDMI-2 → `/doorpad`.
+
+Build production bundles with `VITE_AMBIENT_MOCK=false`. `VITE_AIRCRAFT_ALERT_DISTANCE_KM`
+sets the hallway hero-alert threshold using the distance already present in
+`ambient.aircraft_summary`; it does not add route, destination, or location fields. Mock
+ambient fixtures are limited to development and visual tests.

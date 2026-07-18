@@ -8,6 +8,7 @@ export interface BigButtonProps {
   disabled?: boolean;
   className?: string;
   id?: string;
+  type?: "button" | "submit" | "reset";
 }
 
 export function BigButton({
@@ -18,11 +19,12 @@ export function BigButton({
   disabled = false,
   className = "",
   id,
+  type = "button",
 }: BigButtonProps) {
   return (
     <button
       id={id}
-      type="button"
+      type={type}
       onClick={onClick}
       disabled={disabled}
       className={`db-big-button db-big-button--${variant} ${className}`}

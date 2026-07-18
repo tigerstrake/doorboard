@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
+from door_visiond.settings import Settings
 from fastapi.testclient import TestClient
 
 
@@ -14,11 +17,30 @@ def test_health(client: TestClient) -> None:
     assert data["privacy_enabled"] is False
 
 
+def test_consent_endpoint_returns_canonical_statement_verbatim(
+    client: TestClient,
+    ssd_settings: Settings,
+) -> None:
+    response = client.get("/consent")
+    assert response.status_code == 200
+    path = ssd_settings.consent_statement_path
+    assert path is not None
+    expected = path.read_text(encoding="utf-8")
+    assert response.json() == {"text": expected, "version": "v1"}
+
+
 def test_metrics(client: TestClient) -> None:
     resp = client.get("/metrics")
     assert resp.status_code == 200
     assert "door_visiond_uptime_s" in resp.text
     assert "door_visiond_cache_hit_rate" in resp.text
+
+
+def test_admin_routes_fail_closed_without_configured_token(client: TestClient) -> None:
+    cfg = cast(Any, client.app).state.cfg
+    cfg.admin_token = ""
+
+    assert client.get("/people").status_code == 503
 
 
 def test_current_visitor_empty_is_204(client: TestClient) -> None:

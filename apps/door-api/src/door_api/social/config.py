@@ -32,6 +32,9 @@ class SocialConfig:
     # SQLite database path for social tables.
     db_path: str
 
+    # Door identifier included in every emitted contract event.
+    door_id: str = "primary"
+
     # Rate limit for public writes (guestbook create, poll vote, checkin create,
     # deletion request): N writes per window_s, enforced per-IP and per-session-token.
     write_rate_limit_count: int = 5
@@ -65,6 +68,7 @@ class SocialConfig:
 
         return SocialConfig(
             db_path=db_path,
+            door_id=os.environ.get("DOOR_API_DOOR_ID", "primary"),
             write_rate_limit_count=_env_int("DOOR_API_SOCIAL_RATE_LIMIT_COUNT", 5),
             write_rate_limit_window_s=_env_float("DOOR_API_SOCIAL_RATE_LIMIT_WINDOW_S", 60.0),
             guestbook_text_max_len=_env_int("DOOR_API_SOCIAL_GUESTBOOK_TEXT_MAX_LEN", 280),

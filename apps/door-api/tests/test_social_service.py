@@ -25,6 +25,7 @@ from door_api.social.errors import (
 from door_api.social.sanitize import SanitizationError, escape_for_render, sanitize_text
 from door_api.social.service import SocialService
 from door_api.social.store import SocialStore
+from doorboard_contracts.events import parse_event
 
 INJECTION_CORPUS = [
     "<script>alert(1)</script>",
@@ -44,6 +45,22 @@ def make_service(**config_overrides: Any) -> SocialService:
     service = SocialService(config=config, store=store, on_event=events.append)
     service.events = events  # type: ignore[attr-defined]
     return service
+
+
+def test_emitted_social_event_uses_contract_envelope() -> None:
+    service = make_service()
+    service.create_guestbook_entry(
+        text="hello",
+        author_label="visitor",
+        ip="10.0.0.1",
+        session_token="session",
+        trace_id="request-trace",
+    )
+
+    event = parse_event(service.events[-1])  # type: ignore[attr-defined]
+    assert event.type == "social.guestbook_entry_created"
+    assert event.source == "door-api"
+    assert event.door_id == "primary"
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from door_sync.fence import validate_roots
@@ -62,16 +62,17 @@ class Settings(BaseSettings):
 
     # Which media target to use: "nas" (filesystem archive) or "mock" (in-proc,
     # for dev without a share). Events/purge always go to the NUC target.
-    media_target: str = Field(default="nas", alias="SYNC_MEDIA_TARGET")
+    media_target: str = Field(default="mock", alias="SYNC_MEDIA_TARGET")
 
     # ── door-media (local, loopback) ──────────────────────────────────────────
     # Used only to (a) reconcile finalized-but-unsynced clips on startup and
     # (b) license local deletion via POST /internal/sync_completed. Loopback.
     door_media_url: str = Field(default="http://127.0.0.1:8082", alias="DOOR_MEDIA_URL")
+    door_media_admin_token: str = Field(default="", alias="DOOR_MEDIA_ADMIN_TOKEN")
 
     # ── admin auth (local; same stopgap as door-media) ────────────────────────
-    # Gates GET /queue. Empty = disabled (dev/CI). This is a low-trust local
-    # secret for the admin UI, never a NAS/HA admin credential.
+    # Gates GET /queue. An empty value closes the route with 503. This is a
+    # low-trust local secret for the admin UI, never a NAS/HA admin credential.
     admin_token: str = Field(default="", alias="DOOR_SYNC_ADMIN_TOKEN")
 
     # ── retry policy ──────────────────────────────────────────────────────────
@@ -99,6 +100,16 @@ class Settings(BaseSettings):
             msg = f"SYNC_MEDIA_TARGET must be one of {allowed}, got {v!r}"
             raise ValueError(msg)
         return v
+
+    @model_validator(mode="after")
+    def _validate_nas_target(self) -> Settings:
+        if self.media_target != "nas":
+            return self
+        if not self.nas_sync_target.strip():
+            raise ValueError("NAS_SYNC_TARGET is required when SYNC_MEDIA_TARGET=nas")
+        if not Path(self.nas_sync_target).is_absolute():
+            raise ValueError("NAS_SYNC_TARGET must be an absolute path")
+        return self
 
     @property
     def syncable_roots(self) -> tuple[str, ...]:

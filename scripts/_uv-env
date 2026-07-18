@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+export UV_CACHE_DIR="${UV_CACHE_DIR:-${TMPDIR:-/tmp}/doorboard-uv-cache}"
+
+if [[ -z "${UV_PROJECT_ENVIRONMENT:-}" ]]; then
+  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    export UV_PROJECT_ENVIRONMENT="$VIRTUAL_ENV"
+  else
+    _doorboard_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    export UV_PROJECT_ENVIRONMENT="$_doorboard_root/.venv"
+    unset _doorboard_root
+  fi
+fi

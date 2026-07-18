@@ -11,7 +11,15 @@ import {
   Gauge,
 } from "@doorboard/ui-kit";
 import { DoorboardEventClient, uuidv7 } from "@doorboard/event-client";
-import type { DoorboardEvent } from "@doorboard/contracts";
+import type {
+  AmbientAircraftSummaryPayload,
+  AmbientBirdSummaryPayload,
+  AmbientFoodRecommendationPayload,
+  AmbientPrinterStatusPayload,
+  AmbientSatellitePassPayload,
+  DoorboardEvent,
+  PresenceLabel,
+} from "@doorboard/contracts";
 import { WallboardVisitorMode } from "./wallboard/WallboardVisitorMode";
 import {
   presenceFixture,
@@ -31,6 +39,14 @@ import { AdminEnrollmentPanel } from "./AdminEnrollmentPanel";
 import { AdminAboutPanel } from "./AdminAboutPanel";
 import { VisitorPage } from "./VisitorPage";
 import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
+import { WallboardFocusedView, WallboardLauncher } from "./wallboardChannels";
+import {
+  WALLBOARD_CONTROL_EVENT,
+  WALLBOARD_CONTROL_STORAGE_KEY,
+  createWallboardFocusRequest,
+  isWallboardFocusRequest,
+} from "./wallboardChannelModel";
+import type { WallboardFocusChannel, WallboardFocusRequest } from "./wallboardChannelModel";
 
 // Import CSS
 import "@doorboard/ui-kit/index.css";
@@ -41,19 +57,69 @@ const CANNED_GUESTBOOK_PHRASES = ["Hey, stopped by!", "Call me later!", "Awesome
 // Content this kiosk session created, so the Privacy screen can offer a
 // real deletion path without needing a login/identity system.
 type MyContentRef = { kind: "guestbook" | "checkin"; id: string; label: string };
-const MY_CONTENT_KEY = "doorboard_my_social_content";
+type MyContentStore = Record<string, MyContentRef[]>;
+const MY_CONTENT_KEY = "doorboard_my_social_content_v2";
+const ADMIN_TOKEN_KEY = "doorboard_admin_social_token";
+const MAX_STORED_VISITOR_SESSIONS = 16;
+const MAX_CONTENT_ITEMS_PER_SESSION = 32;
 
-function loadMyContent(): MyContentRef[] {
+function adminHeaders(json = false): Record<string, string> {
+  const token = window.localStorage.getItem(ADMIN_TOKEN_KEY);
+  return {
+    ...(json ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+function isMyContentRef(value: unknown): value is MyContentRef {
+  if (value === null || typeof value !== "object") return false;
+  const item = value as Partial<MyContentRef>;
+  return (
+    (item.kind === "guestbook" || item.kind === "checkin") &&
+    typeof item.id === "string" &&
+    item.id.length > 0 &&
+    item.id.length <= 128 &&
+    typeof item.label === "string" &&
+    item.label.length <= 160
+  );
+}
+
+function parseMyContentStore(raw: string | null): MyContentStore {
   try {
-    const raw = window.localStorage.getItem(MY_CONTENT_KEY);
-    return raw ? (JSON.parse(raw) as MyContentRef[]) : [];
+    const parsed = raw ? (JSON.parse(raw) as unknown) : {};
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .flatMap(([sessionId, items]) => {
+          if (!Array.isArray(items)) return [];
+          const validItems = items.filter(isMyContentRef).slice(-MAX_CONTENT_ITEMS_PER_SESSION);
+          return validItems.length > 0 ? [[sessionId, validItems] as const] : [];
+        })
+        .slice(-MAX_STORED_VISITOR_SESSIONS)
+    );
   } catch {
-    return [];
+    return {};
   }
 }
 
-function saveMyContent(items: MyContentRef[]): void {
-  window.localStorage.setItem(MY_CONTENT_KEY, JSON.stringify(items));
+function loadMyContent(sessionId: string): MyContentRef[] {
+  const stored = parseMyContentStore(window.localStorage.getItem(MY_CONTENT_KEY));
+  return Array.isArray(stored[sessionId]) ? stored[sessionId] : [];
+}
+
+function saveMyContent(sessionId: string, items: MyContentRef[]): void {
+  try {
+    const stored = parseMyContentStore(window.localStorage.getItem(MY_CONTENT_KEY));
+    if (items.length > 0) stored[sessionId] = items;
+    else delete stored[sessionId];
+    const bounded = Object.fromEntries(
+      Object.entries(stored).slice(-MAX_STORED_VISITOR_SESSIONS)
+    );
+    window.localStorage.setItem(MY_CONTENT_KEY, JSON.stringify(bounded));
+  } catch {
+    // Storage can be disabled or full on a locked-down kiosk. The durable API
+    // action has already succeeded, so local deletion shortcuts degrade away.
+  }
 }
 
 function apiErrorMessage(err: unknown, fallback: string): string {
@@ -69,6 +135,35 @@ const API_BASE = import.meta.env.VITE_DOOR_API_BASE_URL ?? "http://127.0.0.1:800
 const FEATURE_PHOTOBOOTH =
   ((import.meta.env.VITE_FEATURE_PHOTOBOOTH as string | undefined) ??
     (import.meta.env.FEATURE_PHOTOBOOTH as string | undefined)) === "true";
+const DEV_TOOLS_ENABLED =
+  ((import.meta.env.VITE_DOOR_UI_DEV_TOOLS as string | undefined) ??
+    (import.meta.env.VITE_ENABLE_SIM_PANEL as string | undefined)) === "true";
+const MOCK_AMBIENT_ENABLED =
+  (import.meta.env.VITE_AMBIENT_MOCK as string | undefined) === "true" || DEV_TOOLS_ENABLED;
+const configuredAircraftAlertDistanceKm = Number(
+  (import.meta.env.VITE_AIRCRAFT_ALERT_DISTANCE_KM as string | undefined) ?? "3"
+);
+const AIRCRAFT_ALERT_DISTANCE_KM =
+  Number.isFinite(configuredAircraftAlertDistanceKm) && configuredAircraftAlertDistanceKm > 0
+    ? configuredAircraftAlertDistanceKm
+    : 3;
+const MAX_PRESENCE_SUBJECTS = 8;
+const MAX_SCOREBOARD_ENTRIES = 16;
+
+function safeDisplayText(value: unknown, maxLength = 80): string {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim().replace(/\s+/g, " ");
+  return normalized.slice(0, maxLength);
+}
+
+function clampPercentage(value: number | null): number {
+  if (value === null || !Number.isFinite(value)) return 0;
+  return Math.min(100, Math.max(0, value));
+}
+
+function isFiniteNonNegative(value: number): boolean {
+  return Number.isFinite(value) && value >= 0;
+}
 
 const wsUrlFromApiBase = (base: string) => `${base.replace(/^http/, "ws")}/ws`;
 
@@ -80,21 +175,103 @@ type DoorPadScreen =
   | "guestbook"
   | "poll"
   | "checkin"
-  | "privacy";
+  | "privacy"
+  | "remote";
 type VideoStep = "offer" | "countdown" | "recording" | "review" | "saved" | "qr";
 type PhotoStep = "offer" | "countdown" | "review" | "saved";
 
 interface DoorApiSnapshot {
-  session?: { state?: SessionState; session_id?: string | null };
+  accepted?: boolean;
+  session?: {
+    state?: SessionState;
+    session_id?: string | null;
+    display_name?: string | null;
+    profile_id?: string | null;
+  };
   config?: { max_recording_s?: number };
+}
+
+interface TimedAmbient<T> {
+  payload: T;
+  occurredAt: string;
+}
+
+interface ScoreboardEntry {
+  score: number;
+  occurredAt: string;
+}
+
+interface AmbientAlert {
+  id: string;
+  kind: "aircraft" | "satellite" | "bird" | "printer";
+  title: string;
+  detail: string;
+  priority: number;
+}
+
+function doorPadRouteForState(state: SessionState): { screen: DoorPadScreen; video: VideoStep } {
+  if (state === "IDLE" || state === "SESSION_END") return { screen: "home", video: "offer" };
+  if (state === "VIDEO_MESSAGE_OFFERED") return { screen: "message", video: "offer" };
+  if (state === "VIDEO_MESSAGE_RECORDING") return { screen: "message", video: "recording" };
+  if (state === "VIDEO_MESSAGE_REVIEW") return { screen: "message", video: "review" };
+  if (state === "VIDEO_MESSAGE_SAVED") return { screen: "message", video: "saved" };
+  return { screen: "ringing", video: "offer" };
 }
 
 interface VideoRecording {
   recording_id: string;
+  session_id?: string;
+  started_at_utc?: string;
+  duration_s?: number | null;
   path: string | null;
   consent_context: "visitor_initiated" | "bell_event" | null;
   thumbnail_path: string | null;
   playback_url?: string;
+}
+
+function AdminVideoMessagePlayer({
+  recordingId,
+  token,
+}: {
+  recordingId: string;
+  token: string;
+}) {
+  const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
+  const [playerState, setPlayerState] = useState<"idle" | "loading" | "unavailable">("idle");
+
+  useEffect(
+    () => () => {
+      if (playbackUrl) URL.revokeObjectURL(playbackUrl);
+    },
+    [playbackUrl]
+  );
+
+  const load = async () => {
+    setPlayerState("loading");
+    try {
+      const response = await fetch(`${API_BASE}/admin/media-inbox/${recordingId}/file`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error("playback unavailable");
+      const nextUrl = URL.createObjectURL(await response.blob());
+      setPlaybackUrl((previous) => {
+        if (previous) URL.revokeObjectURL(previous);
+        return nextUrl;
+      });
+      setPlayerState("idle");
+    } catch {
+      setPlayerState("unavailable");
+    }
+  };
+
+  if (playbackUrl) {
+    return <video className="admin-message-video" src={playbackUrl} controls playsInline />;
+  }
+  return (
+    <BigButton onClick={load} disabled={playerState === "loading"}>
+      {playerState === "loading" ? "Loading…" : playerState === "unavailable" ? "Retry playback" : "Play message"}
+    </BigButton>
+  );
 }
 
 interface PhotoReview {
@@ -155,8 +332,16 @@ export function App() {
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
   const [activeDisplayName, setActiveDisplayName] = useState<string | null>(null);
   const [mockSessionId, setMockSessionId] = useState<string>(() => crypto.randomUUID());
-  const [showSimPanel, setShowSimPanel] = useState<boolean>(true);
+  const [showSimPanel, setShowSimPanel] = useState<boolean>(DEV_TOOLS_ENABLED);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
+  const [wallboardFocusRequest, setWallboardFocusRequest] = useState<WallboardFocusRequest | null>(null);
+  const [wallboardLaunchStatus, setWallboardLaunchStatus] = useState<string>("Ambient grid");
+  const [eventConnection, setEventConnection] = useState<"connecting" | "connected" | "disconnected">(
+    "connecting"
+  );
+  const [ringRequestState, setRingRequestState] = useState<"idle" | "sending" | "sent" | "failed">(
+    "idle"
+  );
   
   // DoorPad local state
   const [doorPadScreen, setDoorPadScreen] = useState<DoorPadScreen>("home");
@@ -169,18 +354,28 @@ export function App() {
   const [latestRecording, setLatestRecording] = useState<VideoRecording | null>(null);
   const [currentPhoto, setCurrentPhoto] = useState<PhotoReview | null>(null);
   const [visitorQrUrl, setVisitorQrUrl] = useState<string | null>(null);
+  const [mediaActionPending, setMediaActionPending] = useState<boolean>(false);
   const [adminRecordings, setAdminRecordings] = useState<VideoRecording[]>([]);
+  const [adminInboxState, setAdminInboxState] = useState<"idle" | "loading" | "ready" | "unavailable">(
+    "idle"
+  );
+  const [adminToken, setAdminToken] = useState<string>(
+    () => window.localStorage.getItem(ADMIN_TOKEN_KEY) ?? ""
+  );
+  const [adminTokenDraft, setAdminTokenDraft] = useState<string>("");
+  const [sessionObservedAt, setSessionObservedAt] = useState<number>(() => Date.now());
   const [galleryPhotos, setGalleryPhotos] = useState<GalleryPhoto[]>([]);
   const [wallboardMoments, setWallboardMoments] = useState<WallboardMoment[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Admin surface media & storage states
   const [storageStatus, setStorageStatus] = useState({
-    free_bytes: 48 * 1024 * 1024 * 1024 * 0.84, // 84% free of 48 GiB default
+    free_bytes: 0,
     queue_depth: 0,
     oldest_unsynced_s: 0,
     recording_allowed: true,
   });
+  const [storageStatusKnown, setStorageStatusKnown] = useState(false);
 
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [kindFilter, setKindFilter] = useState<string>("all");
@@ -193,15 +388,172 @@ export function App() {
 
   // Social feature state (T-403)
   const [guestbookText, setGuestbookText] = useState<string>("");
+  const [selectedGuestbookPhrase, setSelectedGuestbookPhrase] = useState<string | null>(null);
   const [guestbookSubmitting, setGuestbookSubmitting] = useState<boolean>(false);
   const [currentPoll, setCurrentPoll] = useState<Poll | null>(null);
   const [pollResults, setPollResults] = useState<PollResultRow[] | null>(null);
   const [pollVoteError, setPollVoteError] = useState<string | null>(null);
+  const [selectedPollOptionId, setSelectedPollOptionId] = useState<string | null>(null);
+  const [doorPadVotedOptionId, setDoorPadVotedOptionId] = useState<string | null>(null);
   const [checkinSubmitting, setCheckinSubmitting] = useState<boolean>(false);
-  const [myContent, setMyContent] = useState<MyContentRef[]>(() => loadMyContent());
+  const [myContent, setMyContent] = useState<MyContentRef[]>([]);
   const [approvedGuestbook, setApprovedGuestbook] = useState<GuestbookEntry[]>([]);
+  const [guestbookAmbientState, setGuestbookAmbientState] = useState<
+    "idle" | "ready" | "unavailable"
+  >("idle");
+  const [pollAmbientState, setPollAmbientState] = useState<"idle" | "ready" | "unavailable">(
+    "idle"
+  );
+
+  const [presenceState, setPresenceState] = useState<
+    Record<string, { label: PresenceLabel; occurredAt: string }>
+  >(() =>
+    MOCK_AMBIENT_ENABLED
+      ? {
+          resident_1: {
+            label: presenceFixture.owner.label,
+            occurredAt: presenceFixture.owner.occurred_at,
+          },
+          resident_2: {
+            label: presenceFixture.roommate.label,
+            occurredAt: presenceFixture.roommate.occurred_at,
+          },
+        }
+      : ({} as Record<string, { label: PresenceLabel; occurredAt: string }>)
+  );
+  const [birdSummary, setBirdSummary] = useState<TimedAmbient<AmbientBirdSummaryPayload> | null>(
+    () =>
+      MOCK_AMBIENT_ENABLED
+        ? {
+            occurredAt: birdFixture.occurred_at,
+            payload: {
+              window: "today",
+              top_species: birdFixture.top_species,
+              total_detections: birdFixture.total_detections,
+            },
+          }
+        : null
+  );
+  const [aircraftSummary, setAircraftSummary] = useState<
+    TimedAmbient<AmbientAircraftSummaryPayload> | null
+  >(() =>
+    MOCK_AMBIENT_ENABLED
+      ? {
+          occurredAt: aircraftFixture.occurred_at,
+          payload: { nearby: aircraftFixture.nearby, as_of: aircraftFixture.occurred_at },
+        }
+      : null
+  );
+  const [satellitePass, setSatellitePass] = useState<TimedAmbient<AmbientSatellitePassPayload> | null>(
+    () =>
+      MOCK_AMBIENT_ENABLED
+        ? {
+            occurredAt: satelliteFixture.occurred_at,
+            payload: {
+              satellite: satelliteFixture.satellite,
+              rise_at: satelliteFixture.rise_at,
+              max_elevation_deg: satelliteFixture.max_elevation_deg,
+              direction: satelliteFixture.direction,
+              visible: satelliteFixture.visible,
+            },
+          }
+        : null
+  );
+  const [printerStatus, setPrinterStatus] = useState<TimedAmbient<AmbientPrinterStatusPayload> | null>(
+    () =>
+      MOCK_AMBIENT_ENABLED
+        ? {
+            occurredAt: printerFixture.occurred_at,
+            payload: {
+              state: printerFixture.state as AmbientPrinterStatusPayload["state"],
+              job_name: printerFixture.job_name,
+              progress_pct: printerFixture.progress_pct,
+              eta: printerFixture.eta,
+            },
+          }
+        : null
+  );
+  const [foodRecommendation, setFoodRecommendation] = useState<
+    TimedAmbient<AmbientFoodRecommendationPayload> | null
+  >(() =>
+    MOCK_AMBIENT_ENABLED
+      ? {
+          occurredAt: foodFixture.occurred_at,
+          payload: {
+            date: foodFixture.occurred_at.slice(0, 10),
+            title: foodFixture.title,
+            detail: foodFixture.detail,
+            provider: foodFixture.provider,
+          },
+        }
+        : null
+  );
+  const [moodUpdate, setMoodUpdate] = useState<TimedAmbient<{ mood: string }> | null>(() =>
+    MOCK_AMBIENT_ENABLED
+      ? { occurredAt: moodFixture.occurred_at, payload: { mood: moodFixture.mood } }
+      : null
+  );
+  const [scoreboardEntries, setScoreboardEntries] = useState<Record<string, ScoreboardEntry>>(() =>
+    MOCK_AMBIENT_ENABLED
+      ? Object.fromEntries(
+          scoreboardFixture.scores.map((entry, index) => [
+            `fixture-${index}`,
+            { score: entry.score, occurredAt: scoreboardFixture.occurred_at },
+          ])
+        )
+      : {}
+  );
+  const [ambientAlert, setAmbientAlert] = useState<AmbientAlert | null>(null);
 
   const clientRef = useRef<DoorboardEventClient | null>(null);
+  const doorPadFocusRef = useRef<HTMLDivElement | null>(null);
+  const alertTimeoutRef = useRef<number | null>(null);
+  const latestAlertPriorityRef = useRef<number>(0);
+  const lastBirdTotalRef = useRef<number | null>(null);
+  const lastPrinterStateRef = useRef<string | null>(null);
+  const lastAmbientAlertsRef = useRef<
+    Partial<Record<AmbientAlert["kind"], { key: string; shownAt: number }>>
+  >({});
+
+  const applySessionSnapshot = useCallback(
+    (snapshot: DoorApiSnapshot["session"] | null | undefined) => {
+      const nextState = snapshot?.state;
+      if (!nextState) return;
+      setSessionState((previous) => {
+        if (previous !== nextState) setSessionObservedAt(Date.now());
+        return nextState;
+      });
+      if (snapshot?.session_id) setMockSessionId(snapshot.session_id);
+      if (snapshot?.display_name !== undefined) setActiveDisplayName(snapshot.display_name);
+      if (snapshot?.profile_id !== undefined) setActiveProfile(snapshot.profile_id);
+      const target = doorPadRouteForState(nextState);
+      setDoorPadScreen(target.screen);
+      setVideoStep(target.video);
+      if (nextState === "IDLE") {
+        setActiveDisplayName(null);
+        setActiveProfile(null);
+        setRingRequestState("idle");
+      }
+    },
+    []
+  );
+
+  const showAmbientAlert = useCallback((alert: AmbientAlert) => {
+    const key = `${alert.title}|${alert.detail}`;
+    const previous = lastAmbientAlertsRef.current[alert.kind];
+    const now = Date.now();
+    if (previous?.key === key && now - previous.shownAt < 60_000) return;
+    if (alert.priority < latestAlertPriorityRef.current) return;
+    lastAmbientAlertsRef.current[alert.kind] = { key, shownAt: now };
+    latestAlertPriorityRef.current = alert.priority;
+    setAmbientAlert(alert);
+    if (alertTimeoutRef.current !== null) window.clearTimeout(alertTimeoutRef.current);
+    alertTimeoutRef.current = window.setTimeout(() => {
+      latestAlertPriorityRef.current = 0;
+      setAmbientAlert(null);
+      alertTimeoutRef.current = null;
+    }, alert.kind === "aircraft" ? 12000 : 8000);
+  }, []);
 
   // Sync pathname route
   useEffect(() => {
@@ -220,20 +572,97 @@ export function App() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    if (sessionState === "IDLE") {
+      saveMyContent(mockSessionId, []);
+      setMyContent([]);
+      socialApi.clearVisitorToken();
+      return;
+    }
+    setMyContent(loadMyContent(mockSessionId));
+  }, [mockSessionId, sessionState]);
+
+  useEffect(() => {
+    if (route !== "/doorpad") return undefined;
+    const frame = window.requestAnimationFrame(() => doorPadFocusRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [doorPadScreen, route, videoStep]);
+
+  useEffect(() => {
+    if (!WALLBOARD_TAKEOVER_STATES.includes(sessionState)) return;
+    setAmbientAlert(null);
+    latestAlertPriorityRef.current = 0;
+    if (alertTimeoutRef.current !== null) {
+      window.clearTimeout(alertTimeoutRef.current);
+      alertTimeoutRef.current = null;
+    }
+  }, [sessionState]);
+
+  useEffect(
+    () => () => {
+      if (alertTimeoutRef.current !== null) window.clearTimeout(alertTimeoutRef.current);
+    },
+    []
+  );
+
+  useEffect(() => {
+    const readStoredFocus = () => {
+      try {
+        const raw = window.localStorage.getItem(WALLBOARD_CONTROL_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as unknown;
+        if (isWallboardFocusRequest(parsed)) {
+          setWallboardFocusRequest(parsed);
+          setWallboardLaunchStatus(
+            parsed.mode === "ambient" ? "Ambient grid" : `Focused: ${parsed.channel}`
+          );
+        }
+      } catch {
+        setWallboardFocusRequest(null);
+      }
+    };
+
+    readStoredFocus();
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === WALLBOARD_CONTROL_STORAGE_KEY) readStoredFocus();
+    };
+    const handleLocalFocus = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (isWallboardFocusRequest(detail)) {
+        setWallboardFocusRequest(detail);
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener(WALLBOARD_CONTROL_EVENT, handleLocalFocus);
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener(WALLBOARD_CONTROL_EVENT, handleLocalFocus);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (wallboardFocusRequest?.mode !== "focus" || !wallboardFocusRequest.expiresAt) return undefined;
+    const remainingMs = Math.max(0, wallboardFocusRequest.expiresAt - Date.now());
+    const timeout = window.setTimeout(() => setWallboardFocusRequest(null), remainingMs);
+    return () => window.clearTimeout(timeout);
+  }, [wallboardFocusRequest]);
+
   // Initialize event client
   useEffect(() => {
     const client = new DoorboardEventClient({
       // Connect to simulator ws, or fallback to mock BroadcastChannel
       wsUrl: wsUrlFromApiBase(API_BASE),
-      filters: ["session.*", "vision.*", "door.*", "media.*"],
+      filters: ["session.*", "vision.*", "door.*", "media.*", "ambient.*", "status.*", "social.*"],
+      onStatusChange: setEventConnection,
       onSnapshot: (snapshot) => {
-        const state = (snapshot as { state?: SessionState }).state;
-        if (state) {
-          setSessionState(state);
-          if (state === "IDLE") {
-            setDoorPadScreen("home");
-          }
-        }
+        const value = snapshot as DoorApiSnapshot["session"] | DoorApiSnapshot;
+        const session =
+          value && typeof value === "object" && "session" in value
+            ? (value as DoorApiSnapshot).session
+            : (value as DoorApiSnapshot["session"]);
+        applySessionSnapshot(session);
       },
     });
 
@@ -243,32 +672,7 @@ export function App() {
     const unsubscribeSession = client.subscribe("session.state_changed", (event: DoorboardEvent) => {
       if (event && event.type === "session.state_changed" && event.payload) {
         const toState = event.payload.to_state;
-        setSessionState(toState);
-
-        if (toState === "IDLE") {
-          setActiveProfile(null);
-          setActiveDisplayName(null);
-        }
-
-        // Keep DoorPad local screen in sync, including sessions started by hardware.
-        if (toState === "IDLE") {
-          setDoorPadScreen("home");
-          setVideoStep("offer");
-        } else if (toState === "VIDEO_MESSAGE_OFFERED") {
-          setDoorPadScreen("message");
-          setVideoStep("offer");
-        } else if (toState === "VIDEO_MESSAGE_RECORDING") {
-          setDoorPadScreen("message");
-          setVideoStep("recording");
-        } else if (toState === "VIDEO_MESSAGE_REVIEW") {
-          setDoorPadScreen("message");
-          setVideoStep("review");
-        } else if (toState === "VIDEO_MESSAGE_SAVED") {
-          setDoorPadScreen("message");
-          setVideoStep("saved");
-        } else if (VISITOR_STATES.includes(toState)) {
-          setDoorPadScreen("ringing");
-        }
+        applySessionSnapshot({ state: toState, session_id: event.payload.session_id });
       }
     });
 
@@ -289,56 +693,236 @@ export function App() {
           oldest_unsynced_s: event.payload.oldest_unsynced_s,
           recording_allowed: event.payload.recording_allowed,
         });
+        setStorageStatusKnown(true);
       }
     });
+
+    const unsubscribePresence = client.subscribe("status.presence_changed", (event: DoorboardEvent) => {
+      if (event.type !== "status.presence_changed") return;
+      const subjectKey = safeDisplayText(event.payload.subject_id, 128);
+      if (!subjectKey || subjectKey === "__proto__" || subjectKey === "constructor") return;
+      setPresenceState((previous) => {
+        const next = { ...previous };
+        if (!(subjectKey in next) && Object.keys(next).length >= MAX_PRESENCE_SUBJECTS) {
+          const oldest = Object.entries(next).sort(
+            ([, left], [, right]) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt)
+          )[0];
+          if (oldest) delete next[oldest[0]];
+        }
+        next[subjectKey] = {
+          label: event.payload.label,
+          occurredAt: event.occurred_at,
+        };
+        return next;
+      });
+    });
+
+    const unsubscribeBirds = client.subscribe("ambient.bird_summary", (event: DoorboardEvent) => {
+      if (event.type !== "ambient.bird_summary") return;
+      const previousTotal = lastBirdTotalRef.current;
+      lastBirdTotalRef.current = event.payload.total_detections;
+      setBirdSummary({ payload: event.payload, occurredAt: event.occurred_at });
+      if (
+        event.payload.top_species.length > 0 &&
+        (previousTotal === null || event.payload.total_detections > previousTotal)
+      ) {
+        const species = event.payload.top_species[0];
+        showAmbientAlert({
+          id: event.event_id,
+          kind: "bird",
+          title: `New in the latest bird update: ${safeDisplayText(species.name) || "Bird detected"}`,
+          detail: `${species.count} today · ${(species.confidence_avg * 100).toFixed(0)}% average confidence`,
+          priority: 1,
+        });
+      }
+    });
+
+    const unsubscribeAircraft = client.subscribe("ambient.aircraft_summary", (event: DoorboardEvent) => {
+      if (event.type !== "ambient.aircraft_summary") return;
+      setAircraftSummary({ payload: event.payload, occurredAt: event.payload.as_of });
+      const closest = event.payload.nearby
+        .filter((aircraft) => isFiniteNonNegative(aircraft.distance_km))
+        .sort((a, b) => a.distance_km - b.distance_km)[0];
+      if (closest && closest.distance_km <= AIRCRAFT_ALERT_DISTANCE_KM) {
+        showAmbientAlert({
+          id: event.event_id,
+          kind: "aircraft",
+          title: `${safeDisplayText(closest.callsign, 16) || "Aircraft"} is overhead`,
+          detail: `${isFiniteNonNegative(closest.altitude_ft) ? closest.altitude_ft.toLocaleString() : "Unknown"} ft · ${closest.distance_km.toFixed(1)} km away · heading ${Number.isFinite(closest.heading) ? Math.round(closest.heading) : "unknown"}°`,
+          priority: 4,
+        });
+      }
+    });
+
+    const unsubscribeSatellite = client.subscribe("ambient.satellite_pass", (event: DoorboardEvent) => {
+      if (event.type !== "ambient.satellite_pass") return;
+      setSatellitePass({ payload: event.payload, occurredAt: event.occurred_at });
+      const minutesUntilRise = (Date.parse(event.payload.rise_at) - Date.now()) / 60000;
+      if (event.payload.visible && minutesUntilRise >= 0 && minutesUntilRise <= 15) {
+        showAmbientAlert({
+          id: event.event_id,
+          kind: "satellite",
+          title: `${safeDisplayText(event.payload.satellite) || "Satellite"} rises soon`,
+          detail: `${Math.max(1, Math.ceil(minutesUntilRise))} min · ${event.payload.direction} · ${event.payload.max_elevation_deg.toFixed(0)}° max elevation`,
+          priority: 3,
+        });
+      }
+    });
+
+    const unsubscribePrinter = client.subscribe("ambient.printer_status", (event: DoorboardEvent) => {
+      if (event.type !== "ambient.printer_status") return;
+      const previousState = lastPrinterStateRef.current;
+      lastPrinterStateRef.current = event.payload.state;
+      setPrinterStatus({ payload: event.payload, occurredAt: event.occurred_at });
+      if (event.payload.state === "error" || (previousState === "printing" && event.payload.state === "idle")) {
+        showAmbientAlert({
+          id: event.event_id,
+          kind: "printer",
+          title: event.payload.state === "error" ? "3D printer needs attention" : "3D print finished",
+          detail: event.payload.job_name
+            ? safeDisplayText(event.payload.job_name)
+            : "No job name provided",
+          priority: event.payload.state === "error" ? 3 : 2,
+        });
+      }
+    });
+
+    const unsubscribeFood = client.subscribe("ambient.food_recommendation", (event: DoorboardEvent) => {
+      if (event.type !== "ambient.food_recommendation") return;
+      setFoodRecommendation({ payload: event.payload, occurredAt: event.occurred_at });
+    });
+
+    const unsubscribeMood = client.subscribe("social.mood_updated", (event: DoorboardEvent) => {
+      if (event.type !== "social.mood_updated") return;
+      setMoodUpdate({
+        payload: { mood: safeDisplayText(event.payload.mood, 40) },
+        occurredAt: event.occurred_at,
+      });
+    });
+
+    const unsubscribeScoreboard = client.subscribe(
+      "social.scoreboard_updated",
+      (event: DoorboardEvent) => {
+        if (event.type !== "social.scoreboard_updated" || !Number.isFinite(event.payload.delta)) return;
+        const entryKey = safeDisplayText(event.payload.entry_id, 128);
+        if (!entryKey || entryKey === "__proto__" || entryKey === "constructor") return;
+        setScoreboardEntries((previous) => {
+          const next = { ...previous };
+          if (!(entryKey in next) && Object.keys(next).length >= MAX_SCOREBOARD_ENTRIES) {
+            const oldest = Object.entries(next).sort(
+              ([, left], [, right]) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt)
+            )[0];
+            if (oldest) delete next[oldest[0]];
+          }
+          const nextScore = (next[entryKey]?.score ?? 0) + Math.trunc(event.payload.delta);
+          next[entryKey] = {
+            score: Math.min(Number.MAX_SAFE_INTEGER, Math.max(Number.MIN_SAFE_INTEGER, nextScore)),
+            occurredAt: event.occurred_at,
+          };
+          return next;
+        });
+      }
+    );
 
     return () => {
       unsubscribeSession();
       unsubscribeVision();
       unsubscribeMedia();
+      unsubscribePresence();
+      unsubscribeBirds();
+      unsubscribeAircraft();
+      unsubscribeSatellite();
+      unsubscribePrinter();
+      unsubscribeFood();
+      unsubscribeMood();
+      unsubscribeScoreboard();
       client.close();
     };
-  }, []);
+  }, [applySessionSnapshot, showAmbientAlert]);
+
+  useEffect(() => {
+    if (!WALLBOARD_TAKEOVER_STATES.includes(sessionState)) {
+      if (sessionState === "IDLE") setVisitorQrUrl(null);
+      return undefined;
+    }
+    let cancelled = false;
+    void fetch(`${API_BASE}/visitor-token`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("visitor token unavailable");
+        return response.json() as Promise<{ token: string; url: string }>;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        socialApi.setVisitorToken(data.token);
+        setVisitorQrUrl(data.url);
+      })
+      .catch(() => {
+        if (!cancelled) setVisitorQrUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionState]);
 
   useEffect(() => {
     const controller = new AbortController();
     fetch(`${API_BASE}/session`, { signal: controller.signal })
       .then((response) => (response.ok ? response.json() : null))
       .then((data: DoorApiSnapshot | null) => {
-        if (data?.session?.state) {
-          setSessionState(data.session.state);
-        }
+        applySessionSnapshot(data?.session);
         if (typeof data?.config?.max_recording_s === "number") {
           setMaxRecordingS(data.config.max_recording_s);
         }
       })
       .catch(() => undefined);
     return () => controller.abort();
-  }, []);
+  }, [applySessionSnapshot]);
 
   useEffect(() => {
     if (route !== "/admin" && route !== "/diagnostics") return undefined;
+    if (!adminToken) {
+      setAdminInboxState("idle");
+      setAdminRecordings([]);
+      return undefined;
+    }
     const controller = new AbortController();
-    fetch(`${API_BASE}/admin/media-inbox`, { signal: controller.signal })
-      .then((response) => (response.ok ? response.json() : { recordings: [] }))
+    setAdminInboxState("loading");
+    fetch(`${API_BASE}/admin/media-inbox`, {
+      signal: controller.signal,
+      headers: adminHeaders(),
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error(`admin inbox unavailable: ${response.status}`);
+        return response.json();
+      })
       .then((data: { recordings?: VideoRecording[] }) => {
         setAdminRecordings(data.recordings ?? []);
+        setAdminInboxState("ready");
       })
-      .catch(() => setAdminRecordings([]));
+      .catch(() => {
+        if (!controller.signal.aborted) setAdminInboxState("unavailable");
+      });
     return () => controller.abort();
-  }, [route]);
+  }, [adminToken, route]);
 
   useEffect(() => {
-    if (!FEATURE_PHOTOBOOTH || (route !== "/admin" && route !== "/diagnostics")) return undefined;
+    if (
+      !FEATURE_PHOTOBOOTH ||
+      !adminToken ||
+      (route !== "/admin" && route !== "/diagnostics")
+    ) return undefined;
     const controller = new AbortController();
-    fetch(`${API_BASE}/admin/gallery/photos`, { signal: controller.signal })
+    fetch(`${API_BASE}/admin/gallery/photos`, {
+      signal: controller.signal,
+      headers: adminHeaders(),
+    })
       .then((response) => (response.ok ? response.json() : { photos: [] }))
       .then((data: { photos?: GalleryPhoto[] }) => {
         setGalleryPhotos(data.photos ?? []);
       })
       .catch(() => setGalleryPhotos([]));
     return () => controller.abort();
-  }, [route]);
+  }, [adminToken, route]);
 
   // Show temporary toast feedback
   const triggerToast = (msg: string) => {
@@ -351,12 +935,32 @@ export function App() {
     setRoute(path);
   };
 
+  const returnDoorPadToContext = () => {
+    if (VISITOR_STATES.includes(sessionState)) {
+      setDoorPadScreen("ringing");
+    } else {
+      setDoorPadScreen("home");
+    }
+  };
+
+  const setWallboardChannel = (channel: "ambient" | WallboardFocusChannel) => {
+    const request = createWallboardFocusRequest(channel);
+    setWallboardFocusRequest(request);
+    setWallboardLaunchStatus(channel === "ambient" ? "Ambient grid" : `Focused: ${channel}`);
+    window.localStorage.setItem(WALLBOARD_CONTROL_STORAGE_KEY, JSON.stringify(request));
+    window.dispatchEvent(new CustomEvent(WALLBOARD_CONTROL_EVENT, { detail: request }));
+  };
+
+  const returnWallboardAmbient = () => {
+    setWallboardChannel("ambient");
+  };
+
   const MEDIA_API_BASE = window.location.port === "5173" ? "http://127.0.0.1:8082" : "";
 
   const fetchRecordings = useCallback(async (cursorVal = currentCursor) => {
     setLoading(true);
     try {
-      let url = `${MEDIA_API_BASE}/recordings?limit=${pageSize}`;
+      let url = `${API_BASE}/admin/recordings?limit=${pageSize}`;
       if (kindFilter !== "all") {
         url += `&kind=${kindFilter}`;
       }
@@ -367,7 +971,7 @@ export function App() {
         url += `&cursor=${encodeURIComponent(cursorVal)}`;
       }
       
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: adminHeaders() });
       if (res.ok) {
         const data = await res.json();
         setRecordings(data.recordings || []);
@@ -380,13 +984,13 @@ export function App() {
     } finally {
       setLoading(false);
     }
-  }, [currentCursor, pageSize, kindFilter, syncFilter, MEDIA_API_BASE]);
+  }, [currentCursor, pageSize, kindFilter, syncFilter]);
 
   useEffect(() => {
-    if (route === "/admin" || route === "/diagnostics") {
+    if (adminToken && (route === "/admin" || route === "/diagnostics")) {
       fetchRecordings(currentCursor);
     }
-  }, [route, currentCursor, fetchRecordings]);
+  }, [adminToken, route, currentCursor, fetchRecordings]);
 
   const handleNextPage = () => {
     if (nextCursor) {
@@ -409,11 +1013,15 @@ export function App() {
       return;
     }
     try {
-      const res = await fetch(`${MEDIA_API_BASE}/recordings/${recordingId}`, {
+      const res = await fetch(`${API_BASE}/admin/recordings/${recordingId}`, {
         method: "DELETE",
+        headers: adminHeaders(),
       });
       if (res.ok) {
         triggerToast("Recording deleted");
+        setAdminRecordings((previous) =>
+          previous.filter((recording) => recording.recording_id !== recordingId)
+        );
         // Reset to first page or refresh current page
         fetchRecordings(currentCursor);
       } else {
@@ -428,7 +1036,9 @@ export function App() {
   const refreshGalleryPhotos = useCallback(async () => {
     if (!FEATURE_PHOTOBOOTH) return;
     try {
-      const response = await fetch(`${API_BASE}/admin/gallery/photos`);
+      const response = await fetch(`${API_BASE}/admin/gallery/photos`, {
+        headers: adminHeaders(),
+      });
       const data = response.ok ? ((await response.json()) as { photos?: GalleryPhoto[] }) : {};
       setGalleryPhotos(data.photos ?? []);
     } catch {
@@ -442,7 +1052,7 @@ export function App() {
     try {
       const response = await fetch(`${API_BASE}/admin/gallery/photos/${photo.recording_id}/approve`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: adminHeaders(true),
         body: JSON.stringify({
           tags: tagText.split(",").map((tag) => tag.trim()).filter(Boolean),
           wallboard_moment: photo.wallboard_moment,
@@ -461,7 +1071,7 @@ export function App() {
     try {
       const response = await fetch(`${API_BASE}/admin/gallery/photos/${photo.recording_id}/tags`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: adminHeaders(true),
         body: JSON.stringify({
           tags: tagText === null ? photo.tags : tagText.split(",").map((tag) => tag.trim()),
           wallboard_moment: wallboardMoment ?? photo.wallboard_moment,
@@ -479,6 +1089,7 @@ export function App() {
     try {
       const response = await fetch(`${API_BASE}/admin/gallery/photos/${photo.recording_id}`, {
         method: "DELETE",
+        headers: adminHeaders(),
       });
       triggerToast(response.ok ? "Photo deleted" : "Couldn't delete photo");
       void refreshGalleryPhotos();
@@ -496,16 +1107,20 @@ export function App() {
       socialApi
         .listGuestbook(5)
         .then((entries) => {
-          if (!cancelled) setApprovedGuestbook(entries);
+          if (!cancelled) {
+            setApprovedGuestbook(entries);
+            setGuestbookAmbientState("ready");
+          }
         })
         .catch(() => {
-          // NUC/door-api unreachable — tile just keeps showing last-known data.
+          if (!cancelled) setGuestbookAmbientState("unavailable");
         });
       socialApi
         .getCurrentPoll()
         .then((poll) => {
           if (cancelled) return;
           setCurrentPoll(poll);
+          setPollAmbientState("ready");
           if (poll) {
             return socialApi.getPollResults(poll.id).then((results) => {
               if (!cancelled) setPollResults(results);
@@ -514,7 +1129,7 @@ export function App() {
           setPollResults(null);
         })
         .catch(() => {
-          // Same fallback as above — ambient tile keeps last-known data.
+          if (!cancelled) setPollAmbientState("unavailable");
         });
       if (FEATURE_PHOTOBOOTH) {
         fetch(`${API_BASE}/wallboard/moments`)
@@ -539,6 +1154,9 @@ export function App() {
   useEffect(() => {
     if (doorPadScreen !== "poll") return;
     let cancelled = false;
+    setSelectedPollOptionId(null);
+    setDoorPadVotedOptionId(null);
+    setPollVoteError(null);
     socialApi
       .getCurrentPoll()
       .then((poll) => {
@@ -560,9 +1178,11 @@ export function App() {
   }, [doorPadScreen]);
 
   const rememberMyContent = (ref: MyContentRef) => {
-    const next = [...myContent, ref];
-    setMyContent(next);
-    saveMyContent(next);
+    setMyContent((previous) => {
+      const next = [...previous.filter((item) => item.id !== ref.id), ref];
+      saveMyContent(mockSessionId, next);
+      return next;
+    });
   };
 
   const handleGuestbookSubmit = async (text: string) => {
@@ -573,7 +1193,8 @@ export function App() {
       rememberMyContent({ kind: "guestbook", id: entry.id, label: text.slice(0, 40) });
       triggerToast("Note submitted! It'll show up once approved.");
       setGuestbookText("");
-      handleReset();
+      setSelectedGuestbookPhrase(null);
+      returnDoorPadToContext();
     } catch (err) {
       triggerToast(apiErrorMessage(err, "Couldn't submit your note — try again."));
     } finally {
@@ -581,11 +1202,12 @@ export function App() {
     }
   };
 
-  const handlePollVote = async (optionId: string) => {
-    if (!currentPoll) return;
+  const handlePollVote = async () => {
+    if (!currentPoll || !selectedPollOptionId || doorPadVotedOptionId) return;
     setPollVoteError(null);
     try {
-      await socialApi.castVote(currentPoll.id, optionId);
+      await socialApi.castVote(currentPoll.id, selectedPollOptionId);
+      setDoorPadVotedOptionId(selectedPollOptionId);
       const results = await socialApi.getPollResults(currentPoll.id);
       setPollResults(results);
       triggerToast("Vote cast!");
@@ -598,17 +1220,17 @@ export function App() {
     if (checkinSubmitting) return;
     setCheckinSubmitting(true);
     try {
-      const label = kind === "enrolled" ? "Enrolled Visitor" : "Guest";
+      const label = kind === "enrolled" && activeDisplayName ? activeDisplayName : "Guest";
       // door-api derives attribution server-side from the session's cached
       // identity — this client never asserts a person_id.
       const checkin = await socialApi.createCheckin(label);
       rememberMyContent({ kind: "checkin", id: checkin.id, label });
       triggerToast(
         checkin.person_id
-          ? `Checked in — recognized as ${checkin.person_id}!`
+          ? "Recognized check-in saved."
           : `Checked in as ${label}`
       );
-      setDoorPadScreen("home");
+      returnDoorPadToContext();
     } catch (err) {
       triggerToast(apiErrorMessage(err, "Couldn't check in — try again."));
     } finally {
@@ -621,10 +1243,27 @@ export function App() {
       await socialApi.requestDeletion(item.kind, item.id);
       const next = myContent.filter((c) => c.id !== item.id);
       setMyContent(next);
-      saveMyContent(next);
+      saveMyContent(mockSessionId, next);
       triggerToast("Deletion request honored.");
     } catch (err) {
       triggerToast(apiErrorMessage(err, "Couldn't process the deletion request."));
+    }
+  };
+
+  const handleDeletionRequestAll = async () => {
+    if (myContent.length === 0) {
+      triggerToast("No session submissions to delete.");
+      return;
+    }
+    const items = [...myContent];
+    try {
+      await Promise.all(items.map((item) => socialApi.requestDeletion(item.kind, item.id)));
+      setMyContent([]);
+      saveMyContent(mockSessionId, []);
+      triggerToast("Deletion requests honored.");
+      returnDoorPadToContext();
+    } catch (err) {
+      triggerToast(apiErrorMessage(err, "Couldn't process every deletion request."));
     }
   };
 
@@ -680,33 +1319,30 @@ export function App() {
     clientRef.current.publish(event);
   };
 
-  // Auto-reset when DoorPad or Wallboard is idle / timed out
+  const endVisitorSession = async () => {
+    const previous = sessionState;
+    applySessionSnapshot({ state: "SESSION_END", session_id: mockSessionId });
+    const result = await postDoorApi("/doorpad/session/end");
+    if (result?.session?.state) {
+      applySessionSnapshot(result.session);
+    } else {
+      applySessionSnapshot({ state: previous, session_id: mockSessionId });
+    }
+  };
+
+  // Auto-reset is a real Pi-local session action. It never relies on sending a
+  // client-authored contract event over the server's broadcast-only socket.
   const handleReset = () => {
-    triggerEvent("IDLE");
+    void endVisitorSession();
   };
-
-  // The Wallboard's own "Done" button ends the visitor session properly (VISITOR_MODE
-  // family -> SESSION_END) rather than jumping straight to IDLE, so the session-end
-  // thank-you screen has a moment to show — mirroring door-api's real transition table.
-  const endVisitorSession = () => {
-    triggerEvent("SESSION_END");
-  };
-
-  // door-api auto-expires SESSION_END -> IDLE; this mock mirrors that so the thank-you
-  // screen the Wallboard shows during SESSION_END returns to ambient on its own.
-  useEffect(() => {
-    if (sessionState !== "SESSION_END") return;
-    const timeout = setTimeout(() => triggerEvent("IDLE"), 3000);
-    return () => clearTimeout(timeout);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionState]);
 
   // Render Simulator panel overlay (for interactive dev)
   const renderSimPanel = () => {
+    if (!DEV_TOOLS_ENABLED) return null;
     if (!showSimPanel) {
       return (
         <button className="sim-panel-toggle-btn" onClick={() => setShowSimPanel(true)}>
-          ⚙️ Open Sim Control
+          Open Sim Control
         </button>
       );
     }
@@ -715,15 +1351,15 @@ export function App() {
       <div className="sim-panel-overlay">
         <div className="sim-panel-header">
           <h3>Simulation Panel</h3>
-          <button onClick={() => setShowSimPanel(false)}>❌ Close</button>
+          <button onClick={() => setShowSimPanel(false)}>Close</button>
         </div>
         <div className="sim-panel-body">
           <p>Current Session State: <strong>{sessionState}</strong></p>
           <div className="sim-panel-buttons">
-            <button onClick={() => triggerEvent("VISITOR_MODE", null)}>🔔 Press Bell (Generic)</button>
-            <button onClick={() => triggerEvent("VISITOR_MODE", "owner")}>👤 Recognize Owner (Taylor)</button>
-            <button onClick={() => triggerEvent("VISITOR_MODE", "roommate")}>👥 Recognize Roommate (Alex)</button>
-            <button onClick={() => handleReset()}>🔄 Reset to IDLE</button>
+            <button onClick={() => triggerEvent("VISITOR_MODE", null)}>Press Bell (Generic)</button>
+            <button onClick={() => triggerEvent("VISITOR_MODE", "owner")}>Recognize Owner</button>
+            <button onClick={() => triggerEvent("VISITOR_MODE", "roommate")}>Recognize Roommate</button>
+            <button onClick={() => handleReset()}>Reset to IDLE</button>
           </div>
         </div>
       </div>
@@ -733,26 +1369,55 @@ export function App() {
   // Toast Component
   const renderToast = () => {
     if (!toastMessage) return null;
-    return <div className="db-toast-message">{toastMessage}</div>;
+    return <div className="db-toast-message" role="status" aria-live="polite">{toastMessage}</div>;
   };
 
   // --- WALLBOARD SURFACE ---
   const renderWallboard = () => {
     const isVisitorMode = WALLBOARD_TAKEOVER_STATES.includes(sessionState);
-    const visitorUrl = `${window.location.origin}/visitor?token=${mockSessionId}`;
+    const presenceEntries = Object.values(presenceState);
+    const scoreboardRows = Object.values(scoreboardEntries).sort((left, right) => right.score - left.score);
+    const visitorPresence = {
+      owner: { label: presenceEntries[0]?.label ?? ("unknown" as const) },
+      roommate: { label: presenceEntries[1]?.label ?? ("unknown" as const) },
+    };
+    const focusedChannel =
+      !isVisitorMode &&
+      wallboardFocusRequest?.mode === "focus" &&
+      wallboardFocusRequest.channel &&
+      (!wallboardFocusRequest.expiresAt || wallboardFocusRequest.expiresAt > Date.now())
+        ? wallboardFocusRequest.channel
+        : null;
 
     return (
-      <CrossfadeSwitch activeKey={isVisitorMode ? "visitor" : "ambient"}>
+      <CrossfadeSwitch activeKey={isVisitorMode ? "visitor" : focusedChannel ?? "ambient"}>
         {isVisitorMode ? (
           <WallboardVisitorMode
             sessionState={sessionState}
             sessionId={mockSessionId}
             profileId={activeProfile}
             displayName={activeDisplayName}
-            presence={presenceFixture}
+            presence={visitorPresence}
             pollQuestion={currentPoll?.question ?? "No poll running right now."}
-            visitorUrl={visitorUrl}
+            visitorUrl={visitorQrUrl}
             onDone={endVisitorSession}
+          />
+        ) : focusedChannel ? (
+          <WallboardFocusedView
+            channel={focusedChannel}
+            poll={currentPoll}
+            pollResults={pollResults}
+            guestbookEntries={approvedGuestbook}
+            moments={wallboardMoments}
+            ambient={{
+              aircraft: aircraftSummary?.payload ?? null,
+              birds: birdSummary?.payload ?? null,
+              satellite: satellitePass?.payload ?? null,
+              printer: printerStatus?.payload ?? null,
+              food: foodRecommendation?.payload ?? null,
+              scoreboard: scoreboardRows.length > 0 ? scoreboardRows : null,
+            }}
+            onReturnAmbient={returnWallboardAmbient}
           />
         ) : (
           // AMBIENT MODE - TILE DASHBOARD
@@ -760,99 +1425,134 @@ export function App() {
             <header className="ambient-header">
               <div className="ambient-header-left">
                 <h1 className="ambient-header-title">Room 304 Wallboard</h1>
-                <span className="ambient-header-subtitle">Dorm Hallway Display</span>
+                <span className="ambient-header-subtitle">
+                  Dorm Hallway Display · {eventConnection === "connected" ? "Live updates" : "Using last-known data"}
+                </span>
               </div>
               <div className="ambient-clock">
                 {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
               </div>
             </header>
 
+            {ambientAlert && (
+              <aside
+                className={`ambient-alert ambient-alert--${ambientAlert.kind}`}
+                role="status"
+                aria-live="polite"
+              >
+                <p className="surface-eyebrow">{ambientAlert.kind}</p>
+                <strong>{ambientAlert.title}</strong>
+                <span>{ambientAlert.detail}</span>
+              </aside>
+            )}
+
             <main className="ambient-grid">
               {/* Tile 1: Presence */}
-              <Tile title="Presence" asOf={presenceFixture.owner.occurred_at}>
+              <Tile title="Presence" asOf={presenceEntries[0]?.occurredAt ?? null} staleAfterMs={15 * 60 * 1000}>
                 <div className="presence-tile-content">
-                  <div className="presence-row">
-                    <span>Taylor:</span>
-                    <StatusBadge label={presenceFixture.owner.label} />
-                  </div>
-                  <div className="presence-row">
-                    <span>Alex:</span>
-                    <StatusBadge label={presenceFixture.roommate.label} />
-                  </div>
+                  {presenceEntries.slice(0, 2).map((presence, index) => (
+                    <div className="presence-row" key={index}>
+                      <span>Resident {index + 1}:</span>
+                      <StatusBadge label={presence.label} />
+                    </div>
+                  ))}
+                  {presenceEntries.length === 0 && <p>Presence unavailable.</p>}
                 </div>
               </Tile>
 
               {/* Tile 2: Mood */}
-              <Tile title="Current Mood" asOf={moodFixture.occurred_at}>
+              <Tile title="Current Mood" asOf={moodUpdate?.occurredAt ?? null} staleAfterMs={12 * 60 * 60 * 1000}>
                 <div className="mood-tile-content">
-                  <span className="mood-emoji">🎯</span>
-                  <span className="mood-text">Taylor is feeling <strong>{moodFixture.mood}</strong></span>
+                  {moodUpdate ? (
+                    <>
+                      <span className="mood-emoji" aria-hidden="true">Status</span>
+                      <span className="mood-text">Resident mood: <strong>{moodUpdate.payload.mood || "Not shared"}</strong></span>
+                    </>
+                  ) : <span className="mood-text">No mood update available.</span>}
                 </div>
               </Tile>
 
               {/* Tile 3: Birds */}
-              <Tile title="Bird Detections" asOf={birdFixture.occurred_at}>
+              <Tile title="Bird Detections" asOf={birdSummary?.occurredAt ?? null} staleAfterMs={60 * 60 * 1000}>
                 <div className="bird-tile-content">
-                  <p className="bird-stat">Total today: <strong>{birdFixture.total_detections}</strong></p>
-                  {birdFixture.top_species.map((s, idx) => (
+                  {birdSummary && <p className="bird-stat">Total today: <strong>{birdSummary.payload.total_detections}</strong></p>}
+                  {birdSummary?.payload.top_species.slice(0, 5).map((s, idx) => (
                     <div key={idx} className="bird-row">
-                      <span>{s.name} (x{s.count})</span>
+                      <span>{safeDisplayText(s.name) || "Unknown bird"} (x{s.count})</span>
                       <span className="bird-conf">{(s.confidence_avg * 100).toFixed(0)}% conf</span>
                     </div>
                   ))}
+                  {!birdSummary && <p>Bird summary unavailable.</p>}
+                  {birdSummary && birdSummary.payload.top_species.length === 0 && <p>No detections yet today.</p>}
                 </div>
               </Tile>
 
               {/* Tile 4: Aircraft */}
-              <Tile title="Overhead Aircraft" asOf={aircraftFixture.occurred_at}>
+              <Tile title="Overhead Aircraft" asOf={aircraftSummary?.occurredAt ?? null} staleAfterMs={5 * 60 * 1000}>
                 <div className="aircraft-tile-content">
-                  {aircraftFixture.nearby.map((a, idx) => (
+                  {aircraftSummary?.payload.nearby.slice(0, 5).map((a, idx) => (
                     <div key={idx} className="aircraft-row">
-                      <span className="aircraft-call">{a.callsign}</span>
+                      <span className="aircraft-call">{safeDisplayText(a.callsign, 16) || "Aircraft"}</span>
                       <span>{a.altitude_ft.toLocaleString()} ft</span>
                       <span>{a.distance_km} km away</span>
                     </div>
                   ))}
+                  {!aircraftSummary && <p>Aircraft data unavailable.</p>}
+                  {aircraftSummary && aircraftSummary.payload.nearby.length === 0 && <p>No nearby aircraft.</p>}
                 </div>
               </Tile>
 
               {/* Tile 5: Satellite Pass */}
-              <Tile title="Next Satellite Pass" asOf={satelliteFixture.occurred_at}>
+              <Tile title="Next Satellite Pass" asOf={satellitePass?.occurredAt ?? null} staleAfterMs={24 * 60 * 60 * 1000}>
                 <div className="satellite-tile-content">
-                  <p>🛰️ <strong>{satelliteFixture.satellite}</strong></p>
-                  <p>Rise: {new Date(satelliteFixture.rise_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-                  <p>Direction: {satelliteFixture.direction} ({satelliteFixture.max_elevation_deg}° max elev)</p>
+                  {satellitePass ? (
+                    <>
+                      <p><strong>{satellitePass.payload.satellite}</strong></p>
+                      <p>Rise: {new Date(satellitePass.payload.rise_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                      <p>Direction: {satellitePass.payload.direction} ({satellitePass.payload.max_elevation_deg}° max elev)</p>
+                    </>
+                  ) : <p>Satellite pass data unavailable.</p>}
                 </div>
               </Tile>
 
               {/* Tile 6: Printer Status */}
-              <Tile title="3D Printer" asOf={printerFixture.occurred_at}>
+              <Tile title="3D Printer" asOf={printerStatus?.occurredAt ?? null} staleAfterMs={5 * 60 * 1000}>
                 <div className="printer-tile-content">
-                  <p>Job: <strong>{printerFixture.job_name}</strong> ({printerFixture.state})</p>
-                  <div className="progress-bar-container">
-                    <div className="progress-bar-fill" style={{ width: `${printerFixture.progress_pct}%` }} />
-                  </div>
-                  <p className="printer-subtext">{printerFixture.progress_pct}% completed · ETA 15m</p>
+                  {printerStatus ? (
+                    <>
+                      <p>Job: <strong>{printerStatus.payload.job_name ?? "None"}</strong> ({printerStatus.payload.state})</p>
+                      <div className="progress-bar-container">
+                        <div className="progress-bar-fill" style={{ width: `${clampPercentage(printerStatus.payload.progress_pct)}%` }} />
+                      </div>
+                      <p className="printer-subtext">
+                        {printerStatus.payload.progress_pct === null ? "Progress unavailable" : `${printerStatus.payload.progress_pct}% completed`}
+                      </p>
+                    </>
+                  ) : <p>Printer status unavailable.</p>}
                 </div>
               </Tile>
 
               {/* Tile 7: Roommate Scoreboard */}
-              <Tile title="Scoreboard" asOf={scoreboardFixture.occurred_at}>
+              <Tile title="Scoreboard" asOf={scoreboardRows[0]?.occurredAt ?? null}>
                 <div className="scoreboard-tile-content">
-                  {scoreboardFixture.scores.map((s, idx) => (
+                  {scoreboardRows.length > 0 ? scoreboardRows.slice(0, 8).map((entry, idx) => (
                     <div key={idx} className="score-row">
-                      <span>{s.name}</span>
-                      <span className="score-points"><strong>{s.score}</strong> pts</span>
+                      <span>Resident {idx + 1}</span>
+                      <span className="score-points"><strong>{entry.score}</strong> pts</span>
                     </div>
-                  ))}
+                  )) : <p>Scoreboard unavailable.</p>}
                 </div>
               </Tile>
 
               {/* Tile 8: Daily Food */}
-              <Tile title="Daily Food Recommendation" asOf={foodFixture.occurred_at}>
+              <Tile title="Daily Food Recommendation" asOf={foodRecommendation?.occurredAt ?? null} staleAfterMs={36 * 60 * 60 * 1000}>
                 <div className="food-tile-content">
-                  <h4>🍜 {foodFixture.title}</h4>
-                  <p>{foodFixture.detail}</p>
+                  {foodRecommendation ? (
+                    <>
+                      <h4>{foodRecommendation.payload.title}</h4>
+                      <p>{foodRecommendation.payload.detail}</p>
+                    </>
+                  ) : <p>Food recommendation unavailable.</p>}
                 </div>
               </Tile>
 
@@ -887,7 +1587,9 @@ export function App() {
               {/* Tile 9: Room Poll — fed by the real current poll (T-403) */}
               <Tile title="Active Room Poll">
                 <div className="poll-tile-content">
-                  {!currentPoll && <p>No poll running right now.</p>}
+                  {pollAmbientState === "unavailable" && <p>Poll service unavailable; showing no new results.</p>}
+                  {pollAmbientState === "ready" && !currentPoll && <p>No poll running right now.</p>}
+                  {pollAmbientState === "idle" && <p>Loading current poll…</p>}
                   {currentPoll && (
                     <>
                       <p className="poll-q"><strong>{currentPoll.question}</strong></p>
@@ -909,7 +1611,9 @@ export function App() {
                 asOf={approvedGuestbook[0]?.created_at ?? null}
               >
                 <div className="guestbook-tile-content">
-                  {approvedGuestbook.length === 0 && <p>No guestbook notes yet — be the first!</p>}
+                  {guestbookAmbientState === "unavailable" && <p>Guestbook unavailable; approved notes below may be stale.</p>}
+                  {guestbookAmbientState === "idle" && <p>Loading approved notes…</p>}
+                  {guestbookAmbientState === "ready" && approvedGuestbook.length === 0 && <p>No guestbook notes yet — be the first!</p>}
                   {approvedGuestbook.map((e) => (
                     <GuestbookQuote key={e.id} text={e.text} authorLabel={e.author_label} />
                   ))}
@@ -941,21 +1645,21 @@ export function App() {
   };
 
   // --- DOORPAD SURFACE ---
-  const postDoorApi = useCallback(async (path: string) => {
+  const postDoorApi = useCallback(async (path: string, unavailableMessage = "Local service unavailable") => {
     try {
       const response = await fetch(`${API_BASE}${path}`, { method: "POST" });
       if (!response.ok) {
-        triggerToast("Local service unavailable");
+        triggerToast(unavailableMessage);
         return null;
       }
       return response.json() as Promise<DoorApiSnapshot>;
     } catch {
-      triggerToast("Local service unavailable");
+      triggerToast(unavailableMessage);
       return null;
     }
   }, []);
 
-  const fetchLatestRecording = useCallback(async () => {
+  const fetchLatestRecording = useCallback(async (): Promise<VideoRecording | null> => {
     for (let attempt = 0; attempt < 12; attempt += 1) {
       try {
         const response = await fetch(`${API_BASE}/doorpad/video-message/latest`);
@@ -963,7 +1667,7 @@ export function App() {
           const data = (await response.json()) as { recording?: VideoRecording | null };
           if (data.recording) {
             setLatestRecording(data.recording);
-            return;
+            return data.recording;
           }
         }
       } catch {
@@ -971,30 +1675,50 @@ export function App() {
       }
       await new Promise((resolve) => window.setTimeout(resolve, 250));
     }
+    return null;
   }, []);
 
   const stopRecording = useCallback(async () => {
-    setVideoStep("review");
-    await postDoorApi("/doorpad/video-message/stop");
-    void fetchLatestRecording();
-  }, [fetchLatestRecording, postDoorApi]);
+    if (mediaActionPending) return;
+    setMediaActionPending(true);
+    const result = await postDoorApi(
+      "/doorpad/video-message/stop",
+      "Couldn't stop the recording. Please try again."
+    );
+    const stopped = result?.accepted || result?.session?.state === "VIDEO_MESSAGE_REVIEW";
+    if (stopped) {
+      setVideoStep("review");
+      const recording = await fetchLatestRecording();
+      if (!recording) triggerToast("Recording stopped, but playback is still preparing.");
+    }
+    setMediaActionPending(false);
+  }, [fetchLatestRecording, mediaActionPending, postDoorApi]);
 
   const beginRecording = useCallback(async () => {
+    if (mediaActionPending) return;
+    setMediaActionPending(true);
     setRecordingElapsed(0);
     setLatestRecording(null);
-    setVideoStep("recording");
-    await postDoorApi("/doorpad/video-message/start");
-  }, [postDoorApi]);
+    const result = await postDoorApi(
+      "/doorpad/video-message/start",
+      "Recording couldn't start. Check the camera and try again."
+    );
+    const started = result?.accepted || result?.session?.state === "VIDEO_MESSAGE_RECORDING";
+    if (started) setVideoStep("recording");
+    else setVideoStep("offer");
+    setMediaActionPending(false);
+  }, [mediaActionPending, postDoorApi]);
 
   useEffect(() => {
     if (doorPadScreen !== "message" || videoStep !== "countdown") return undefined;
     if (countdown <= 0) {
+      if (mediaActionPending) return undefined;
       void beginRecording();
       return undefined;
     }
     const timer = window.setTimeout(() => setCountdown((value) => value - 1), 1000);
     return () => window.clearTimeout(timer);
-  }, [beginRecording, countdown, doorPadScreen, videoStep]);
+  }, [beginRecording, countdown, doorPadScreen, mediaActionPending, videoStep]);
 
   useEffect(() => {
     if (doorPadScreen !== "message" || videoStep !== "recording") return undefined;
@@ -1012,29 +1736,68 @@ export function App() {
   }, [doorPadScreen, maxRecordingS, stopRecording, videoStep]);
 
   const startVideoFlow = async () => {
+    if (!storageStatus.recording_allowed) {
+      triggerToast("Video messages are temporarily unavailable because local storage is paused.");
+      return;
+    }
+    if (mediaActionPending) return;
     setDoorPadScreen("message");
     setVideoStep("countdown");
     setCountdown(3);
     setLatestRecording(null);
-    await postDoorApi("/doorpad/video-message/offer");
+    setMediaActionPending(true);
+    const result = await postDoorApi(
+      "/doorpad/video-message/offer",
+      "Video messages are temporarily unavailable."
+    );
+    const offered = result?.accepted || result?.session?.state === "VIDEO_MESSAGE_OFFERED";
+    if (!offered) setVideoStep("offer");
+    if (result?.config?.max_recording_s) setMaxRecordingS(result.config.max_recording_s);
+    setMediaActionPending(false);
   };
 
   const discardVideoFlow = async () => {
-    setLatestRecording(null);
-    setVisitorQrUrl(null);
-    setDoorPadScreen("home");
-    setVideoStep("offer");
-    await postDoorApi("/doorpad/video-message/discard");
+    if (mediaActionPending) return;
+    setMediaActionPending(true);
+    const result = await postDoorApi(
+      "/doorpad/video-message/discard",
+      "Couldn't discard the message yet. Please try again."
+    );
+    const discarded = result?.accepted || ["SESSION_END", "IDLE"].includes(result?.session?.state ?? "");
+    if (discarded) {
+      setLatestRecording(null);
+      setVisitorQrUrl(null);
+      if (result?.session) applySessionSnapshot(result.session);
+      else setDoorPadScreen("home");
+      setVideoStep("offer");
+    }
+    setMediaActionPending(false);
   };
 
   const saveVideoMessage = async () => {
-    setVideoStep("saved");
-    await postDoorApi("/doorpad/video-message/save");
+    if (mediaActionPending) return;
+    setMediaActionPending(true);
+    const result = await postDoorApi(
+      "/doorpad/video-message/save",
+      "Couldn't save the message. Your review is still here."
+    );
+    const saved = result?.accepted || result?.session?.state === "VIDEO_MESSAGE_SAVED";
+    if (saved) setVideoStep("saved");
+    setMediaActionPending(false);
   };
 
   const startPhotoFlow = async () => {
     if (!FEATURE_PHOTOBOOTH) return;
+    if (!storageStatus.recording_allowed) {
+      triggerToast("Photo capture is temporarily unavailable because local storage is paused.");
+      return;
+    }
     setDoorPadScreen("photo");
+    setPhotoStep("offer");
+    setCurrentPhoto(null);
+  };
+
+  const beginPhotoCountdown = () => {
     setPhotoStep("countdown");
     setPhotoCountdown(3);
     setCurrentPhoto(null);
@@ -1042,11 +1805,11 @@ export function App() {
 
   const capturePhoto = useCallback(async () => {
     if (!FEATURE_PHOTOBOOTH) return;
+    setMediaActionPending(true);
     try {
       const response = await fetch(`${API_BASE}/doorpad/photo-booth/capture`, { method: "POST" });
       if (!response.ok) {
         triggerToast("Photo capture unavailable");
-        setDoorPadScreen("home");
         setPhotoStep("offer");
         return;
       }
@@ -1055,8 +1818,9 @@ export function App() {
       setPhotoStep("review");
     } catch {
       triggerToast("Photo capture unavailable");
-      setDoorPadScreen("home");
       setPhotoStep("offer");
+    } finally {
+      setMediaActionPending(false);
     }
   }, []);
 
@@ -1070,30 +1834,48 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [capturePhoto, doorPadScreen, photoCountdown, photoStep]);
 
-  const discardPhotoFlow = async () => {
+  const discardPhotoFlow = async (): Promise<boolean> => {
     const photo = currentPhoto;
-    setCurrentPhoto(null);
-    setDoorPadScreen("home");
-    setPhotoStep("offer");
-    if (!photo) return;
+    if (!photo) {
+      setCurrentPhoto(null);
+      setDoorPadScreen("home");
+      setPhotoStep("offer");
+      return true;
+    }
+    if (mediaActionPending) return false;
+    setMediaActionPending(true);
     try {
-      await fetch(`${API_BASE}/doorpad/photo-booth/${photo.recording_id}/discard`, {
+      const response = await fetch(`${API_BASE}/doorpad/photo-booth/${photo.recording_id}/discard`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: photo.session_id }),
       });
+      if (!response.ok) {
+        triggerToast("Couldn't discard the photo yet. Please try again.");
+        return false;
+      }
+      setCurrentPhoto(null);
+      setDoorPadScreen("home");
+      setPhotoStep("offer");
+      return true;
     } catch {
-      // Best effort; backend review TTL/cleanup owns stale temp files.
+      triggerToast("Couldn't discard the photo yet. Please try again.");
+      return false;
+    } finally {
+      setMediaActionPending(false);
     }
   };
 
   const retakePhoto = async () => {
-    await discardPhotoFlow();
-    void startPhotoFlow();
+    if (await discardPhotoFlow()) {
+      setDoorPadScreen("photo");
+      beginPhotoCountdown();
+    }
   };
 
   const savePhoto = async () => {
-    if (!currentPhoto) return;
+    if (!currentPhoto || mediaActionPending) return;
+    setMediaActionPending(true);
     try {
       const response = await fetch(
         `${API_BASE}/doorpad/photo-booth/${currentPhoto.recording_id}/save`,
@@ -1111,20 +1893,19 @@ export function App() {
       triggerToast("Photo saved for owner review.");
     } catch {
       triggerToast("Couldn't save photo");
+    } finally {
+      setMediaActionPending(false);
     }
   };
 
   const showVisitorQr = async () => {
     setDoorPadScreen("message");
     setVideoStep("qr");
-    const offered = await postDoorApi("/doorpad/video-message/offer");
-    if (offered?.config?.max_recording_s) {
-      setMaxRecordingS(offered.config.max_recording_s);
-    }
     try {
       const response = await fetch(`${API_BASE}/visitor-token`);
       if (response.ok) {
-        const data = (await response.json()) as { url: string };
+        const data = (await response.json()) as { token: string; url: string };
+        socialApi.setVisitorToken(data.token);
         setVisitorQrUrl(data.url);
       } else {
         triggerToast("QR token unavailable");
@@ -1134,10 +1915,29 @@ export function App() {
     }
   };
 
-  const ringDoorbell = () => {
-    setSessionState("VISITOR_MODE");
+  const ringDoorbell = async () => {
+    if (
+      ringRequestState === "sending" ||
+      (sessionState === "RINGING" && ringRequestState !== "failed")
+    ) {
+      triggerToast("The bell is already ringing.");
+      return;
+    }
+    setSessionState("RINGING");
+    setSessionObservedAt(Date.now());
     setDoorPadScreen("ringing");
-    void postDoorApi("/doorpad/ring");
+    setRingRequestState("sending");
+    const result = await postDoorApi(
+      "/doorpad/ring",
+      "The local bell service is unavailable. You can still leave a video message."
+    );
+    if (!result) {
+      setRingRequestState("failed");
+      return;
+    }
+    applySessionSnapshot(result.session);
+    setRingRequestState("sent");
+    if (!result.accepted) triggerToast("The bell is already active.");
   };
 
   const renderVideoPreview = () => <LiveVideoPreview title="Live self-preview" />;
@@ -1154,18 +1954,23 @@ export function App() {
 
     if (doorPadScreen === "home") {
       return (
-        <div className="doorpad-view db-app-theme">
+        <div
+          className="doorpad-view db-app-theme"
+          ref={doorPadFocusRef}
+          tabIndex={-1}
+          aria-label="DoorPad home"
+        >
           <header className="doorpad-header">
             <h2>Room 304 DoorPad</h2>
-            <p>Tap an action below to interact</p>
+            <p>Large-touch visitor controls</p>
           </header>
           
           <div className="doorpad-grid">
-            <BigButton id="btn-ring" variant="primary" icon={<span>🔔</span>} onClick={ringDoorbell}>
+            <BigButton id="btn-ring" variant="primary" icon={<span aria-hidden="true">R</span>} onClick={ringDoorbell}>
               Ring Bell
             </BigButton>
             
-            <BigButton id="btn-video" icon={<span>📹</span>} onClick={() => {
+            <BigButton id="btn-video" icon={<span aria-hidden="true">V</span>} onClick={() => {
               setDoorPadScreen("message");
               setVideoStep("offer");
             }}>
@@ -1173,24 +1978,28 @@ export function App() {
             </BigButton>
 
             {FEATURE_PHOTOBOOTH && (
-              <BigButton id="btn-photo-booth" icon={<span>📸</span>} onClick={startPhotoFlow}>
+              <BigButton id="btn-photo-booth" icon={<span aria-hidden="true">P</span>} onClick={startPhotoFlow}>
                 Photo Booth
               </BigButton>
             )}
 
-            <BigButton id="btn-guestbook" icon={<span>✍️</span>} onClick={() => handleActionClick("Guestbook", "guestbook")}>
+            <BigButton id="btn-guestbook" icon={<span aria-hidden="true">G</span>} onClick={() => handleActionClick("Guestbook", "guestbook")}>
               Guestbook
             </BigButton>
 
-            <BigButton id="btn-poll" icon={<span>📊</span>} onClick={() => handleActionClick("Poll Vote", "poll")}>
+            <BigButton id="btn-poll" icon={<span aria-hidden="true">Q</span>} onClick={() => handleActionClick("Poll Vote", "poll")}>
               Vote in Poll
             </BigButton>
 
-            <BigButton id="btn-checkin" icon={<span>✅</span>} onClick={() => handleActionClick("Check In", "checkin")}>
+            <BigButton id="btn-checkin" icon={<span aria-hidden="true">C</span>} onClick={() => handleActionClick("Check In", "checkin")}>
               Visitor Check-In
             </BigButton>
 
-            <BigButton id="btn-privacy" icon={<span>🔒</span>} onClick={() => handleActionClick("Privacy Notice", "privacy")}>
+            <BigButton id="btn-remote" icon={<span aria-hidden="true">W</span>} onClick={() => handleActionClick("Wallboard", "remote")}>
+              Wallboard Control
+            </BigButton>
+
+            <BigButton id="btn-privacy" icon={<span aria-hidden="true">I</span>} onClick={() => handleActionClick("Privacy Notice", "privacy")}>
               Privacy & Info
             </BigButton>
           </div>
@@ -1202,24 +2011,89 @@ export function App() {
       <CountdownAutoReset
         onReset={
           doorPadScreen === "message"
-            ? discardVideoFlow
+            ? videoStep === "qr"
+              ? handleReset
+              : discardVideoFlow
             : doorPadScreen === "photo"
               ? discardPhotoFlow
               : handleReset
         }
         timeoutMs={30000}
+        paused={
+          (doorPadScreen === "message" && videoStep !== "offer" && videoStep !== "qr") ||
+          doorPadScreen === "photo"
+        }
       >
-        <div className="doorpad-view db-app-theme fade-in">
+        <div
+          className="doorpad-view db-app-theme fade-in"
+          ref={doorPadFocusRef}
+          tabIndex={-1}
+          aria-label="DoorPad visitor workflow"
+        >
           {doorPadScreen === "ringing" && (
-            <div className="doorpad-sub-content">
-              <div className="pulse-ring-icon">🔔</div>
-              <h2>Ringing Doorbell...</h2>
-              <p>Wallboard has flipped to Visitor Mode. Taylor & Alex have been notified.</p>
-              <div className="qr-inline">
-                <BigButton onClick={showVisitorQr}>Show QR Handoff</BigButton>
+            <div className="doorpad-sub-content doorpad-waiting-content">
+              <div className="doorpad-waiting-layout">
+                <LiveVideoPreview
+                  title="Live view at the door"
+                  className="doorpad-waiting-video"
+                />
+                <div className="doorpad-waiting-panel">
+                  <div className="doorpad-journey-status" role="status" aria-live="polite">
+                    <span className="doorpad-journey-status__mark" aria-hidden="true" />
+                    <div>
+                      <p className="surface-eyebrow">Visitor session</p>
+                      <h2>
+                        {sessionState === "ANSWERED"
+                          ? "Someone is coming"
+                          : sessionState === "UNANSWERED_TIMEOUT" || sessionState === "VIDEO_MESSAGE_OFFERED"
+                            ? "No answer yet"
+                            : ringRequestState === "failed"
+                              ? "Bell service unavailable"
+                              : "Bell sent"}
+                      </h2>
+                      <p>
+                        {sessionState === "ANSWERED"
+                          ? "Please wait here while they come to the door."
+                          : sessionState === "UNANSWERED_TIMEOUT" || sessionState === "VIDEO_MESSAGE_OFFERED"
+                            ? "You can leave a video message now or keep waiting a little longer."
+                            : ringRequestState === "failed"
+                              ? "The local bell service did not confirm the ring. Retry here or leave a video message."
+                              : "The bell is ringing inside. You can wait here or leave a video message now."}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="doorpad-waiting-actions">
+                    <BigButton
+                      id="post-ring-wait"
+                      variant="primary"
+                      onClick={
+                        ringRequestState === "failed"
+                          ? ringDoorbell
+                          : () => triggerToast("Still waiting — this screen will stay with you.")
+                      }
+                    >
+                      {ringRequestState === "failed" ? "Retry Bell" : "Wait for Someone to Open"}
+                    </BigButton>
+                    {sessionState !== "ANSWERED" && (
+                      <BigButton
+                        id="post-ring-video"
+                        disabled={mediaActionPending || !storageStatus.recording_allowed}
+                        onClick={startVideoFlow}
+                      >
+                        Send a Video Message
+                      </BigButton>
+                    )}
+                    <BigButton id="post-ring-checkin" onClick={() => setDoorPadScreen("checkin")}>
+                      Check In
+                    </BigButton>
+                    <BigButton onClick={showVisitorQr}>Open Visitor QR</BigButton>
+                  </div>
+                </div>
               </div>
-              <div className="action-button-group">
-                <BigButton variant="primary" onClick={handleReset}>Cancel / End Session</BigButton>
+              <div className="action-button-group doorpad-waiting-footer">
+                <BigButton onClick={() => setDoorPadScreen("guestbook")}>Guestbook</BigButton>
+                <BigButton onClick={() => setDoorPadScreen("poll")}>Vote in Poll</BigButton>
+                <BigButton onClick={handleReset}>End Visit</BigButton>
               </div>
             </div>
           )}
@@ -1231,7 +2105,7 @@ export function App() {
               {renderVideoPreview()}
               <div className="action-button-group">
                 <BigButton variant="primary" onClick={startVideoFlow}>Start Recording</BigButton>
-                <BigButton onClick={showVisitorQr}>Use Phone QR</BigButton>
+                <BigButton onClick={showVisitorQr}>Open Visitor QR</BigButton>
                 <BigButton onClick={discardVideoFlow}>Cancel</BigButton>
               </div>
             </div>
@@ -1253,8 +2127,8 @@ export function App() {
               <div className="recording-status"><span /> Recording {recordingElapsed}s / {maxRecordingS}s</div>
               {renderVideoPreview()}
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={stopRecording}>Stop & Review</BigButton>
-                <BigButton onClick={discardVideoFlow}>Discard</BigButton>
+                <BigButton variant="primary" disabled={mediaActionPending} onClick={stopRecording}>Stop & Review</BigButton>
+                <BigButton disabled={mediaActionPending} onClick={discardVideoFlow}>Discard</BigButton>
               </div>
             </div>
           )}
@@ -1271,9 +2145,9 @@ export function App() {
                 Consent context: {latestRecording?.consent_context ?? "visitor_initiated"}
               </div>
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={saveVideoMessage}>Save Message</BigButton>
-                <BigButton onClick={startVideoFlow}>Re-record</BigButton>
-                <BigButton onClick={discardVideoFlow}>Discard</BigButton>
+                <BigButton variant="primary" disabled={mediaActionPending} onClick={saveVideoMessage}>Save Message</BigButton>
+                <BigButton disabled={mediaActionPending} onClick={startVideoFlow}>Re-record</BigButton>
+                <BigButton disabled={mediaActionPending} onClick={discardVideoFlow}>Discard</BigButton>
               </div>
             </div>
           )}
@@ -1290,11 +2164,27 @@ export function App() {
 
           {doorPadScreen === "message" && videoStep === "qr" && (
             <div className="doorpad-sub-content">
-              <h2>Continue on Phone</h2>
+              <h2>Visitor Link</h2>
+              <p>Use your phone to see ring status, leave a text note, vote, or request deletion.</p>
               {visitorQrUrl ? <QRPlaceholder url={visitorQrUrl} /> : <p>Preparing QR token...</p>}
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={startVideoFlow}>Record Here Instead</BigButton>
-                <BigButton onClick={discardVideoFlow}>Cancel</BigButton>
+                <BigButton variant="primary" onClick={startVideoFlow}>Record a Video Here</BigButton>
+                <BigButton onClick={returnDoorPadToContext}>Back</BigButton>
+              </div>
+            </div>
+          )}
+
+          {doorPadScreen === "photo" && photoStep === "offer" && (
+            <div className="doorpad-sub-content">
+              <h2>Take a Photo</h2>
+              <p>
+                The camera will count down before taking one photo. You can review, retake, or
+                discard it before anything is saved privately for owner approval.
+              </p>
+              {renderVideoPreview()}
+              <div className="action-button-group">
+                <BigButton variant="primary" onClick={beginPhotoCountdown}>Start 3-Second Countdown</BigButton>
+                <BigButton onClick={discardPhotoFlow}>Cancel</BigButton>
               </div>
             </div>
           )}
@@ -1322,9 +2212,9 @@ export function App() {
               )}
               <div className="message-meta">Consent context: visitor_initiated</div>
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={savePhoto}>Keep Photo</BigButton>
-                <BigButton onClick={retakePhoto}>Retake</BigButton>
-                <BigButton onClick={discardPhotoFlow}>Discard</BigButton>
+                <BigButton variant="primary" disabled={mediaActionPending} onClick={savePhoto}>Keep Photo</BigButton>
+                <BigButton disabled={mediaActionPending} onClick={retakePhoto}>Retake</BigButton>
+                <BigButton disabled={mediaActionPending} onClick={discardPhotoFlow}>Discard</BigButton>
               </div>
             </div>
           )}
@@ -1341,6 +2231,30 @@ export function App() {
             </div>
           )}
 
+          {doorPadScreen === "remote" && (
+            <div className="doorpad-sub-content doorpad-remote-content">
+              <div className="doorpad-section-heading">
+                <div>
+                  <p className="surface-eyebrow">Wallboard remote</p>
+                  <h2>Choose what the big display shows</h2>
+                </div>
+                <span className="doorpad-launch-status">{wallboardLaunchStatus}</span>
+              </div>
+              <WallboardLauncher
+                selectedChannel={wallboardFocusRequest?.mode === "focus" && wallboardFocusRequest.channel
+                  ? wallboardFocusRequest.channel
+                  : "ambient"}
+                onSelect={setWallboardChannel}
+              />
+              <p className="placeholder-subtext">
+                Local mock control only until the display-control contract escalation is approved.
+              </p>
+              <div className="action-button-group">
+                <BigButton variant="primary" onClick={returnDoorPadToContext}>Done</BigButton>
+              </div>
+            </div>
+          )}
+
           {doorPadScreen === "guestbook" && (
             <div className="doorpad-sub-content">
               <h2>Leave a Guestbook Note</h2>
@@ -1351,23 +2265,46 @@ export function App() {
                     key={phrase}
                     className="phrase-btn"
                     disabled={guestbookSubmitting}
-                    onClick={() => handleGuestbookSubmit(phrase)}
+                    aria-pressed={selectedGuestbookPhrase === phrase}
+                    onClick={() => {
+                      setSelectedGuestbookPhrase(phrase);
+                      setGuestbookText("");
+                    }}
                   >
                     "{phrase}"
                   </button>
                 ))}
               </div>
+              {selectedGuestbookPhrase && (
+                <BigButton
+                  variant="primary"
+                  disabled={guestbookSubmitting}
+                  onClick={() => handleGuestbookSubmit(selectedGuestbookPhrase)}
+                >
+                  Send Selected Phrase
+                </BigButton>
+              )}
               <textarea
                 className="guestbook-freetext"
                 maxLength={280}
                 rows={3}
                 placeholder="Or write your own note..."
                 value={guestbookText}
-                onChange={(e) => setGuestbookText(e.target.value)}
+                onChange={(e) => {
+                  setGuestbookText(e.target.value);
+                  setSelectedGuestbookPhrase(null);
+                }}
               />
+              <p className="character-count" aria-live="polite">{guestbookText.length} / 280</p>
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={() => { triggerToast("Note Submitted!"); handleReset(); }}>Submit</BigButton>
-                <BigButton onClick={() => setDoorPadScreen("home")}>Cancel</BigButton>
+                <BigButton
+                  variant="primary"
+                  disabled={guestbookSubmitting || guestbookText.trim().length === 0}
+                  onClick={() => handleGuestbookSubmit(guestbookText)}
+                >
+                  Submit Note
+                </BigButton>
+                <BigButton onClick={returnDoorPadToContext}>Cancel</BigButton>
               </div>
             </div>
           )}
@@ -1388,10 +2325,14 @@ export function App() {
                           key={opt.id}
                           className="phrase-btn"
                           style={{ width: "100%", margin: "4px 0" }}
-                          onClick={() => handlePollVote(opt.id)}
+                          disabled={doorPadVotedOptionId !== null}
+                          aria-pressed={
+                            doorPadVotedOptionId === opt.id || selectedPollOptionId === opt.id
+                          }
+                          onClick={() => setSelectedPollOptionId(opt.id)}
                         >
                           {opt.text}
-                          {result !== undefined && (
+                          {doorPadVotedOptionId && result !== undefined && (
                             <span className="poll-vote-count"> — {result.votes} votes</span>
                           )}
                         </button>
@@ -1400,9 +2341,21 @@ export function App() {
                   </div>
                 </>
               )}
+              {doorPadVotedOptionId && <p className="visitor-note-status">Vote submitted.</p>}
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={() => { triggerToast("Vote cast!"); handleReset(); }}>Submit Vote</BigButton>
-                <BigButton onClick={() => setDoorPadScreen("home")}>Cancel</BigButton>
+                {!doorPadVotedOptionId && currentPoll && (
+                  <BigButton
+                    variant="primary"
+                    disabled={!selectedPollOptionId}
+                    onClick={handlePollVote}
+                  >
+                    Submit Vote
+                  </BigButton>
+                )}
+                {doorPadVotedOptionId && (
+                  <BigButton variant="primary" onClick={returnDoorPadToContext}>Done</BigButton>
+                )}
+                <BigButton onClick={returnDoorPadToContext}>Cancel</BigButton>
               </div>
             </div>
           )}
@@ -1412,23 +2365,30 @@ export function App() {
               <h2>Check In</h2>
               <p>Voluntarily mark yourself as a visitor to increment stats!</p>
               <div className="phrase-grid">
-                <button
-                  className="phrase-btn"
-                  disabled={checkinSubmitting}
-                  onClick={() => handleCheckin("enrolled")}
-                >
-                  Enrolled Visitor
-                </button>
+                {activeDisplayName && (
+                  <button
+                    className="phrase-btn"
+                    disabled={checkinSubmitting}
+                    onClick={() => handleCheckin("enrolled")}
+                  >
+                    Check in as {activeDisplayName}
+                  </button>
+                )}
                 <button
                   className="phrase-btn"
                   disabled={checkinSubmitting}
                   onClick={() => handleCheckin("guest")}
                 >
-                  Anonymous Guest
+                  Check in as Guest
                 </button>
               </div>
+              {!activeDisplayName && (
+                <p className="placeholder-subtext">
+                  Named check-in is available only when an enrolled, consenting visitor is recognized.
+                </p>
+              )}
               <div className="action-button-group">
-                <BigButton onClick={() => setDoorPadScreen("home")}>Back</BigButton>
+                <BigButton onClick={returnDoorPadToContext}>Back</BigButton>
               </div>
             </div>
           )}
@@ -1437,8 +2397,8 @@ export function App() {
             <div className="doorpad-sub-content">
               <h2>Camera Notice & Deletion Requests</h2>
               <div className="privacy-info-box">
-                <p>📸 This door pad utilizes physical cameras for proactive face recognition of enrolled users.</p>
-                <p>🔒 Embeddings for unknown visitors are never persisted or recorded. biometrics stay strictly offline on device.</p>
+                <p>This door pad uses local cameras for enrolled-resident recognition only.</p>
+                <p>Unknown visitors are never named, and biometric data stays offline on the device.</p>
               </div>
               {myContent.length > 0 && (
                 <div className="my-content-list">
@@ -1460,8 +2420,14 @@ export function App() {
                 </p>
               )}
               <div className="action-button-group">
-                <BigButton variant="primary" onClick={() => { triggerToast("Deletion Requested"); handleReset(); }}>Request Deletion of My Data</BigButton>
-                <BigButton onClick={() => setDoorPadScreen("home")}>Back</BigButton>
+                <BigButton
+                  variant="primary"
+                  disabled={myContent.length === 0}
+                  onClick={handleDeletionRequestAll}
+                >
+                  Request Deletion of My Data
+                </BigButton>
+                <BigButton onClick={returnDoorPadToContext}>Back</BigButton>
               </div>
             </div>
           )}
@@ -1473,14 +2439,9 @@ export function App() {
   // --- VISITOR SURFACE ---
   const renderVisitor = () => {
     return (
-      <div className="placeholder-view db-app-theme">
-        <div className="placeholder-card">
-          <h1>Visitor Surface</h1>
-          <p className="subtitle-tag">Route: `/visitor`</p>
-          <VisitorPage sessionState={sessionState} />
-          <button className="back-home-btn" onClick={() => navigateTo("/")}>Back to Navigation</button>
-        </div>
-      </div>
+      <main className="visitor-shell db-app-theme">
+        <VisitorPage sessionState={sessionState} />
+      </main>
     );
   };
 
@@ -1500,8 +2461,65 @@ export function App() {
     );
   };
 
+  const submitAdminToken = (event: React.FormEvent) => {
+    event.preventDefault();
+    const token = adminTokenDraft.trim();
+    if (!token) return;
+    window.localStorage.setItem(ADMIN_TOKEN_KEY, token);
+    setAdminToken(token);
+    setAdminTokenDraft("");
+  };
+
+  const logoutAdmin = () => {
+    window.localStorage.removeItem(ADMIN_TOKEN_KEY);
+    setAdminToken("");
+    setAdminRecordings([]);
+    setAdminInboxState("idle");
+  };
+
+  const runAdminSessionAction = async (path: "answer" | "cannot-answer" | "end") => {
+    try {
+      const response = await fetch(`${API_BASE}/admin/session/${path}`, {
+        method: "POST",
+        headers: adminHeaders(),
+      });
+      if (!response.ok) {
+        triggerToast(response.status === 401 ? "Admin token rejected" : "Session action unavailable");
+        return;
+      }
+      const result = (await response.json()) as DoorApiSnapshot;
+      if (result.session) applySessionSnapshot(result.session);
+      triggerToast(result.accepted ? "Session updated" : "That action no longer applies");
+    } catch {
+      triggerToast("Session action unavailable");
+    }
+  };
+
   // --- ADMIN SURFACE ---
   const renderAdmin = () => {
+    if (!adminToken) {
+      return (
+        <main className="admin-auth-shell db-app-theme">
+          <form className="admin-auth-card" onSubmit={submitAdminToken}>
+            <p className="surface-eyebrow">Owner access</p>
+            <h1>Admin sign in</h1>
+            <p>Enter the Pi-local admin token. Admin tools are never linked from visitor screens.</p>
+            <label htmlFor="admin-token">Admin token</label>
+            <input
+              id="admin-token"
+              type="password"
+              autoComplete="current-password"
+              value={adminTokenDraft}
+              onChange={(event) => setAdminTokenDraft(event.target.value)}
+            />
+            <BigButton variant="primary" disabled={!adminTokenDraft.trim()} type="submit">
+              Continue
+            </BigButton>
+          </form>
+        </main>
+      );
+    }
+
     // SSD Space percentage calculation: 48 GiB default cap
     const maxSsdCap = 48 * 1024 * 1024 * 1024;
     const freeGb = storageStatus.free_bytes / (1024 * 1024 * 1024);
@@ -1521,42 +2539,132 @@ export function App() {
           <header className="admin-header">
             <div>
               <h1>Admin Control Panel</h1>
-              <p className="subtitle-tag">Route: `/admin` | `/diagnostics`</p>
+              <p className="subtitle-tag">Owner-only local controls</p>
             </div>
-            <button className="back-home-btn" onClick={() => navigateTo("/")}>Back to Navigation</button>
+            {DEV_TOOLS_ENABLED && (
+              <button className="back-home-btn" onClick={() => navigateTo("/")}>Back to Navigation</button>
+            )}
+            <button className="back-home-btn" onClick={logoutAdmin}>Sign out</button>
           </header>
 
-          <LiveVideoPreview title="Local Live View" showStats />
+          <section className="admin-live-session" aria-live="polite">
+            <div className="admin-live-session__summary">
+              <p className="surface-eyebrow">Live visitor session</p>
+              <h2>{sessionState === "IDLE" ? "No active visitor" : sessionState.replaceAll("_", " ")}</h2>
+              <p>
+                {sessionState === "IDLE"
+                  ? "The DoorPad and wallboard are in ambient mode."
+                  : `Observed ${Math.max(0, Math.floor((currentTime.getTime() - sessionObservedAt) / 1000))} seconds ago.`}
+              </p>
+              <div className="action-button-group">
+                <BigButton
+                  variant="primary"
+                  disabled={sessionState !== "RINGING"}
+                  onClick={() => runAdminSessionAction("answer")}
+                >
+                  Someone Is Coming
+                </BigButton>
+                <BigButton
+                  disabled={sessionState !== "RINGING"}
+                  onClick={() => runAdminSessionAction("cannot-answer")}
+                >
+                  Can't Answer
+                </BigButton>
+                <BigButton
+                  disabled={sessionState === "IDLE"}
+                  onClick={() => runAdminSessionAction("end")}
+                >
+                  End Session
+                </BigButton>
+              </div>
+            </div>
+            <LiveVideoPreview title="Local Door Camera" showStats />
+          </section>
+
           <div className="admin-stats-grid">
-            <div className="stat-card"><span>Uptime:</span> <strong>3d 12h</strong></div>
-            <div className="stat-card"><span>SQLite WAL:</span> <strong>Active</strong></div>
-            <div className="stat-card"><span>Hailo NPU:</span> <strong>Degraded (Sim)</strong></div>
-            <div className="stat-card"><span>SSD Space:</span> <strong>84% free</strong></div>
+            <div className="stat-card">
+              <span>door-api</span>
+              <strong>Pi-local</strong>
+              <small>Session and social writes use local endpoints.</small>
+            </div>
+            <div className="stat-card">
+              <span>Media storage</span>
+              <strong>
+                {!storageStatusKnown
+                  ? "Status unavailable"
+                  : storageStatus.recording_allowed
+                    ? "Recording allowed"
+                    : "Recording paused"}
+              </strong>
+              <small>
+                {storageStatusKnown
+                  ? `${freeGb.toFixed(1)} GiB free from the latest local storage event.`
+                  : "Waiting for a media.storage_status update; no capacity is being guessed."}
+              </small>
+            </div>
+            <div className="stat-card">
+              <span>Vision pipeline</span>
+              <strong>Unavailable in this panel</strong>
+              <small>Diagnostics should report Hailo/camera status when connected.</small>
+            </div>
+            <div className="stat-card">
+              <span>Sync queue</span>
+              <strong>{storageStatusKnown ? `${storageStatus.queue_depth} pending` : "Status unavailable"}</strong>
+              <small>
+                {storageStatusKnown
+                  ? `Oldest unsynced: ${oldestHrs.toFixed(1)} hours.`
+                  : "Waiting for local media telemetry."}
+              </small>
+            </div>
           </div>
 
           <section className="admin-inbox-section">
             <h2>Video Message Inbox</h2>
-            {adminRecordings.length === 0 ? (
+            {adminInboxState === "loading" && <p className="desc">Loading saved messages…</p>}
+            {adminInboxState === "unavailable" && (
+              <p className="admin-unavailable">Message inbox unavailable. Check the admin token and door-media health.</p>
+            )}
+            {adminInboxState === "ready" && adminRecordings.length === 0 ? (
               <p className="desc">No saved visitor video messages.</p>
-            ) : (
+            ) : adminInboxState === "ready" ? (
               <div className="admin-recording-list">
                 {adminRecordings.map((recording) => (
                   <div className="admin-recording-row" key={recording.recording_id}>
                     <div>
-                      <strong>{recording.recording_id.slice(0, 8)}</strong>
-                      <p>Consent: {recording.consent_context}</p>
-                      <p>Clip: {recording.path}</p>
+                      <strong>Visitor message</strong>
+                      <p>
+                        {recording.started_at_utc
+                          ? new Date(recording.started_at_utc).toLocaleString()
+                          : "Time unavailable"}
+                        {recording.duration_s !== null && recording.duration_s !== undefined
+                          ? ` · ${recording.duration_s.toFixed(1)} seconds`
+                          : ""}
+                      </p>
+                      <p>Consent: {recording.consent_context ?? "unavailable"}</p>
                     </div>
-                    <span>{recording.thumbnail_path ? "Thumbnail ready" : "No thumbnail"}</span>
+                    <div className="admin-recording-actions">
+                      <AdminVideoMessagePlayer
+                        recordingId={recording.recording_id}
+                        token={adminToken}
+                      />
+                      <button
+                        className="delete-recording-btn"
+                        onClick={() => handleDeleteRecording(recording.recording_id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
-            )}
+            ) : null}
           </section>
 
           <section className="admin-gauges-section">
             <h3 className="section-title">Storage Status</h3>
-            <div className="admin-gauges-grid">
+            {!storageStatusKnown ? (
+              <p className="admin-unavailable">Storage telemetry has not arrived from door-media.</p>
+            ) : <div className="admin-gauges-grid">
               <Gauge
                 title="SSD Space"
                 value={freeGb.toFixed(1)}
@@ -1579,7 +2687,7 @@ export function App() {
                 unit="hours"
                 severity={oldestSeverity}
               />
-            </div>
+            </div>}
           </section>
 
           <section className="admin-recordings-section">
@@ -1773,6 +2881,10 @@ export function App() {
 
   // --- NAVIGATION PAGE (DEFAULT ROOT /) ---
   const renderNavigation = () => {
+    if (!DEV_TOOLS_ENABLED) {
+      return renderWallboard();
+    }
+
     return (
       <div className="navigation-view db-app-theme">
         <div className="nav-container">

@@ -11,18 +11,25 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from doorboard_contracts.events import (
+    BaseEvent,
+    SocialCheckinCreatedEvent,
     SocialCheckinCreatedPayload,
+    SocialDeletionRequestedEvent,
     SocialDeletionRequestedPayload,
+    SocialGuestbookEntryCreatedEvent,
     SocialGuestbookEntryCreatedPayload,
+    SocialPollVoteCastEvent,
     SocialPollVoteCastPayload,
 )
+from doorboard_esp32_link.esp32 import uuid7_now
 
 from door_api.social.config import SocialConfig
 from door_api.social.errors import (
@@ -57,6 +64,10 @@ def hash_ip(ip: str) -> str:
     retaining a durable identifier.
     """
     return hashlib.sha256(ip.encode("utf-8")).hexdigest()[:32]
+
+
+def hash_session_key(session_key: str) -> str:
+    return hashlib.sha256(session_key.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -126,13 +137,30 @@ class SocialService:
             )
 
     def _emit(self, event_type: str, payload_model: Any, *, trace_id: str) -> None:
-        self.on_event(
+        try:
+            contract_trace_id = UUID(trace_id)
+        except ValueError:
+            contract_trace_id = uuid5(NAMESPACE_URL, trace_id)
+
+        event_type_map: dict[str, type[BaseEvent]] = {
+            "social.guestbook_entry_created": SocialGuestbookEntryCreatedEvent,
+            "social.poll_vote_cast": SocialPollVoteCastEvent,
+            "social.checkin_created": SocialCheckinCreatedEvent,
+            "social.deletion_requested": SocialDeletionRequestedEvent,
+        }
+        event = event_type_map[event_type].model_validate(
             {
+                "event_id": uuid7_now(),
                 "type": event_type,
-                "payload": payload_model.model_dump(mode="json"),
-                "trace_id": trace_id,
+                "source": "door-api",
+                "occurred_at": datetime.now(UTC),
+                "monotonic_ms": int(time.monotonic() * 1000),
+                "door_id": self.config.door_id,
+                "trace_id": contract_trace_id,
+                "payload": payload_model,
             }
         )
+        self.on_event(event.model_dump(mode="json"))
 
     def _log_moderation(self, *, target_kind: str, target_id: str, action: str, actor: str) -> None:
         self.store.append_moderation_log(
@@ -184,6 +212,7 @@ class SocialService:
             author_label=clean_author,
             status="pending",
             ip_hash=hash_ip(ip),
+            session_key_hash=hash_session_key(session_token),
             created_at=created_at,
         )
         self.metrics.guestbook_created += 1
@@ -299,7 +328,7 @@ class SocialService:
 
         inserted = self.store.insert_vote(
             poll_id=poll_id,
-            session_token=session_token,
+            session_token=hash_session_key(session_token),
             option_id=option_id,
             created_at=_utcnow_iso(),
         )
@@ -356,6 +385,7 @@ class SocialService:
             checkin_id=checkin_id,
             person_id=person_id,
             label=clean_label,
+            session_key_hash=hash_session_key(session_token),
             created_at=_utcnow_iso(),
         )
         self.metrics.checkins_created += 1
@@ -408,9 +438,28 @@ class SocialService:
             self._check_rate_limit(ip=ip, session_token=session_token)
 
         if target_kind == "guestbook":
-            self.delete_guestbook_entry(target_id, actor=actor)
+            if actor == "visitor":
+                ok = self.store.soft_delete_guestbook_entry(
+                    target_id,
+                    deleted_at=_utcnow_iso(),
+                    session_key_hash=hash_session_key(session_token),
+                )
+                if not ok:
+                    raise NotFoundError(f"no guestbook entry {target_id} owned by this session")
+                self._log_moderation(
+                    target_kind="guestbook",
+                    target_id=target_id,
+                    action="deleted",
+                    actor=actor,
+                )
+            else:
+                self.delete_guestbook_entry(target_id, actor=actor)
         elif target_kind == "checkin":
-            ok = self.store.soft_delete_checkin(target_id, deleted_at=_utcnow_iso())
+            ok = self.store.soft_delete_checkin(
+                target_id,
+                deleted_at=_utcnow_iso(),
+                session_key_hash=(hash_session_key(session_token) if actor == "visitor" else None),
+            )
             if not ok:
                 raise NotFoundError(f"no checkin {target_id}")
             self._log_moderation(

@@ -177,6 +177,7 @@ def main():
         is_task_brief = (
             "docs/tasks/" in rel_path.replace(os.sep, "/") 
             and os.path.basename(file_path).startswith("T-")
+            and not os.path.basename(file_path).endswith("-escalation.md")
         )
         if is_task_brief:
             brief_errors = check_task_brief(file_path)

@@ -1,0 +1,20 @@
+[Unit]
+Description=Doorboard MediaMTX
+Requires=doorboard-storage-ready.service
+After=doorboard-storage-ready.service
+
+[Service]
+Type=simple
+User=doorboard
+Group=doorboard
+ExecStart=/usr/local/bin/mediamtx /etc/doorboard/mediamtx.yml
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/mnt/ssd/doorboard
+
+[Install]
+WantedBy=multi-user.target

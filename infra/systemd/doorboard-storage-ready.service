@@ -1,0 +1,21 @@
+[Unit]
+Description=Verify Doorboard SSD storage
+After=local-fs.target
+Before=door-media.service door-visiond.service door-api.service door-sync.service mediamtx.service
+
+[Service]
+Type=oneshot
+User=doorboard
+Group=doorboard
+WorkingDirectory=/opt/doorboard
+EnvironmentFile=/etc/doorboard/doorboard.env
+ExecStart=/opt/doorboard/.venv/bin/python /opt/doorboard/scripts/check-door-storage
+RemainAfterExit=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/mnt/ssd
+
+[Install]
+WantedBy=multi-user.target

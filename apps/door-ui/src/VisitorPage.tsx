@@ -33,46 +33,78 @@ function apiErrorMessage(err: unknown, fallback: string): string {
 }
 
 export function VisitorPage({ sessionState }: VisitorPageProps) {
+  const [accessState, setAccessState] = useState<"checking" | "valid" | "invalid">("checking");
+  const [verifiedSessionState, setVerifiedSessionState] = useState<SessionState | null>(null);
   const [noteText, setNoteText] = useState("");
   const [noteSubmitting, setNoteSubmitting] = useState(false);
   const [noteStatus, setNoteStatus] = useState<string | null>(null);
+  const [createdNoteId, setCreatedNoteId] = useState<string | null>(null);
 
   const [poll, setPoll] = useState<Poll | null>(null);
   const [pollResults, setPollResults] = useState<PollResultRow[] | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
+  const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   const [votedOptionId, setVotedOptionId] = useState<string | null>(null);
 
   const [deletionRequested, setDeletionRequested] = useState(false);
+  const [deletionError, setDeletionError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    socialApi
-      .getCurrentPoll()
+    socialApi.validateVisitorSession()
+      .then((session) => {
+        if (cancelled) return null;
+        setAccessState("valid");
+        setVerifiedSessionState(session.state);
+        return socialApi.getCurrentPoll();
+      })
       .then((p) => {
         if (cancelled) return;
+        if (p === null) return;
         setPoll(p);
-        if (p) return socialApi.getPollResults(p.id).then((r) => !cancelled && setPollResults(r));
       })
       .catch(() => {
-        // No poll available right now — section just stays hidden.
+        if (!cancelled) setAccessState("invalid");
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const ringStatus = RING_STATUS_COPY[sessionState] ?? "Waiting for a visitor session…";
-  const showNoteField = sessionState === "UNANSWERED_TIMEOUT" ||
-    sessionState === "VIDEO_MESSAGE_OFFERED" ||
-    sessionState === "VIDEO_MESSAGE_RECORDING" ||
-    sessionState === "VIDEO_MESSAGE_REVIEW";
+  useEffect(() => {
+    if (accessState !== "valid") return undefined;
+    let cancelled = false;
+    const refresh = () => {
+      void socialApi
+        .validateVisitorSession()
+        .then((session) => {
+          if (!cancelled) setVerifiedSessionState(session.state);
+        })
+        .catch(() => {
+          if (!cancelled) setAccessState("invalid");
+        });
+    };
+    const interval = window.setInterval(refresh, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [accessState]);
+
+  const effectiveSessionState = verifiedSessionState ?? sessionState;
+  const ringStatus = RING_STATUS_COPY[effectiveSessionState] ?? "Waiting for a visitor session…";
+  const showNoteField = effectiveSessionState === "UNANSWERED_TIMEOUT" ||
+    effectiveSessionState === "VIDEO_MESSAGE_OFFERED" ||
+    effectiveSessionState === "VIDEO_MESSAGE_RECORDING" ||
+    effectiveSessionState === "VIDEO_MESSAGE_REVIEW";
 
   const submitNote = async () => {
     if (noteSubmitting || noteText.trim().length === 0) return;
     setNoteSubmitting(true);
     setNoteStatus(null);
     try {
-      await socialApi.createGuestbookEntry(noteText, "Left via phone");
+      const note = await socialApi.createGuestbookEntry(noteText, "Left via phone");
+      setCreatedNoteId(note.id);
       setNoteStatus("Note sent! It'll show up once approved.");
       setNoteText("");
     } catch (err) {
@@ -82,12 +114,12 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
     }
   };
 
-  const castVote = async (optionId: string) => {
-    if (!poll) return;
+  const castVote = async () => {
+    if (!poll || !selectedOptionId || votedOptionId) return;
     setPollError(null);
     try {
-      await socialApi.castVote(poll.id, optionId);
-      setVotedOptionId(optionId);
+      await socialApi.castVote(poll.id, selectedOptionId);
+      setVotedOptionId(selectedOptionId);
       const results = await socialApi.getPollResults(poll.id);
       setPollResults(results);
     } catch (err) {
@@ -96,12 +128,29 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
   };
 
   const requestPrivacyDeletion = async () => {
-    // The visitor phone flow has no durable identity to key a specific
-    // record off of beyond the note just sent — deletion of that note is
-    // handled inline via its own confirmation; this button covers the
-    // general "forget me" ask described in docs/ui/visitor.md.
-    setDeletionRequested(true);
+    if (!createdNoteId) return;
+    setDeletionError(null);
+    try {
+      await socialApi.requestDeletion("guestbook", createdNoteId);
+      setCreatedNoteId(null);
+      setDeletionRequested(true);
+    } catch (err) {
+      setDeletionError(apiErrorMessage(err, "Couldn't delete your note."));
+    }
   };
+
+  if (accessState === "checking") {
+    return <div className="visitor-section"><p>Checking visitor link...</p></div>;
+  }
+
+  if (accessState === "invalid") {
+    return (
+      <div className="visitor-section">
+        <h3>Visitor link unavailable</h3>
+        <p>This link is missing, expired, or its door session has ended.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="visitor-page">
@@ -121,6 +170,7 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
             value={noteText}
             onChange={(e) => setNoteText(e.target.value)}
           />
+          <p className="character-count">{noteText.length} / 280</p>
           {noteStatus && <p className="visitor-note-status">{noteStatus}</p>}
           <BigButton
             variant="primary"
@@ -145,14 +195,20 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
                   className="phrase-btn"
                   style={{ width: "100%", margin: "4px 0" }}
                   disabled={votedOptionId !== null}
-                  onClick={() => castVote(opt.id)}
+                  aria-pressed={votedOptionId === opt.id || selectedOptionId === opt.id}
+                  onClick={() => setSelectedOptionId(opt.id)}
                 >
                   {opt.text}
-                  {result !== undefined && <span> — {result.votes} votes</span>}
+                  {votedOptionId && result !== undefined && <span> — {result.votes} votes</span>}
                 </button>
               );
             })}
           </div>
+          {!votedOptionId && (
+            <BigButton variant="primary" disabled={!selectedOptionId} onClick={castVote}>
+              Submit vote
+            </BigButton>
+          )}
           {votedOptionId && <p>Thanks for voting!</p>}
         </section>
       )}
@@ -160,14 +216,18 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
       <section className="visitor-section">
         <h3>Privacy</h3>
         <p>
-          📸 A camera near the door proactively recognizes enrolled residents only. Unknown
+          A camera near the door proactively recognizes enrolled residents only. Unknown
           faces are never named or stored.
         </p>
+        {deletionError && <p>{deletionError}</p>}
         {!deletionRequested ? (
-          <BigButton onClick={requestPrivacyDeletion}>Request my data be deleted</BigButton>
+          <BigButton disabled={!createdNoteId} onClick={requestPrivacyDeletion}>
+            Delete my submitted note
+          </BigButton>
         ) : (
-          <p>Noted — reach out to the resident if you'd like a specific note removed too.</p>
+          <p>Your submitted note was deleted.</p>
         )}
+        {!createdNoteId && !deletionRequested && <p>No visitor submissions to delete.</p>}
       </section>
     </div>
   );

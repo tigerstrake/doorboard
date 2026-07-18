@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Restart a local service after three consecutive failed health probes."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import urllib.request
+from pathlib import Path
+
+SERVICES = {
+    "door-ui.service": "http://127.0.0.1:5173/healthz",
+    "door-api.service": "http://127.0.0.1:8080/health",
+    "door-visiond.service": "http://127.0.0.1:8081/health",
+    "door-media.service": "http://127.0.0.1:8082/health",
+    "door-sync.service": "http://127.0.0.1:8083/health",
+}
+STATE_PATH = Path("/run/doorboard/health-failures.json")
+
+
+def _active(unit: str) -> bool:
+    return (
+        subprocess.run(  # noqa: S603
+            ["systemctl", "is-active", "--quiet", unit],
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _healthy(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=2.0) as response:  # noqa: S310
+            return 200 <= response.status < 300
+    except OSError:
+        return False
+
+
+def main() -> int:
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        failures = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        failures = {}
+    if not isinstance(failures, dict):
+        failures = {}
+
+    for unit, url in SERVICES.items():
+        if not _active(unit):
+            failures.pop(unit, None)
+            continue
+        if _healthy(url):
+            failures[unit] = 0
+            continue
+        count = int(failures.get(unit, 0)) + 1
+        failures[unit] = count
+        if count >= 3:
+            subprocess.run(["systemctl", "try-restart", unit], check=False)  # noqa: S603
+            failures[unit] = 0
+
+    temporary = STATE_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(failures, sort_keys=True), encoding="utf-8")
+    temporary.replace(STATE_PATH)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
