@@ -79,15 +79,13 @@ paths:
     recordPath: {segments_root}/{stream}/%Y/%m/%d/%H/%M/%S-%f
     recordFormat: fmp4
     recordSegmentDuration: {segment_s}s
+    # Pi 5 has no HW H.264 block: rpicam-vid encodes via libav, which needs an
+    # explicit --libav-format when writing the elementary stream to stdout.
+    # MediaMTX runOnInit is NOT run through a shell, so the pipe must be wrapped
+    # in sh -c. ffmpeg is quieted (-nostats -loglevel error) so its progress
+    # output cannot fill the (unread) subprocess stdout pipe. (issue #84)
     runOnInit: >-
-      rpicam-vid
-      --width 1280 --height 720 --framerate 25
-      --codec h264 --profile main --level 4.1
-      --bitrate 2000000
-      --flush 1
-      --timeout 0
-      --output - |
-      ffmpeg -re -i pipe:0 -c:v copy -f rtsp rtsp://127.0.0.1:8554/{stream}
+      sh -c 'rpicam-vid --width 1280 --height 720 --framerate 25 --codec h264 --libav-format h264 --profile baseline --level 4.1 --bitrate 2000000 --inline --flush 1 --timeout 0 --nopreview --output - | ffmpeg -nostats -loglevel error -fflags nobuffer -f h264 -r 25 -i pipe:0 -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/{stream}'
     runOnInitRestart: yes
 """
 
@@ -156,7 +154,15 @@ class MediaMTXRouter:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
                 )
-                await self._proc.wait()
+                # An unread stdout pipe fills its OS buffer and deadlocks
+                # MediaMTX (API + streaming freeze while the process lives on).
+                drain = asyncio.create_task(self._drain_output(self._proc.stdout))
+                try:
+                    await self._proc.wait()
+                finally:
+                    drain.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await drain
                 rc = self._proc.returncode
                 logger.warning(
                     "mediamtx_exited",
@@ -170,6 +176,23 @@ class MediaMTXRouter:
                 logger.exception("mediamtx_supervisor_error", exc_info=exc)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
+
+    async def _drain_output(self, stream: asyncio.StreamReader | None) -> None:
+        """Forward MediaMTX output to the logger so its pipe never fills."""
+        if stream is None:
+            return
+        try:
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").rstrip()
+                if text:
+                    logger.info("mediamtx", extra={"line": text})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("mediamtx_drain_failed")
 
     async def _kill_mediamtx(self) -> None:
         if self._proc and self._proc.returncode is None:
@@ -371,7 +394,7 @@ class MediaMTXRouter:
             StreamInfo(
                 name=self._settings.visitor_cam_stream,
                 whep_url=(
-                    f"{self._settings.mediamtx_api}/whep/{self._settings.visitor_cam_stream}"
+                    f"http://127.0.0.1:8889/{self._settings.visitor_cam_stream}/whep"
                 ),
                 stream_up=False,  # updated by async path
                 webrtc_clients=0,
@@ -389,7 +412,7 @@ class MediaMTXRouter:
                 return [
                     StreamInfo(
                         name=stream,
-                        whep_url=f"http://127.0.0.1:8889/whep/{stream}",
+                        whep_url=f"http://127.0.0.1:8889/{stream}/whep",
                         stream_up=True,
                         webrtc_clients=readers,
                     )
@@ -399,7 +422,7 @@ class MediaMTXRouter:
         return [
             StreamInfo(
                 name=stream,
-                whep_url=f"http://127.0.0.1:8889/whep/{stream}",
+                whep_url=f"http://127.0.0.1:8889/{stream}/whep",
                 stream_up=False,
                 webrtc_clients=0,
             )

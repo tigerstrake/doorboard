@@ -62,7 +62,7 @@ export function LiveVideoPreview({
     if (video.srcObject !== snapshot.stream) {
       video.srcObject = snapshot.stream;
     }
-  }, [snapshot.stream]);
+  }, [snapshot.stream, snapshot.status]);
 
   const statusLabel = statusText(snapshot.status);
   const stats = getMediaClientStats();

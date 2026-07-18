@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -119,6 +120,8 @@ class SessionStore:
         self._lock = threading.Lock()
         self._media_outbox_max_rows = media_outbox_max_rows
         self._sync_outbox_max_rows = sync_outbox_max_rows
+        if db_path not in (":memory:", "") and not db_path.startswith("file:"):
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(
             db_path,
             isolation_level="DEFERRED",
