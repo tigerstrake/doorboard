@@ -27,6 +27,7 @@
 
 #define AUDIO_SAMPLE_RATE 22050
 #define AUDIO_BUFFER_SIZE 256
+#define WATCHDOG_QUEUE_WAIT_MS 500
 
 typedef struct {
     uint64_t observed_at_mono_ms;
@@ -53,6 +54,10 @@ static QueueHandle_t s_link_queue;
 static QueueHandle_t s_audio_queue;
 static door_protocol_t s_protocol;
 static portMUX_TYPE s_protocol_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint32_t s_input_queue_drops;
+static volatile uint32_t s_effect_queue_drops;
+static volatile uint32_t s_link_queue_drops;
+static volatile uint32_t s_audio_queue_drops;
 
 static led_strip_handle_t s_led_strip = NULL;
 static i2s_chan_handle_t s_tx_chan = NULL;
@@ -69,7 +74,9 @@ static void IRAM_ATTR button_isr_handler(void *arg)
         .observed_at_mono_ms = (uint64_t)xTaskGetTickCountFromISR() * portTICK_PERIOD_MS,
     };
     BaseType_t higher_priority_task_woken = pdFALSE;
-    (void)xQueueSendFromISR(s_input_queue, &event, &higher_priority_task_woken);
+    if (xQueueSendFromISR(s_input_queue, &event, &higher_priority_task_woken) != pdTRUE) {
+        __atomic_fetch_add(&s_input_queue_drops, 1U, __ATOMIC_RELAXED);
+    }
     if (higher_priority_task_woken == pdTRUE) {
         portYIELD_FROM_ISR();
     }
@@ -87,7 +94,7 @@ static door_effect_id_t profile_effect_for_id(const char *profile_id)
     return DOOR_EFFECT_BLUE_WAVE;
 }
 
-static void enqueue_effect(door_effect_id_t effect_id, const char *profile_id)
+static bool enqueue_effect(door_effect_id_t effect_id, const char *profile_id)
 {
     effect_command_t command = {
         .effect_id = effect_id,
@@ -95,7 +102,26 @@ static void enqueue_effect(door_effect_id_t effect_id, const char *profile_id)
     if (profile_id != NULL) {
         snprintf(command.profile_id, sizeof(command.profile_id), "%s", profile_id);
     }
-    (void)xQueueSend(s_effect_queue, &command, 0);
+    if (xQueueSend(s_effect_queue, &command, 0) == pdTRUE) {
+        return true;
+    }
+
+    effect_command_t dropped;
+    (void)xQueueReceive(s_effect_queue, &dropped, 0);
+    __atomic_fetch_add(&s_effect_queue_drops, 1U, __ATOMIC_RELAXED);
+    return xQueueSend(s_effect_queue, &command, 0) == pdTRUE;
+}
+
+static bool enqueue_audio(door_effect_id_t effect_id)
+{
+    audio_command_t command = {.effect_id = effect_id};
+    if (xQueueSend(s_audio_queue, &command, 0) == pdTRUE) {
+        return true;
+    }
+    audio_command_t dropped;
+    (void)xQueueReceive(s_audio_queue, &dropped, 0);
+    __atomic_fetch_add(&s_audio_queue_drops, 1U, __ATOMIC_RELAXED);
+    return xQueueSend(s_audio_queue, &command, 0) == pdTRUE;
 }
 
 static bool fill_press_random(uint8_t *buffer, size_t len, void *user)
@@ -124,9 +150,14 @@ static void input_task(void *arg)
     button_isr_event_t event;
     uint64_t last_press_mono_ms = 0;
 
-    (void)esp_task_wdt_add(NULL);
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     for (;;) {
-        if (xQueueReceive(s_input_queue, &event, portMAX_DELAY) != pdTRUE) {
+        if (xQueueReceive(
+                s_input_queue,
+                &event,
+                pdMS_TO_TICKS(WATCHDOG_QUEUE_WAIT_MS)
+            ) != pdTRUE) {
+            esp_task_wdt_reset();
             continue;
         }
 
@@ -159,7 +190,10 @@ static void input_task(void *arg)
             .pressed_at_mono_ms = event.observed_at_mono_ms,
         };
         if (make_press_id(link_event.press_id, sizeof(link_event.press_id))) {
-            (void)xQueueSend(s_link_queue, &link_event, 0);
+            if (xQueueSend(s_link_queue, &link_event, pdMS_TO_TICKS(5)) != pdTRUE) {
+                __atomic_fetch_add(&s_link_queue_drops, 1U, __ATOMIC_RELAXED);
+                ESP_LOGE(TAG, "button_event dropped because link queue is full");
+            }
         } else {
             ESP_LOGE(TAG, "button_event dropped because press_id generation failed");
         }
@@ -199,7 +233,14 @@ static void play_tone(uint32_t freq_hz, uint32_t duration_ms)
                                      AUDIO_BUFFER_SIZE : 
                                      (total_samples - samples_written);
             size_t bytes_written = 0;
-            i2s_channel_write(s_tx_chan, silence_buf, chunk_samples * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+            i2s_channel_write(
+                s_tx_chan,
+                silence_buf,
+                chunk_samples * sizeof(int16_t),
+                &bytes_written,
+                pdMS_TO_TICKS(100)
+            );
+            esp_task_wdt_reset();
             if (bytes_written == 0) {
                 break;
             }
@@ -229,7 +270,14 @@ static void play_tone(uint32_t freq_hz, uint32_t duration_ms)
             }
         }
         size_t bytes_written = 0;
-        i2s_channel_write(s_tx_chan, tone_buf, chunk_samples * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+        i2s_channel_write(
+            s_tx_chan,
+            tone_buf,
+            chunk_samples * sizeof(int16_t),
+            &bytes_written,
+            pdMS_TO_TICKS(100)
+        );
+        esp_task_wdt_reset();
         if (bytes_written == 0) {
             break;
         }
@@ -242,9 +290,13 @@ static void audio_task(void *arg)
     (void)arg;
     audio_command_t cmd;
 
-    (void)esp_task_wdt_add(NULL);
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     for (;;) {
-        if (xQueueReceive(s_audio_queue, &cmd, portMAX_DELAY) == pdTRUE) {
+        if (xQueueReceive(
+                s_audio_queue,
+                &cmd,
+                pdMS_TO_TICKS(WATCHDOG_QUEUE_WAIT_MS)
+            ) == pdTRUE) {
             const door_audio_cue_t *cue = door_effects_get_audio_cue(cmd.effect_id);
             for (uint32_t i = 0; i < cue->num_tones; i++) {
                 audio_command_t peek_cmd;
@@ -266,18 +318,19 @@ static void effects_task(void *arg)
     door_effects_init_state(&state);
     bool animation_active = false;
 
-    (void)esp_task_wdt_add(NULL);
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     for (;;) {
-        TickType_t wait_ticks = animation_active ? pdMS_TO_TICKS(30) : portMAX_DELAY;
+        TickType_t wait_ticks = animation_active
+            ? pdMS_TO_TICKS(30)
+            : pdMS_TO_TICKS(WATCHDOG_QUEUE_WAIT_MS);
 
         if (xQueueReceive(s_effect_queue, &command, wait_ticks) == pdTRUE) {
             door_effects_start(&state, command.effect_id, command.profile_id[0] != '\0' ? command.profile_id : NULL);
             animation_active = (state.effect_id != DOOR_EFFECT_NONE);
 
-            audio_command_t audio_cmd = {
-                .effect_id = state.effect_id,
-            };
-            (void)xQueueSend(s_audio_queue, &audio_cmd, 0);
+            if (!enqueue_audio(state.effect_id)) {
+                ESP_LOGW(TAG, "audio effect dropped because audio queue stayed full");
+            }
         }
 
         if (animation_active) {
@@ -365,9 +418,10 @@ static void link_task(void *arg)
     (void)arg;
     link_button_event_t button_event;
     uint64_t last_heartbeat_mono_ms = 0;
+    uint64_t last_drop_log_mono_ms = 0;
     bool fallback_was_active = true;
 
-    (void)esp_task_wdt_add(NULL);
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
 
     portENTER_CRITICAL(&s_protocol_mux);
     (void)door_protocol_start_hello(&s_protocol);
@@ -405,6 +459,24 @@ static void link_task(void *arg)
             last_heartbeat_mono_ms = now;
         }
 
+        if (now - last_drop_log_mono_ms >= 10000) {
+            const uint32_t input_drops = __atomic_load_n(&s_input_queue_drops, __ATOMIC_RELAXED);
+            const uint32_t effect_drops = __atomic_load_n(&s_effect_queue_drops, __ATOMIC_RELAXED);
+            const uint32_t link_drops = __atomic_load_n(&s_link_queue_drops, __ATOMIC_RELAXED);
+            const uint32_t audio_drops = __atomic_load_n(&s_audio_queue_drops, __ATOMIC_RELAXED);
+            if (input_drops || effect_drops || link_drops || audio_drops) {
+                ESP_LOGW(
+                    TAG,
+                    "queue drops input=%lu effect=%lu link=%lu audio=%lu",
+                    (unsigned long)input_drops,
+                    (unsigned long)effect_drops,
+                    (unsigned long)link_drops,
+                    (unsigned long)audio_drops
+                );
+            }
+            last_drop_log_mono_ms = now;
+        }
+
         esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(5));
     }
@@ -413,7 +485,7 @@ static void link_task(void *arg)
 static void sensors_task(void *arg)
 {
     (void)arg;
-    (void)esp_task_wdt_add(NULL);
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     for (;;) {
 #if CONFIG_DOORBOARD_ENABLE_KNOCK_DETECTION
         const bool threshold_crossed = false;
@@ -553,11 +625,11 @@ void app_main(void)
     configure_leds();
     configure_audio();
 
-    xTaskCreate(input_task, "input", 4096, NULL, 12, NULL);
-    xTaskCreate(effects_task, "effects", 4096, NULL, 10, NULL);
-    xTaskCreate(audio_task, "audio", 4096, NULL, 11, NULL);
-    xTaskCreate(link_task, "link", 6144, NULL, 8, NULL);
-    xTaskCreate(sensors_task, "sensors", 4096, NULL, 5, NULL);
+    ESP_ERROR_CHECK(xTaskCreate(input_task, "input", 4096, NULL, 12, NULL) == pdPASS ? ESP_OK : ESP_FAIL);
+    ESP_ERROR_CHECK(xTaskCreate(effects_task, "effects", 4096, NULL, 10, NULL) == pdPASS ? ESP_OK : ESP_FAIL);
+    ESP_ERROR_CHECK(xTaskCreate(audio_task, "audio", 4096, NULL, 11, NULL) == pdPASS ? ESP_OK : ESP_FAIL);
+    ESP_ERROR_CHECK(xTaskCreate(link_task, "link", 6144, NULL, 8, NULL) == pdPASS ? ESP_OK : ESP_FAIL);
+    ESP_ERROR_CHECK(xTaskCreate(sensors_task, "sensors", 4096, NULL, 5, NULL) == pdPASS ? ESP_OK : ESP_FAIL);
 
     enqueue_effect(DOOR_EFFECT_BOOT, NULL);
 }
