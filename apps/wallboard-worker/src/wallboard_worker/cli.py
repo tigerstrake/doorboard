@@ -126,8 +126,8 @@ def aircraft_summary(mock: bool) -> None:
             observer_lon=settings.aircraft_observer_lon,
             bbox_half_size_lat=settings.aircraft_bbox_half_size_lat,
             bbox_half_size_lon=settings.aircraft_bbox_half_size_lon,
-            opensky_username=settings.opensky_username,
-            opensky_password=settings.opensky_password,
+            opensky_client_id=settings.opensky_client_id,
+            opensky_client_secret=settings.opensky_client_secret,
             opensky_url="https://opensky-network.org/api/states/all",
             poll_cooldown_seconds=settings.aircraft_poll_cooldown_seconds,
         )
