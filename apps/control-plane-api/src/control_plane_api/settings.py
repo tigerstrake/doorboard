@@ -55,6 +55,29 @@ class Settings(BaseSettings):
     # a persistently bad condition doesn't page on every ingested event.
     notify_cooldown_s: int = Field(default=3600, alias="CONTROL_PLANE_NOTIFY_COOLDOWN_S")
 
+    # ── Telegram video-message delivery (NUC-only; ADR-0012) ─────────────
+    # When a visitor SAVES a video message, the clip is pulled from door-api's
+    # admin media endpoint and sent to these Telegram chats. Disabled (silent
+    # no-op) unless a bot token, ≥1 chat id, and door-api media creds are all
+    # set — same fail-safe default as the ntfy channel above.
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    # Comma-separated chat ids — yourself, your roommate, or a shared group.
+    # Plain `str` + manual split (see `telegram_chat_id_list`): pydantic-settings
+    # JSON-decodes `list[str]` env vars *before* validators run, so a
+    # comma-separated value would crash a real list field.
+    telegram_chat_ids: str = Field(default="", alias="TELEGRAM_CHAT_IDS")
+    telegram_api_base_url: str = Field(
+        default="https://api.telegram.org", alias="TELEGRAM_API_BASE_URL"
+    )
+    # Telegram bot uploads cap at 50 MB; above this we send a text pointer instead.
+    telegram_max_video_bytes: int = Field(
+        default=50 * 1024 * 1024, alias="TELEGRAM_MAX_VIDEO_BYTES"
+    )
+    # door-api admin media source: the clip lives on the Pi; the NUC pulls it on
+    # demand (the NUC is the legitimate holder of admin credentials, not the Pi).
+    door_api_base_url: str = Field(default="", alias="CONTROL_PLANE_DOOR_API_BASE_URL")
+    door_api_admin_token: str = Field(default="", alias="CONTROL_PLANE_DOOR_API_ADMIN_TOKEN")
+
     # ── admin auth (stopgap — see packages/auth README) ──────────────────
     admin_token: str = Field(default="", alias="CONTROL_PLANE_ADMIN_TOKEN")
 
@@ -71,6 +94,10 @@ class Settings(BaseSettings):
     presence_stale_after_s: float = Field(
         default=1800.0, alias="CONTROL_PLANE_PRESENCE_STALE_AFTER_S"
     )
+
+    @property
+    def telegram_chat_id_list(self) -> list[str]:
+        return [c.strip() for c in self.telegram_chat_ids.split(",") if c.strip()]
 
     @property
     def host(self) -> str:

@@ -7,6 +7,11 @@ from control_plane_api.mqtt import MqttPublisher, build_publisher
 from control_plane_api.notify import NotifyEngine, build_notifier
 from control_plane_api.presence import CalendarProvider, MockCalendarProvider
 from control_plane_api.settings import Settings
+from control_plane_api.telegram import (
+    VideoMessageDelivery,
+    build_telegram_sender,
+    build_video_source,
+)
 
 
 class AppState:
@@ -26,6 +31,20 @@ class AppState:
         notifier = build_notifier(ntfy_url=cfg.ntfy_url, ntfy_topic=cfg.ntfy_topic)
         self.notify_engine = NotifyEngine(
             notifier, cooldown_s=cfg.notify_cooldown_s, sync_stall_alert_s=cfg.sync_stall_alert_s
+        )
+        # Telegram video-message delivery (ADR-0012). Disabled unless a bot
+        # token, chat id(s), and door-api media creds are all configured.
+        self.video_message_delivery = VideoMessageDelivery(
+            sender=build_telegram_sender(
+                bot_token=cfg.telegram_bot_token,
+                chat_ids=cfg.telegram_chat_id_list,
+                api_base_url=cfg.telegram_api_base_url,
+            ),
+            source=build_video_source(
+                door_api_base_url=cfg.door_api_base_url,
+                door_api_admin_token=cfg.door_api_admin_token,
+            ),
+            max_video_bytes=cfg.telegram_max_video_bytes,
         )
         # Real calendar wiring is a later brief (T-504) — `MockCalendarProvider`
         # always returns "no signal", so calendar simply never wins precedence
