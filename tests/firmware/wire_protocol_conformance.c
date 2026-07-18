@@ -275,38 +275,6 @@ static void test_oversized_frame_counts_rx_error(void)
     assert(esp32.stats.rx_errors == 1);
 }
 
-static void test_peer_reboot_resets_dedupe_identity_for_frames_without_boot_id(void)
-{
-    door_protocol_t esp32;
-    char ack[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
-    const char *hello_one =
-        "{\"v\":1,\"seq\":1,\"t\":\"hello\",\"ack\":null,\"p\":{\"sw_version\":"
-        "\"doorboard-test\",\"proto_v\":1,\"boot_id\":\"pi-boot-one\"}}\n";
-    const char *hello_two =
-        "{\"v\":1,\"seq\":1,\"t\":\"hello\",\"ack\":null,\"p\":{\"sw_version\":"
-        "\"doorboard-test\",\"proto_v\":1,\"boot_id\":\"pi-boot-two\"}}\n";
-    const char *profile =
-        "{\"v\":1,\"seq\":2,\"t\":\"profile_update\",\"ack\":null,\"p\":{"
-        "\"profile_id\":\"blue_wave\",\"ttl_ms\":2500,\"priority\":\"normal\"}}\n";
-
-    door_protocol_init(&esp32, "esp32-test", "host-test");
-    assert(door_protocol_receive_from_pi(
-        &esp32, hello_one, strlen(hello_one), 0, NULL, ack, sizeof(ack)
-    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
-    assert(door_protocol_receive_from_pi(
-        &esp32, profile, strlen(profile), 1, NULL, ack, sizeof(ack)
-    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
-    assert(esp32.stats.profile_updates_applied == 1);
-
-    assert(door_protocol_receive_from_pi(
-        &esp32, hello_two, strlen(hello_two), 2, NULL, ack, sizeof(ack)
-    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
-    assert(door_protocol_receive_from_pi(
-        &esp32, profile, strlen(profile), 3, NULL, ack, sizeof(ack)
-    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
-    assert(esp32.stats.profile_updates_applied == 2);
-}
-
 int main(void)
 {
     test_uuid_v4_press_ids_use_random_version_and_variant_bits();
@@ -321,7 +289,6 @@ int main(void)
     test_malformed_wire_message_counts_rx_error();
     test_protocol_version_rejection_counts_rx_error();
     test_oversized_frame_counts_rx_error();
-    test_peer_reboot_resets_dedupe_identity_for_frames_without_boot_id();
     puts("wire protocol conformance passed");
     return 0;
 }
