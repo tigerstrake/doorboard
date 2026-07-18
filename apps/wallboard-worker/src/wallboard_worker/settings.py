@@ -54,8 +54,10 @@ class Settings(BaseSettings):
     )
 
     feature_aircraft: bool = Field(default=False, alias="FEATURE_AIRCRAFT")
-    opensky_username: str = Field(default="", alias="OPENSKY_USERNAME")
-    opensky_password: str = Field(default="", alias="OPENSKY_PASSWORD")
+    # OpenSky OAuth2 client credentials (Basic auth is no longer accepted by
+    # OpenSky). Empty = anonymous access (works, but heavily throttled).
+    opensky_client_id: str = Field(default="", alias="OPENSKY_CLIENT_ID")
+    opensky_client_secret: str = Field(default="", alias="OPENSKY_CLIENT_SECRET")
     aircraft_observer_lat: float = Field(default=0.0, alias="AIRCRAFT_OBSERVER_LAT")
     aircraft_observer_lon: float = Field(default=0.0, alias="AIRCRAFT_OBSERVER_LON")
     aircraft_bbox_half_size_lat: float = Field(default=0.25, alias="AIRCRAFT_BBOX_HALF_SIZE_LAT")

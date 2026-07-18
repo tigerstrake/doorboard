@@ -3,7 +3,7 @@ from __future__ import annotations
 import abc
 import logging
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
@@ -11,15 +11,25 @@ from pydantic import BaseModel
 
 logger = logging.getLogger("doorboard.aircraft")
 
+# OpenSky's OAuth2 client-credentials token endpoint. Basic auth (username/
+# password) is no longer accepted by OpenSky, so credentials go through here.
+OPENSKY_TOKEN_URL = (
+    "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
+)
+
 
 class AircraftConfig(BaseModel):
     observer_lat: float
     observer_lon: float
     bbox_half_size_lat: float = 0.25
     bbox_half_size_lon: float = 0.25
-    opensky_username: str = ""
-    opensky_password: str = ""
+    # OpenSky OAuth2 client credentials (register an API client on OpenSky).
+    # Leave empty for anonymous access, which still works but is heavily
+    # throttled (~400 daily credits, most-recent state vectors only).
+    opensky_client_id: str = ""
+    opensky_client_secret: str = ""
     opensky_url: str = "https://opensky-network.org/api/states/all"
+    opensky_token_url: str = OPENSKY_TOKEN_URL
     poll_cooldown_seconds: int = 30
 
 
@@ -52,6 +62,49 @@ class OpenSkyAircraftProvider(AircraftProvider):
         self._cached_aircraft: list[dict[str, Any]] = []
         self._last_request_time: datetime | None = None
         self._last_successful_time: datetime | None = None
+        self._token: str | None = None
+        self._token_expiry: datetime | None = None
+
+    def _has_credentials(self) -> bool:
+        return bool(self.config.opensky_client_id and self.config.opensky_client_secret)
+
+    def _get_token(self, now: datetime, *, force: bool = False) -> str | None:
+        """Fetch/cache an OAuth2 client-credentials bearer token (~30 min TTL).
+
+        Returns None (→ anonymous request) when unconfigured or on failure, so a
+        token outage degrades gracefully rather than dropping the feed.
+        """
+        if not self._has_credentials():
+            return None
+        if (
+            not force
+            and self._token is not None
+            and self._token_expiry is not None
+            and now < self._token_expiry
+        ):
+            return self._token
+        try:
+            resp = httpx.post(
+                self.config.opensky_token_url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self.config.opensky_client_id,
+                    "client_secret": self.config.opensky_client_secret,
+                },
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            self._token = payload["access_token"]
+            expires_in = int(payload.get("expires_in", 1800))
+            # Refresh a minute early so we never send an about-to-expire token.
+            self._token_expiry = now + timedelta(seconds=max(expires_in - 60, 30))
+            return self._token
+        except Exception as e:
+            logger.warning(f"OpenSky token fetch failed: {e}. Falling back to anonymous.")
+            self._token = None
+            self._token_expiry = None
+            return None
 
     def get_nearby_aircraft(self, now: datetime) -> list[dict[str, Any]]:
         # Respect cooldown/rate limits
@@ -77,13 +130,22 @@ class OpenSkyAircraftProvider(AircraftProvider):
             "lomax": lomax,
         }
 
-        auth = None
-        if self.config.opensky_username and self.config.opensky_password:
-            auth = (self.config.opensky_username, self.config.opensky_password)
+        headers: dict[str, str] = {}
+        token = self._get_token(now)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
 
         self._last_request_time = now
         try:
-            resp = httpx.get(self.config.opensky_url, params=params, auth=auth, timeout=10.0)
+            resp = httpx.get(self.config.opensky_url, params=params, headers=headers, timeout=10.0)
+            # A 401 means the token expired mid-flight — refresh once and retry.
+            if resp.status_code == 401 and self._has_credentials():
+                token = self._get_token(now, force=True)
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+                    resp = httpx.get(
+                        self.config.opensky_url, params=params, headers=headers, timeout=10.0
+                    )
             if resp.status_code == 200:
                 data = resp.json()
                 states = data.get("states") or []

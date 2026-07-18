@@ -220,3 +220,84 @@ def test_run_aircraft_summary_fields_verification(
         assert "route" not in ac
         assert "origin" not in ac
         assert "destination" not in ac
+
+
+def _oauth_config() -> AircraftConfig:
+    return AircraftConfig(
+        observer_lat=37.7749,
+        observer_lon=-122.4194,
+        opensky_client_id="cid",
+        opensky_client_secret="secret",
+        poll_cooldown_seconds=0,
+    )
+
+
+def _token_resp(token: str = "TOK", expires_in: int = 1800) -> MagicMock:
+    r = MagicMock()
+    r.status_code = 200
+    r.json.return_value = {"access_token": token, "expires_in": expires_in}
+    r.raise_for_status.return_value = None
+    return r
+
+
+@patch("httpx.post")
+@patch("httpx.get")
+def test_opensky_oauth2_sends_bearer_and_caches_token(mock_get, mock_post) -> None:
+    provider = OpenSkyAircraftProvider(_oauth_config())
+    mock_post.return_value = _token_resp()
+    states = MagicMock()
+    states.status_code = 200
+    states.json.return_value = OPENSKY_MOCK_RESPONSE
+    mock_get.return_value = states
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=UTC)
+    provider.get_nearby_aircraft(now)
+
+    # Token requested via client-credentials, then used as a Bearer on the feed.
+    mock_post.assert_called_once()
+    token_data = mock_post.call_args[1]["data"]
+    assert token_data["grant_type"] == "client_credentials"
+    assert token_data["client_id"] == "cid"
+    assert mock_get.call_args[1]["headers"]["Authorization"] == "Bearer TOK"
+
+    # A second poll within the token TTL reuses it (no re-auth).
+    provider.get_nearby_aircraft(now + timedelta(seconds=1))
+    assert mock_post.call_count == 1
+
+
+@patch("httpx.post")
+@patch("httpx.get")
+def test_opensky_refreshes_token_on_401(mock_get, mock_post) -> None:
+    provider = OpenSkyAircraftProvider(_oauth_config())
+    mock_post.side_effect = [_token_resp("OLD"), _token_resp("NEW")]
+
+    unauthorized = MagicMock()
+    unauthorized.status_code = 401
+    ok = MagicMock()
+    ok.status_code = 200
+    ok.json.return_value = OPENSKY_MOCK_RESPONSE
+    mock_get.side_effect = [unauthorized, ok]
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=UTC)
+    res = provider.get_nearby_aircraft(now)
+
+    assert mock_get.call_count == 2  # 401, then retry
+    assert mock_post.call_count == 2  # initial token + forced refresh
+    assert mock_get.call_args[1]["headers"]["Authorization"] == "Bearer NEW"
+    assert len(res) == 1
+
+
+@patch("httpx.post")
+@patch("httpx.get")
+def test_opensky_anonymous_when_unconfigured(mock_get, mock_post) -> None:
+    config = AircraftConfig(observer_lat=37.7749, observer_lon=-122.4194, poll_cooldown_seconds=0)
+    provider = OpenSkyAircraftProvider(config)
+    states = MagicMock()
+    states.status_code = 200
+    states.json.return_value = OPENSKY_MOCK_RESPONSE
+    mock_get.return_value = states
+
+    provider.get_nearby_aircraft(datetime(2026, 7, 7, 12, 0, 0, tzinfo=UTC))
+
+    mock_post.assert_not_called()  # no token fetch without credentials
+    assert "Authorization" not in mock_get.call_args[1].get("headers", {})
