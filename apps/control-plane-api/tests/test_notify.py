@@ -170,6 +170,68 @@ def test_per_notification_cooldown_overrides_engine_default(session_factory) -> 
     assert len(notifier.sent) == 2  # would be 1 under the 3600s engine default
 
 
+# ── new-species bird alert (T-612) ─────────────────────────────────────────
+
+
+def _bird_event(names: list[str]):
+    return parse_event(
+        build_event(
+            "ambient.bird_summary",
+            payload_overrides={
+                "top_species": [{"name": n, "count": 1, "confidence_avg": 0.9} for n in names],
+                "total_detections": len(names),
+            },
+        )
+    )
+
+
+KNOWN = frozenset({"house finch", "mourning dove"})
+
+
+def test_new_bird_not_on_list_triggers() -> None:
+    event = _bird_event(["House Finch", "Painted Bunting"])
+    n = evaluate_rules(
+        event,
+        sync_stall_alert_s=14400,
+        bird_new_species_alert=True,
+        bird_known_species=KNOWN,
+        bird_new_species_cooldown_s=99999,
+    )
+    assert n is not None
+    assert n.rule_key == "new_bird:primary:painted bunting"
+    assert "Painted Bunting" in n.message
+    assert n.cooldown_s == 99999
+
+
+def test_known_birds_do_not_trigger() -> None:
+    event = _bird_event(["House Finch", "Mourning Dove"])
+    assert (
+        evaluate_rules(
+            event, sync_stall_alert_s=14400, bird_new_species_alert=True, bird_known_species=KNOWN
+        )
+        is None
+    )
+
+
+def test_new_bird_alert_disabled_by_default() -> None:
+    event = _bird_event(["Painted Bunting"])
+    assert (
+        evaluate_rules(
+            event, sync_stall_alert_s=14400, bird_new_species_alert=False, bird_known_species=KNOWN
+        )
+        is None
+    )
+
+
+def test_matching_is_case_insensitive() -> None:
+    event = _bird_event(["HOUSE FINCH", "Painted Bunting"])
+    n = evaluate_rules(
+        event, sync_stall_alert_s=14400, bird_new_species_alert=True, bird_known_species=KNOWN
+    )
+    # House Finch is known despite casing; the first *unknown* is reported.
+    assert n is not None and n.rule_key.endswith("painted bunting")
+
+
 # ── channel routing ────────────────────────────────────────────────────────
 
 

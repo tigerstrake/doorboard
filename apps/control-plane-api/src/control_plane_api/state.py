@@ -45,6 +45,9 @@ class AppState:
             aircraft_alert_radius_km=cfg.aircraft_alert_radius_km,
             aircraft_alert_max_altitude_ft=cfg.aircraft_alert_max_altitude_ft,
             aircraft_alert_cooldown_s=cfg.aircraft_alert_cooldown_s,
+            bird_new_species_alert=cfg.bird_new_species_alert,
+            bird_known_species=cfg.bird_known_species_set,
+            bird_new_species_cooldown_s=cfg.bird_new_species_cooldown_s,
         )
         # Telegram video-message delivery (ADR-0012). Disabled unless a bot
         # token, chat id(s), and door-api media creds are all configured.

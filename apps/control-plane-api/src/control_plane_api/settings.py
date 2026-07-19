@@ -67,6 +67,21 @@ class Settings(BaseSettings):
     aircraft_alert_max_altitude_ft: int = Field(default=0, alias="AIRCRAFT_ALERT_MAX_ALTITUDE_FT")
     aircraft_alert_cooldown_s: int = Field(default=600, alias="AIRCRAFT_ALERT_COOLDOWN_S")
 
+    # ── new-species bird alert (T-612) ───────────────────────────────────
+    # Notify when an ambient.bird_summary reports a species NOT in
+    # BIRD_KNOWN_SPECIES (e.g. a bird outside your bundled illustration set).
+    # One message per new species (long per-species cooldown), never for the
+    # regulars you list. Off unless BIRD_NEW_SPECIES_ALERT=true. Needs bird
+    # detections to reach the control plane (see the birdnet adapter).
+    bird_new_species_alert: bool = Field(default=False, alias="BIRD_NEW_SPECIES_ALERT")
+    # Comma-separated species names you consider "known" (matched case-insensitively
+    # against the detection's name). Plain str + manual split — see
+    # `bird_known_species_set` and the list[str]-env note above.
+    bird_known_species: str = Field(default="", alias="BIRD_KNOWN_SPECIES")
+    bird_new_species_cooldown_s: int = Field(
+        default=30 * 24 * 3600, alias="BIRD_NEW_SPECIES_COOLDOWN_S"
+    )
+
     # ── Telegram video-message delivery (NUC-only; ADR-0012) ─────────────
     # When a visitor SAVES a video message, the clip is pulled from door-api's
     # admin media endpoint and sent to these Telegram chats. Disabled (silent
@@ -114,6 +129,10 @@ class Settings(BaseSettings):
     @property
     def aircraft_alert_radius_km(self) -> float:
         return self.aircraft_alert_radius_mi * 1.60934
+
+    @property
+    def bird_known_species_set(self) -> frozenset[str]:
+        return frozenset(c.strip().lower() for c in self.bird_known_species.split(",") if c.strip())
 
     @property
     def host(self) -> str:
