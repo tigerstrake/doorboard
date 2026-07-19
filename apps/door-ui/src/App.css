@@ -214,6 +214,20 @@
   font-size: 0.8rem;
 }
 
+/* Live bird collage (AvianVisitors frame PNG), shown under the bird stats. */
+.bird-collage {
+  width: 100%;
+  margin-top: var(--db-spacing-sm);
+  border-radius: var(--db-radius-md, 12px);
+  border: 1px solid var(--db-border-color);
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.03);
+}
+.bird-collage--focus {
+  max-height: 60vh;
+  object-fit: contain;
+}
+
 .aircraft-call {
   font-family: var(--db-font-mono);
   font-weight: 700;

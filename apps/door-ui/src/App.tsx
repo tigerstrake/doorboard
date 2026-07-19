@@ -144,6 +144,9 @@ const MOCK_AMBIENT_ENABLED =
 const configuredAircraftAlertDistanceKm = Number(
   (import.meta.env.VITE_AIRCRAFT_ALERT_DISTANCE_KM as string | undefined) ?? "3"
 );
+// Live bird collage image (e.g. the AvianVisitors frame PNG served by the
+// window bird-Pi). Empty = no collage shown. Rendered under the bird stats.
+const BIRD_COLLAGE_URL = (import.meta.env.VITE_BIRD_COLLAGE_URL as string | undefined) ?? "";
 const AIRCRAFT_ALERT_DISTANCE_KM =
   Number.isFinite(configuredAircraftAlertDistanceKm) && configuredAircraftAlertDistanceKm > 0
     ? configuredAircraftAlertDistanceKm
@@ -1414,6 +1417,7 @@ export function App() {
             ambient={{
               aircraft: aircraftSummary?.payload ?? null,
               birds: birdSummary?.payload ?? null,
+              birdCollageUrl: BIRD_COLLAGE_URL,
               satellite: satellitePass?.payload ?? null,
               printer: printerStatus?.payload ?? null,
               food: foodRecommendation?.payload ?? null,
@@ -1486,6 +1490,17 @@ export function App() {
                   ))}
                   {!birdSummary && <p>Bird summary unavailable.</p>}
                   {birdSummary && birdSummary.payload.top_species.length === 0 && <p>No detections yet today.</p>}
+                  {BIRD_COLLAGE_URL && (
+                    <img
+                      className="bird-collage"
+                      src={BIRD_COLLAGE_URL}
+                      alt="Live bird collage from the window feeder"
+                      loading="lazy"
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                      }}
+                    />
+                  )}
                 </div>
               </Tile>
 
