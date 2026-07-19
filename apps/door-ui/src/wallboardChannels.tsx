@@ -46,6 +46,7 @@ interface WallboardFocusedViewProps {
   ambient: {
     aircraft: AmbientAircraftSummaryPayload | null;
     birds: AmbientBirdSummaryPayload | null;
+    birdCollageUrl: string;
     satellite: AmbientSatellitePassPayload | null;
     printer: AmbientPrinterStatusPayload | null;
     food: AmbientFoodRecommendationPayload | null;
@@ -139,22 +140,37 @@ function renderFocusContent(
         </div>
       ) : <p className="focus-empty">Scoreboard data is unavailable.</p>;
     case "birds":
-      return ambient.birds ? (
+      return (
         <div className="focus-list">
-          <div className="focus-hero-stat focus-hero-stat--inline">
-            <span>Total today</span>
-            <strong>{ambient.birds.total_detections}</strong>
-          </div>
-          {ambient.birds.top_species.slice(0, 8).map((species, index) => (
-            <div className="focus-row" key={`${species.name}-${index}`}>
-              <strong>{safeText(species.name) || "Unknown bird"}</strong>
-              <span>{species.count} detections</span>
-              <span>{(species.confidence_avg * 100).toFixed(0)}% confidence</span>
-            </div>
-          ))}
-          {ambient.birds.top_species.length === 0 && <p className="focus-empty">No bird detections yet today.</p>}
+          {ambient.birds ? (
+            <>
+              <div className="focus-hero-stat focus-hero-stat--inline">
+                <span>Total today</span>
+                <strong>{ambient.birds.total_detections}</strong>
+              </div>
+              {ambient.birds.top_species.slice(0, 8).map((species, index) => (
+                <div className="focus-row" key={`${species.name}-${index}`}>
+                  <strong>{safeText(species.name) || "Unknown bird"}</strong>
+                  <span>{species.count} detections</span>
+                  <span>{(species.confidence_avg * 100).toFixed(0)}% confidence</span>
+                </div>
+              ))}
+              {ambient.birds.top_species.length === 0 && <p className="focus-empty">No bird detections yet today.</p>}
+            </>
+          ) : <p className="focus-empty">Bird summary is unavailable.</p>}
+          {ambient.birdCollageUrl && (
+            <img
+              className="bird-collage bird-collage--focus"
+              src={ambient.birdCollageUrl}
+              alt="Live bird collage from the window feeder"
+              loading="lazy"
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+              }}
+            />
+          )}
         </div>
-      ) : <p className="focus-empty">Bird summary is unavailable.</p>;
+      );
     case "printer":
       return ambient.printer ? (
         <div className="focus-printer">
