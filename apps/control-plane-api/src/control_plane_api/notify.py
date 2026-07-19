@@ -46,6 +46,9 @@ def evaluate_rules(
     aircraft_alert_radius_km: float = 0.0,
     aircraft_alert_max_altitude_ft: int = 0,
     aircraft_alert_cooldown_s: int = 600,
+    bird_new_species_alert: bool = False,
+    bird_known_species: frozenset[str] = frozenset(),
+    bird_new_species_cooldown_s: int = 30 * 24 * 3600,
 ) -> Notification | None:
     if event.type == "session.ended" and event.payload.outcome == "unanswered_timeout":
         return Notification(
@@ -102,6 +105,20 @@ def evaluate_rules(
                 ),
                 cooldown_s=aircraft_alert_cooldown_s,
             )
+    # New bird: alert the first detected species not on the known list (e.g. a
+    # bird outside your bundled illustration set). Per-species rule_key + long
+    # cooldown => one message the first time each new species shows up, never a
+    # repeat for the regulars. Fires only when explicitly enabled.
+    if event.type == "ambient.bird_summary" and bird_new_species_alert:
+        for species in event.payload.top_species:
+            name = species.name.strip()
+            if name and name.lower() not in bird_known_species:
+                return Notification(
+                    rule_key=f"new_bird:{event.door_id}:{name.lower()}",
+                    title="New bird detected",
+                    message=f"{name} was detected — not on your known-species list.",
+                    cooldown_s=bird_new_species_cooldown_s,
+                )
     return None
 
 
@@ -214,6 +231,9 @@ class NotifyEngine:
         aircraft_alert_radius_km: float = 0.0,
         aircraft_alert_max_altitude_ft: int = 0,
         aircraft_alert_cooldown_s: int = 600,
+        bird_new_species_alert: bool = False,
+        bird_known_species: frozenset[str] = frozenset(),
+        bird_new_species_cooldown_s: int = 30 * 24 * 3600,
     ) -> None:
         self._notifier = notifier
         self._cooldown = timedelta(seconds=cooldown_s)
@@ -221,6 +241,9 @@ class NotifyEngine:
         self._aircraft_alert_radius_km = aircraft_alert_radius_km
         self._aircraft_alert_max_altitude_ft = aircraft_alert_max_altitude_ft
         self._aircraft_alert_cooldown_s = aircraft_alert_cooldown_s
+        self._bird_new_species_alert = bird_new_species_alert
+        self._bird_known_species = bird_known_species
+        self._bird_new_species_cooldown_s = bird_new_species_cooldown_s
 
     def on_event(self, session: Session, event: DoorboardEvent, *, now: datetime) -> None:
         notification = evaluate_rules(
@@ -229,6 +252,9 @@ class NotifyEngine:
             aircraft_alert_radius_km=self._aircraft_alert_radius_km,
             aircraft_alert_max_altitude_ft=self._aircraft_alert_max_altitude_ft,
             aircraft_alert_cooldown_s=self._aircraft_alert_cooldown_s,
+            bird_new_species_alert=self._bird_new_species_alert,
+            bird_known_species=self._bird_known_species,
+            bird_new_species_cooldown_s=self._bird_new_species_cooldown_s,
         )
         if notification is None:
             return
