@@ -32,6 +32,7 @@ import {
   foodFixture,
   aboutFixture,
 } from "./fixtures";
+import { API_BASE, wsUrlFromApiBase } from "./apiBase";
 import { socialApi, ApiError } from "./socialApi";
 import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
 import { AdminSocialPanel } from "./AdminSocialPanel";
@@ -132,8 +133,6 @@ function apiErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-// Session states that trigger Wallboard Visitor Mode takeover
-const API_BASE = import.meta.env.VITE_DOOR_API_BASE_URL ?? "http://127.0.0.1:8000";
 const FEATURE_PHOTOBOOTH =
   ((import.meta.env.VITE_FEATURE_PHOTOBOOTH as string | undefined) ??
     (import.meta.env.FEATURE_PHOTOBOOTH as string | undefined)) === "true";
@@ -188,8 +187,6 @@ function clampPercentage(value: number | null): number {
 function isFiniteNonNegative(value: number): boolean {
   return Number.isFinite(value) && value >= 0;
 }
-
-const wsUrlFromApiBase = (base: string) => `${base.replace(/^http/, "ws")}/ws`;
 
 type DoorPadScreen =
   | "home"
