@@ -86,6 +86,23 @@ services:
       CONTROL_PLANE_ADMIN_TOKEN: ${CONTROL_PLANE_ADMIN_TOKEN:?CONTROL_PLANE_ADMIN_TOKEN must be set in .env}
       CONTROL_PLANE_SYNC_STALL_ALERT_S: ${CONTROL_PLANE_SYNC_STALL_ALERT_S:-14400}
       CONTROL_PLANE_NOTIFY_COOLDOWN_S: ${CONTROL_PLANE_NOTIFY_COOLDOWN_S:-3600}
+      # Telegram video-message delivery + door-api admin media source. This
+      # compose file predates ADR-0012, so without these passthroughs the
+      # service never saw TELEGRAM_BOT_TOKEN etc. even when set in .env.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
+      TELEGRAM_API_BASE_URL: ${TELEGRAM_API_BASE_URL:-https://api.telegram.org}
+      TELEGRAM_MAX_VIDEO_BYTES: ${TELEGRAM_MAX_VIDEO_BYTES:-52428800}
+      CONTROL_PLANE_DOOR_API_BASE_URL: ${CONTROL_PLANE_DOOR_API_BASE_URL:-}
+      CONTROL_PLANE_DOOR_API_ADMIN_TOKEN: ${CONTROL_PLANE_DOOR_API_ADMIN_TOKEN:-}
+      # Aircraft proximity alert (T-610) and new-species bird alert (T-612);
+      # aliases per control_plane_api/settings.py. All off by default.
+      AIRCRAFT_ALERT_RADIUS_MI: ${AIRCRAFT_ALERT_RADIUS_MI:-0}
+      AIRCRAFT_ALERT_MAX_ALTITUDE_FT: ${AIRCRAFT_ALERT_MAX_ALTITUDE_FT:-0}
+      AIRCRAFT_ALERT_COOLDOWN_S: ${AIRCRAFT_ALERT_COOLDOWN_S:-600}
+      BIRD_NEW_SPECIES_ALERT: ${BIRD_NEW_SPECIES_ALERT:-false}
+      BIRD_KNOWN_SPECIES: ${BIRD_KNOWN_SPECIES:-}
+      BIRD_NEW_SPECIES_COOLDOWN_S: ${BIRD_NEW_SPECIES_COOLDOWN_S:-2592000}
     ports:
       - "${LAN_BIND_ADDR:-0.0.0.0}:8090:8090"
     healthcheck:

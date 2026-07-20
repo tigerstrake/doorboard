@@ -1,7 +1,7 @@
 # wallboard-worker runtime for the NUC control plane.
 
 FROM ghcr.io/astral-sh/uv:0.5-python3.12-bookworm-slim AS builder
-WORKDIR /src
+WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
 COPY packages/contracts packages/contracts
@@ -25,8 +25,8 @@ FROM python:3.12-slim-bookworm AS runtime
 WORKDIR /app
 
 RUN groupadd --system doorboard && useradd --system --gid doorboard --create-home doorboard
-COPY --from=builder /src/.venv /app/.venv
-COPY --from=builder /src/apps/wallboard-worker /app/apps/wallboard-worker
+COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/apps/wallboard-worker /app/apps/wallboard-worker
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1

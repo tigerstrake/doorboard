@@ -7,7 +7,10 @@
 set -eu
 
 PASSWD_FILE=/mosquitto/data/passwd
-: > "$PASSWD_FILE"
+# Remove any existing file rather than truncating it: modern
+# eclipse-mosquitto:2 `mosquitto_passwd -c` refuses ("File exists") if the
+# target is already present, so a pre-created (even empty) file breaks startup.
+rm -f "$PASSWD_FILE"
 
 require() {
   var_name="$1"
@@ -27,6 +30,10 @@ mosquitto_passwd -b "$PASSWD_FILE" door-pi "$MQTT_PI_PASSWORD"
 mosquitto_passwd -b "$PASSWD_FILE" home-assistant "$MQTT_HA_PASSWORD"
 mosquitto_passwd -b "$PASSWD_FILE" ha-discovery "$MQTT_HA_DISCOVERY_PASSWORD"
 mosquitto_passwd -b "$PASSWD_FILE" healthcheck "$MQTT_HEALTHCHECK_PASSWORD"
-chmod 600 "$PASSWD_FILE"
+# 644, not 600: this entrypoint runs as root but `exec mosquitto` drops to the
+# unprivileged `mosquitto` user, which then can't read a 600 root-owned file.
+# The file holds only hashed passwords, so world-readable inside the container
+# (on a private named volume) is acceptable.
+chmod 644 "$PASSWD_FILE"
 
 exec mosquitto -c /mosquitto/config/mosquitto.conf
