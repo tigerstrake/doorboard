@@ -1,10 +1,9 @@
 // Client for door-api's guestbook/poll/checkin/deletion endpoints (T-403).
-// Mirrors the DoorboardEventClient convention of defaulting to the current
-// hostname for Pi-local networking (packages/event-client/src/index.ts).
+// Shares the host-derived door-api base with the kiosk (see ./apiBase) so the
+// visitor page and the /admin moderation panel both reach door-api on the same
+// host they are viewed from (kiosk localhost, or a LAN laptop at door-pi.local).
 
-const DOOR_API_BASE_URL =
-  (import.meta.env.VITE_DOOR_API_BASE_URL as string | undefined) ||
-  `http://${window.location.hostname}:8000`;
+import { API_BASE as DOOR_API_BASE_URL } from "./apiBase";
 
 let runtimeVisitorToken: string | null = null;
 

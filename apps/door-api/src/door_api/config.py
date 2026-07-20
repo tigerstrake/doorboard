@@ -25,6 +25,26 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Browser origins always permitted by CORS: the two local dev-server origins the
+# on-Pi kiosk build has always used. Keeping these as the baseline means the
+# CORS policy is unchanged when DOOR_API_CORS_ORIGINS is unset.
+_DEFAULT_CORS_ORIGINS: tuple[str, ...] = (
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+)
+
+
+def _cors_origins_from_env(name: str) -> tuple[str, ...]:
+    """Resolve allowed CORS origins: the defaults plus any comma-separated
+    extras from ``name`` (trimmed; blanks ignored; order-preserving, deduped)."""
+    origins = list(_DEFAULT_CORS_ORIGINS)
+    for part in os.environ.get(name, "").split(","):
+        origin = part.strip()
+        if origin and origin not in origins:
+            origins.append(origin)
+    return tuple(origins)
+
+
 @dataclass(frozen=True, kw_only=True)
 class SessionConfig:
     """Timeouts and durations for the visitor session state machine.
@@ -67,6 +87,11 @@ class SessionConfig:
 
     # Door identifier included on locally emitted feedback events.
     door_id: str = "primary"
+
+    # Browser origins allowed by CORS. Defaults to the two localhost dev origins;
+    # DOOR_API_CORS_ORIGINS adds extras (e.g. http://door-pi.local:5173) so the
+    # owner can open /admin over the LAN.
+    cors_origins: tuple[str, ...] = _DEFAULT_CORS_ORIGINS
 
     # door-media base URL used for fire-and-forget recording lifecycle forwarding.
     media_base_url: str = "http://127.0.0.1:8001"
@@ -125,6 +150,7 @@ class SessionConfig:
             session_end_linger_s=_env_float("DOOR_API_SESSION_END_LINGER_S", 3.0),
             db_path=db_path,
             door_id=os.environ.get("DOOR_API_DOOR_ID", "primary"),
+            cors_origins=_cors_origins_from_env("DOOR_API_CORS_ORIGINS"),
             media_base_url=os.environ.get("DOOR_API_MEDIA_BASE_URL", "http://127.0.0.1:8001"),
             media_public_base_url=os.environ.get(
                 "DOOR_API_MEDIA_PUBLIC_BASE_URL",
