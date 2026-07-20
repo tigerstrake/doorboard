@@ -12,6 +12,8 @@ dependencies = [
     "doorboard-food-recommendation",
     "click>=8.1",
     "httpx",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
 ]
 
 [project.scripts]
