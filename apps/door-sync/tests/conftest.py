@@ -26,7 +26,16 @@ from door_sync.targets import (
     TransientError,
     sha256_file,
 )
-from doorboard_contracts.events import SessionEndedEvent, SessionEndedPayload
+from doorboard_contracts.events import (
+    MediaRecordingFinalizedEvent,
+    MediaRecordingFinalizedPayload,
+    MediaRecordingStartedEvent,
+    MediaRecordingStartedPayload,
+    MediaThumbnailReadyEvent,
+    MediaThumbnailReadyPayload,
+    SessionEndedEvent,
+    SessionEndedPayload,
+)
 
 
 @pytest.fixture
@@ -122,12 +131,76 @@ def make_session_event_dict(door_id: str = "primary") -> dict:
     return ev.model_dump(mode="json")
 
 
+def make_media_recording_started_dict(
+    *, recording_id=None, session_id=None, door_id: str = "primary"
+) -> dict:  # noqa: ANN001
+    ev = MediaRecordingStartedEvent(
+        event_id=uuid7(),
+        type="media.recording_started",
+        source="door-media",
+        occurred_at=datetime.now(UTC),
+        monotonic_ms=123,
+        door_id=door_id,
+        trace_id=uuid7(),
+        payload=MediaRecordingStartedPayload(
+            recording_id=recording_id or uuid7(),
+            session_id=session_id or uuid7(),
+            kind="video_message",
+            stream="entry",
+        ),
+    )
+    return ev.model_dump(mode="json")
+
+
+def make_media_recording_finalized_dict(
+    *, recording_id=None, path: str = "recordings/clip.mp4", door_id: str = "primary"
+) -> dict:  # noqa: ANN001
+    data = b"video-bytes" * 100
+    ev = MediaRecordingFinalizedEvent(
+        event_id=uuid7(),
+        type="media.recording_finalized",
+        source="door-media",
+        occurred_at=datetime.now(UTC),
+        monotonic_ms=123,
+        door_id=door_id,
+        trace_id=uuid7(),
+        payload=MediaRecordingFinalizedPayload(
+            recording_id=recording_id or uuid7(),
+            path=path,
+            duration_s=4.5,
+            size_bytes=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
+            consent_context="visitor_initiated",
+        ),
+    )
+    return ev.model_dump(mode="json")
+
+
+def make_media_thumbnail_ready_dict(
+    *, recording_id=None, path: str = "thumbnails/clip.jpg", door_id: str = "primary"
+) -> dict:  # noqa: ANN001
+    ev = MediaThumbnailReadyEvent(
+        event_id=uuid7(),
+        type="media.thumbnail_ready",
+        source="door-media",
+        occurred_at=datetime.now(UTC),
+        monotonic_ms=123,
+        door_id=door_id,
+        trace_id=uuid7(),
+        payload=MediaThumbnailReadyPayload(recording_id=recording_id or uuid7(), path=path),
+    )
+    return ev.model_dump(mode="json")
+
+
 @pytest.fixture
 def helpers() -> SimpleNamespace:
     return SimpleNamespace(
         make_settings=make_settings,
         make_recording_file=make_recording_file,
         make_session_event_dict=make_session_event_dict,
+        make_media_recording_started_dict=make_media_recording_started_dict,
+        make_media_recording_finalized_dict=make_media_recording_finalized_dict,
+        make_media_thumbnail_ready_dict=make_media_thumbnail_ready_dict,
         RecordingMediaClient=RecordingMediaClient,
         VerifyingDoorMedia=VerifyingDoorMedia,
         MockMediaTarget=MockMediaTarget,
