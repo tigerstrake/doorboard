@@ -1,3 +1,5 @@
+import { safeRandomUUID } from "./uuid";
+
 export const WALLBOARD_FOCUS_TIMEOUT_MS = 120000;
 export const WALLBOARD_CONTROL_STORAGE_KEY = "doorboard_wallboard_focus_request";
 export const WALLBOARD_CONTROL_EVENT = "doorboard-wallboard-focus";
@@ -96,7 +98,7 @@ export function createWallboardFocusRequest(
 ): WallboardFocusRequest {
   const now = Date.now();
   return {
-    requestId: crypto.randomUUID(),
+    requestId: safeRandomUUID(),
     mode: channel === "ambient" ? "ambient" : "focus",
     channel: channel === "ambient" ? null : channel,
     requestedAt: now,
