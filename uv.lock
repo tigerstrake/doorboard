@@ -479,6 +479,8 @@ dependencies = [
     { name = "doorboard-printer" },
     { name = "doorboard-satellites" },
     { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
 ]
 
 [package.metadata]
@@ -492,6 +494,8 @@ requires-dist = [
     { name = "doorboard-printer", editable = "integrations/printer" },
     { name = "doorboard-satellites", editable = "integrations/satellites" },
     { name = "httpx" },
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "pydantic-settings", specifier = ">=2.6" },
 ]
 
 [[package]]
