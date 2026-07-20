@@ -43,6 +43,7 @@ def evaluate_rules(
     event: DoorboardEvent,
     *,
     sync_stall_alert_s: int,
+    doorbell_notify_enabled: bool = True,
     aircraft_alert_radius_km: float = 0.0,
     aircraft_alert_max_altitude_ft: int = 0,
     aircraft_alert_cooldown_s: int = 600,
@@ -50,6 +51,23 @@ def evaluate_rules(
     bird_known_species: frozenset[str] = frozenset(),
     bird_new_species_cooldown_s: int = 30 * 24 * 3600,
 ) -> Notification | None:
+    # Doorbell rang: an IMMEDIATE alert the moment a session reaches RINGING,
+    # unlike `missed_bell` below which only fires *after* a fully-unanswered
+    # session times out. Keyed on the session_id so each distinct ring notifies
+    # exactly once (the per-rule-key cooldown then swallows any duplicate
+    # state_changed within the same session; a new ring is a new session, hence
+    # a new key, hence a fresh notification). Off when DOORBELL_NOTIFY_ENABLED
+    # is false.
+    if (
+        doorbell_notify_enabled
+        and event.type == "session.state_changed"
+        and str(event.payload.to_state) == "RINGING"
+    ):
+        return Notification(
+            rule_key=f"doorbell_rang:{event.door_id}:{event.payload.session_id}",
+            title="🔔 Doorbell",
+            message="Someone's at the door.",
+        )
     if event.type == "session.ended" and event.payload.outcome == "unanswered_timeout":
         return Notification(
             rule_key=f"missed_bell:{event.door_id}",
@@ -228,6 +246,7 @@ class NotifyEngine:
         *,
         cooldown_s: int,
         sync_stall_alert_s: int,
+        doorbell_notify_enabled: bool = True,
         aircraft_alert_radius_km: float = 0.0,
         aircraft_alert_max_altitude_ft: int = 0,
         aircraft_alert_cooldown_s: int = 600,
@@ -238,6 +257,7 @@ class NotifyEngine:
         self._notifier = notifier
         self._cooldown = timedelta(seconds=cooldown_s)
         self._sync_stall_alert_s = sync_stall_alert_s
+        self._doorbell_notify_enabled = doorbell_notify_enabled
         self._aircraft_alert_radius_km = aircraft_alert_radius_km
         self._aircraft_alert_max_altitude_ft = aircraft_alert_max_altitude_ft
         self._aircraft_alert_cooldown_s = aircraft_alert_cooldown_s
@@ -249,6 +269,7 @@ class NotifyEngine:
         notification = evaluate_rules(
             event,
             sync_stall_alert_s=self._sync_stall_alert_s,
+            doorbell_notify_enabled=self._doorbell_notify_enabled,
             aircraft_alert_radius_km=self._aircraft_alert_radius_km,
             aircraft_alert_max_altitude_ft=self._aircraft_alert_max_altitude_ft,
             aircraft_alert_cooldown_s=self._aircraft_alert_cooldown_s,

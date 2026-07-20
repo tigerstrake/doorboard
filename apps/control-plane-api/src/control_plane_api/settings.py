@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # ── notifications (ntfy chosen per T-501 brief; see README) ─────────
     ntfy_url: str = Field(default="", alias="NTFY_URL")
     ntfy_topic: str = Field(default="", alias="NTFY_TOPIC")
+    # Immediate "doorbell rang" alert the moment a session reaches RINGING
+    # (distinct from the delayed, conditional `missed_bell`). On by default;
+    # set false to silence the per-ring ping while keeping other rules.
+    doorbell_notify_enabled: bool = Field(default=True, alias="DOORBELL_NOTIFY_ENABLED")
     # Threshold for the "sync failing" alert, using media.storage_status's
     # oldest_unsynced_s as the proxy signal (see notify.py).
     sync_stall_alert_s: int = Field(default=4 * 3600, alias="CONTROL_PLANE_SYNC_STALL_ALERT_S")

@@ -49,6 +49,68 @@ def test_answered_session_does_not_trigger_missed_bell() -> None:
     assert evaluate_rules(parse_event(event), sync_stall_alert_s=14400) is None
 
 
+# ── immediate doorbell alert ────────────────────────────────────────────────
+
+
+def _ringing_event(session_id: str, *, to_state: str = "RINGING"):
+    return parse_event(
+        build_event(
+            "session.state_changed",
+            payload_overrides={
+                "session_id": session_id,
+                "from_state": "VISITOR_MODE",
+                "to_state": to_state,
+            },
+        )
+    )
+
+
+SESSION_A = "0f7e3f6f-6d69-44f7-b2e0-20f520cb04f5"
+SESSION_B = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+
+
+def test_ringing_state_triggers_doorbell_notification() -> None:
+    n = evaluate_rules(_ringing_event(SESSION_A), sync_stall_alert_s=14400)
+    assert n is not None
+    assert n.rule_key == f"doorbell_rang:primary:{SESSION_A}"
+    assert n.title == "🔔 Doorbell"
+    assert n.message == "Someone's at the door."
+
+
+def test_non_ringing_state_change_does_not_trigger() -> None:
+    # VISITOR_MODE is a legal earlier transition; only RINGING should page.
+    event = _ringing_event(SESSION_A, to_state="VISITOR_MODE")
+    assert evaluate_rules(event, sync_stall_alert_s=14400) is None
+
+
+def test_doorbell_alert_disabled_by_flag() -> None:
+    event = _ringing_event(SESSION_A)
+    assert evaluate_rules(event, sync_stall_alert_s=14400, doorbell_notify_enabled=False) is None
+
+
+def test_doorbell_rule_key_is_per_session(session_factory) -> None:
+    # Two distinct rings (distinct sessions) both notify; a duplicate
+    # state_changed within the same session (same key, within cooldown) does not.
+    notifier = RecordingNotifier()
+    engine = NotifyEngine(notifier, cooldown_s=3600, sync_stall_alert_s=14400)
+
+    with session_factory() as session:
+        engine.on_event(session, _ringing_event(SESSION_A), now=NOW)
+        session.commit()
+    with session_factory() as session:  # same session again, within cooldown → suppressed
+        engine.on_event(session, _ringing_event(SESSION_A), now=NOW + timedelta(minutes=1))
+        session.commit()
+    with session_factory() as session:  # a different ring → new session → notifies
+        engine.on_event(session, _ringing_event(SESSION_B), now=NOW + timedelta(minutes=1))
+        session.commit()
+
+    assert len(notifier.sent) == 2
+    assert {n.rule_key for n in notifier.sent} == {
+        f"doorbell_rang:primary:{SESSION_A}",
+        f"doorbell_rang:primary:{SESSION_B}",
+    }
+
+
 def test_critical_storage_alert_triggers_notification() -> None:
     event = build_event("system.storage_alert", payload_overrides={"severity": "critical"})
     notification = evaluate_rules(parse_event(event), sync_stall_alert_s=14400)
