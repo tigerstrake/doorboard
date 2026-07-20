@@ -84,10 +84,12 @@ paths:
     # MediaMTX runOnInit is NOT run through a shell, so the pipe must be wrapped
     # in sh -c. ffmpeg is quieted (-nostats -loglevel error) so its progress
     # output cannot fill the (unread) subprocess stdout pipe. (issue #84)
-    # The publish command is built in _build_run_on_init; when audio is enabled
-    # (MEDIA_AUDIO_ENABLED) it grows a second ffmpeg ALSA input encoded as AAC
-    # while video stays -c:v copy. fmp4 segments carry the AAC track through the
-    # -c copy concat at finalize, so recordings/video messages include sound.
+    # The publish command is built in _build_run_on_init and is VIDEO-ONLY.
+    # Audio does NOT go through MediaMTX: its live fmp4 recorder cannot mux an
+    # AAC track — with a second (mic) track it drops the RTSP publish and writes
+    # zero segments after ~10s (verified on hardware, superseding #109). Mic
+    # audio is instead captured to a per-recording file and muxed into the
+    # concatenated video at finalize (see start_recording/finalize_recording).
     runOnInit: >-
       {run_on_init}
     runOnInitRestart: yes
@@ -102,10 +104,13 @@ def _build_run_on_init(settings: Settings) -> str:
     the Pi 5 has no HW H.264 block so rpicam-vid encodes via libav with an
     explicit ``--libav-format h264`` and baseline/4.1 profile.
 
-    When ``audio_enabled`` is set, a second ffmpeg input pulls USB-microphone
-    audio via ALSA (device/rate/bitrate from settings) and encodes it as AAC.
-    Building the string here keeps the rpicam/ffmpeg pipeline out of the config
-    template's ``str.format`` pass, so no ffmpeg option can collide with the
+    This command is **video-only** regardless of ``audio_enabled``. Audio does
+    not go through MediaMTX: its live fmp4 recorder cannot mux an AAC track (it
+    drops the RTSP publish and stops writing segments ~10s in — verified on
+    hardware). Mic audio is captured separately per recording and muxed into the
+    concatenated video at finalize instead. Building the string here keeps the
+    rpicam/ffmpeg pipeline out of the config template's ``str.format`` pass, so
+    no ffmpeg option can collide with the
     ``{stream}``/``{segments_root}``/``{segment_s}`` placeholders.
     """
     stream = settings.visitor_cam_stream
@@ -115,20 +120,9 @@ def _build_run_on_init(settings: Settings) -> str:
         "--inline --flush 1 --timeout 0 --nopreview --output -"
     )
     rtsp = f"-f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/{stream}"
-    if settings.audio_enabled:
-        ffmpeg = (
-            "ffmpeg -nostats -loglevel error -fflags nobuffer "
-            "-thread_queue_size 1024 -use_wallclock_as_timestamps 1 "
-            "-f h264 -r 25 -i pipe:0 "
-            f"-thread_queue_size 1024 -f alsa -ar {settings.audio_sample_rate} "
-            f"-i {settings.audio_device} "
-            f"-c:v copy -c:a aac -b:a {settings.audio_bitrate} {rtsp}"
-        )
-    else:
-        ffmpeg = (
-            "ffmpeg -nostats -loglevel error -fflags nobuffer "
-            f"-f h264 -r 25 -i pipe:0 -c:v copy {rtsp}"
-        )
+    ffmpeg = (
+        f"ffmpeg -nostats -loglevel error -fflags nobuffer -f h264 -r 25 -i pipe:0 -c:v copy {rtsp}"
+    )
     return f"sh -c '{rpicam} | {ffmpeg}'"
 
 
@@ -139,6 +133,13 @@ class _ActiveRecording:
     started_epoch: float = field(default_factory=time.time)
     # Segment files captured during this window (collected at finalize time)
     captured_segments: list[Path] = field(default_factory=list)
+    # Parallel USB-mic capture (video-only MediaMTX path, muxed at finalize).
+    # ``audio_proc`` runs ffmpeg writing ``audio_path`` (a per-recording .m4a);
+    # ``audio_drain`` keeps its output pipe from filling. All None when audio is
+    # disabled or the capture process failed to spawn (video-only fallback).
+    audio_proc: asyncio.subprocess.Process | None = None
+    audio_path: Path | None = None
+    audio_drain: asyncio.Task[None] | None = None
 
 
 class MediaMTXRouter:
@@ -219,8 +220,10 @@ class MediaMTXRouter:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
-    async def _drain_output(self, stream: asyncio.StreamReader | None) -> None:
-        """Forward MediaMTX output to the logger so its pipe never fills."""
+    async def _drain_output(
+        self, stream: asyncio.StreamReader | None, *, label: str = "mediamtx"
+    ) -> None:
+        """Forward a subprocess's output to the logger so its pipe never fills."""
         if stream is None:
             return
         try:
@@ -230,11 +233,11 @@ class MediaMTXRouter:
                     break
                 text = line.decode("utf-8", errors="replace").rstrip()
                 if text:
-                    logger.info("mediamtx", extra={"line": text})
+                    logger.info(label, extra={"line": text})
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("mediamtx_drain_failed")
+            logger.exception("%s_drain_failed", label)
 
     async def _kill_mediamtx(self) -> None:
         if self._proc and self._proc.returncode is None:
@@ -302,16 +305,96 @@ class MediaMTXRouter:
             stream=stream,
             started_monotonic_ms=time.monotonic_ns() // 1_000_000,
         )
-        self._active[recording_id] = _ActiveRecording(handle=handle)
+        active = _ActiveRecording(handle=handle)
+        self._active[recording_id] = active
+        if self._settings.audio_enabled:
+            await self._start_audio_capture(active)
         logger.info(
             "recording_started",
             extra={
                 "recording_id": str(recording_id),
                 "kind": kind,
                 "session_id": str(session_id),
+                "audio": active.audio_proc is not None,
             },
         )
         return handle
+
+    async def _start_audio_capture(self, active: _ActiveRecording) -> None:
+        """Spawn a parallel ffmpeg capturing the USB mic to a per-recording file.
+
+        The camera and mic are independent devices, so mic audio is recorded on
+        its own (video stays MediaMTX-only) and muxed into the concatenated video
+        at finalize. Failure to spawn is non-fatal: we log and fall back to a
+        video-only recording rather than break capture.
+        """
+        recording_id = active.handle.recording_id
+        audio_path = self._settings.audio_tmp_root / f"{recording_id}.m4a"
+        try:
+            audio_path.parent.mkdir(parents=True, exist_ok=True)
+            # -nostdin: this ffmpeg shares the parent's stdin; without it ffmpeg
+            # would consume/interfere with it. Output is piped and drained to
+            # avoid the 64KB-pipe deadlock (same class of bug as the supervisor).
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-nostdin",
+                "-nostats",
+                "-loglevel",
+                "error",
+                "-f",
+                "alsa",
+                "-ar",
+                str(self._settings.audio_sample_rate),
+                "-i",
+                self._settings.audio_device,
+                "-c:a",
+                "aac",
+                "-b:a",
+                self._settings.audio_bitrate,
+                "-y",
+                str(audio_path),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except Exception as exc:
+            logger.warning(
+                "audio_capture_start_failed",
+                extra={"recording_id": str(recording_id), "error": str(exc)},
+            )
+            return
+        active.audio_proc = proc
+        active.audio_path = audio_path
+        active.audio_drain = asyncio.create_task(
+            self._drain_output(proc.stdout, label="audio_capture")
+        )
+        logger.info(
+            "audio_capture_started",
+            extra={"recording_id": str(recording_id), "path": str(audio_path)},
+        )
+
+    async def _stop_audio_capture(self, active: _ActiveRecording) -> None:
+        """Gracefully stop the mic capture so ffmpeg finalizes the .m4a moov box.
+
+        SIGTERM lets ffmpeg flush; kill only if it does not exit promptly. The
+        output-drain task is always cancelled. Safe to call when no audio process
+        was ever spawned.
+        """
+        proc = active.audio_proc
+        if proc is not None and proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except TimeoutError:
+                    with contextlib.suppress(ProcessLookupError):
+                        proc.kill()
+                    await proc.wait()
+        if active.audio_drain is not None:
+            active.audio_drain.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await active.audio_drain
+            active.audio_drain = None
 
     async def finalize_recording(
         self,
@@ -337,11 +420,22 @@ class MediaMTXRouter:
             ended_epoch=ended_epoch + self._settings.segment_s,
         )
 
+        # The recording window is over: stop the parallel mic capture so ffmpeg
+        # finalizes its .m4a. Always stop (even on the error paths below) so the
+        # capture process is never leaked.
+        await self._stop_audio_capture(active)
+
         if not segments:
+            self._cleanup_audio_file(active)
             raise RuntimeError(f"no media segments found for recording {handle.recording_id}")
         await _concat_segments(segments, out_path)
         if not out_path.exists() or out_path.stat().st_size == 0:
+            self._cleanup_audio_file(active)
             raise RuntimeError(f"ffmpeg produced an empty recording {handle.recording_id}")
+
+        # Mux the captured mic audio into the concatenated video. Graceful
+        # video-only fallback on any problem — audio must never break a recording.
+        await self._mux_audio(active, out_path)
         self._active.pop(handle.recording_id, None)
 
         size_bytes = out_path.stat().st_size
@@ -369,11 +463,92 @@ class MediaMTXRouter:
 
     async def discard_recording(self, handle: RecordingHandle) -> None:
         """Abort an active recording window without cutting a clip."""
-        self._active.pop(handle.recording_id, None)
+        active = self._active.pop(handle.recording_id, None)
+        if active is not None:
+            await self._stop_audio_capture(active)
+            self._cleanup_audio_file(active)
         logger.info(
             "recording_discarded",
             extra={"recording_id": str(handle.recording_id)},
         )
+
+    async def _mux_audio(self, active: _ActiveRecording, out_path: Path) -> None:
+        """Mux the captured mic audio into ``out_path`` in place.
+
+        No-op (video-only) when audio was disabled, never captured, or the file
+        is missing/empty. Any ffmpeg failure is swallowed and the original
+        video-only ``out_path`` is kept — audio must never break a recording.
+        The per-recording temp audio file is always removed afterwards.
+        """
+        audio_path = active.audio_path
+        if audio_path is None:
+            return
+        recording_id = active.handle.recording_id
+        try:
+            if not audio_path.exists() or audio_path.stat().st_size == 0:
+                logger.warning(
+                    "audio_missing_video_only",
+                    extra={"recording_id": str(recording_id)},
+                )
+                return
+            muxed_tmp = out_path.parent / f".muxed_{out_path.name}"
+            offset = self._settings.audio_sync_offset_s
+            # -itsoffset shifts the *audio* (next input); positive delays audio
+            # relative to video for lip-sync tuning (MEDIA_AUDIO_SYNC_OFFSET_S).
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-nostdin",
+                "-y",
+                "-i",
+                str(out_path),
+                "-itsoffset",
+                str(offset),
+                "-i",
+                str(audio_path),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c",
+                "copy",
+                str(muxed_tmp),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0 or not muxed_tmp.exists() or muxed_tmp.stat().st_size == 0:
+                message = stderr.decode(errors="replace")[:500]
+                logger.warning(
+                    "audio_mux_failed_video_only",
+                    extra={
+                        "recording_id": str(recording_id),
+                        "returncode": proc.returncode,
+                        "error": message,
+                    },
+                )
+                with contextlib.suppress(OSError):
+                    muxed_tmp.unlink(missing_ok=True)
+                return
+            muxed_tmp.replace(out_path)
+            logger.info(
+                "audio_muxed",
+                extra={"recording_id": str(recording_id), "sync_offset_s": offset},
+            )
+        except Exception as exc:
+            logger.warning(
+                "audio_mux_error_video_only",
+                extra={"recording_id": str(recording_id), "error": str(exc)},
+            )
+        finally:
+            self._cleanup_audio_file(active)
+
+    def _cleanup_audio_file(self, active: _ActiveRecording) -> None:
+        """Delete the per-recording temp audio file, if any."""
+        if active.audio_path is not None:
+            with contextlib.suppress(OSError):
+                active.audio_path.unlink(missing_ok=True)
+            active.audio_path = None
 
     async def capture_photo(
         self,
