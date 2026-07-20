@@ -107,6 +107,7 @@ export interface Checkin {
   person_id: string | null;
   label: string | null;
   created_at: string;
+  photo_recording_id?: string | null;
 }
 
 export interface MostFrequentVisitorStat {
@@ -194,11 +195,23 @@ export const socialApi = {
   // No person_id param: attribution is derived server-side from the current
   // session's cached identity (door-api SessionMachine), never trusted from
   // the client — see door_api/social/routes.py CheckinCreateRequest.
-  async createCheckin(label: string | null): Promise<Checkin> {
+  //
+  // photoRecordingId optionally links the check-in to a photo saved through the
+  // photo-booth pipeline (added by #112). It stays optional so plain check-ins
+  // behave exactly as before; the recording itself remains private until the
+  // owner approves it, so passing an id never bypasses review/consent.
+  async createCheckin(
+    label: string | null,
+    photoRecordingId?: string | null
+  ): Promise<Checkin> {
     const sessionToken = await getSessionToken();
     return request<Checkin>("/checkins", {
       method: "POST",
-      body: { label, session_token: sessionToken },
+      body: {
+        label,
+        session_token: sessionToken,
+        ...(photoRecordingId ? { photo_recording_id: photoRecordingId } : {}),
+      },
     });
   },
 
