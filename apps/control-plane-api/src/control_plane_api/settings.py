@@ -109,6 +109,16 @@ class Settings(BaseSettings):
     door_api_base_url: str = Field(default="", alias="CONTROL_PLANE_DOOR_API_BASE_URL")
     door_api_admin_token: str = Field(default="", alias="CONTROL_PLANE_DOOR_API_ADMIN_TOKEN")
 
+    # ── per-recipient video-message routing (ADR-0014) ───────────────────
+    # Maps a recipient KEY (a lowercase resident id) to a Telegram chat id so a
+    # saved video message can be routed to a specific resident instead of the
+    # shared TELEGRAM_CHAT_IDS broadcast. Format: comma-separated `key:chatid`,
+    # e.g. "tiger:8397445760,adam:" — a blank/missing chat id means a KNOWN
+    # recipient with no chat configured yet: the clip is still saved on door-api,
+    # it just isn't sent to them (see `video_message_recipient_map`). Plain `str`
+    # + manual parse, same reason as `telegram_chat_ids` above.
+    video_message_recipients: str = Field(default="", alias="VIDEO_MESSAGE_RECIPIENTS")
+
     # ── admin auth (stopgap — see packages/auth README) ──────────────────
     admin_token: str = Field(default="", alias="CONTROL_PLANE_ADMIN_TOKEN")
 
@@ -129,6 +139,26 @@ class Settings(BaseSettings):
     @property
     def telegram_chat_id_list(self) -> list[str]:
         return [c.strip() for c in self.telegram_chat_ids.split(",") if c.strip()]
+
+    @property
+    def video_message_recipient_map(self) -> dict[str, str]:
+        """Parse VIDEO_MESSAGE_RECIPIENTS into {key: chat_id} (ADR-0014).
+
+        Keys are lowercased resident ids; a blank chat id (``"adam:"`` or a
+        bare ``"adam"``) means a known recipient with no chat configured yet —
+        routing to them saves the clip but sends nothing. Duplicate keys keep
+        the last value.
+        """
+        result: dict[str, str] = {}
+        for entry in self.video_message_recipients.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            key, _sep, chat_id = entry.partition(":")
+            key = key.strip().lower()
+            if key:
+                result[key] = chat_id.strip()
+        return result
 
     @property
     def aircraft_alert_radius_km(self) -> float:

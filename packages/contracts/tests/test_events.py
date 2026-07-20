@@ -11,7 +11,7 @@ from doorboard_contracts import (
     SessionState,
     parse_event,
 )
-from doorboard_contracts.events import SessionEndedPayload
+from doorboard_contracts.events import SessionEndedPayload, SessionStateChangedEvent
 from doorboard_contracts.examples import example_events
 from pydantic import ValidationError
 
@@ -130,6 +130,35 @@ def test_every_session_ended_outcome_is_reachable() -> None:
 def test_session_end_is_reachable_from_every_in_session_state() -> None:
     for state in IN_SESSION_STATES:
         assert SessionState.SESSION_END in _reachable(state)
+
+
+def test_session_state_changed_recipients_round_trip() -> None:
+    # ADR-0014: `recipients` is an optional list of chosen recipient keys on the
+    # VIDEO_MESSAGE_SAVED transition. Absent => None (legacy broadcast); present
+    # => carried through a JSON round-trip unchanged.
+    base = next(
+        event for event in example_events() if event.type == "session.state_changed"
+    ).model_dump(mode="json")
+
+    # Absent in the source data parses to None and is backward-compatible.
+    absent = dict(base)
+    absent_payload = dict(base["payload"])
+    absent_payload.pop("recipients", None)
+    absent["payload"] = absent_payload
+    parsed_absent = parse_event(absent)
+    assert isinstance(parsed_absent, SessionStateChangedEvent)
+    assert parsed_absent.payload.recipients is None
+
+    # Present values survive parse → dump → parse.
+    present = dict(base)
+    present_payload = dict(base["payload"])
+    present_payload["to_state"] = "VIDEO_MESSAGE_SAVED"
+    present_payload["recipients"] = ["tiger", "adam"]
+    present["payload"] = present_payload
+    parsed = parse_event(present)
+    assert isinstance(parsed, SessionStateChangedEvent)
+    assert parsed.payload.recipients == ["tiger", "adam"]
+    assert parse_event(parsed.model_dump(mode="json")) == parsed
 
 
 def test_uuidv7_event_id_is_required() -> None:

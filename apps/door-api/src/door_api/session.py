@@ -48,6 +48,36 @@ from door_api.persistence import PersistedSession, SessionStore
 
 logger = logging.getLogger("door-api.session")
 
+# Per-recipient video-message routing (ADR-0014). The DoorPad passes short
+# recipient keys (lowercase resident ids); door-api only validates their shape
+# and forwards them — the control plane resolves keys to chat ids.
+_MAX_RECIPIENTS = 16
+_MAX_RECIPIENT_KEY_LEN = 64
+
+
+def _normalize_recipients(recipients: list[str] | None) -> list[str] | None:
+    """Clean the chosen recipient keys for the VIDEO_MESSAGE_SAVED payload.
+
+    Strips whitespace, drops empty/oversized/non-string entries, de-duplicates
+    while preserving order, and caps the count. Returns None for an empty
+    result so "no recipients" stays a legacy broadcast rather than an empty
+    list that the control plane would read as "nobody configured".
+    """
+    if not recipients:
+        return None
+    cleaned: list[str] = []
+    for raw in recipients:
+        if not isinstance(raw, str):
+            continue
+        key = raw.strip()
+        if not key or len(key) > _MAX_RECIPIENT_KEY_LEN:
+            continue
+        if key not in cleaned:
+            cleaned.append(key)
+        if len(cleaned) >= _MAX_RECIPIENTS:
+            break
+    return cleaned or None
+
 
 def _system_boot_id() -> str:
     try:
@@ -303,12 +333,19 @@ class SessionMachine:
         profile_id: str | None = None,
         had_cached_profile: bool | None = None,
         session_entry: Literal["button", "touch", "approach"] | None = None,
+        recipients: list[str] | None = None,
     ) -> bool:
         """Attempt a state transition.
 
         Returns True if the transition was executed, False if it was illegal.
         Illegal transitions are side-effect-free: no state change, no event,
         no persistence write. They are counted and logged.
+
+        ``recipients`` carries the chosen recipient keys for per-recipient
+        video-message routing (ADR-0014). It is only meaningful on the
+        VIDEO_MESSAGE_SAVED transition and is passed straight through onto the
+        emitted ``session.state_changed`` payload; all other transitions leave
+        it None (legacy broadcast).
         """
         from_state = self._state
 
@@ -378,6 +415,7 @@ class SessionMachine:
                 from_state=from_state,
                 to_state=to_state,
                 trigger=trigger,
+                recipients=recipients,
             ),
         )
         state_event_dict = state_event.model_dump(mode="json")
@@ -709,12 +747,21 @@ class SessionMachine:
             )
         return False
 
-    def handle_video_message_save(self) -> bool:
-        """Visitor confirmed the video message."""
+    def handle_video_message_save(self, *, recipients: list[str] | None = None) -> bool:
+        """Visitor confirmed the video message.
+
+        ``recipients`` is the optional list of chosen recipient keys (e.g.
+        ``["tiger"]`` / ``["adam"]`` / both) picked in the DoorPad review UI (a
+        follow-up PR wires the buttons; this backend just accepts and forwards
+        them). The keys are normalized and threaded onto the emitted
+        VIDEO_MESSAGE_SAVED event so the control plane can route the clip
+        (ADR-0014). None/omitted preserves the legacy broadcast behavior.
+        """
         if self._state == SessionState.VIDEO_MESSAGE_REVIEW:
             return self.transition(
                 SessionState.VIDEO_MESSAGE_SAVED,
                 "visitor:save",
+                recipients=_normalize_recipients(recipients),
             )
         return False
 

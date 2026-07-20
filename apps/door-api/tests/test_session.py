@@ -723,6 +723,60 @@ class TestVideoMessageRerecord:
         assert machine.state == SessionState.VIDEO_MESSAGE_RECORDING
 
 
+class TestVideoMessageRecipients:
+    """Per-recipient routing (ADR-0014): chosen keys ride the SAVED event."""
+
+    @staticmethod
+    def _drive_to_review(machine: SessionMachine) -> None:
+        machine.handle_button_pressed()
+        machine.transition(SessionState.RINGING, "auto:visitor_mode_ring")
+        machine.transition(SessionState.UNANSWERED_TIMEOUT, "timeout:ring")
+        machine.transition(SessionState.VIDEO_MESSAGE_OFFERED, "auto:unanswered_to_offer")
+        machine.handle_video_message_start()
+        machine.handle_video_message_stop()
+        assert machine.state == SessionState.VIDEO_MESSAGE_REVIEW
+
+    @staticmethod
+    def _saved_payload(collector: EventCollector) -> dict[str, Any]:
+        saved = [
+            e
+            for e in collector.of_type("session.state_changed")
+            if e["payload"]["to_state"] == "VIDEO_MESSAGE_SAVED"
+        ]
+        assert len(saved) == 1
+        return saved[0]["payload"]
+
+    def test_save_with_recipients_emits_them(self) -> None:
+        machine, collector, _ = make_machine()
+        self._drive_to_review(machine)
+
+        assert machine.handle_video_message_save(recipients=["tiger", "adam"])
+        assert machine.state == SessionState.VIDEO_MESSAGE_SAVED
+        assert self._saved_payload(collector)["recipients"] == ["tiger", "adam"]
+
+    def test_save_without_recipients_emits_none(self) -> None:
+        machine, collector, _ = make_machine()
+        self._drive_to_review(machine)
+
+        assert machine.handle_video_message_save()
+        assert self._saved_payload(collector)["recipients"] is None
+
+    def test_recipients_are_normalized(self) -> None:
+        # Blank/whitespace-only keys dropped, duplicates collapsed, order kept.
+        machine, collector, _ = make_machine()
+        self._drive_to_review(machine)
+
+        assert machine.handle_video_message_save(recipients=["tiger", "  ", "tiger"])
+        assert self._saved_payload(collector)["recipients"] == ["tiger"]
+
+    def test_empty_recipient_list_is_treated_as_broadcast(self) -> None:
+        machine, collector, _ = make_machine()
+        self._drive_to_review(machine)
+
+        assert machine.handle_video_message_save(recipients=[])
+        assert self._saved_payload(collector)["recipients"] is None
+
+
 # ---------------------------------------------------------------------------
 # §13 — Metrics
 # ---------------------------------------------------------------------------
