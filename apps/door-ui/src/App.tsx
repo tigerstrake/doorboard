@@ -38,9 +38,9 @@ import { AdminSocialPanel } from "./AdminSocialPanel";
 import { AdminEnrollmentPanel } from "./AdminEnrollmentPanel";
 import { AdminAboutPanel } from "./AdminAboutPanel";
 import { VisitorPage } from "./VisitorPage";
+import { RevealPage } from "./RevealPage";
 import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
-import { VisitorCollageContent, WallboardFocusedView, WallboardLauncher } from "./wallboardChannels";
-import type { VisitorCollage } from "./wallboardChannels";
+import { WallboardFocusedView, WallboardLauncher } from "./wallboardChannels";
 import { OnScreenKeyboard } from "./OnScreenKeyboard";
 import {
   WALLBOARD_CONTROL_EVENT,
@@ -412,7 +412,6 @@ export function App() {
   const [sessionObservedAt, setSessionObservedAt] = useState<number>(() => Date.now());
   const [galleryPhotos, setGalleryPhotos] = useState<GalleryPhoto[]>([]);
   const [wallboardMoments, setWallboardMoments] = useState<WallboardMoment[]>([]);
-  const [visitorCollage, setVisitorCollage] = useState<VisitorCollage | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Admin surface media & storage states
@@ -1194,16 +1193,9 @@ export function App() {
             // Private gallery unavailable — keep the last approved moment list.
           });
       }
-      // Visitor collage: count-only stats always work; approved check-in photos
-      // (owner-approved for the wallboard) come back only when photobooth is on.
-      fetch(`${API_BASE}/wallboard/visitor-collage`)
-        .then((response) => (response.ok ? response.json() : null))
-        .then((data: VisitorCollage | null) => {
-          if (!cancelled && data) setVisitorCollage(data);
-        })
-        .catch(() => {
-          // door-api unavailable — keep the last collage snapshot.
-        });
+      // NOTE: the visitor collage is intentionally NOT fetched or polled here.
+      // It is private all year and only revealed on-demand via the owner-only
+      // /reveal#<token> page — never on the public wallboard. See RevealPage.
     };
     load();
     const interval = setInterval(load, 30000);
@@ -1472,7 +1464,6 @@ export function App() {
             pollResults={pollResults}
             guestbookEntries={approvedGuestbook}
             moments={wallboardMoments}
-            visitorCollage={visitorCollage}
             ambient={{
               aircraft: aircraftSummary?.payload ?? null,
               birds: birdSummary?.payload ?? null,
@@ -1714,16 +1705,9 @@ export function App() {
                 </Tile>
               )}
 
-              {/* Tile 11: Who's Stopped By — visitor collage + fun stats.
-                  Approved check-in photos only (owner-approved for the
-                  wallboard); count-only stats show even without photos. */}
-              <Tile
-                title="Who's Stopped By"
-                asOf={visitorCollage?.stats?.most_recent_checkin_at ?? null}
-                staleAfterMs={365 * 24 * 60 * 60 * 1000}
-              >
-                <VisitorCollageContent collage={visitorCollage} maxPhotos={6} variant="ambient" />
-              </Tile>
+              {/* The "Who's Stopped By" visitor collage is intentionally absent
+                  from the public wallboard. It is private all year and only
+                  shown on-demand via the owner-only /reveal#<token> page. */}
             </main>
           </div>
         )}
@@ -3261,6 +3245,9 @@ export function App() {
       {route === "/wallboard" && renderWallboard()}
       {route === "/doorpad" && renderDoorPad()}
       {route === "/visitor" && renderVisitor()}
+      {/* Secret owner-only "class year in review" reveal. Never linked from any
+          UI; reachable only by typing /reveal#<owner-token>. */}
+      {route === "/reveal" && <RevealPage />}
       {route === "/live-view-demo" && renderLiveViewDemo()}
       {(route === "/admin" || route === "/diagnostics") && renderAdmin()}
       {route === "/" && renderNavigation()}

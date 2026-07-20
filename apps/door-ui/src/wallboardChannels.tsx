@@ -12,9 +12,10 @@ import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
 import { WALLBOARD_CHANNELS } from "./wallboardChannelModel";
 import type { WallboardFocusChannel } from "./wallboardChannelModel";
 
-// "Who's Stopped By" visitor collage — fed by the door-api
-// /wallboard/visitor-collage endpoint. Stats are count-only aggregates; photos
-// are check-in photos the owner has approved for public display in the gallery.
+// "Who's Stopped By" visitor collage — fed by the owner-only door-api
+// GET /admin/visitor-collage endpoint (reached only via the secret /reveal
+// page). Stats are count-only aggregates; photos are check-in photos the owner
+// has approved for display in the gallery.
 export interface VisitorCollageStats {
   total_checkins: number;
   checkins_this_year: number;
@@ -107,13 +108,25 @@ interface VisitorCollageContentProps {
   collage: VisitorCollage | null;
   maxPhotos?: number;
   variant?: "ambient" | "focus";
+  /**
+   * Whether to render the fun-stats chip panel below the photo grid. Defaults
+   * to true. The owner-only `/reveal` page renders its own big celebratory
+   * stats section and reuses this component only for the photo grid.
+   */
+  showStats?: boolean;
 }
 
-/** Shared renderer for the "Who's Stopped By" ambient tile and focused view. */
+/**
+ * Shared renderer for the visitor check-in photo grid + fun-stats chips. Reused
+ * by the owner-only `/reveal` page (see RevealPage). This is deliberately NOT
+ * wired into the public wallboard ambient rotation or channel launcher — the
+ * collage is private all year and only shown at the reveal.
+ */
 export function VisitorCollageContent({
   collage,
   maxPhotos = 6,
   variant = "ambient",
+  showStats = true,
 }: VisitorCollageContentProps) {
   const stats = collage?.stats ?? null;
   const photos = collage?.photos ?? [];
@@ -139,7 +152,7 @@ export function VisitorCollageContent({
           Approved check-in photos will appear here as visitors opt in.
         </p>
       )}
-      {stats && <VisitorStatsPanel stats={stats} />}
+      {showStats && stats && <VisitorStatsPanel stats={stats} />}
     </div>
   );
 }
@@ -175,7 +188,6 @@ interface WallboardFocusedViewProps {
   pollResults: PollResultRow[] | null;
   guestbookEntries: GuestbookEntry[];
   moments: Array<{ recording_id: string; tags: string[]; approved_at: string | null }>;
-  visitorCollage?: VisitorCollage | null;
   ambient: {
     aircraft: AmbientAircraftSummaryPayload | null;
     birds: AmbientBirdSummaryPayload | null;
@@ -194,7 +206,6 @@ export function WallboardFocusedView({
   pollResults,
   guestbookEntries,
   moments,
-  visitorCollage = null,
   ambient,
   onReturnAmbient,
 }: WallboardFocusedViewProps) {
@@ -212,15 +223,7 @@ export function WallboardFocusedView({
         </BigButton>
       </header>
       <main className="wallboard-focus-main">
-        {renderFocusContent(
-          channel,
-          poll,
-          pollResults,
-          guestbookEntries,
-          moments,
-          visitorCollage,
-          ambient
-        )}
+        {renderFocusContent(channel, poll, pollResults, guestbookEntries, moments, ambient)}
       </main>
       <footer className="wallboard-focus-footer">
         Focused from DoorPad. Returns to ambient automatically.
@@ -235,7 +238,6 @@ function renderFocusContent(
   pollResults: PollResultRow[] | null,
   guestbookEntries: GuestbookEntry[],
   moments: Array<{ recording_id: string; tags: string[]; approved_at: string | null }>,
-  visitorCollage: VisitorCollage | null,
   ambient: WallboardFocusedViewProps["ambient"]
 ) {
   const safeText = (value: string | null | undefined, maxLength = 80) =>
@@ -371,7 +373,5 @@ function renderFocusContent(
       ) : (
         <p className="focus-empty">No approved moments yet.</p>
       );
-    case "visitors":
-      return <VisitorCollageContent collage={visitorCollage} maxPhotos={12} variant="focus" />;
   }
 }
