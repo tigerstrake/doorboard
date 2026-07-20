@@ -931,6 +931,66 @@ async def wallboard_moments() -> dict[str, Any]:
     }
 
 
+async def _approved_wallboard_photos() -> dict[str, dict[str, Any]]:
+    """Map recording_id -> owner-approved, wallboard-eligible gallery photo.
+
+    This is the same consent gate the Moments tile uses (``/wallboard/moments``):
+    ``list_wallboard_moments`` in door-sync returns only photos that are
+    ``status == "approved"``, ``approved_by == "owner"``, and flagged
+    ``wallboard_moment``. Photos merely archived in the private gallery (not
+    flagged for the wallboard) never surface here, so raw check-in photos stay
+    private until the owner explicitly approves them for public display.
+    """
+    async with httpx.AsyncClient(timeout=state.config.media_timeout_s) as client:
+        resp = await client.get(
+            f"{state.config.sync_base_url.rstrip('/')}/internal/gallery/moments",
+            headers=_sync_auth_headers(),
+        )
+        resp.raise_for_status()
+        photos = resp.json().get("photos", [])
+    return {
+        p["recording_id"]: p
+        for p in photos
+        if isinstance(p, dict) and p.get("recording_id") and p.get("status") == "approved"
+    }
+
+
+@app.get("/wallboard/visitor-collage")
+async def wallboard_visitor_collage() -> dict[str, Any]:
+    """Year-end "who's stopped by" collage + fun stats for the wallboard.
+
+    Stats are count-only aggregates over non-deleted check-ins (no images, no
+    person_id) and are always returned. Photos are the intersection of
+    check-ins that reference a photo (``checkins.photo_recording_id``) with
+    owner-approved, wallboard-eligible gallery photos — so only photos the owner
+    has explicitly approved for public display ever appear.
+    """
+    stats = state.social_service.visitor_collage_stats()
+
+    photos: list[dict[str, Any]] = []
+    if state.config.feature_photobooth:
+        try:
+            approved = await _approved_wallboard_photos()
+        except Exception:
+            # Private gallery unavailable — degrade to stats-only, never leak.
+            approved = {}
+        if approved:
+            for checkin in state.social_service.list_checkin_photos(limit=500):
+                recording_id = checkin.photo_recording_id
+                gallery = approved.get(recording_id) if recording_id else None
+                if gallery is None:
+                    continue
+                photos.append(
+                    {
+                        "recording_id": recording_id,
+                        "thumbnail_path": gallery.get("gallery_thumbnail_path"),
+                        "label": checkin.label,
+                        "created_at": checkin.created_at,
+                    }
+                )
+    return {"stats": stats, "photos": photos}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()

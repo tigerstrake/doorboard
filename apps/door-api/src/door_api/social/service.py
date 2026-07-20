@@ -417,6 +417,39 @@ class SocialService:
         label = self.store.latest_label_for_person(person_id)
         return {"person_id": person_id, "label": label, "count": count}
 
+    def visitor_collage_stats(self) -> dict[str, Any]:
+        """Count-only aggregate stats for the "who's stopped by" wallboard tile.
+
+        These are pure counts over non-deleted check-ins — no images and no
+        person_id is exposed (``most_frequent`` returns only the freeform label
+        the visitor chose), so they are safe on the public wallboard route.
+        """
+        year_start = f"{datetime.now(UTC).year}-01-01T00:00:00Z"
+        stats = self.store.aggregate_checkin_stats(year_start=year_start)
+        most_frequent = self.most_frequent_visitor_stat()
+        return {
+            "total_checkins": stats.total_checkins,
+            "checkins_this_year": stats.checkins_this_year,
+            "unique_visitors": stats.unique_visitors,
+            "distinct_visitors": stats.distinct_persons,
+            "guest_count": stats.guest_count,
+            "most_frequent": (
+                {"label": most_frequent["label"], "count": most_frequent["count"]}
+                if most_frequent
+                else None
+            ),
+            "first_checkin_at": stats.first_checkin_at,
+            "most_recent_checkin_at": stats.most_recent_checkin_at,
+        }
+
+    def list_checkin_photos(self, *, limit: int) -> list[Checkin]:
+        """Non-deleted check-ins that reference a photo, newest first.
+
+        The reference alone does not authorize public display — the caller must
+        intersect these with owner-approved gallery photos before showing them.
+        """
+        return self.store.list_checkin_photos(limit=limit)
+
     # ------------------------------------------------------------------
     # Deletion (visitor-initiated request OR admin-direct action)
     # ------------------------------------------------------------------

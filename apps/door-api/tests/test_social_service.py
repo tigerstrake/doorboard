@@ -534,3 +534,138 @@ class TestCheckinPhotoReference:
 
         event = parse_event(service.events[-1])  # type: ignore[attr-defined]
         assert event.payload.photo_recording_id is None  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# Visitor collage aggregate stats (year-end "who's stopped by" tile)
+# ---------------------------------------------------------------------------
+
+
+class TestVisitorCollageStats:
+    def test_empty_store_returns_zeroed_stats(self) -> None:
+        stats = make_service().visitor_collage_stats()
+        assert stats["total_checkins"] == 0
+        assert stats["checkins_this_year"] == 0
+        assert stats["unique_visitors"] == 0
+        assert stats["most_frequent"] is None
+        assert stats["first_checkin_at"] is None
+        assert stats["most_recent_checkin_at"] is None
+
+    def test_unique_visitors_groups_enrolled_and_counts_guests(self) -> None:
+        service = make_service()
+        for i in range(3):
+            service.create_checkin(
+                person_id="prs_alex",
+                label="Alex",
+                ip=f"10.0.0.{i}",
+                session_token=f"s{i}",
+                trace_id="t",
+            )
+        for i in range(2):
+            service.create_checkin(
+                person_id=None,
+                label="guest",
+                ip=f"10.0.1.{i}",
+                session_token=f"a{i}",
+                trace_id="t",
+            )
+        stats = service.visitor_collage_stats()
+        assert stats["total_checkins"] == 5
+        # One enrolled person (distinct) + two anonymous guests = three visitors.
+        assert stats["distinct_visitors"] == 1
+        assert stats["guest_count"] == 2
+        assert stats["unique_visitors"] == 3
+        # most_frequent exposes only the freeform label + count, never person_id.
+        assert stats["most_frequent"] == {"label": "Alex", "count": 3}
+        assert "person_id" not in stats["most_frequent"]
+
+    def test_checkins_this_year_excludes_prior_years(self) -> None:
+        service = make_service()
+        # Two old check-ins inserted straight through the store with a past date.
+        for i in range(2):
+            service.store.insert_checkin(
+                checkin_id=f"old-{i}",
+                person_id=None,
+                label="old guest",
+                photo_recording_id=None,
+                session_key_hash="h",
+                created_at="2020-06-01T12:00:00Z",
+            )
+        service.create_checkin(
+            person_id=None, label="recent", ip="10.0.0.9", session_token="s9", trace_id="t"
+        )
+        stats = service.visitor_collage_stats()
+        assert stats["total_checkins"] == 3
+        assert stats["checkins_this_year"] == 1
+        assert stats["first_checkin_at"] == "2020-06-01T12:00:00Z"
+
+    def test_soft_deleted_checkins_are_excluded(self) -> None:
+        service = make_service()
+        checkin = service.create_checkin(
+            person_id="prs_alex", label="Alex", ip="10.0.0.1", session_token="s1", trace_id="t"
+        )
+        service.request_deletion(
+            target_kind="checkin",
+            target_id=checkin.id,
+            ip="10.0.0.1",
+            session_token="admin",
+            trace_id="t",
+            actor="admin",
+        )
+        stats = service.visitor_collage_stats()
+        assert stats["total_checkins"] == 0
+        assert stats["most_frequent"] is None
+
+
+class TestListCheckinPhotos:
+    def test_only_returns_photo_checkins_newest_first(self) -> None:
+        service = make_service()
+        # Explicit timestamps through the store so ordering is deterministic
+        # (create_checkin stamps millisecond-precision "now", which can collide).
+        service.store.insert_checkin(
+            checkin_id="c-nophoto",
+            person_id=None,
+            label="no photo",
+            photo_recording_id=None,
+            session_key_hash="h",
+            created_at="2026-01-01T00:00:00Z",
+        )
+        service.store.insert_checkin(
+            checkin_id="c-old",
+            person_id=None,
+            label="first",
+            photo_recording_id="rec_1",
+            session_key_hash="h",
+            created_at="2026-02-01T00:00:00Z",
+        )
+        service.store.insert_checkin(
+            checkin_id="c-new",
+            person_id=None,
+            label="second",
+            photo_recording_id="rec_2",
+            session_key_hash="h",
+            created_at="2026-03-01T00:00:00Z",
+        )
+        photos = service.list_checkin_photos(limit=10)
+        # Only the two photo check-ins, newest first.
+        assert [c.photo_recording_id for c in photos] == ["rec_2", "rec_1"]
+
+    def test_soft_deleted_photo_checkins_are_excluded(self) -> None:
+        service = make_service()
+        checkin = service.create_checkin(
+            person_id=None,
+            label="gone",
+            photo_recording_id="rec_x",
+            ip="10.0.0.1",
+            session_token="s1",
+            trace_id="t",
+        )
+        service.request_deletion(
+            target_kind="checkin",
+            target_id=checkin.id,
+            ip="10.0.0.1",
+            session_token="admin",
+            trace_id="t",
+            actor="admin",
+        )
+        assert service.list_checkin_photos(limit=10) == []
