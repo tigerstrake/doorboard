@@ -27,6 +27,7 @@ import shutil
 import signal
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -428,14 +429,28 @@ class MediaMTXRouter:
         if not segments:
             self._cleanup_audio_file(active)
             raise RuntimeError(f"no media segments found for recording {handle.recording_id}")
+        # Concatenate the padded window of WHOLE 2s segments so the real
+        # recording window is fully covered. out_path holds this video-only
+        # concat; when audio is present it is trimmed to the real window and
+        # remuxed below (otherwise it is the final video-only clip).
         await _concat_segments(segments, out_path)
         if not out_path.exists() or out_path.stat().st_size == 0:
             self._cleanup_audio_file(active)
             raise RuntimeError(f"ffmpeg produced an empty recording {handle.recording_id}")
 
-        # Mux the captured mic audio into the concatenated video. Graceful
-        # video-only fallback on any problem — audio must never break a recording.
-        await self._mux_audio(active, out_path)
+        # The concat is padded by segment_s on each side AND snaps to 2s segment
+        # boundaries, so it includes pre-roll before the visitor actually started
+        # recording. The parallel mic audio covers the EXACT window
+        # [started_epoch, ended_epoch]. Compute how far into the concat the real
+        # start is (trim_start) and the real duration (D) so the audio mux can
+        # trim the video to match — dropping the pre-roll and fixing A/V sync.
+        trim_start = self._trim_start_into_concat(active.started_epoch, segments[0])
+        duration_s = max(0.0, ended_epoch - active.started_epoch)
+
+        # Mux the captured mic audio into the concatenated video, trimming the
+        # video to the real window. Graceful video-only fallback on any problem —
+        # audio/trim must never break a recording.
+        await self._mux_audio(active, out_path, trim_start=trim_start, duration_s=duration_s)
         self._active.pop(handle.recording_id, None)
 
         size_bytes = out_path.stat().st_size
@@ -472,13 +487,46 @@ class MediaMTXRouter:
             extra={"recording_id": str(handle.recording_id)},
         )
 
-    async def _mux_audio(self, active: _ActiveRecording, out_path: Path) -> None:
-        """Mux the captured mic audio into ``out_path`` in place.
+    def _trim_start_into_concat(self, started_epoch: float, first_segment: Path) -> float | None:
+        """How far into the concatenated video the real recording start lies.
+
+        The concat begins at the first segment's start (which precedes the real
+        ``started_epoch`` because the window is padded by ``segment_s`` and snaps
+        to 2s segment boundaries). ``trim_start`` = ``started_epoch`` minus that
+        segment start, clamped to >= 0. Prefer the start time encoded in the
+        MediaMTX segment path (``%S-%f``); fall back to the file mtime minus one
+        segment length if the path cannot be parsed. Returns ``None`` if neither
+        is available (caller then keeps the untrimmed video-only concat).
+        """
+        try:
+            seg_start = _segment_start_epoch(first_segment)
+        except (ValueError, OSError, IndexError):
+            try:
+                seg_start = first_segment.stat().st_mtime - self._settings.segment_s
+            except OSError:
+                return None
+        return max(0.0, started_epoch - seg_start)
+
+    async def _mux_audio(
+        self,
+        active: _ActiveRecording,
+        out_path: Path,
+        *,
+        trim_start: float | None,
+        duration_s: float,
+    ) -> None:
+        """Trim the concat to the real window and mux the mic audio in place.
+
+        ``out_path`` holds the padded video-only concat. A single ffmpeg pass
+        input-seeks to ``trim_start`` and re-encodes (frame-accurate) for
+        ``duration_s`` while muxing the captured audio, so the final clip matches
+        the audio window: pre-roll dropped, A/V in sync.
 
         No-op (video-only) when audio was disabled, never captured, or the file
-        is missing/empty. Any ffmpeg failure is swallowed and the original
-        video-only ``out_path`` is kept — audio must never break a recording.
-        The per-recording temp audio file is always removed afterwards.
+        is missing/empty. Graceful fallback (keep the untrimmed video-only
+        ``out_path``) when the trim window can't be computed or ffmpeg fails —
+        audio/trim must never break a recording. The per-recording temp audio
+        file is always removed afterwards.
         """
         audio_path = active.audio_path
         if audio_path is None:
@@ -491,26 +539,51 @@ class MediaMTXRouter:
                     extra={"recording_id": str(recording_id)},
                 )
                 return
+            if trim_start is None or duration_s <= 0:
+                logger.warning(
+                    "audio_trim_unavailable_video_only",
+                    extra={
+                        "recording_id": str(recording_id),
+                        "trim_start": trim_start,
+                        "duration_s": duration_s,
+                    },
+                )
+                return
             muxed_tmp = out_path.parent / f".muxed_{out_path.name}"
             offset = self._settings.audio_sync_offset_s
-            # -itsoffset shifts the *audio* (next input); positive delays audio
-            # relative to video for lip-sync tuning (MEDIA_AUDIO_SYNC_OFFSET_S).
+            # Input -ss before -i + a re-encode = frame-accurate trim: drops the
+            # pre-roll ahead of the real start. -itsoffset shifts the *audio*
+            # (next input); positive delays audio for lip-sync tuning
+            # (MEDIA_AUDIO_SYNC_OFFSET_S). -t caps the output at the real window
+            # so the trailing pad is dropped and video length matches audio.
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg",
                 "-nostdin",
                 "-y",
+                "-ss",
+                f"{trim_start:.6f}",
                 "-i",
                 str(out_path),
                 "-itsoffset",
                 str(offset),
                 "-i",
                 str(audio_path),
+                "-t",
+                f"{duration_s:.6f}",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "copy",
                 "-map",
                 "0:v:0",
                 "-map",
                 "1:a:0",
-                "-c",
-                "copy",
                 str(muxed_tmp),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
@@ -533,7 +606,12 @@ class MediaMTXRouter:
             muxed_tmp.replace(out_path)
             logger.info(
                 "audio_muxed",
-                extra={"recording_id": str(recording_id), "sync_offset_s": offset},
+                extra={
+                    "recording_id": str(recording_id),
+                    "sync_offset_s": offset,
+                    "trim_start_s": trim_start,
+                    "duration_s": duration_s,
+                },
             )
         except Exception as exc:
             logger.warning(
@@ -658,6 +736,31 @@ class MediaMTXRouter:
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
+
+def _segment_start_epoch(path: Path) -> float:
+    """Parse a MediaMTX segment's start time (epoch seconds) from its path.
+
+    MediaMTX writes segments at recordPath
+    ``{segments_root}/{stream}/%Y/%m/%d/%H/%M/%S-%f`` (see
+    ``_MEDIAMTX_CONFIG_TEMPLATE``), e.g.
+    ``.../visitor/2026/07/18/14/30/45-500000.mp4``. ``%f`` is 6-digit
+    microseconds (MediaMTX computes it as ``Start.Nanosecond()/1000``), and the
+    timestamp is in the server's local time (``time.Local``; the template does
+    not use ``%z``). So the year/month/day/hour/minute come from the parent
+    directories and second + microseconds from the filename, reconstructed as a
+    local-time ``datetime`` whose ``.timestamp()`` inverts MediaMTX's encoding.
+
+    Raises ``ValueError``/``IndexError`` if the path does not match this layout
+    (the caller falls back to the file mtime).
+    """
+    second_str, sep, micro_str = path.stem.partition("-")
+    if not sep:
+        raise ValueError(f"segment filename missing '%S-%f' separator: {path.name}")
+    micros = int(micro_str)  # %f is zero-padded microseconds → int() is exact
+    year, month, day, hour, minute = (int(part) for part in path.parent.parts[-5:])
+    started = datetime(year, month, day, hour, minute, int(second_str), micros)
+    return started.timestamp()
 
 
 def _find_segments(

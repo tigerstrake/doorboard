@@ -4,6 +4,7 @@ import asyncio
 import os
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from door_media.mediamtx_router import (
     _build_run_on_init,
     _find_segments,
     _prune_segments,
+    _segment_start_epoch,
 )
 from door_media.settings import Settings
 
@@ -107,6 +109,38 @@ def test_prune_segments_removes_only_expired_files(tmp_path: Path) -> None:
     assert _prune_segments(tmp_path, older_than_epoch=now - 60) == 1
     assert not expired.exists()
     assert retained.exists()
+
+
+def _mediamtx_segment_path(root: Path, stream: str, started: datetime) -> Path:
+    """Build a MediaMTX-style segment path for ``started`` (%Y/%m/%d/%H/%M/%S-%f)."""
+    micros = f"{started.microsecond:06d}"
+    return (
+        root
+        / stream
+        / f"{started.year:04d}"
+        / f"{started.month:02d}"
+        / f"{started.day:02d}"
+        / f"{started.hour:02d}"
+        / f"{started.minute:02d}"
+        / f"{started.second:02d}-{micros}.mp4"
+    )
+
+
+def test_segment_start_epoch_parses_mediamtx_path(tmp_path: Path) -> None:
+    # recordPath: {segments_root}/{stream}/%Y/%m/%d/%H/%M/%S-%f, %f = 6-digit
+    # microseconds, local time (MediaMTX time.Local). Parsing must invert the
+    # datetime the path encodes.
+    started = datetime(2026, 7, 18, 14, 30, 45, 500000)
+    seg = _mediamtx_segment_path(tmp_path / "segments", "visitor", started)
+
+    assert _segment_start_epoch(seg) == pytest.approx(started.timestamp())
+
+
+def test_segment_start_epoch_rejects_non_mediamtx_path(tmp_path: Path) -> None:
+    # A filename that is not "%S-%f" (no separator / non-numeric) must raise so
+    # the caller falls back to the file mtime.
+    with pytest.raises((ValueError, IndexError)):
+        _segment_start_epoch(tmp_path / "segments" / "visitor" / "seg.mp4")
 
 
 def _render_config(cfg: Settings) -> str:
@@ -276,7 +310,7 @@ async def test_start_recording_video_only_when_audio_disabled(
 
 
 @pytest.mark.anyio
-async def test_finalize_muxes_captured_audio(
+async def test_finalize_trims_and_muxes_captured_audio(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = Settings(
@@ -302,25 +336,96 @@ async def test_finalize_muxes_captured_audio(
     audio_path = active.audio_path
     audio_path.write_bytes(b"audio-bytes")
 
-    _touch(cfg.segments_root / "visitor" / "seg.mp4", modified=time.time())
+    # A MediaMTX-style segment whose start precedes the real recording start by
+    # 2.5s (the padded/boundary-snapped pre-roll). The real window is 6.496s
+    # (matching the on-hardware audio track), so the final ffmpeg must -ss 2.5
+    # into the concat and cap it at -t 6.496.
+    seg_started = datetime(2026, 7, 18, 14, 30, 45, 500000)
+    seg = _mediamtx_segment_path(cfg.segments_root, "visitor", seg_started)
+    active.started_epoch = seg_started.timestamp() + 2.5
+    finalize_epoch = active.started_epoch + 6.496
+    monkeypatch.setattr(time, "time", lambda: finalize_epoch)
+    _touch(seg, modified=active.started_epoch)  # inside the padded find window
 
     result = await router.finalize_recording(handle, consent_context="visitor_initiated")
 
     mux_calls = [c for c in calls if "-map" in c]
     assert len(mux_calls) == 1
-    argv = " ".join(mux_calls[0])
+    mux = mux_calls[0]
+    argv = " ".join(mux)
     out_path = cfg.recordings_root / f"video_message_{handle.recording_id}.mp4"
+    # Frame-accurate trim: input -ss BEFORE -i, then a re-encode.
+    assert mux[0] == "ffmpeg"
+    assert mux.index("-ss") < mux.index("-i")
+    assert float(mux[mux.index("-ss") + 1]) == pytest.approx(2.5, abs=1e-3)
+    assert float(mux[mux.index("-t") + 1]) == pytest.approx(6.496, abs=1e-3)
     assert str(out_path) in argv
     assert str(audio_path) in argv
     assert "-itsoffset 0.25" in argv
+    assert "-c:v libx264" in argv
+    assert "-preset veryfast" in argv
+    assert "-crf 23" in argv
+    assert "-pix_fmt yuv420p" in argv
+    assert "-c:a copy" in argv
     assert "-map 0:v:0" in argv
     assert "-map 1:a:0" in argv
-    assert "-c copy" in argv
 
-    # out_path was atomically replaced by the muxed file; size/sha reflect it.
+    # out_path was atomically replaced by the trimmed+muxed file; size/sha reflect it.
     assert out_path.read_bytes() == b"muxed-bytes"
     assert result.size_bytes == len(b"muxed-bytes")
     # Temp audio cleaned up; recording no longer active.
+    assert not audio_path.exists()
+    assert handle.recording_id not in router._active
+
+
+@pytest.mark.anyio
+async def test_finalize_falls_back_to_video_only_on_mux_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Audio was captured and the trim window is computable, but the trim/mux
+    # ffmpeg fails → keep the untrimmed video-only concat, no exception.
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        MEDIA_AUDIO_ENABLED=True,
+    )
+    calls: list[list[str]] = []
+
+    async def failing_exec(*args: str, **kwargs: object) -> _FakeProc:
+        argv = list(args)
+        calls.append(argv)
+        proc = _FakeProc(argv)
+        if "-map" in argv:
+            proc.returncode = 1  # mux fails and writes no output file
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", failing_exec)
+
+    async def fake_concat(segments: list[Path], out_path: Path) -> None:
+        Path(out_path).write_bytes(b"video-bytes")
+
+    monkeypatch.setattr("door_media.mediamtx_router._concat_segments", fake_concat)
+
+    router = MediaMTXRouter(cfg)
+    handle = await router.start_recording(
+        session_id=uuid.uuid4(), kind="video_message", stream="visitor"
+    )
+    active = router._active[handle.recording_id]
+    assert active.audio_path is not None
+    audio_path = active.audio_path
+    audio_path.write_bytes(b"audio-bytes")
+    active.started_epoch = time.time() - 5  # non-zero real window
+
+    _touch(cfg.segments_root / "visitor" / "seg.mp4", modified=time.time())
+
+    result = await router.finalize_recording(handle, consent_context="visitor_initiated")
+
+    # The trim/mux was attempted (a -map call) but failed.
+    assert any("-map" in c for c in calls)
+    out_path = cfg.recordings_root / f"video_message_{handle.recording_id}.mp4"
+    assert out_path.read_bytes() == b"video-bytes"
+    assert result.size_bytes == len(b"video-bytes")
+    # Temp audio still cleaned up; recording no longer active.
     assert not audio_path.exists()
     assert handle.recording_id not in router._active
 
