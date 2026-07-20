@@ -90,6 +90,10 @@ class CheckinCreateRequest(BaseModel):
     # the request body. A client claiming to be a specific enrolled person
     # would otherwise let any visitor attribute check-ins to anyone.
     label: str | None = None
+    # Optional reference to a visitor-captured photo_booth recording
+    # (see ADR-0013). The photo itself lives in the photo-booth/gallery
+    # pipeline; the check-in only stores the reference.
+    photo_recording_id: str | None = None
     session_token: str = Field(min_length=1, max_length=200)
 
 
@@ -137,6 +141,7 @@ def _checkin_to_dict(checkin: Checkin) -> dict:
         "id": checkin.id,
         "person_id": checkin.person_id,
         "label": checkin.label,
+        "photo_recording_id": checkin.photo_recording_id,
         "created_at": checkin.created_at,
     }
 
@@ -274,6 +279,7 @@ def build_social_router(
             checkin = service.create_checkin(
                 person_id=get_current_person_id(),
                 label=body.label,
+                photo_recording_id=body.photo_recording_id,
                 ip=_client_ip(request),
                 session_token=session_key,
                 trace_id=trace_id,

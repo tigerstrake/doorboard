@@ -362,6 +362,7 @@ class SocialService:
         *,
         person_id: str | None,
         label: str | None,
+        photo_recording_id: str | None = None,
         ip: str,
         session_token: str,
         trace_id: str,
@@ -385,6 +386,7 @@ class SocialService:
             checkin_id=checkin_id,
             person_id=person_id,
             label=clean_label,
+            photo_recording_id=photo_recording_id,
             session_key_hash=hash_session_key(session_token),
             created_at=_utcnow_iso(),
         )
@@ -392,7 +394,10 @@ class SocialService:
         self._emit(
             "social.checkin_created",
             SocialCheckinCreatedPayload(
-                checkin_id=checkin_uuid, person_id=person_id, label=clean_label
+                checkin_id=checkin_uuid,
+                person_id=person_id,
+                label=clean_label,
+                photo_recording_id=photo_recording_id,
             ),
             trace_id=trace_id,
         )

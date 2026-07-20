@@ -29,6 +29,18 @@
             }
           ],
           "title": "Person Id"
+        },
+        "photo_recording_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Photo Recording Id"
         }
       },
       "required": [

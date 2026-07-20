@@ -491,3 +491,46 @@ class TestCheckinStats:
             person_id=None, label="anon", ip="10.0.0.1", session_token="s1", trace_id="t"
         )
         assert service.most_frequent_visitor_stat() is None
+
+
+# ---------------------------------------------------------------------------
+# Check-in photo reference (ADR-0013)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckinPhotoReference:
+    def test_checkin_stores_returns_and_emits_photo_recording_id(self) -> None:
+        service = make_service()
+        checkin = service.create_checkin(
+            person_id="prs_alex",
+            label="Alex",
+            photo_recording_id="rec_photo_123",
+            ip="10.0.0.1",
+            session_token="s1",
+            trace_id="t",
+        )
+        # Returned from create + persisted for reads.
+        assert checkin.photo_recording_id == "rec_photo_123"
+        listed = service.list_checkins(limit=10, cursor=None)
+        assert listed[0].photo_recording_id == "rec_photo_123"
+
+        # Emitted on the contract event.
+        event = parse_event(service.events[-1])  # type: ignore[attr-defined]
+        assert event.type == "social.checkin_created"
+        assert event.payload.photo_recording_id == "rec_photo_123"  # type: ignore[union-attr]
+
+    def test_checkin_without_photo_defaults_to_none(self) -> None:
+        service = make_service()
+        checkin = service.create_checkin(
+            person_id=None,
+            label="anon",
+            ip="10.0.0.1",
+            session_token="s1",
+            trace_id="t",
+        )
+        assert checkin.photo_recording_id is None
+        listed = service.list_checkins(limit=10, cursor=None)
+        assert listed[0].photo_recording_id is None
+
+        event = parse_event(service.events[-1])  # type: ignore[attr-defined]
+        assert event.payload.photo_recording_id is None  # type: ignore[union-attr]
