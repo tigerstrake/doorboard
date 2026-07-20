@@ -1549,6 +1549,9 @@ input:focus-visible {
   height: 100vh;
   overflow: hidden;
   padding: clamp(1rem, 3vh, 1.5rem);
+  box-sizing: border-box;
+  border: 2px solid var(--db-accent);
+  box-shadow: inset 0 0 26px rgba(53, 214, 255, 0.14);
 }
 
 .doorpad-header {
@@ -2217,6 +2220,11 @@ input:focus-visible {
 .doorpad-sub-content .db-live-video {
   max-width: 520px;
   margin-inline: auto;
+}
+/* Blue accent frame around the doorpad's live camera view. */
+.doorpad-view .db-live-video__frame {
+  border: 2px solid var(--db-accent);
+  box-shadow: 0 0 14px rgba(53, 214, 255, 0.28);
 }
 
 /* --- On-screen keyboard (touch kiosk, no physical keyboard) — 2026-07-18 ---- */
