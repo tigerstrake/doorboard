@@ -177,6 +177,33 @@ def test_checkin_ignores_client_supplied_person_id(client: TestClient) -> None:
     assert stats is None
 
 
+def test_checkin_accepts_and_returns_photo_recording_id(client: TestClient) -> None:
+    # A check-in may carry an optional reference to a visitor-captured photo
+    # (ADR-0013). The reference round-trips through create and list.
+    resp = client.post(
+        "/checkins",
+        json={
+            "label": "Alex",
+            "photo_recording_id": "rec_photo_abc",
+            "session_token": _visitor_token(client),
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["photo_recording_id"] == "rec_photo_abc"
+
+    listed = client.get("/checkins").json()["checkins"]
+    assert listed[0]["photo_recording_id"] == "rec_photo_abc"
+
+
+def test_checkin_without_photo_returns_null_reference(client: TestClient) -> None:
+    resp = client.post(
+        "/checkins",
+        json={"label": "Alex", "session_token": _visitor_token(client)},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["photo_recording_id"] is None
+
+
 # ---------------------------------------------------------------------------
 # Deletion requests
 # ---------------------------------------------------------------------------

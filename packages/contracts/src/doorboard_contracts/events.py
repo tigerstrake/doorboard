@@ -317,6 +317,11 @@ class SocialCheckinCreatedPayload(StrictModel):
     checkin_id: UUID
     person_id: str | None
     label: str | None
+    # Optional reference to a visitor-captured photo_booth recording (see
+    # ADR-0013). Defaults to None so existing producers/consumers stay
+    # backward-compatible; the photo itself lives in the photo-booth/gallery
+    # pipeline — the check-in only stores the reference.
+    photo_recording_id: str | None = None
 
 
 class SocialMoodUpdatedPayload(StrictModel):

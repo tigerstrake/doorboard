@@ -121,6 +121,7 @@ PAYLOADS: dict[str, dict[str, Any]] = {
         "checkin_id": ENTRY_ID,
         "person_id": "prs_8f3k2j",
         "label": "Alex",
+        "photo_recording_id": str(RECORDING_ID),
     },
     "social.mood_updated": {"subject_id": "owner", "mood": "focused"},
     "social.scoreboard_updated": {"board_id": "daily", "entry_id": ENTRY_ID, "delta": 1},

@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS checkins (
     id TEXT PRIMARY KEY,
     person_id TEXT,
     label TEXT,
+    photo_recording_id TEXT,
     session_key_hash TEXT,
     created_at TEXT NOT NULL,
     deleted_at TEXT
@@ -112,6 +113,7 @@ class Checkin:
     id: str
     person_id: str | None
     label: str | None
+    photo_recording_id: str | None
     created_at: str
     deleted_at: str | None
 
@@ -130,6 +132,9 @@ class SocialStore:
             self._conn.executescript(_CREATE_TABLES)
             self._ensure_column("guestbook_entries", "session_key_hash", "TEXT")
             self._ensure_column("checkins", "session_key_hash", "TEXT")
+            # Additive column (ADR-0013): upgrade existing DBs so a check-in can
+            # carry an optional reference to a visitor-captured photo.
+            self._ensure_column("checkins", "photo_recording_id", "TEXT")
             self._conn.commit()
 
     def _ensure_column(self, table: str, column: str, sql_type: str) -> None:
@@ -363,21 +368,24 @@ class SocialStore:
         checkin_id: str,
         person_id: str | None,
         label: str | None,
+        photo_recording_id: str | None,
         session_key_hash: str,
         created_at: str,
     ) -> None:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO checkins "
-                "(id, person_id, label, session_key_hash, created_at) VALUES (?, ?, ?, ?, ?)",
-                (checkin_id, person_id, label, session_key_hash, created_at),
+                "(id, person_id, label, photo_recording_id, session_key_hash, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (checkin_id, person_id, label, photo_recording_id, session_key_hash, created_at),
             )
             self._conn.commit()
 
     def get_checkin(self, checkin_id: str) -> Checkin | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, person_id, label, created_at, deleted_at FROM checkins WHERE id = ?",
+                "SELECT id, person_id, label, photo_recording_id, created_at, deleted_at "
+                "FROM checkins WHERE id = ?",
                 (checkin_id,),
             ).fetchone()
         return self._row_to_checkin(row) if row else None
@@ -386,14 +394,15 @@ class SocialStore:
         with self._lock:
             if cursor_created_at is None:
                 rows = self._conn.execute(
-                    "SELECT id, person_id, label, created_at, deleted_at FROM checkins "
-                    "WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
+                    "SELECT id, person_id, label, photo_recording_id, created_at, deleted_at "
+                    "FROM checkins WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    "SELECT id, person_id, label, created_at, deleted_at FROM checkins "
-                    "WHERE deleted_at IS NULL AND created_at < ? ORDER BY created_at DESC LIMIT ?",
+                    "SELECT id, person_id, label, photo_recording_id, created_at, deleted_at "
+                    "FROM checkins WHERE deleted_at IS NULL AND created_at < ? "
+                    "ORDER BY created_at DESC LIMIT ?",
                     (cursor_created_at, limit),
                 ).fetchall()
         return [self._row_to_checkin(row) for row in rows]
@@ -443,7 +452,12 @@ class SocialStore:
     @staticmethod
     def _row_to_checkin(row: tuple) -> Checkin:
         return Checkin(
-            id=row[0], person_id=row[1], label=row[2], created_at=row[3], deleted_at=row[4]
+            id=row[0],
+            person_id=row[1],
+            label=row[2],
+            photo_recording_id=row[3],
+            created_at=row[4],
+            deleted_at=row[5],
         )
 
     # ------------------------------------------------------------------

@@ -6,7 +6,8 @@
   "payload": {
     "checkin_id": "9f3a02d5-6442-4478-a5bb-0b84f5e915db",
     "label": "Alex",
-    "person_id": "prs_8f3k2j"
+    "person_id": "prs_8f3k2j",
+    "photo_recording_id": "c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788"
   },
   "source": "doorboard-contracts-test",
   "trace_id": "9d1e8a34-52a1-4b0e-9c0f-2a7d1f66b100",

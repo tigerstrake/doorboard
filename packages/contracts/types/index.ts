@@ -180,6 +180,7 @@ export interface SocialCheckinCreatedPayload {
   checkin_id: string;
   person_id: string | null;
   label: string | null;
+  photo_recording_id?: string | null;
 }
 
 export interface SocialMoodUpdatedPayload {
