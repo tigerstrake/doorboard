@@ -93,6 +93,10 @@ services:
       TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
       TELEGRAM_API_BASE_URL: ${TELEGRAM_API_BASE_URL:-https://api.telegram.org}
       TELEGRAM_MAX_VIDEO_BYTES: ${TELEGRAM_MAX_VIDEO_BYTES:-52428800}
+      # Per-recipient video-message routing (ADR-0014, backend in #118):
+      # "key:chatid,..." mapping the DoorPad Send-to buttons' lowercased names to
+      # Telegram chats. Empty -> broadcast to TELEGRAM_CHAT_IDS.
+      VIDEO_MESSAGE_RECIPIENTS: ${VIDEO_MESSAGE_RECIPIENTS:-}
       CONTROL_PLANE_DOOR_API_BASE_URL: ${CONTROL_PLANE_DOOR_API_BASE_URL:-}
       CONTROL_PLANE_DOOR_API_ADMIN_TOKEN: ${CONTROL_PLANE_DOOR_API_ADMIN_TOKEN:-}
       # Aircraft proximity alert (T-610) and new-species bird alert (T-612);
