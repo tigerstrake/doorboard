@@ -160,12 +160,18 @@ const RESIDENTS = ((import.meta.env.VITE_RESIDENTS as string | undefined) ?? "")
   .map((name) => name.trim())
   .filter((name) => name.length > 0);
 // "Tiger", "Tiger & Adam", "Tiger, Adam & Sam" — a friendly join for display.
-const RESIDENTS_LABEL =
-  RESIDENTS.length === 0
-    ? ""
-    : RESIDENTS.length === 1
-      ? RESIDENTS[0]
-      : `${RESIDENTS.slice(0, -1).join(", ")} & ${RESIDENTS[RESIDENTS.length - 1]}`;
+function friendlyJoin(names: string[]): string {
+  if (names.length === 0) return "";
+  if (names.length === 1) return names[0];
+  return `${names.slice(0, -1).join(", ")} & ${names[names.length - 1]}`;
+}
+const RESIDENTS_LABEL = friendlyJoin(RESIDENTS);
+// Video-message recipient choices at the review step. Each resident becomes a
+// "Send to {name}" button whose backend routing key is the lowercased name
+// (e.g. "Tiger" -> "tiger"). These keys MUST match the control-plane
+// VIDEO_MESSAGE_RECIPIENTS config keys so per-recipient Telegram routing works
+// (ADR-0014, backend added in #118). Empty residents -> plain broadcast save.
+const RECIPIENT_CHOICES = RESIDENTS.map((name) => ({ name, key: name.toLowerCase() }));
 const AIRCRAFT_ALERT_DISTANCE_KM =
   Number.isFinite(configuredAircraftAlertDistanceKm) && configuredAircraftAlertDistanceKm > 0
     ? configuredAircraftAlertDistanceKm
@@ -388,6 +394,9 @@ export function App() {
   const [recordingElapsed, setRecordingElapsed] = useState<number>(0);
   const [maxRecordingS, setMaxRecordingS] = useState<number>(60);
   const [latestRecording, setLatestRecording] = useState<VideoRecording | null>(null);
+  // Display names of the residents a saved video message was routed to, used to
+  // tailor the "Sent to …" confirmation. Empty = plain broadcast/save.
+  const [sentRecipientNames, setSentRecipientNames] = useState<string[]>([]);
   const [currentPhoto, setCurrentPhoto] = useState<PhotoReview | null>(null);
   // Post-bell photo check-in (auto-captured on the "ringing" screen). Kept
   // separate from the manual photo-booth `currentPhoto` so the two flows never
@@ -1713,9 +1722,14 @@ export function App() {
   };
 
   // --- DOORPAD SURFACE ---
-  const postDoorApi = useCallback(async (path: string, unavailableMessage = "Local service unavailable") => {
+  const postDoorApi = useCallback(async (path: string, unavailableMessage = "Local service unavailable", body?: unknown) => {
     try {
-      const response = await fetch(`${API_BASE}${path}`, { method: "POST" });
+      const init: RequestInit = { method: "POST" };
+      if (body !== undefined) {
+        init.headers = { "Content-Type": "application/json" };
+        init.body = JSON.stringify(body);
+      }
+      const response = await fetch(`${API_BASE}${path}`, init);
       if (!response.ok) {
         triggerToast(unavailableMessage);
         return null;
@@ -1842,15 +1856,22 @@ export function App() {
     setMediaActionPending(false);
   };
 
-  const saveVideoMessage = async () => {
+  const saveVideoMessage = async (recipients?: string[], recipientNames?: string[]) => {
     if (mediaActionPending) return;
     setMediaActionPending(true);
+    // Only attach a body when the visitor chose specific recipients; omitting it
+    // keeps the legacy broadcast semantics the backend applies for an empty list.
+    const body = recipients && recipients.length > 0 ? { recipients } : undefined;
     const result = await postDoorApi(
       "/doorpad/video-message/save",
-      "Couldn't save the message. Your review is still here."
+      "Couldn't save the message. Your review is still here.",
+      body
     );
     const saved = result?.accepted || result?.session?.state === "VIDEO_MESSAGE_SAVED";
-    if (saved) setVideoStep("saved");
+    if (saved) {
+      setSentRecipientNames(recipientNames ?? []);
+      setVideoStep("saved");
+    }
     setMediaActionPending(false);
   };
 
@@ -2419,7 +2440,36 @@ export function App() {
                 Consent context: {latestRecording?.consent_context ?? "visitor_initiated"}
               </div>
               <div className="action-button-group">
-                <BigButton variant="primary" disabled={mediaActionPending} onClick={saveVideoMessage}>Save Message</BigButton>
+                {RECIPIENT_CHOICES.length > 0 ? (
+                  <>
+                    {RECIPIENT_CHOICES.map((choice) => (
+                      <BigButton
+                        key={choice.key}
+                        variant="primary"
+                        disabled={mediaActionPending}
+                        onClick={() => saveVideoMessage([choice.key], [choice.name])}
+                      >
+                        Send to {choice.name}
+                      </BigButton>
+                    ))}
+                    {RECIPIENT_CHOICES.length >= 2 && (
+                      <BigButton
+                        variant="primary"
+                        disabled={mediaActionPending}
+                        onClick={() =>
+                          saveVideoMessage(
+                            RECIPIENT_CHOICES.map((choice) => choice.key),
+                            RECIPIENT_CHOICES.map((choice) => choice.name)
+                          )
+                        }
+                      >
+                        {RECIPIENT_CHOICES.length > 2 ? "Send to everyone" : "Send to both"}
+                      </BigButton>
+                    )}
+                  </>
+                ) : (
+                  <BigButton variant="primary" disabled={mediaActionPending} onClick={() => saveVideoMessage()}>Save Message</BigButton>
+                )}
                 <BigButton disabled={mediaActionPending} onClick={startVideoFlow}>Re-record</BigButton>
                 <BigButton disabled={mediaActionPending} onClick={discardVideoFlow}>Discard</BigButton>
               </div>
@@ -2428,7 +2478,11 @@ export function App() {
 
           {doorPadScreen === "message" && videoStep === "saved" && (
             <div className="doorpad-sub-content">
-              <h2>Message Saved</h2>
+              <h2>
+                {sentRecipientNames.length > 0
+                  ? `Sent to ${friendlyJoin(sentRecipientNames)}`
+                  : "Message Saved"}
+              </h2>
               <p>Thanks. The saved message is now in the local admin inbox.</p>
               <div className="action-button-group">
                 <BigButton variant="primary" onClick={handleReset}>Done</BigButton>
