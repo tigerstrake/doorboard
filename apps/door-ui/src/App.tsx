@@ -2237,6 +2237,7 @@ export function App() {
         }
         timeoutMs={30000}
         paused={
+          doorPadScreen === "ringing" ||
           (doorPadScreen === "message" && videoStep !== "offer" && videoStep !== "qr") ||
           doorPadScreen === "photo"
         }
