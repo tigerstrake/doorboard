@@ -43,6 +43,7 @@ import { RevealPage } from "./RevealPage";
 import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
 import { WallboardFocusedView, WallboardLauncher } from "./wallboardChannels";
 import { OnScreenKeyboard } from "./OnScreenKeyboard";
+import { safeRandomUUID } from "./uuid";
 import {
   WALLBOARD_CONTROL_EVENT,
   WALLBOARD_CONTROL_STORAGE_KEY,
@@ -373,7 +374,7 @@ export function App() {
   const [sessionState, setSessionState] = useState<SessionState>("IDLE");
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
   const [activeDisplayName, setActiveDisplayName] = useState<string | null>(null);
-  const [mockSessionId, setMockSessionId] = useState<string>(() => crypto.randomUUID());
+  const [mockSessionId, setMockSessionId] = useState<string>(() => safeRandomUUID());
   const [showSimPanel, setShowSimPanel] = useState<boolean>(DEV_TOOLS_ENABLED);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
   const [wallboardFocusRequest, setWallboardFocusRequest] = useState<WallboardFocusRequest | null>(null);
@@ -1334,11 +1335,11 @@ export function App() {
     let currentSessionId = mockSessionId;
     if (toState !== "IDLE" && sessionState === "IDLE") {
       // Start a new mock session with a new UUID when transitioning from IDLE
-      currentSessionId = crypto.randomUUID();
+      currentSessionId = safeRandomUUID();
       setMockSessionId(currentSessionId);
     }
 
-    const traceId = crypto.randomUUID();
+    const traceId = safeRandomUUID();
 
     if (profileId) {
       const visionEvent: DoorboardEvent = {
