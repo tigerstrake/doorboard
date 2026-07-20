@@ -314,6 +314,148 @@ def test_photobooth_feature_off_hides_public_endpoints() -> None:
     assert moments.status_code == 404
 
 
+class _FakeGalleryClient:
+    """Fake httpx.AsyncClient serving door-sync's internal gallery moments."""
+
+    moments: list[dict[str, Any]] = []
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+
+    async def __aenter__(self) -> _FakeGalleryClient:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        del args
+
+    async def get(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> _FakeMediaResponse:
+        del params, headers
+        if url.endswith("/internal/gallery/moments"):
+            return _FakeMediaResponse(body={"photos": self.__class__.moments})
+        return _FakeMediaResponse(body={})
+
+
+def _enable_photobooth(monkeypatch: pytest.MonkeyPatch) -> None:
+    # monkeypatch.setenv auto-reverts so photobooth stays off for other tests.
+    monkeypatch.setenv("FEATURE_PHOTOBOOTH", "true")
+    state.shutdown()
+    state.__init__()
+    state.startup()
+
+
+def test_visitor_collage_returns_count_only_stats_when_photobooth_disabled() -> None:
+    # Photobooth is off in the default fixture: stats still work, photos do not.
+    state.social_service.create_checkin(
+        person_id="prs_alex", label="Alex", ip="10.0.0.1", session_token="s1", trace_id="t"
+    )
+    state.social_service.create_checkin(
+        person_id=None, label="guest", ip="10.0.0.2", session_token="s2", trace_id="t"
+    )
+
+    response = TestClient(app).get("/wallboard/visitor-collage")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stats"]["total_checkins"] == 2
+    assert body["stats"]["unique_visitors"] == 2  # one enrolled + one guest
+    assert body["stats"]["most_frequent"] == {"label": "Alex", "count": 1}
+    assert body["photos"] == []
+
+
+def test_visitor_collage_empty_case() -> None:
+    response = TestClient(app).get("/wallboard/visitor-collage")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stats"]["total_checkins"] == 0
+    assert body["stats"]["most_frequent"] is None
+    assert body["stats"]["first_checkin_at"] is None
+    assert body["photos"] == []
+
+
+def test_visitor_collage_returns_only_owner_approved_checkin_photos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_photobooth(monkeypatch)
+    monkeypatch.setattr("door_api.app.httpx.AsyncClient", _FakeGalleryClient)
+
+    # An approved photo check-in, an un-approved photo check-in, and a photoless one.
+    state.social_service.create_checkin(
+        person_id=None,
+        label="Approved Guest",
+        photo_recording_id="rec_ok",
+        ip="10.0.0.1",
+        session_token="s1",
+        trace_id="t",
+    )
+    state.social_service.create_checkin(
+        person_id=None,
+        label="Private Guest",
+        photo_recording_id="rec_private",
+        ip="10.0.0.2",
+        session_token="s2",
+        trace_id="t",
+    )
+    state.social_service.create_checkin(
+        person_id=None, label="No Photo", ip="10.0.0.3", session_token="s3", trace_id="t"
+    )
+
+    # Only rec_ok is owner-approved + wallboard-eligible in the gallery.
+    _FakeGalleryClient.moments = [
+        {
+            "recording_id": "rec_ok",
+            "status": "approved",
+            "gallery_thumbnail_path": "gallery/albums/2026-07/thumbnails/rec_ok.jpg",
+        },
+        # rec_private is intentionally absent from the approved moments feed.
+    ]
+
+    response = TestClient(app).get("/wallboard/visitor-collage")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stats"]["total_checkins"] == 3
+    # rec_private (not approved) and the photoless check-in are excluded.
+    assert [p["recording_id"] for p in body["photos"]] == ["rec_ok"]
+    photo = body["photos"][0]
+    assert photo["label"] == "Approved Guest"
+    assert photo["thumbnail_path"] == "gallery/albums/2026-07/thumbnails/rec_ok.jpg"
+
+
+def test_visitor_collage_degrades_to_stats_when_gallery_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_photobooth(monkeypatch)
+
+    class _FailingGalleryClient(_FakeGalleryClient):
+        async def get(self, url: str, **kwargs: Any) -> _FakeMediaResponse:
+            del url, kwargs
+            raise RuntimeError("gallery down")
+
+    monkeypatch.setattr("door_api.app.httpx.AsyncClient", _FailingGalleryClient)
+    state.social_service.create_checkin(
+        person_id=None,
+        label="Guest",
+        photo_recording_id="rec_ok",
+        ip="10.0.0.1",
+        session_token="s1",
+        trace_id="t",
+    )
+
+    response = TestClient(app).get("/wallboard/visitor-collage")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stats"]["total_checkins"] == 1
+    assert body["photos"] == []  # never leak when the private gallery is unreachable
+
+
 def test_contract_button_event_sets_cached_profile_snapshot() -> None:
     events = EventFactory(SimClock())
     button = events.make(

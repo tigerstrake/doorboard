@@ -316,6 +316,93 @@
   font-family: monospace;
 }
 
+/* "Who's Stopped By" visitor collage tile */
+.visitor-collage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--db-spacing-sm);
+}
+
+.visitor-collage-empty,
+.visitor-collage-nophotos {
+  color: var(--db-text-muted);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.visitor-collage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--db-spacing-xs);
+}
+
+.visitor-collage--focus .visitor-collage-grid {
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--db-spacing-md);
+}
+
+.visitor-collage-cell {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+}
+
+.visitor-collage-thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--db-border-color);
+}
+
+.visitor-collage-thumb--placeholder {
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.06);
+  font-weight: 800;
+  font-size: 1.4rem;
+}
+
+.visitor-collage-cell figcaption {
+  font-size: 0.75rem;
+  color: var(--db-text-secondary);
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visitor-collage--focus .visitor-collage-cell figcaption {
+  font-size: clamp(1rem, 1.6vw, 1.4rem);
+}
+
+.visitor-collage-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--db-spacing-xs);
+}
+
+.visitor-collage-chip {
+  font-size: 0.75rem;
+  color: var(--db-text-secondary);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--db-border-color);
+  border-radius: 9999px;
+  padding: 2px 10px;
+}
+
+.visitor-collage-chip strong {
+  color: var(--db-text-primary);
+}
+
+.visitor-collage--focus .visitor-collage-chip {
+  font-size: clamp(1rem, 1.6vw, 1.4rem);
+  padding: 6px 16px;
+}
+
 /* Wallboard Visitor Takeover View */
 .wallboard-visitor-view {
   display: flex;

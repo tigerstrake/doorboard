@@ -118,6 +118,28 @@ class Checkin:
     deleted_at: str | None
 
 
+@dataclass(frozen=True)
+class CheckinStats:
+    """Aggregate, count-only visitor stats (no images, no biometric data).
+
+    Computed over non-deleted check-ins. ``unique_visitors`` groups enrolled
+    people by distinct ``person_id`` and treats every anonymous/guest check-in
+    as its own distinct visit (so a busy year of one-off guests still reads as
+    many visitors, which is what the "who's stopped by" tile wants to celebrate).
+    """
+
+    total_checkins: int
+    checkins_this_year: int
+    distinct_persons: int
+    guest_count: int
+    first_checkin_at: str | None
+    most_recent_checkin_at: str | None
+
+    @property
+    def unique_visitors(self) -> int:
+        return self.distinct_persons + self.guest_count
+
+
 class SocialStore:
     """Manages the SQLite-backed guestbook/poll/checkin persistence."""
 
@@ -135,6 +157,11 @@ class SocialStore:
             # Additive column (ADR-0013): upgrade existing DBs so a check-in can
             # carry an optional reference to a visitor-captured photo.
             self._ensure_column("checkins", "photo_recording_id", "TEXT")
+            # Created after the column migration so it also applies to DBs that
+            # predate photo_recording_id — the collage joins on this reference.
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_checkins_photo ON checkins(photo_recording_id)"
+            )
             self._conn.commit()
 
     def _ensure_column(self, table: str, column: str, sql_type: str) -> None:
@@ -448,6 +475,56 @@ class SocialStore:
         if row is None:
             return None
         return (row[0], row[1])
+
+    def aggregate_checkin_stats(self, *, year_start: str) -> CheckinStats:
+        """Count-only aggregate over non-deleted check-ins for the visitor tile.
+
+        ``year_start`` is an ISO timestamp (e.g. ``2026-01-01T00:00:00Z``); ISO
+        strings sort lexically so a range comparison on ``created_at`` is exact
+        and index-friendly. No images or biometric data are touched here.
+        """
+        with self._lock:
+            total = self._conn.execute(
+                "SELECT COUNT(*) FROM checkins WHERE deleted_at IS NULL"
+            ).fetchone()[0]
+            this_year = self._conn.execute(
+                "SELECT COUNT(*) FROM checkins WHERE deleted_at IS NULL AND created_at >= ?",
+                (year_start,),
+            ).fetchone()[0]
+            distinct_persons = self._conn.execute(
+                "SELECT COUNT(DISTINCT person_id) FROM checkins "
+                "WHERE deleted_at IS NULL AND person_id IS NOT NULL"
+            ).fetchone()[0]
+            guest_count = self._conn.execute(
+                "SELECT COUNT(*) FROM checkins WHERE deleted_at IS NULL AND person_id IS NULL"
+            ).fetchone()[0]
+            bounds = self._conn.execute(
+                "SELECT MIN(created_at), MAX(created_at) FROM checkins WHERE deleted_at IS NULL"
+            ).fetchone()
+        return CheckinStats(
+            total_checkins=total,
+            checkins_this_year=this_year,
+            distinct_persons=distinct_persons,
+            guest_count=guest_count,
+            first_checkin_at=bounds[0],
+            most_recent_checkin_at=bounds[1],
+        )
+
+    def list_checkin_photos(self, *, limit: int) -> list[Checkin]:
+        """Non-deleted check-ins that reference a photo, newest first.
+
+        Only the photo *reference* is returned; whether that photo may be shown
+        publicly is decided by the caller by intersecting with owner-approved
+        gallery photos. Indexed by ``idx_checkins_photo``.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, person_id, label, photo_recording_id, created_at, deleted_at "
+                "FROM checkins WHERE deleted_at IS NULL AND photo_recording_id IS NOT NULL "
+                "ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._row_to_checkin(row) for row in rows]
 
     @staticmethod
     def _row_to_checkin(row: tuple) -> Checkin:

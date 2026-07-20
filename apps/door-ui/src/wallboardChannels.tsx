@@ -12,6 +12,138 @@ import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
 import { WALLBOARD_CHANNELS } from "./wallboardChannelModel";
 import type { WallboardFocusChannel } from "./wallboardChannelModel";
 
+// "Who's Stopped By" visitor collage — fed by the door-api
+// /wallboard/visitor-collage endpoint. Stats are count-only aggregates; photos
+// are check-in photos the owner has approved for public display in the gallery.
+export interface VisitorCollageStats {
+  total_checkins: number;
+  checkins_this_year: number;
+  unique_visitors: number;
+  distinct_visitors: number;
+  guest_count: number;
+  most_frequent: { label: string | null; count: number } | null;
+  first_checkin_at: string | null;
+  most_recent_checkin_at: string | null;
+}
+
+export interface VisitorCollagePhoto {
+  recording_id: string;
+  thumbnail_path: string | null;
+  label: string | null;
+  created_at: string;
+}
+
+export interface VisitorCollage {
+  stats: VisitorCollageStats;
+  photos: VisitorCollagePhoto[];
+}
+
+const VISITOR_COLLAGE_EMPTY =
+  "No check-ins yet — visitors can check in with a photo at the door.";
+
+function formatCollageDate(value: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+function VisitorPhotoThumb({ photo }: { photo: VisitorCollagePhoto }) {
+  // Gallery thumbnails are NAS-relative paths that the wallboard cannot fetch
+  // directly, so we only render an <img> for absolute URLs and otherwise fall
+  // back to an initial-based placeholder (same posture as the Moments tile).
+  const src = photo.thumbnail_path;
+  const isUrl = !!src && /^(https?:)?\/\//.test(src);
+  const label = photo.label?.trim();
+  if (isUrl) {
+    return (
+      <img
+        className="visitor-collage-thumb"
+        src={src as string}
+        alt={label ? `Check-in photo — ${label}` : "Visitor check-in photo"}
+        loading="lazy"
+        onError={(e) => {
+          e.currentTarget.style.display = "none";
+        }}
+      />
+    );
+  }
+  return (
+    <div className="visitor-collage-thumb visitor-collage-thumb--placeholder" aria-hidden="true">
+      {(label?.[0] ?? "?").toUpperCase()}
+    </div>
+  );
+}
+
+function VisitorStatsPanel({ stats }: { stats: VisitorCollageStats }) {
+  const lastVisit = formatCollageDate(stats.most_recent_checkin_at);
+  return (
+    <div className="visitor-collage-stats">
+      <span className="visitor-collage-chip">
+        <strong>{stats.unique_visitors}</strong> visitor{stats.unique_visitors === 1 ? "" : "s"}
+      </span>
+      <span className="visitor-collage-chip">
+        <strong>{stats.checkins_this_year}</strong> this year
+      </span>
+      <span className="visitor-collage-chip">
+        <strong>{stats.total_checkins}</strong> total visits
+      </span>
+      {stats.most_frequent && (
+        <span className="visitor-collage-chip">
+          Most frequent: <strong>{stats.most_frequent.label?.trim() || "Guest"}</strong> (
+          {stats.most_frequent.count})
+        </span>
+      )}
+      {lastVisit && (
+        <span className="visitor-collage-chip">
+          Last visit: <strong>{lastVisit}</strong>
+        </span>
+      )}
+    </div>
+  );
+}
+
+interface VisitorCollageContentProps {
+  collage: VisitorCollage | null;
+  maxPhotos?: number;
+  variant?: "ambient" | "focus";
+}
+
+/** Shared renderer for the "Who's Stopped By" ambient tile and focused view. */
+export function VisitorCollageContent({
+  collage,
+  maxPhotos = 6,
+  variant = "ambient",
+}: VisitorCollageContentProps) {
+  const stats = collage?.stats ?? null;
+  const photos = collage?.photos ?? [];
+  const hasActivity = (stats?.total_checkins ?? 0) > 0 || photos.length > 0;
+
+  if (!hasActivity) {
+    return <p className="visitor-collage-empty focus-empty">{VISITOR_COLLAGE_EMPTY}</p>;
+  }
+
+  return (
+    <div className={`visitor-collage visitor-collage--${variant}`}>
+      {photos.length > 0 ? (
+        <div className="visitor-collage-grid">
+          {photos.slice(0, maxPhotos).map((photo) => (
+            <figure className="visitor-collage-cell" key={photo.recording_id}>
+              <VisitorPhotoThumb photo={photo} />
+              <figcaption>{photo.label?.trim() || "Guest"}</figcaption>
+            </figure>
+          ))}
+        </div>
+      ) : (
+        <p className="visitor-collage-nophotos">
+          Approved check-in photos will appear here as visitors opt in.
+        </p>
+      )}
+      {stats && <VisitorStatsPanel stats={stats} />}
+    </div>
+  );
+}
+
 interface WallboardLauncherProps {
   selectedChannel: "ambient" | WallboardFocusChannel;
   onSelect: (channel: "ambient" | WallboardFocusChannel) => void;
@@ -43,6 +175,7 @@ interface WallboardFocusedViewProps {
   pollResults: PollResultRow[] | null;
   guestbookEntries: GuestbookEntry[];
   moments: Array<{ recording_id: string; tags: string[]; approved_at: string | null }>;
+  visitorCollage?: VisitorCollage | null;
   ambient: {
     aircraft: AmbientAircraftSummaryPayload | null;
     birds: AmbientBirdSummaryPayload | null;
@@ -61,6 +194,7 @@ export function WallboardFocusedView({
   pollResults,
   guestbookEntries,
   moments,
+  visitorCollage = null,
   ambient,
   onReturnAmbient,
 }: WallboardFocusedViewProps) {
@@ -78,7 +212,15 @@ export function WallboardFocusedView({
         </BigButton>
       </header>
       <main className="wallboard-focus-main">
-        {renderFocusContent(channel, poll, pollResults, guestbookEntries, moments, ambient)}
+        {renderFocusContent(
+          channel,
+          poll,
+          pollResults,
+          guestbookEntries,
+          moments,
+          visitorCollage,
+          ambient
+        )}
       </main>
       <footer className="wallboard-focus-footer">
         Focused from DoorPad. Returns to ambient automatically.
@@ -93,6 +235,7 @@ function renderFocusContent(
   pollResults: PollResultRow[] | null,
   guestbookEntries: GuestbookEntry[],
   moments: Array<{ recording_id: string; tags: string[]; approved_at: string | null }>,
+  visitorCollage: VisitorCollage | null,
   ambient: WallboardFocusedViewProps["ambient"]
 ) {
   const safeText = (value: string | null | undefined, maxLength = 80) =>
@@ -228,5 +371,7 @@ function renderFocusContent(
       ) : (
         <p className="focus-empty">No approved moments yet.</p>
       );
+    case "visitors":
+      return <VisitorCollageContent collage={visitorCollage} maxPhotos={12} variant="focus" />;
   }
 }
