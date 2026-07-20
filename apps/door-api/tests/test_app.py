@@ -59,6 +59,7 @@ def test_admin_routes_fail_closed_without_configured_token() -> None:
         ("post", "/admin/session/answer"),
         ("post", "/admin/session/cannot-answer"),
         ("post", "/admin/session/end"),
+        ("get", "/admin/visitor-collage"),
     ):
         response = client.request(method, path)
         assert response.status_code == 503
@@ -349,8 +350,29 @@ def _enable_photobooth(monkeypatch: pytest.MonkeyPatch) -> None:
     state.startup()
 
 
-def test_visitor_collage_returns_count_only_stats_when_photobooth_disabled() -> None:
+def test_visitor_collage_requires_admin_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The collage is private all year and only revealed via the owner-only
+    # /reveal page, so the endpoint is admin-namespaced + owner-gated. Without a
+    # configured token it already fails closed with 503 (see the fail-closed
+    # test); once configured, a valid bearer token is required.
+    headers = _enable_admin(monkeypatch)
+
+    denied = TestClient(app).get("/admin/visitor-collage")
+    assert denied.status_code == 401
+
+    wrong = TestClient(app).get("/admin/visitor-collage", headers={"Authorization": "Bearer nope"})
+    assert wrong.status_code == 401
+
+    allowed = TestClient(app).get("/admin/visitor-collage", headers=headers)
+    assert allowed.status_code == 200
+    assert "stats" in allowed.json()
+
+
+def test_visitor_collage_returns_count_only_stats_when_photobooth_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Photobooth is off in the default fixture: stats still work, photos do not.
+    headers = _enable_admin(monkeypatch)
     state.social_service.create_checkin(
         person_id="prs_alex", label="Alex", ip="10.0.0.1", session_token="s1", trace_id="t"
     )
@@ -358,7 +380,7 @@ def test_visitor_collage_returns_count_only_stats_when_photobooth_disabled() -> 
         person_id=None, label="guest", ip="10.0.0.2", session_token="s2", trace_id="t"
     )
 
-    response = TestClient(app).get("/wallboard/visitor-collage")
+    response = TestClient(app).get("/admin/visitor-collage", headers=headers)
 
     assert response.status_code == 200
     body = response.json()
@@ -368,8 +390,9 @@ def test_visitor_collage_returns_count_only_stats_when_photobooth_disabled() -> 
     assert body["photos"] == []
 
 
-def test_visitor_collage_empty_case() -> None:
-    response = TestClient(app).get("/wallboard/visitor-collage")
+def test_visitor_collage_empty_case(monkeypatch: pytest.MonkeyPatch) -> None:
+    headers = _enable_admin(monkeypatch)
+    response = TestClient(app).get("/admin/visitor-collage", headers=headers)
 
     assert response.status_code == 200
     body = response.json()
@@ -382,6 +405,7 @@ def test_visitor_collage_empty_case() -> None:
 def test_visitor_collage_returns_only_owner_approved_checkin_photos(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    headers = _enable_admin(monkeypatch)
     _enable_photobooth(monkeypatch)
     monkeypatch.setattr("door_api.app.httpx.AsyncClient", _FakeGalleryClient)
 
@@ -416,7 +440,7 @@ def test_visitor_collage_returns_only_owner_approved_checkin_photos(
         # rec_private is intentionally absent from the approved moments feed.
     ]
 
-    response = TestClient(app).get("/wallboard/visitor-collage")
+    response = TestClient(app).get("/admin/visitor-collage", headers=headers)
 
     assert response.status_code == 200
     body = response.json()
@@ -431,6 +455,7 @@ def test_visitor_collage_returns_only_owner_approved_checkin_photos(
 def test_visitor_collage_degrades_to_stats_when_gallery_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    headers = _enable_admin(monkeypatch)
     _enable_photobooth(monkeypatch)
 
     class _FailingGalleryClient(_FakeGalleryClient):
@@ -448,7 +473,7 @@ def test_visitor_collage_degrades_to_stats_when_gallery_unavailable(
         trace_id="t",
     )
 
-    response = TestClient(app).get("/wallboard/visitor-collage")
+    response = TestClient(app).get("/admin/visitor-collage", headers=headers)
 
     assert response.status_code == 200
     body = response.json()

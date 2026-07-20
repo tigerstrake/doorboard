@@ -955,15 +955,22 @@ async def _approved_wallboard_photos() -> dict[str, dict[str, Any]]:
     }
 
 
-@app.get("/wallboard/visitor-collage")
-async def wallboard_visitor_collage() -> dict[str, Any]:
-    """Year-end "who's stopped by" collage + fun stats for the wallboard.
+@app.get("/admin/visitor-collage", dependencies=[Depends(_require_admin)])
+async def admin_visitor_collage() -> dict[str, Any]:
+    """Owner-only year-end "who's stopped by" collage + fun stats.
+
+    This is deliberately NOT a public wallboard route: the collage collects
+    silently all year and is only revealed on-demand (e.g. the last day of
+    school) via the owner-only ``/reveal#<token>`` page, which calls this
+    endpoint with the ``DOOR_API_SOCIAL_ADMIN_TOKEN`` bearer token. It must
+    never surface on the public 27" wallboard, so it fails closed behind
+    ``_require_admin`` (503 if no token is configured, 401 without a valid one).
 
     Stats are count-only aggregates over non-deleted check-ins (no images, no
-    person_id) and are always returned. Photos are the intersection of
-    check-ins that reference a photo (``checkins.photo_recording_id``) with
-    owner-approved, wallboard-eligible gallery photos — so only photos the owner
-    has explicitly approved for public display ever appear.
+    person_id). Photos are the intersection of check-ins that reference a photo
+    (``checkins.photo_recording_id``) with owner-approved, wallboard-eligible
+    gallery photos — so only photos the owner has explicitly approved for
+    display ever appear.
     """
     stats = state.social_service.visitor_collage_stats()
 

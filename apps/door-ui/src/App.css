@@ -403,6 +403,109 @@
   padding: 6px 16px;
 }
 
+/* Owner-only "class year in review" reveal (/reveal#<token>).
+   Never shown on the public wallboard — see RevealPage.tsx. */
+.reveal-page {
+  min-height: 100vh;
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.reveal-page--empty,
+.reveal-page--loading {
+  align-items: center;
+  justify-content: center;
+}
+
+.reveal-empty-note {
+  color: var(--db-text-muted);
+  font-size: 1rem;
+  margin: 0;
+}
+
+.reveal-page--revealed {
+  gap: clamp(1.5rem, 4vh, 3rem);
+  padding: clamp(2rem, 6vh, 5rem) clamp(1.5rem, 5vw, 5rem);
+  background:
+    radial-gradient(circle at 15% 0%, rgba(124, 92, 255, 0.28), transparent 45%),
+    radial-gradient(circle at 90% 10%, rgba(255, 138, 76, 0.24), transparent 40%),
+    var(--db-app-bg, #0b0d12);
+}
+
+.reveal-hero {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.reveal-eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: clamp(0.8rem, 1.4vw, 1.05rem);
+  color: var(--db-text-secondary);
+  margin: 0;
+}
+
+.reveal-title {
+  font-size: clamp(2rem, 6vw, 4.5rem);
+  line-height: 1.05;
+  margin: 0;
+  font-weight: 800;
+  background: linear-gradient(90deg, #a78bfa, #f9a8d4, #fbbf24);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.reveal-subtitle {
+  font-size: clamp(1rem, 2vw, 1.5rem);
+  color: var(--db-text-secondary);
+  margin: 0;
+}
+
+.reveal-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: clamp(0.75rem, 2vw, 1.75rem);
+}
+
+.reveal-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 8rem;
+  padding: clamp(0.75rem, 2vh, 1.5rem) clamp(1rem, 2.5vw, 2rem);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--db-border-color);
+}
+
+.reveal-stat strong {
+  font-size: clamp(1.4rem, 3vw, 2.6rem);
+  color: var(--db-text-primary);
+  line-height: 1;
+}
+
+.reveal-stat span {
+  font-size: clamp(0.75rem, 1.3vw, 1rem);
+  color: var(--db-text-secondary);
+  text-align: center;
+}
+
+.reveal-collage {
+  flex: 1;
+}
+
+.reveal-collage .visitor-collage--focus .visitor-collage-grid {
+  grid-template-columns: repeat(auto-fill, minmax(clamp(120px, 14vw, 220px), 1fr));
+}
+
 /* Wallboard Visitor Takeover View */
 .wallboard-visitor-view {
   display: flex;

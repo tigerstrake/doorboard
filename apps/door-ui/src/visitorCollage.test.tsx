@@ -2,8 +2,12 @@
 import React from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
-import { VisitorCollageContent, WallboardFocusedView } from "./wallboardChannels";
+import { VisitorCollageContent } from "./wallboardChannels";
 import type { VisitorCollage } from "./wallboardChannels";
+
+// The VisitorCollageContent renderer is retained after #114's rework: the
+// visitor collage is no longer a public wallboard tile/channel, but the same
+// grid renderer is reused by the owner-only /reveal page (see reveal.test.tsx).
 
 afterEach(() => cleanup());
 
@@ -102,41 +106,11 @@ describe("visitor collage tile", () => {
     render(<VisitorCollageContent collage={null} />);
     expect(screen.getByText(/No check-ins yet/)).toBeTruthy();
   });
-});
 
-describe("visitor collage focused view", () => {
-  function renderFocus(collage: VisitorCollage | null) {
-    return render(
-      <WallboardFocusedView
-        channel="visitors"
-        poll={null}
-        pollResults={null}
-        guestbookEntries={[]}
-        moments={[]}
-        visitorCollage={collage}
-        ambient={{
-          aircraft: null,
-          birds: null,
-          birdCollageUrl: "",
-          satellite: null,
-          printer: null,
-          food: null,
-          scoreboard: null,
-        }}
-        onReturnAmbient={() => {}}
-      />,
-    );
-  }
-
-  it("renders the year-end collage in the focused channel", () => {
-    renderFocus(COLLAGE);
-    expect(screen.getByRole("heading", { name: "Who's Stopped By" })).toBeTruthy();
+  it("suppresses the stats chip panel when showStats is false (reveal page reuse)", () => {
+    render(<VisitorCollageContent collage={COLLAGE} showStats={false} />);
+    // The photo grid still renders, but the compact stats chips do not.
     expect(within(grid()).getByText("Alex")).toBeTruthy();
-    expect(document.querySelector(".visitor-collage--focus")).toBeTruthy();
-  });
-
-  it("renders the empty state in the focused channel", () => {
-    renderFocus(null);
-    expect(screen.getByText(/No check-ins yet/)).toBeTruthy();
+    expect(document.querySelector(".visitor-collage-stats")).toBeNull();
   });
 });
