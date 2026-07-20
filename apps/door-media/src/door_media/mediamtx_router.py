@@ -84,10 +84,52 @@ paths:
     # MediaMTX runOnInit is NOT run through a shell, so the pipe must be wrapped
     # in sh -c. ffmpeg is quieted (-nostats -loglevel error) so its progress
     # output cannot fill the (unread) subprocess stdout pipe. (issue #84)
+    # The publish command is built in _build_run_on_init; when audio is enabled
+    # (MEDIA_AUDIO_ENABLED) it grows a second ffmpeg ALSA input encoded as AAC
+    # while video stays -c:v copy. fmp4 segments carry the AAC track through the
+    # -c copy concat at finalize, so recordings/video messages include sound.
     runOnInit: >-
-      sh -c 'rpicam-vid --width 1280 --height 720 --framerate 25 --codec h264 --libav-format h264 --profile baseline --level 4.1 --bitrate 2000000 --inline --flush 1 --timeout 0 --nopreview --output - | ffmpeg -nostats -loglevel error -fflags nobuffer -f h264 -r 25 -i pipe:0 -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/{stream}'
+      {run_on_init}
     runOnInitRestart: yes
 """
+
+
+def _build_run_on_init(settings: Settings) -> str:
+    """Return the MediaMTX ``runOnInit`` publish command for the visitor stream.
+
+    The command is a ``sh -c`` wrapper (MediaMTX does not run runOnInit through a
+    shell) around ``rpicam-vid | ffmpeg``. Video is always copied (``-c:v copy``);
+    the Pi 5 has no HW H.264 block so rpicam-vid encodes via libav with an
+    explicit ``--libav-format h264`` and baseline/4.1 profile.
+
+    When ``audio_enabled`` is set, a second ffmpeg input pulls USB-microphone
+    audio via ALSA (device/rate/bitrate from settings) and encodes it as AAC.
+    Building the string here keeps the rpicam/ffmpeg pipeline out of the config
+    template's ``str.format`` pass, so no ffmpeg option can collide with the
+    ``{stream}``/``{segments_root}``/``{segment_s}`` placeholders.
+    """
+    stream = settings.visitor_cam_stream
+    rpicam = (
+        "rpicam-vid --width 1280 --height 720 --framerate 25 --codec h264 "
+        "--libav-format h264 --profile baseline --level 4.1 --bitrate 2000000 "
+        "--inline --flush 1 --timeout 0 --nopreview --output -"
+    )
+    rtsp = f"-f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/{stream}"
+    if settings.audio_enabled:
+        ffmpeg = (
+            "ffmpeg -nostats -loglevel error -fflags nobuffer "
+            "-thread_queue_size 1024 -use_wallclock_as_timestamps 1 "
+            "-f h264 -r 25 -i pipe:0 "
+            f"-thread_queue_size 1024 -f alsa -ar {settings.audio_sample_rate} "
+            f"-i {settings.audio_device} "
+            f"-c:v copy -c:a aac -b:a {settings.audio_bitrate} {rtsp}"
+        )
+    else:
+        ffmpeg = (
+            "ffmpeg -nostats -loglevel error -fflags nobuffer "
+            f"-f h264 -r 25 -i pipe:0 -c:v copy {rtsp}"
+        )
+    return f"sh -c '{rpicam} | {ffmpeg}'"
 
 
 @dataclass
@@ -235,6 +277,7 @@ class MediaMTXRouter:
             stream=self._settings.visitor_cam_stream,
             segments_root=self._settings.segments_root,
             segment_s=self._settings.segment_s,
+            run_on_init=_build_run_on_init(self._settings),
         )
         cfg_path.write_text(cfg_content, encoding="utf-8")
         logger.info("mediamtx_config_written", extra={"path": str(cfg_path)})
