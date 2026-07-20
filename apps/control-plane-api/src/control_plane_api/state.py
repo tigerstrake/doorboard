@@ -42,6 +42,7 @@ class AppState:
             notifier,
             cooldown_s=cfg.notify_cooldown_s,
             sync_stall_alert_s=cfg.sync_stall_alert_s,
+            doorbell_notify_enabled=cfg.doorbell_notify_enabled,
             aircraft_alert_radius_km=cfg.aircraft_alert_radius_km,
             aircraft_alert_max_altitude_ft=cfg.aircraft_alert_max_altitude_ft,
             aircraft_alert_cooldown_s=cfg.aircraft_alert_cooldown_s,
