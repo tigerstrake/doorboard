@@ -161,6 +161,11 @@ class SessionMachine:
     _display_name: str | None = field(default=None, init=False)
     _profile_id: str | None = field(default=None, init=False)
     _had_cached_profile: bool = field(default=False, init=False)
+    # Whether this session was ever answered. Distinguishes a genuine missed
+    # bell (rung, never answered) from an answered session that idled out at the
+    # video-message offer — both can reach VIDEO_MESSAGE_OFFERED. See
+    # ``_outcome_for_end``.
+    _was_answered: bool = field(default=False, init=False)
     _started_at_mono_ms: int = field(default=0, init=False)
     _last_transition_mono_ms: int = field(default=0, init=False)
     _timer: _TimerState = field(default_factory=_TimerState, init=False)
@@ -214,6 +219,7 @@ class SessionMachine:
             if isinstance(loaded_meta, dict):
                 meta = loaded_meta
                 self._had_cached_profile = bool(meta.get("had_cached_profile", False))
+                self._was_answered = bool(meta.get("was_answered", False))
 
         now_ms = self._monotonic_ms_fn()
         persisted_boot_id = meta.get("boot_id")
@@ -337,6 +343,7 @@ class SessionMachine:
             self._display_name = display_name
             self._profile_id = profile_id
             self._had_cached_profile = bool(had_cached_profile)
+            self._was_answered = False
         else:
             # Allow identity to be updated (e.g., late recognition during APPROACH_DETECTED).
             if person_id is not None:
@@ -349,6 +356,8 @@ class SessionMachine:
                 self._had_cached_profile = had_cached_profile
 
         self._state = to_state
+        if to_state == SessionState.ANSWERED:
+            self._was_answered = True
         self._last_transition_mono_ms = now_ms
         self.metrics.transitions += 1
 
@@ -404,7 +413,7 @@ class SessionMachine:
             and from_state not in (SessionState.IDLE, SessionState.SESSION_END)
         ):
             self.metrics.sessions_ended += 1
-            outcome = self._outcome_for_trigger(trigger)
+            outcome = self._outcome_for_end(from_state, trigger)
             ended_event = SessionEndedEvent(
                 event_id=uuid7_now(),
                 type="session.ended",
@@ -434,6 +443,7 @@ class SessionMachine:
             self._display_name = None
             self._profile_id = None
             self._had_cached_profile = False
+            self._was_answered = False
         else:
             # Persist SESSION_END as well so restart can finish its transition.
             media_dropped, sync_dropped = self._persist(
@@ -854,6 +864,7 @@ class SessionMachine:
                     ),
                     "timer_trigger": self._timer.trigger or None,
                     "had_cached_profile": self._had_cached_profile,
+                    "was_answered": self._was_answered,
                     "boot_id": self._boot_id_fn(),
                 }
             ),
@@ -915,6 +926,35 @@ class SessionMachine:
             )
         )
         return "abandoned"
+
+    def _outcome_for_end(
+        self, from_state: SessionState, trigger: str
+    ) -> SessionMachine._SessionOutcome:
+        """Resolve the ``session.ended`` outcome, accounting for a missed bell.
+
+        A bell that is rung but never answered flows
+        ``RINGING → UNANSWERED_TIMEOUT → VIDEO_MESSAGE_OFFERED`` and, if the
+        visitor leaves no message, ends via the *silent* inactivity fallback
+        (``timeout:inactivity``). That is a missed bell, so it must report
+        ``unanswered_timeout`` — the outcome the control-plane ``missed_bell``
+        notify rule keys on — rather than the generic ``abandoned``.
+
+        ``VIDEO_MESSAGE_OFFERED`` is also reachable from ``ANSWERED`` via the
+        DoorPad ``doorpad:video_offer`` flow, so this is gated on
+        ``_was_answered``: an answered session that idles out at the offer is not
+        a missed bell and keeps ``abandoned``. An actively declined/ended offer
+        (``visitor:discard``/``visitor:end``) and a saved message
+        (``auto:saved_to_end``) use different triggers and are unaffected. A
+        message can never have been saved on this path — saving happens only
+        later, from ``VIDEO_MESSAGE_REVIEW`` — so "no message" is guaranteed.
+        """
+        if (
+            from_state == SessionState.VIDEO_MESSAGE_OFFERED
+            and trigger == "timeout:inactivity"
+            and not self._was_answered
+        ):
+            return "unanswered_timeout"
+        return self._outcome_for_trigger(trigger)
 
     def close(self) -> None:
         """Cancel timers and close the store."""

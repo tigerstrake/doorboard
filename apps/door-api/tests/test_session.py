@@ -263,7 +263,11 @@ class TestHappyPath:
         assert changed[1]["payload"]["to_state"] == "VISITOR_MODE"
 
     def test_unanswered_path(self) -> None:
-        """IDLE → BUTTON → VISITOR → RINGING → UNANSWERED → OFFER → END → IDLE."""
+        """A rung-but-unanswered bell whose visitor leaves no message is a missed
+        bell: IDLE → BUTTON → VISITOR → RINGING → UNANSWERED → OFFER → (silent
+        inactivity) → END → IDLE, ending with ``unanswered_timeout`` so the
+        control-plane missed-bell notification fires.
+        """
         machine, collector, _ = make_machine()
         machine.handle_button_pressed()
 
@@ -274,11 +278,54 @@ class TestHappyPath:
         machine.transition(SessionState.VIDEO_MESSAGE_OFFERED, "auto:unanswered_to_offer")
         assert machine.state == SessionState.VIDEO_MESSAGE_OFFERED
 
-        machine.handle_video_message_discard()
+        # No visitor action: the silent inactivity fallback fires (exactly what
+        # the scheduled VIDEO_MESSAGE_OFFERED timer does).
+        machine.transition(SessionState.SESSION_END, "timeout:inactivity")
         assert machine.state == SessionState.SESSION_END
 
         machine.transition(SessionState.IDLE, "auto:end_to_idle")
         assert machine.state == SessionState.IDLE
+
+        ended = collector.of_type("session.ended")
+        assert len(ended) == 1
+        assert ended[0]["payload"]["outcome"] == "unanswered_timeout"
+
+    def test_declined_offer_stays_abandoned(self) -> None:
+        """A visitor who actively discards the offer is *not* a missed bell; the
+        ``visitor:discard`` trigger keeps the ``abandoned`` outcome.
+        """
+        machine, collector, _ = make_machine()
+        machine.handle_button_pressed()
+        machine.transition(SessionState.RINGING, "auto:visitor_mode_ring")
+        machine.transition(SessionState.UNANSWERED_TIMEOUT, "timeout:ring")
+        machine.transition(SessionState.VIDEO_MESSAGE_OFFERED, "auto:unanswered_to_offer")
+
+        machine.handle_video_message_discard()
+        assert machine.state == SessionState.SESSION_END
+        machine.transition(SessionState.IDLE, "auto:end_to_idle")
+
+        ended = collector.of_type("session.ended")
+        assert len(ended) == 1
+        assert ended[0]["payload"]["outcome"] == "abandoned"
+
+    def test_answered_then_offer_inactivity_stays_abandoned(self) -> None:
+        """An *answered* session that reaches the offer (DoorPad flow) and idles
+        out is not a missed bell: the same ``timeout:inactivity`` fallback keeps
+        ``abandoned`` because the bell was answered.
+        """
+        machine, collector, _ = make_machine()
+        machine.handle_button_pressed()
+        machine.transition(SessionState.RINGING, "auto:visitor_mode_ring")
+        machine.handle_answered()
+        assert machine.state == SessionState.ANSWERED
+
+        # DoorPad offers a video message after the door was answered.
+        machine.handle_video_message_offer()
+        assert machine.state == SessionState.VIDEO_MESSAGE_OFFERED
+
+        # Silent inactivity fallback — but the bell was answered.
+        machine.transition(SessionState.SESSION_END, "timeout:inactivity")
+        machine.transition(SessionState.IDLE, "auto:end_to_idle")
 
         ended = collector.of_type("session.ended")
         assert len(ended) == 1
@@ -845,6 +892,34 @@ class TestTimerAsync:
             assert machine.state == SessionState.SESSION_END
             ended = collector.of_type("session.ended")
             assert ended[-1]["payload"]["outcome"] == "answered"
+
+        asyncio.run(run())
+
+    def test_unanswered_bell_flow_ends_with_unanswered_timeout(self) -> None:
+        """End-to-end via the real scheduled timers: a bell that rings and is
+        never answered, with no video message left, drives
+        VISITOR_MODE → RINGING → UNANSWERED_TIMEOUT → VIDEO_MESSAGE_OFFERED →
+        SESSION_END and emits ``session.ended`` with ``unanswered_timeout`` so
+        the control-plane missed-bell notification fires.
+        """
+        config = SessionConfig(
+            db_path=":memory:",
+            visitor_mode_auto_ring_s=0.02,
+            ring_timeout_s=0.02,
+            offer_delay_s=0.02,
+            inactivity_timeout_s=0.05,
+            session_end_linger_s=0.5,
+        )
+        machine, collector, _ = make_machine(config=config)
+
+        async def run() -> None:
+            machine.handle_button_pressed()
+            # Let the scheduled timer chain run to the silent offer timeout.
+            await asyncio.sleep(0.3)
+            assert machine.state == SessionState.SESSION_END
+            ended = collector.of_type("session.ended")
+            assert len(ended) == 1
+            assert ended[0]["payload"]["outcome"] == "unanswered_timeout"
 
         asyncio.run(run())
 
