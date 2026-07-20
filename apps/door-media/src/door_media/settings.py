@@ -98,10 +98,12 @@ class Settings(BaseSettings):
     segment_s: int = Field(default=2, alias="DOOR_MEDIA_SEGMENT_S")
 
     # ── audio ─────────────────────────────────────────────────────────────────
-    # Opt-in USB-microphone capture. When disabled (default) the publish
-    # pipeline stays video-only, matching historical behaviour. When enabled the
-    # runOnInit ffmpeg adds a second ALSA input encoded as AAC so recordings —
-    # and thus Telegram video messages — carry sound.
+    # Opt-in USB-microphone capture. When disabled (default) recordings stay
+    # video-only, matching historical behaviour. When enabled, mic audio is
+    # captured to a per-recording file (the MediaMTX publish stays video-only —
+    # its live fmp4 recorder cannot mux an AAC track) and muxed into the
+    # concatenated video at finalize, so recordings — and thus Telegram video
+    # messages — carry sound.
     audio_enabled: bool = Field(default=False, alias="MEDIA_AUDIO_ENABLED")
     audio_device: str = Field(
         default="plughw:CARD=Microphone,DEV=0",
@@ -109,6 +111,9 @@ class Settings(BaseSettings):
     )
     audio_sample_rate: int = Field(default=48000, alias="MEDIA_AUDIO_SAMPLE_RATE")
     audio_bitrate: str = Field(default="96k", alias="MEDIA_AUDIO_BITRATE")
+    # Lip-sync tuning knob applied at mux time (ffmpeg -itsoffset on the audio
+    # input): positive delays audio relative to video. Tuned on-device.
+    audio_sync_offset_s: float = Field(default=0.0, alias="MEDIA_AUDIO_SYNC_OFFSET_S")
     # Raw MediaMTX segments are a rolling buffer, not durable recordings.
     # Keep enough history to finalize long interactions, then prune them so
     # continuous capture cannot consume the SSD indefinitely.
@@ -160,6 +165,11 @@ class Settings(BaseSettings):
     @property
     def segments_root(self) -> Path:
         return self.ssd_data_root / "segments"
+
+    @property
+    def audio_tmp_root(self) -> Path:
+        """Per-recording mic capture files live here (muxed in at finalize)."""
+        return self.ssd_data_root / "audio-tmp"
 
     @property
     def thumbnails_root(self) -> Path:
