@@ -1,8 +1,12 @@
 """door-media event source — the real-time enqueue path.
 
-Subscribes to door-media's ``GET /events`` (SSE) and enqueues archive work as
-recordings finalize (``media.recording_finalized`` → clip,
-``media.thumbnail_ready`` → thumbnail). This is the fast path; startup
+Subscribes to door-media's ``GET /events`` (SSE) and, per media event, does two
+idempotent things: enqueues NAS archive work as recordings finalize
+(``media.recording_finalized`` → clip, ``media.thumbnail_ready`` → thumbnail)
+*and* mirrors the media metadata event itself to the NUC control plane
+(``media.recording_started`` / ``_finalized`` / ``_thumbnail_ready`` →
+``enqueue_event``) so its ``media_mirror`` read model — the table Telegram
+video-message delivery reads — is populated. This is the fast path; startup
 reconciliation (``SyncEngine.reconcile_from_media``) is the backstop that
 guarantees nothing is lost if this stream was down when an event fired.
 
@@ -42,23 +46,45 @@ class MediaEventSource:
         self._running = False
 
     def handle_event(self, event: dict) -> None:
-        """Enqueue archive work for one door-media event. Unknown types ignored."""
+        """Handle one door-media event. Unknown types ignored.
+
+        Two independent, idempotent effects per media event:
+
+          - **NAS archive** — finalized clips/thumbnails become upload work so a
+            durable copy is kept off the door (``enqueue_recording`` /
+            ``enqueue_thumbnail``).
+          - **NUC mirror** — the *metadata* event itself is forwarded to the
+            control plane (``enqueue_event``) so its ``media_mirror`` read model
+            is populated. Without this the NUC never learns a recording exists,
+            and Telegram video-message delivery logs ``telegram_video_no_recording``
+            and never sends. door-api's ``session.*`` events already reach the NUC
+            this same way; ``media.*`` events must too.
+
+        Both dedupe (the NAS queue by ``recording_id``, ``enqueue_event`` by
+        ``event_id``), so a reconnect that replays events is harmless.
+        """
         etype = event.get("type")
         payload = event.get("payload", {})
         trace_id = event.get("trace_id", "")
-        if etype == "media.recording_finalized":
+        if etype == "media.recording_started":
+            # Metadata only — no NAS artifact exists yet; mirror to the NUC so it
+            # learns the recording's session_id/kind before finalize arrives.
+            self._engine.enqueue_event(event)
+        elif etype == "media.recording_finalized":
             self._engine.enqueue_recording(
                 recording_id=payload["recording_id"],
                 local_path=payload["path"],
                 sha256=payload["sha256"],
                 trace_id=trace_id,
             )
+            self._engine.enqueue_event(event)
         elif etype == "media.thumbnail_ready":
             self._engine.enqueue_thumbnail(
                 recording_id=payload["recording_id"],
                 local_path=payload["path"],
                 trace_id=trace_id,
             )
+            self._engine.enqueue_event(event)
 
     async def run(self) -> None:
         self._running = True
