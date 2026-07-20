@@ -147,6 +147,25 @@ const configuredAircraftAlertDistanceKm = Number(
 // Live bird collage image (e.g. the AvianVisitors frame PNG served by the
 // window bird-Pi). Empty = no collage shown. Rendered under the bird stats.
 const BIRD_COLLAGE_URL = (import.meta.env.VITE_BIRD_COLLAGE_URL as string | undefined) ?? "";
+// Build-time room label shown in the DoorPad and Wallboard headings. Defaults
+// to "304" so existing deployments/tests are unchanged; set VITE_ROOM_LABEL to
+// re-brand a different room without touching code.
+const ROOM_LABEL =
+  ((import.meta.env.VITE_ROOM_LABEL as string | undefined) ?? "304").trim() || "304";
+// Optional, comma-separated resident names surfaced as a subtle subtitle under
+// the room heading (e.g. "Tiger, Adam" -> "Tiger & Adam"). Empty renders
+// nothing extra. Also seeds later collage/presence use.
+const RESIDENTS = ((import.meta.env.VITE_RESIDENTS as string | undefined) ?? "")
+  .split(",")
+  .map((name) => name.trim())
+  .filter((name) => name.length > 0);
+// "Tiger", "Tiger & Adam", "Tiger, Adam & Sam" — a friendly join for display.
+const RESIDENTS_LABEL =
+  RESIDENTS.length === 0
+    ? ""
+    : RESIDENTS.length === 1
+      ? RESIDENTS[0]
+      : `${RESIDENTS.slice(0, -1).join(", ")} & ${RESIDENTS[RESIDENTS.length - 1]}`;
 const AIRCRAFT_ALERT_DISTANCE_KM =
   Number.isFinite(configuredAircraftAlertDistanceKm) && configuredAircraftAlertDistanceKm > 0
     ? configuredAircraftAlertDistanceKm
@@ -183,6 +202,21 @@ type DoorPadScreen =
   | "remote";
 type VideoStep = "offer" | "countdown" | "recording" | "review" | "saved" | "qr";
 type PhotoStep = "offer" | "countdown" | "review" | "saved";
+// Lifecycle of the auto-captured post-bell check-in photo:
+// idle -> capturing -> ready -> (saving -> saved | cleared). "cleared" is a
+// terminal state used for both "No thanks" and discard-on-abandon so the
+// auto-capture effect (which only fires from "idle") never re-triggers.
+type PostRingPhotoStatus =
+  | "idle"
+  | "capturing"
+  | "ready"
+  | "unavailable"
+  | "saving"
+  | "saved"
+  | "cleared";
+// Auto-capture fires shortly after the ringing screen appears so the ring
+// request settles first and the capture feels intentional, not jarring.
+const POST_RING_PHOTO_DELAY_MS = 600;
 
 interface DoorApiSnapshot {
   accepted?: boolean;
@@ -357,6 +391,13 @@ export function App() {
   const [maxRecordingS, setMaxRecordingS] = useState<number>(60);
   const [latestRecording, setLatestRecording] = useState<VideoRecording | null>(null);
   const [currentPhoto, setCurrentPhoto] = useState<PhotoReview | null>(null);
+  // Post-bell photo check-in (auto-captured on the "ringing" screen). Kept
+  // separate from the manual photo-booth `currentPhoto` so the two flows never
+  // clobber each other's save/discard bookkeeping.
+  const [postRingPhoto, setPostRingPhoto] = useState<PhotoReview | null>(null);
+  const [postRingPhotoStatus, setPostRingPhotoStatus] = useState<PostRingPhotoStatus>("idle");
+  const [postRingName, setPostRingName] = useState<string>("");
+  const [postRingCheckinPending, setPostRingCheckinPending] = useState<boolean>(false);
   const [visitorQrUrl, setVisitorQrUrl] = useState<string | null>(null);
   const [mediaActionPending, setMediaActionPending] = useState<boolean>(false);
   const [adminRecordings, setAdminRecordings] = useState<VideoRecording[]>([]);
@@ -538,6 +579,11 @@ export function App() {
         setActiveDisplayName(null);
         setActiveProfile(null);
         setRingRequestState("idle");
+        // Fresh session: clear any post-bell check-in photo state.
+        setPostRingPhoto(null);
+        setPostRingPhotoStatus("idle");
+        setPostRingName("");
+        setPostRingCheckinPending(false);
       }
     },
     []
@@ -1430,9 +1476,9 @@ export function App() {
           <div className="wallboard-ambient-view db-app-theme">
             <header className="ambient-header">
               <div className="ambient-header-left">
-                <h1 className="ambient-header-title">Room 304 Wallboard</h1>
+                <h1 className="ambient-header-title">Room {ROOM_LABEL} Wallboard</h1>
                 <span className="ambient-header-subtitle">
-                  Dorm Hallway Display · {eventConnection === "connected" ? "Live updates" : "Using last-known data"}
+                  {RESIDENTS_LABEL ? `${RESIDENTS_LABEL} · ` : ""}Dorm Hallway Display · {eventConnection === "connected" ? "Live updates" : "Using last-known data"}
                 </span>
               </div>
               <div className="ambient-clock">
@@ -1915,6 +1961,124 @@ export function App() {
     }
   };
 
+  // --- Post-bell photo check-in --------------------------------------------
+  // Auto-capture a single photo through the existing photo-booth pipeline once
+  // the ringing screen is up. The capture is guarded by `postRingPhotoStatus`
+  // (only fires from "idle") so it never loops.
+  const capturePostRingPhoto = useCallback(async () => {
+    if (!FEATURE_PHOTOBOOTH) return;
+    setPostRingPhotoStatus("capturing");
+    // Pre-fill the optional name with the recognized enrolled name (if any)
+    // without clobbering anything the visitor already typed.
+    setPostRingName((previous) => previous || (activeDisplayName ?? ""));
+    try {
+      const response = await fetch(`${API_BASE}/doorpad/photo-booth/capture`, { method: "POST" });
+      if (!response.ok) {
+        setPostRingPhotoStatus("unavailable");
+        return;
+      }
+      const data = (await response.json()) as { photo: PhotoReview };
+      setPostRingPhoto(data.photo);
+      setPostRingPhotoStatus("ready");
+    } catch {
+      setPostRingPhotoStatus("unavailable");
+    }
+  }, [activeDisplayName]);
+
+  // Best-effort discard of the still-private capture — used both for "No thanks"
+  // and discard-on-abandon. Status goes terminal ("cleared") first so the
+  // auto-capture effect can't re-fire and the abandon effect can't double-run.
+  const discardPostRingPhoto = useCallback(async (): Promise<void> => {
+    const photo = postRingPhoto;
+    setPostRingPhoto(null);
+    setPostRingPhotoStatus("cleared");
+    if (!photo) return;
+    try {
+      await fetch(`${API_BASE}/doorpad/photo-booth/${photo.recording_id}/discard`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: photo.session_id }),
+      });
+    } catch {
+      // The capture stays private in the photo-booth pipeline and remains
+      // owner-deletable, so a failed discard never exposes anything publicly.
+    }
+  }, [postRingPhoto]);
+
+  const declinePostRingCheckin = useCallback(() => {
+    void discardPostRingPhoto();
+  }, [discardPostRingPhoto]);
+
+  const submitPostRingCheckin = async () => {
+    if (postRingCheckinPending || postRingPhotoStatus === "saving") return;
+    setPostRingCheckinPending(true);
+    setPostRingPhotoStatus("saving");
+    const photo = postRingPhoto;
+    try {
+      let photoRecordingId: string | null = null;
+      if (photo) {
+        // Save through the photo-booth pipeline first so the recording is
+        // persisted (privately, for owner review) before the check-in links it.
+        const response = await fetch(
+          `${API_BASE}/doorpad/photo-booth/${photo.recording_id}/save`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: photo.session_id }),
+          }
+        );
+        if (!response.ok) {
+          triggerToast("Couldn't save your photo — try again.");
+          setPostRingPhotoStatus("ready");
+          return;
+        }
+        photoRecordingId = photo.recording_id;
+      }
+      const label = postRingName.trim() || activeDisplayName || "Guest";
+      // door-api derives attribution server-side; this client only passes the
+      // optional photo reference and a display label.
+      const checkin = await socialApi.createCheckin(label, photoRecordingId);
+      rememberMyContent({ kind: "checkin", id: checkin.id, label });
+      setPostRingPhoto(null);
+      setPostRingPhotoStatus("saved");
+      triggerToast("Check-in saved.");
+    } catch (err) {
+      triggerToast(apiErrorMessage(err, "Couldn't check in — try again."));
+      setPostRingPhotoStatus(photo ? "ready" : "unavailable");
+    } finally {
+      setPostRingCheckinPending(false);
+    }
+  };
+
+  // Fire the single auto-capture shortly after the ringing screen appears.
+  useEffect(() => {
+    if (!FEATURE_PHOTOBOOTH) return undefined;
+    if (doorPadScreen !== "ringing") return undefined;
+    if (sessionState === "ANSWERED") return undefined;
+    if (!storageStatus.recording_allowed) return undefined;
+    if (postRingPhotoStatus !== "idle") return undefined;
+    const timer = window.setTimeout(() => {
+      void capturePostRingPhoto();
+    }, POST_RING_PHOTO_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [
+    doorPadScreen,
+    sessionState,
+    storageStatus.recording_allowed,
+    postRingPhotoStatus,
+    capturePostRingPhoto,
+  ]);
+
+  // Discard an unsaved capture the moment the visit is answered or the ringing
+  // screen is left, so an abandoned photo is never left lingering.
+  useEffect(() => {
+    if (!FEATURE_PHOTOBOOTH) return;
+    const abandoned = doorPadScreen !== "ringing" || sessionState === "ANSWERED";
+    if (abandoned && postRingPhotoStatus === "ready") {
+      void discardPostRingPhoto();
+    }
+  }, [doorPadScreen, sessionState, postRingPhotoStatus, discardPostRingPhoto]);
+
   const showVisitorQr = async () => {
     setDoorPadScreen("message");
     setVideoStep("qr");
@@ -1940,6 +2104,15 @@ export function App() {
       triggerToast("The bell is already ringing.");
       return;
     }
+    // Discard any capture left over from a prior ring, then reset the check-in
+    // photo state so the ringing screen auto-captures a fresh one.
+    if (postRingPhoto && postRingPhotoStatus === "ready") {
+      void discardPostRingPhoto();
+    }
+    setPostRingPhoto(null);
+    setPostRingPhotoStatus("idle");
+    setPostRingName("");
+    setPostRingCheckinPending(false);
     setSessionState("RINGING");
     setSessionObservedAt(Date.now());
     setDoorPadScreen("ringing");
@@ -1978,7 +2151,8 @@ export function App() {
           aria-label="DoorPad home"
         >
           <header className="doorpad-header">
-            <h2>Room 304 DoorPad</h2>
+            <h2>Room {ROOM_LABEL} DoorPad</h2>
+            {RESIDENTS_LABEL && <p className="doorpad-residents">{RESIDENTS_LABEL}</p>}
             <p>Large-touch visitor controls</p>
           </header>
           
@@ -2079,6 +2253,82 @@ export function App() {
                       </p>
                     </div>
                   </div>
+                  {FEATURE_PHOTOBOOTH &&
+                    sessionState !== "ANSWERED" &&
+                    (postRingPhotoStatus === "capturing" ||
+                      postRingPhotoStatus === "ready" ||
+                      postRingPhotoStatus === "unavailable" ||
+                      postRingPhotoStatus === "saving") && (
+                      <div
+                        id="post-ring-checkin"
+                        className="doorpad-photo-checkin"
+                        role="group"
+                        aria-label="Photo check-in"
+                      >
+                        <div className="doorpad-photo-checkin__header">
+                          <h3>Want to check in with your picture?</h3>
+                          <p className="placeholder-subtext">
+                            It's for a fun end-of-year collage of everyone who stopped by — with fun
+                            stats about them.
+                          </p>
+                        </div>
+                        {postRingPhotoStatus === "ready" && postRingPhoto ? (
+                          <img
+                            className="review-photo"
+                            src={postRingPhoto.review_url}
+                            alt="Your check-in photo"
+                          />
+                        ) : postRingPhotoStatus === "unavailable" ? (
+                          <p className="placeholder-subtext">
+                            Camera unavailable right now — you can still check in without a photo.
+                          </p>
+                        ) : (
+                          <div className="video-preview-frame video-preview-frame--unavailable">
+                            Taking your photo…
+                          </div>
+                        )}
+                        <label className="doorpad-photo-checkin__name">
+                          <span>Name (optional)</span>
+                          <input
+                            className="doorpad-photo-checkin__input"
+                            type="text"
+                            value={postRingName}
+                            maxLength={60}
+                            placeholder="Guest"
+                            onChange={(event) => setPostRingName(event.target.value)}
+                          />
+                        </label>
+                        <div className="action-button-group">
+                          <BigButton
+                            id="post-ring-checkin-yes"
+                            variant="primary"
+                            disabled={
+                              postRingCheckinPending ||
+                              postRingPhotoStatus === "capturing" ||
+                              postRingPhotoStatus === "saving"
+                            }
+                            onClick={submitPostRingCheckin}
+                          >
+                            Yes, check in
+                          </BigButton>
+                          <BigButton
+                            id="post-ring-checkin-no"
+                            disabled={postRingCheckinPending}
+                            onClick={declinePostRingCheckin}
+                          >
+                            No thanks
+                          </BigButton>
+                        </div>
+                      </div>
+                    )}
+                  {FEATURE_PHOTOBOOTH && postRingPhotoStatus === "saved" && (
+                    <div className="doorpad-photo-checkin doorpad-photo-checkin--done" role="status">
+                      <h3>Checked in — thanks!</h3>
+                      <p className="placeholder-subtext">
+                        Your photo is saved privately for owner review.
+                      </p>
+                    </div>
+                  )}
                   <div className="doorpad-waiting-actions">
                     <BigButton
                       id="post-ring-wait"
@@ -2100,9 +2350,11 @@ export function App() {
                         Send a Video Message
                       </BigButton>
                     )}
-                    <BigButton id="post-ring-checkin" onClick={() => setDoorPadScreen("checkin")}>
-                      Check In
-                    </BigButton>
+                    {!FEATURE_PHOTOBOOTH && (
+                      <BigButton id="post-ring-checkin" onClick={() => setDoorPadScreen("checkin")}>
+                        Check In
+                      </BigButton>
+                    )}
                     <BigButton onClick={showVisitorQr}>Open Visitor QR</BigButton>
                   </div>
                 </div>

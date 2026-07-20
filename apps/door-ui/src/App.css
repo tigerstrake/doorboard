@@ -1796,6 +1796,61 @@ input:focus-visible {
   min-height: 52px;
 }
 
+/* Post-bell photo check-in card — the prominent, opt-in check-in prompt. */
+.doorpad-photo-checkin {
+  width: min(760px, 100%);
+  display: grid;
+  gap: var(--db-spacing-sm);
+  text-align: left;
+  padding: var(--db-spacing-lg);
+  border: 1px solid var(--db-gold, var(--db-border-hover));
+  border-radius: var(--db-radius-md);
+  background: linear-gradient(135deg, rgba(70, 52, 12, 0.42), rgba(8, 20, 38, 0.5));
+  box-shadow: inset 0 0 40px rgba(255, 205, 90, 0.08);
+}
+
+.doorpad-photo-checkin__header h3 {
+  margin: 0 0 0.35rem;
+  font-family: var(--db-font-display);
+  font-weight: 700;
+  font-size: clamp(1.5rem, 3.4vw, 2.4rem);
+}
+
+.doorpad-photo-checkin .review-photo {
+  justify-self: center;
+}
+
+.doorpad-photo-checkin__name {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--db-text-secondary);
+  font-size: 0.95rem;
+}
+
+.doorpad-photo-checkin__input {
+  width: 100%;
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--db-radius-sm, 8px);
+  border: 1px solid var(--db-border-hover);
+  background: rgba(8, 20, 38, 0.6);
+  color: var(--db-text-primary, #fff);
+  font-size: 1.1rem;
+}
+
+.doorpad-photo-checkin--done {
+  background: linear-gradient(135deg, rgba(12, 70, 40, 0.42), rgba(8, 20, 38, 0.5));
+  box-shadow: inset 0 0 40px rgba(90, 255, 160, 0.08);
+}
+
+/* Optional resident names under the room heading. */
+.doorpad-residents {
+  margin: 0.15rem 0 0;
+  color: var(--db-gold, var(--db-text-secondary));
+  font-family: var(--db-font-display);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 .character-count {
   width: 100%;
   margin: -0.4rem 0 0;
