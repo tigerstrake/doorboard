@@ -94,6 +94,7 @@ export interface SessionStateChangedPayload {
   from_state: SessionState;
   to_state: SessionState;
   trigger: string;
+  recipients?: Array<string> | null;
 }
 
 export interface SessionStartedPayload {

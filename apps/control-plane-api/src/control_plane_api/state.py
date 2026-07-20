@@ -63,6 +63,11 @@ class AppState:
                 door_api_admin_token=cfg.door_api_admin_token,
             ),
             max_video_bytes=cfg.telegram_max_video_bytes,
+            # Per-recipient routing (ADR-0014): a saved message carrying chosen
+            # recipient keys goes only to those residents' chats; an empty map
+            # or a message with no recipients falls back to broadcasting to all
+            # TELEGRAM_CHAT_IDS.
+            recipient_map=cfg.video_message_recipient_map,
         )
         # Real calendar wiring is a later brief (T-504) — `MockCalendarProvider`
         # always returns "no signal", so calendar simply never wins precedence

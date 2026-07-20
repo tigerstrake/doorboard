@@ -22,17 +22,22 @@ RID = "22222222-2222-4222-8222-222222222222"
 
 
 class RecordingSender:
-    """TelegramSender test double."""
+    """TelegramSender test double. Records the chat_ids each call targeted
+    (None = the sender's default / all chats)."""
 
     def __init__(self) -> None:
         self.videos: list[dict[str, Any]] = []
-        self.messages: list[str] = []
+        self.messages: list[dict[str, Any]] = []
 
-    def send_video(self, *, video: bytes, filename: str, caption: str) -> None:
-        self.videos.append({"video": video, "filename": filename, "caption": caption})
+    def send_video(
+        self, *, video: bytes, filename: str, caption: str, chat_ids: list[str] | None = None
+    ) -> None:
+        self.videos.append(
+            {"video": video, "filename": filename, "caption": caption, "chat_ids": chat_ids}
+        )
 
-    def send_message(self, *, text: str) -> None:
-        self.messages.append(text)
+    def send_message(self, *, text: str, chat_ids: list[str] | None = None) -> None:
+        self.messages.append({"text": text, "chat_ids": chat_ids})
 
 
 class FakeSource:
@@ -73,13 +78,16 @@ def _add_recording(
         session.commit()
 
 
-def _saved_event(session_id: str = SID):
-    return parse_event(
-        build_event(
-            "session.state_changed",
-            payload_overrides={"to_state": "VIDEO_MESSAGE_SAVED", "session_id": session_id},
-        )
-    )
+def _saved_event(session_id: str = SID, *, recipients: list[str] | None = None):
+    overrides: dict[str, Any] = {"to_state": "VIDEO_MESSAGE_SAVED", "session_id": session_id}
+    if recipients is not None:
+        overrides["recipients"] = recipients
+    return parse_event(build_event("session.state_changed", payload_overrides=overrides))
+
+
+# Per-recipient routing config (ADR-0014): Tiger has a chat id; Adam is a known
+# recipient with no chat configured yet (blank).
+RECIPIENT_MAP = {"tiger": "8397445760", "adam": ""}
 
 
 def _run(session_factory, delivery: VideoMessageDelivery, event) -> None:
@@ -177,7 +185,7 @@ def test_oversized_video_falls_back_to_text(session_factory) -> None:
 
     assert sender.videos == []  # not uploaded
     assert source.calls == []  # not even fetched
-    assert len(sender.messages) == 1 and "too large" in sender.messages[0].lower()
+    assert len(sender.messages) == 1 and "too large" in sender.messages[0]["text"].lower()
 
 
 def test_fetch_failure_sends_nothing(session_factory) -> None:
@@ -189,6 +197,110 @@ def test_fetch_failure_sends_nothing(session_factory) -> None:
 
     assert source.calls == [RID]
     assert sender.videos == []
+
+
+# ── per-recipient routing (ADR-0014) ───────────────────────────────────────
+
+
+def test_recipients_none_broadcasts_to_all(session_factory) -> None:
+    # Legacy path: no recipients chosen => the delivery does not narrow the
+    # target, so the sender falls back to all configured chats (chat_ids=None).
+    _add_recording(session_factory)
+    sender, source = RecordingSender(), FakeSource(b"MP4")
+    delivery = VideoMessageDelivery(sender=sender, source=source, recipient_map=RECIPIENT_MAP)
+
+    _run(session_factory, delivery, _saved_event(recipients=None))
+
+    assert len(sender.videos) == 1
+    assert sender.videos[0]["chat_ids"] is None  # None => sender's default (all)
+
+
+def test_recipients_tiger_sends_only_to_tiger(session_factory) -> None:
+    _add_recording(session_factory)
+    sender, source = RecordingSender(), FakeSource(b"MP4")
+    delivery = VideoMessageDelivery(sender=sender, source=source, recipient_map=RECIPIENT_MAP)
+
+    _run(session_factory, delivery, _saved_event(recipients=["tiger"]))
+
+    assert len(sender.videos) == 1
+    assert sender.videos[0]["chat_ids"] == ["8397445760"]
+    assert source.calls == [RID]
+
+
+def test_recipients_tiger_and_adam_sends_only_to_configured(session_factory) -> None:
+    # Adam's chat id is blank, so ["tiger", "adam"] resolves to Tiger only.
+    _add_recording(session_factory)
+    sender, source = RecordingSender(), FakeSource(b"MP4")
+    delivery = VideoMessageDelivery(sender=sender, source=source, recipient_map=RECIPIENT_MAP)
+
+    _run(session_factory, delivery, _saved_event(recipients=["tiger", "adam"]))
+
+    assert len(sender.videos) == 1
+    assert sender.videos[0]["chat_ids"] == ["8397445760"]
+
+
+def test_recipient_with_blank_chat_id_sends_to_nobody(session_factory, caplog) -> None:
+    # Routing to Adam alone (blank chat id): saved on door-api, nothing sent,
+    # no error, and the skip is logged.
+    _add_recording(session_factory)
+    sender, source = RecordingSender(), FakeSource(b"MP4")
+    delivery = VideoMessageDelivery(sender=sender, source=source, recipient_map=RECIPIENT_MAP)
+
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        _run(session_factory, delivery, _saved_event(recipients=["adam"]))
+
+    assert sender.videos == []
+    assert sender.messages == []
+    assert source.calls == []  # not even fetched
+    assert "telegram_video_recipient_unconfigured" in caplog.text
+
+
+def test_unknown_recipient_key_is_ignored(session_factory, caplog) -> None:
+    # An unknown key is logged and skipped; here it is the only recipient, so
+    # nothing is sent (no error).
+    _add_recording(session_factory)
+    sender, source = RecordingSender(), FakeSource(b"MP4")
+    delivery = VideoMessageDelivery(sender=sender, source=source, recipient_map=RECIPIENT_MAP)
+
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        _run(session_factory, delivery, _saved_event(recipients=["nobody"]))
+
+    assert sender.videos == []
+    assert source.calls == []
+    assert "telegram_video_recipient_unknown" in caplog.text
+
+
+def test_unknown_key_mixed_with_known_still_sends_to_known(session_factory) -> None:
+    _add_recording(session_factory)
+    sender, source = RecordingSender(), FakeSource(b"MP4")
+    delivery = VideoMessageDelivery(sender=sender, source=source, recipient_map=RECIPIENT_MAP)
+
+    _run(session_factory, delivery, _saved_event(recipients=["nobody", "tiger"]))
+
+    assert len(sender.videos) == 1
+    assert sender.videos[0]["chat_ids"] == ["8397445760"]
+
+
+def test_oversized_video_routes_text_pointer_to_chosen_recipient(session_factory) -> None:
+    # The too-large fallback also honors routing: only Tiger gets the pointer.
+    _add_recording(session_factory, size_bytes=200_000_000)
+    sender, source = RecordingSender(), FakeSource(b"x")
+    delivery = VideoMessageDelivery(
+        sender=sender,
+        source=source,
+        max_video_bytes=50 * 1024 * 1024,
+        recipient_map=RECIPIENT_MAP,
+    )
+
+    _run(session_factory, delivery, _saved_event(recipients=["tiger"]))
+
+    assert sender.videos == []
+    assert len(sender.messages) == 1
+    assert sender.messages[0]["chat_ids"] == ["8397445760"]
 
 
 # ── transport ────────────────────────────────────────────────────────────
@@ -235,6 +347,24 @@ def test_client_send_video_posts_multipart_to_each_chat(monkeypatch) -> None:
     assert calls[1]["data"]["chat_id"] == "222"
 
 
+def test_client_send_video_targets_explicit_chat_subset(monkeypatch) -> None:
+    import httpx
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        httpx, "post", lambda url, **kw: calls.append({"url": url, **kw}) or _Resp()
+    )
+
+    client = TelegramClient(
+        bot_token="T", chat_ids=["111", "222"], api_base_url="https://tg.example"
+    )
+    # An explicit subset overrides the configured chats (ADR-0014 routing).
+    client.send_video(video=b"MP4", filename="clip.mp4", caption="hi", chat_ids=["222"])
+
+    assert len(calls) == 1
+    assert calls[0]["data"]["chat_id"] == "222"
+
+
 def test_client_swallows_transport_errors(monkeypatch) -> None:
     import httpx
 
@@ -278,3 +408,15 @@ def test_chat_id_list_parsing() -> None:
     cfg = Settings(TELEGRAM_CHAT_IDS=" 111, 222 ,, 333 ")
     assert cfg.telegram_chat_id_list == ["111", "222", "333"]
     assert Settings(TELEGRAM_CHAT_IDS="").telegram_chat_id_list == []
+
+
+def test_video_message_recipient_map_parsing() -> None:
+    # "key:chatid" comma-separated; a blank chat id (Adam) => known recipient,
+    # no chat configured yet.
+    cfg = Settings(VIDEO_MESSAGE_RECIPIENTS="tiger:8397445760,adam:")
+    assert cfg.video_message_recipient_map == {"tiger": "8397445760", "adam": ""}
+    # Empty config => no recipients (pure broadcast).
+    assert Settings(VIDEO_MESSAGE_RECIPIENTS="").video_message_recipient_map == {}
+    # Whitespace, a bare key, and case are all normalized.
+    cfg2 = Settings(VIDEO_MESSAGE_RECIPIENTS=" Tiger : 8397445760 , adam ")
+    assert cfg2.video_message_recipient_map == {"tiger": "8397445760", "adam": ""}

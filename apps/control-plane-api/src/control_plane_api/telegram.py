@@ -40,9 +40,11 @@ _VIDEO_KIND = "video_message"
 
 
 class TelegramSender(Protocol):
-    def send_video(self, *, video: bytes, filename: str, caption: str) -> None: ...
+    def send_video(
+        self, *, video: bytes, filename: str, caption: str, chat_ids: list[str] | None = None
+    ) -> None: ...
 
-    def send_message(self, *, text: str) -> None: ...
+    def send_message(self, *, text: str, chat_ids: list[str] | None = None) -> None: ...
 
 
 class VideoSource(Protocol):
@@ -70,10 +72,16 @@ class TelegramClient:
     def _method_url(self, method: str) -> str:
         return f"{self._base_url}/bot{self._token}/{method}"
 
-    def send_message(self, *, text: str) -> None:
+    def _targets(self, chat_ids: list[str] | None) -> list[str]:
+        # ``None`` = the configured default (all chats — owner notifications and
+        # legacy broadcast); an explicit list targets a subset (per-recipient
+        # video routing, ADR-0014).
+        return self._chat_ids if chat_ids is None else chat_ids
+
+    def send_message(self, *, text: str, chat_ids: list[str] | None = None) -> None:
         import httpx
 
-        for chat_id in self._chat_ids:
+        for chat_id in self._targets(chat_ids):
             try:
                 resp = httpx.post(
                     self._method_url("sendMessage"),
@@ -86,10 +94,12 @@ class TelegramClient:
                     "telegram_send_message_failed", extra={"chat_id": chat_id}, exc_info=True
                 )
 
-    def send_video(self, *, video: bytes, filename: str, caption: str) -> None:
+    def send_video(
+        self, *, video: bytes, filename: str, caption: str, chat_ids: list[str] | None = None
+    ) -> None:
         import httpx
 
-        for chat_id in self._chat_ids:
+        for chat_id in self._targets(chat_ids):
             try:
                 resp = httpx.post(
                     self._method_url("sendVideo"),
@@ -156,10 +166,15 @@ class VideoMessageDelivery:
         sender: TelegramSender | None = None,
         source: VideoSource | None = None,
         max_video_bytes: int = 50 * 1024 * 1024,
+        recipient_map: dict[str, str] | None = None,
     ) -> None:
         self._sender = sender
         self._source = source
         self._max_video_bytes = max_video_bytes
+        # {recipient_key: chat_id} for per-recipient routing (ADR-0014). A blank
+        # chat_id = known recipient, no chat configured yet. Empty map => nothing
+        # to route to, so every routed send is a "no configured recipient" no-op.
+        self._recipient_map = recipient_map or {}
 
     @property
     def enabled(self) -> bool:
@@ -179,6 +194,21 @@ class VideoMessageDelivery:
             logger.info("telegram_video_no_recording", extra={"session_id": session_id})
             return
 
+        # Resolve who should receive this clip. None => legacy broadcast to all
+        # configured chats (the sender's default). A list (possibly empty) => the
+        # visitor chose specific recipients; only their configured chat ids get it.
+        recipients = getattr(event.payload, "recipients", None)
+        target_chat_ids = self._resolve_targets(recipients, session_id=session_id)
+        if target_chat_ids is not None and not target_chat_ids:
+            # Recipients were chosen but none has a configured chat id (all blank
+            # or unknown). The clip stays saved on door-api — just no send, no
+            # error (ADR-0014).
+            logger.info(
+                "telegram_video_no_configured_recipient",
+                extra={"session_id": session_id, "recipients": recipients},
+            )
+            return
+
         caption = _build_caption(row, event)
         size_bytes = row.size_bytes or 0
         if size_bytes > self._max_video_bytes:
@@ -187,7 +217,8 @@ class VideoMessageDelivery:
                 text=(
                     f"{caption}\n(Clip is {mb:.0f} MB — too large for Telegram; "
                     f"open it from the admin video inbox.)"
-                )
+                ),
+                chat_ids=target_chat_ids,
             )
             return
 
@@ -200,8 +231,46 @@ class VideoMessageDelivery:
             video=video,
             filename=f"video_message_{row.recording_id}.mp4",
             caption=caption,
+            chat_ids=target_chat_ids,
         )
-        logger.info("telegram_video_sent", extra={"recording_id": row.recording_id})
+        logger.info(
+            "telegram_video_sent",
+            extra={"recording_id": row.recording_id, "chat_ids": target_chat_ids},
+        )
+
+    def _resolve_targets(
+        self, recipients: list[str] | None, *, session_id: str
+    ) -> list[str] | None:
+        """Map chosen recipient keys to chat ids (ADR-0014).
+
+        Returns ``None`` for the legacy broadcast (no recipients chosen), or a
+        deduplicated list of chat ids for the routed case. Unknown keys and
+        recipients with no configured chat id are logged and skipped, so the
+        list can come back empty — meaning "saved, but nobody to send to".
+        """
+        if not recipients:
+            return None
+        targets: list[str] = []
+        for key in recipients:
+            norm = key.strip().lower()
+            if not norm:
+                continue
+            if norm not in self._recipient_map:
+                logger.info(
+                    "telegram_video_recipient_unknown",
+                    extra={"session_id": session_id, "recipient": norm},
+                )
+                continue
+            chat_id = self._recipient_map[norm]
+            if not chat_id:
+                logger.info(
+                    "telegram_video_recipient_unconfigured",
+                    extra={"session_id": session_id, "recipient": norm},
+                )
+                continue
+            if chat_id not in targets:
+                targets.append(chat_id)
+        return targets
 
     @staticmethod
     def _lookup_video_recording(session: Session, session_id: str) -> MediaMirrorRow | None:

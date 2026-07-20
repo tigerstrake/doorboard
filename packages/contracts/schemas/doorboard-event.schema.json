@@ -1614,6 +1614,21 @@
         "from_state": {
           "$ref": "#/$defs/SessionState"
         },
+        "recipients": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recipients"
+        },
         "session_id": {
           "format": "uuid",
           "title": "Session Id",

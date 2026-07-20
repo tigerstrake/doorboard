@@ -225,6 +225,14 @@ class SessionStateChangedPayload(StrictModel):
     from_state: SessionState
     to_state: SessionState
     trigger: str
+    # Chosen recipient KEYS for per-recipient video-message routing (ADR-0014).
+    # Only populated on the VIDEO_MESSAGE_SAVED transition, when the visitor
+    # picked who the clip should go to (e.g. ["tiger"], ["adam"], or both). Keys
+    # are lowercase resident ids resolved to Telegram chat ids on the control
+    # plane via VIDEO_MESSAGE_RECIPIENTS. None/absent (the default) means legacy
+    # broadcast to every configured chat — so existing producers/consumers stay
+    # backward-compatible.
+    recipients: list[str] | None = None
 
 
 class SessionStartedPayload(StrictModel):

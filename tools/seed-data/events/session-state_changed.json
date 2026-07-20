@@ -5,6 +5,7 @@
   "occurred_at": "2026-07-04T12:34:56.123000Z",
   "payload": {
     "from_state": "BUTTON_PRESSED",
+    "recipients": null,
     "session_id": "0f7e3f6f-6d69-44f7-b2e0-20f520cb04f5",
     "to_state": "VISITOR_MODE",
     "trigger": "button"

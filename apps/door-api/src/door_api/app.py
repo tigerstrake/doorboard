@@ -523,9 +523,17 @@ async def video_message_stop() -> dict[str, Any]:
     return {"accepted": accepted, **state.snapshot_response()}
 
 
+class VideoMessageSaveBody(BaseModel):
+    # Optional chosen recipient keys for per-recipient routing (ADR-0014). The
+    # DoorPad Tiger/Adam/both buttons (a follow-up PR) POST these; when omitted
+    # the message is a legacy broadcast to all configured chats.
+    recipients: list[str] | None = None
+
+
 @app.post("/doorpad/video-message/save")
-async def video_message_save() -> dict[str, Any]:
-    accepted = state.machine.handle_video_message_save()
+async def video_message_save(body: VideoMessageSaveBody | None = None) -> dict[str, Any]:
+    recipients = body.recipients if body is not None else None
+    accepted = state.machine.handle_video_message_save(recipients=recipients)
     return {"accepted": accepted, **state.snapshot_response()}
 
 
