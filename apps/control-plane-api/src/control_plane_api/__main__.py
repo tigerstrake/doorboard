@@ -37,6 +37,14 @@ def _configure_logging() -> None:
                     "formatter": "json",
                 }
             },
+            # httpx logs every request line at INFO, including the full URL.
+            # Telegram bot calls (sendMessage/sendVideo) put the bot token in
+            # the URL path (/bot<TOKEN>/...), so INFO-level httpx/httpcore logs
+            # would leak the token to stdout. Quiet them to WARNING.
+            "loggers": {
+                "httpx": {"level": "WARNING"},
+                "httpcore": {"level": "WARNING"},
+            },
             "root": {"level": "INFO", "handlers": ["stdout"]},
         }
     )

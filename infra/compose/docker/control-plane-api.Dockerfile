@@ -10,7 +10,7 @@
 # just gives it a container to run in.
 
 FROM ghcr.io/astral-sh/uv:0.5-python3.12-bookworm-slim AS builder
-WORKDIR /src
+WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
 COPY packages/contracts packages/contracts
@@ -27,14 +27,14 @@ COPY apps/door-sync apps/door-sync
 COPY apps/wallboard-worker apps/wallboard-worker
 COPY apps/simulator apps/simulator
 
-RUN uv sync --frozen --no-dev --package doorboard-control-plane-api
+RUN uv sync --frozen --no-dev --no-editable --package doorboard-control-plane-api
 
 FROM python:3.12-slim-bookworm AS runtime
 WORKDIR /app
 
 RUN groupadd --system doorboard && useradd --system --gid doorboard --create-home doorboard
-COPY --from=builder /src/.venv /app/.venv
-COPY --from=builder /src/apps/control-plane-api /app/apps/control-plane-api
+COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/apps/control-plane-api /app/apps/control-plane-api
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1

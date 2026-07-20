@@ -470,6 +470,7 @@ name = "doorboard-wallboard-worker"
 version = "0.0.0"
 source = { editable = "apps/wallboard-worker" }
 dependencies = [
+    { name = "click" },
     { name = "doorboard-aircraft" },
     { name = "doorboard-birdnet" },
     { name = "doorboard-config" },
@@ -482,6 +483,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "click", specifier = ">=8.1" },
     { name = "doorboard-aircraft", editable = "integrations/aircraft" },
     { name = "doorboard-birdnet", editable = "integrations/birdnet" },
     { name = "doorboard-config", editable = "packages/config" },

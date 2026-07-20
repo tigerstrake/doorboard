@@ -10,6 +10,7 @@ dependencies = [
     "doorboard-aircraft",
     "doorboard-printer",
     "doorboard-food-recommendation",
+    "click>=8.1",
     "httpx",
 ]
 
