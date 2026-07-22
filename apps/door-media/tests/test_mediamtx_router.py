@@ -526,3 +526,164 @@ async def test_discard_stops_audio_and_removes_temp(
     assert proc.terminated is True
     assert not audio_path.exists()
     assert handle.recording_id not in router._active
+
+
+# ---------------------------------------------------------------------------
+# RTSP port single-sourcing
+# ---------------------------------------------------------------------------
+
+
+def test_rtsp_port_is_single_sourced(tmp_path: Path) -> None:
+    # A non-default MEDIAMTX_RTSP_PORT must flow to every place the port is used:
+    # the generated server config's rtspAddress, the rpicam publisher URL, and
+    # the read-only consumer URL — so the setting can never silently disagree.
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        MEDIAMTX_RTSP_PORT=8600,
+    )
+    assert cfg.mediamtx_rtsp_url("visitor") == "rtsp://127.0.0.1:8600/visitor"
+
+    cmd = _build_run_on_init(cfg)
+    assert "rtsp://127.0.0.1:8600/visitor" in cmd
+
+    rendered = _render_config(cfg)
+    assert "rtspAddress: 127.0.0.1:8600" in rendered
+    assert "{" not in rendered and "}" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# Snapshot (GET /snapshot frame grab)
+# ---------------------------------------------------------------------------
+
+
+class _SnapshotProc:
+    """Fake asyncio subprocess for the snapshot RTSP frame grab.
+
+    ``communicate`` returns the configured stdout/stderr and returncode. With
+    ``hang=True`` it sleeps indefinitely so ``asyncio.wait_for`` times out,
+    exercising the timeout/kill path.
+    """
+
+    def __init__(
+        self,
+        *,
+        stdout: bytes = b"",
+        stderr: bytes = b"",
+        returncode: int = 0,
+        hang: bool = False,
+    ) -> None:
+        self._stdout = stdout
+        self._stderr = stderr
+        self._final_rc = returncode
+        self._hang = hang
+        self.returncode: int | None = None
+        self.killed = False
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        if self._hang:
+            await asyncio.sleep(3600)
+        self.returncode = self._final_rc
+        return (self._stdout, self._stderr)
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    async def wait(self) -> int:
+        if self.returncode is None:
+            self.returncode = -9
+        return self.returncode
+
+
+def _snapshot_exec_factory(proc: _SnapshotProc, calls: list[list[str]]):
+    async def fake_exec(*args: str, **kwargs: object) -> _SnapshotProc:
+        calls.append(list(args))
+        return proc
+
+    return fake_exec
+
+
+@pytest.mark.anyio
+async def test_snapshot_returns_jpeg_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+    jpeg = b"\xff\xd8\xff\xe0real-frame\xff\xd9"
+    proc = _SnapshotProc(stdout=jpeg, returncode=0)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _snapshot_exec_factory(proc, calls))
+
+    router = MediaMTXRouter(cfg)
+    result = await router.snapshot()
+
+    assert result == jpeg
+    # A single read-only RTSP frame grab to stdout at the configured port/quality.
+    argv = calls[0]
+    assert argv[0] == "ffmpeg"
+    assert "rtsp://127.0.0.1:8554/visitor" in argv
+    assert argv[argv.index("-frames:v") + 1] == "1"
+    assert argv[argv.index("-q:v") + 1] == str(cfg.snapshot_jpeg_quality)
+    assert "pipe:1" in argv
+    # Never writes a file to the SSD.
+    assert list(tmp_path.rglob("*.jpg")) == []
+
+
+@pytest.mark.anyio
+async def test_snapshot_returns_none_on_ffmpeg_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+    proc = _SnapshotProc(stdout=b"", stderr=b"Connection refused", returncode=1)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _snapshot_exec_factory(proc, calls))
+
+    router = MediaMTXRouter(cfg)
+    assert await router.snapshot() is None
+
+
+@pytest.mark.anyio
+async def test_snapshot_returns_none_on_empty_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+    # returncode 0 but no bytes (stream not yet publishing) → treated as failure.
+    proc = _SnapshotProc(stdout=b"", returncode=0)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _snapshot_exec_factory(proc, calls))
+
+    router = MediaMTXRouter(cfg)
+    assert await router.snapshot() is None
+
+
+@pytest.mark.anyio
+async def test_snapshot_times_out_and_kills_ffmpeg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_SNAPSHOT_TIMEOUT_S=0.05,
+    )
+    proc = _SnapshotProc(hang=True)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _snapshot_exec_factory(proc, calls))
+
+    router = MediaMTXRouter(cfg)
+    result = await router.snapshot()
+
+    assert result is None
+    assert proc.killed is True
+
+
+@pytest.mark.anyio
+async def test_snapshot_returns_none_when_ffmpeg_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+
+    async def _raise(*args: str, **kwargs: object) -> object:
+        raise FileNotFoundError("ffmpeg not installed")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _raise)
+
+    router = MediaMTXRouter(cfg)
+    assert await router.snapshot() is None

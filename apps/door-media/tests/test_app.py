@@ -2,7 +2,9 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, cast
 
+import pytest
 from door_media._uuid7 import uuid7
+from door_media.app import _PLACEHOLDER_JPEG
 from doorboard_contracts.events import SessionState
 from fastapi.testclient import TestClient
 
@@ -236,11 +238,62 @@ def test_video_message_discard_deletes_finalized_clip(client: TestClient):
     assert missing.status_code == 404
 
 
-def test_snapshot(client: TestClient) -> None:
+def test_snapshot_mock_mode_returns_placeholder(client: TestClient) -> None:
+    # Mock mode has no camera, so /snapshot degrades to the placeholder JPEG.
     resp = client.get("/snapshot")
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/jpeg"
+    assert resp.headers["x-snapshot-source"] == "placeholder"
+    assert resp.content == _PLACEHOLDER_JPEG
     assert len(resp.content) > 0
+
+
+def test_snapshot_returns_live_frame(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    live_jpeg = b"\xff\xd8live-visitor-frame\xff\xd9"
+
+    async def _fake_snapshot() -> bytes:
+        return live_jpeg
+
+    router = cast(Any, client.app).state.router
+    monkeypatch.setattr(router, "snapshot", _fake_snapshot)
+
+    resp = client.get("/snapshot")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+    assert resp.headers["x-snapshot-source"] == "live"
+    assert resp.content == live_jpeg
+
+
+def test_snapshot_degrades_to_placeholder_when_router_returns_none(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _no_frame() -> None:
+        return None
+
+    router = cast(Any, client.app).state.router
+    monkeypatch.setattr(router, "snapshot", _no_frame)
+
+    resp = client.get("/snapshot")
+    assert resp.status_code == 200
+    assert resp.headers["x-snapshot-source"] == "placeholder"
+    assert resp.content == _PLACEHOLDER_JPEG
+
+
+def test_snapshot_degrades_to_placeholder_on_router_exception(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A snapshot failure must never bubble up as a 500 into the door path.
+    async def _boom() -> bytes:
+        raise RuntimeError("ffmpeg exploded")
+
+    router = cast(Any, client.app).state.router
+    monkeypatch.setattr(router, "snapshot", _boom)
+
+    resp = client.get("/snapshot")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+    assert resp.headers["x-snapshot-source"] == "placeholder"
+    assert resp.content == _PLACEHOLDER_JPEG
 
 
 def test_photo_booth_save_writes_consent_metadata(client: TestClient):

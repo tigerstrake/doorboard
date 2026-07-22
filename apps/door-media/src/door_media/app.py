@@ -51,6 +51,13 @@ from door_media.settings import settings as get_settings
 
 logger = logging.getLogger("door_media.app")
 
+# A tiny 1x1 black JPEG returned by GET /snapshot when no live frame is
+# available (mock mode, a not-yet-live stream, or an ffmpeg failure/timeout).
+# Keeping the endpoint a valid image on failure means door-visiond's face
+# pipeline degrades to "no faces" instead of erroring — the door path is
+# never blocked or 500'd on a missing frame.
+_PLACEHOLDER_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xda\x00\x08\x01\x01\x00\x00?\x00\x37\xff\xd9"  # noqa: E501
+
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
@@ -294,9 +301,39 @@ async def streams(request: Request) -> list[dict]:
 
 @app.get("/snapshot")
 async def snapshot(request: Request) -> Response:
-    # A tiny 1x1 black pixel JPEG for mock/sim use, satisfying "via door-media snapshot endpoint"
-    dummy_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xda\x00\x08\x01\x01\x00\x00?\x00\x37\xff\xd9"  # noqa: E501
-    return Response(content=dummy_jpeg, media_type="image/jpeg")
+    """Return a single current JPEG frame from the live visitor camera.
+
+    Unauthenticated (matches prior behaviour): door-visiond's HardwareBackend
+    polls this on an interval for face frames. In mediamtx mode the frame is
+    grabbed read-only from the live RTSP stream via ffmpeg (it does not disturb
+    the WHEP live stream or segment recording). Best-effort: in mock mode, when
+    the stream is not yet live, or on any ffmpeg failure/timeout, a tiny
+    placeholder JPEG is returned so the face/door path is never blocked or 500'd.
+
+    The ``X-Snapshot-Source`` header is ``live`` for a real frame and
+    ``placeholder`` for the fallback, so consumers/monitoring can tell them
+    apart without inspecting pixels.
+    """
+    router: MediaRouter = request.app.state.router
+    frame: bytes | None = None
+    try:
+        frame = await router.snapshot()
+    except Exception:
+        # A snapshot must never bring down the door path — degrade to placeholder.
+        logger.warning("snapshot_failed", exc_info=True)
+        frame = None
+
+    if frame:
+        return Response(
+            content=frame,
+            media_type="image/jpeg",
+            headers={"X-Snapshot-Source": "live"},
+        )
+    return Response(
+        content=_PLACEHOLDER_JPEG,
+        media_type="image/jpeg",
+        headers={"X-Snapshot-Source": "placeholder"},
+    )
 
 
 # ---------------------------------------------------------------------------
