@@ -25,6 +25,20 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """Parse a comma-separated env var into a trimmed, blank-free tuple.
+
+    Unset uses ``default``; an explicitly empty/blank value also falls back to
+    ``default`` so an operator can't accidentally disable topic subscription by
+    leaving the value empty.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    parts = tuple(item.strip() for item in raw.split(",") if item.strip())
+    return parts or default
+
+
 # Browser origins always permitted by CORS: the two local dev-server origins the
 # on-Pi kiosk build has always used. Keeping these as the baseline means the
 # CORS policy is unchanged when DOOR_API_CORS_ORIGINS is unset.
@@ -128,6 +142,18 @@ class SessionConfig:
     doorpad_effect_id: str = "generic_chime"
     doorpad_effect_duration_ms: int = 900
 
+    # Optional MQTT bridge: subscribe to the NUC control-plane's Mosquitto and
+    # re-broadcast NUC-produced ambient/presence events onto /ws so the wallboard
+    # tiles receive them. Empty URL => bridge DISABLED (default): no connection,
+    # no background task. This is a best-effort, off-critical-path extra; see
+    # mqtt_bridge.py. Topics are comma-separated and restricted to ambient/status
+    # so door-api never re-broadcasts (duplicates) its own session/vision/social
+    # events, which it already emits locally.
+    mqtt_url: str = ""
+    mqtt_username: str = ""
+    mqtt_password: str = ""
+    mqtt_topics: tuple[str, ...] = ("doorboard/ambient/#", "doorboard/status/#")
+
     @staticmethod
     def from_env() -> SessionConfig:
         """Load configuration, applying environment variable overrides."""
@@ -182,5 +208,12 @@ class SessionConfig:
             doorpad_effect_id=os.environ.get("DOOR_API_DOORPAD_EFFECT_ID", "generic_chime"),
             doorpad_effect_duration_ms=int(
                 _env_float("DOOR_API_DOORPAD_EFFECT_DURATION_MS", 900.0)
+            ),
+            mqtt_url=os.environ.get("DOOR_API_MQTT_URL", ""),
+            mqtt_username=os.environ.get("DOOR_API_MQTT_USERNAME", ""),
+            mqtt_password=os.environ.get("DOOR_API_MQTT_PASSWORD", ""),
+            mqtt_topics=_env_csv(
+                "DOOR_API_MQTT_TOPICS",
+                ("doorboard/ambient/#", "doorboard/status/#"),
             ),
         )

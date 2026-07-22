@@ -2,7 +2,7 @@
 name = "doorboard-door-api"
 version = "0.0.0"
 requires-python = ">=3.12"
-dependencies = ["doorboard-contracts", "doorboard-esp32-link", "fastapi", "uvicorn", "websockets", "httpx"]
+dependencies = ["doorboard-contracts", "doorboard-esp32-link", "fastapi", "uvicorn", "websockets", "httpx", "aiomqtt>=2.0,<3.0"]
 
 [project.scripts]
 door-api = "door_api.__main__:main"
