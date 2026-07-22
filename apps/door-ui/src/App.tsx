@@ -27,7 +27,6 @@ import {
   aircraftFixture,
   satelliteFixture,
   printerFixture,
-  moodFixture,
   scoreboardFixture,
   foodFixture,
   aboutFixture,
@@ -548,11 +547,6 @@ export function App() {
         }
         : null
   );
-  const [moodUpdate, setMoodUpdate] = useState<TimedAmbient<{ mood: string }> | null>(() =>
-    MOCK_AMBIENT_ENABLED
-      ? { occurredAt: moodFixture.occurred_at, payload: { mood: moodFixture.mood } }
-      : null
-  );
   const [scoreboardEntries, setScoreboardEntries] = useState<Record<string, ScoreboardEntry>>(() =>
     MOCK_AMBIENT_ENABLED
       ? Object.fromEntries(
@@ -866,14 +860,6 @@ export function App() {
       setFoodRecommendation({ payload: event.payload, occurredAt: event.occurred_at });
     });
 
-    const unsubscribeMood = client.subscribe("social.mood_updated", (event: DoorboardEvent) => {
-      if (event.type !== "social.mood_updated") return;
-      setMoodUpdate({
-        payload: { mood: safeDisplayText(event.payload.mood, 40) },
-        occurredAt: event.occurred_at,
-      });
-    });
-
     const unsubscribeScoreboard = client.subscribe(
       "social.scoreboard_updated",
       (event: DoorboardEvent) => {
@@ -926,7 +912,6 @@ export function App() {
       unsubscribeSatellite();
       unsubscribePrinter();
       unsubscribeFood();
-      unsubscribeMood();
       unsubscribeScoreboard();
       unsubscribeWallboardFocus();
       client.close();
@@ -1521,22 +1506,6 @@ export function App() {
                 </div>
               ))}
               {presenceEntries.length === 0 && <p>Presence unavailable.</p>}
-            </div>
-          </Tile>
-        ),
-      },
-      {
-        key: "mood",
-        channel: null,
-        node: (
-          <Tile title="Current Mood" asOf={moodUpdate?.occurredAt ?? null} staleAfterMs={12 * 60 * 60 * 1000}>
-            <div className="mood-tile-content">
-              {moodUpdate ? (
-                <>
-                  <span className="mood-emoji" aria-hidden="true">Status</span>
-                  <span className="mood-text">Resident mood: <strong>{moodUpdate.payload.mood || "Not shared"}</strong></span>
-                </>
-              ) : <span className="mood-text">No mood update available.</span>}
             </div>
           </Tile>
         ),
