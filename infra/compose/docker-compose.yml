@@ -198,6 +198,11 @@ services:
       SATELLITES_OBSERVER_ELEVATION: ${OBSERVER_ALT_M:-0}
       AIRCRAFT_OBSERVER_LAT: ${OBSERVER_LAT:-0}
       AIRCRAFT_OBSERVER_LON: ${OBSERVER_LON:-0}
+      # Best-effort external enrichment of the nearest few planes (adsbdb +
+      # planespotters, no API key). Default on; disable to emit basic OpenSky
+      # data only. MAX caps how many nearest planes get enriched per poll.
+      AIRCRAFT_ENRICHMENT_ENABLED: ${AIRCRAFT_ENRICHMENT_ENABLED:-true}
+      AIRCRAFT_ENRICHMENT_MAX: ${AIRCRAFT_ENRICHMENT_MAX:-6}
       OCTOPRINT_URL: ${PRINTER_API_URL:-http://octopi.local}
       # Writable dir for skyfield's ephemeris. The image bundles de421.bsp here
       # so the satellite job never downloads at runtime (and never crashes on a
