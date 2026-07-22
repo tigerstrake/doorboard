@@ -113,3 +113,30 @@ export function isWallboardFocusRequest(value: unknown): value is WallboardFocus
   if (candidate.mode === "ambient") return candidate.channel === null;
   return WALLBOARD_CHANNELS.some((channel) => channel.id === candidate.channel);
 }
+
+/**
+ * The `type` string of the ephemeral `/ws` control message the doorpad's focus
+ * request is broadcast as (see door-api's `POST /wallboard/focus`). This is NOT
+ * a contract DoorboardEvent — it is a transient UI-control message.
+ */
+export const WALLBOARD_FOCUS_WS_TYPE = "wallboard.focus_changed";
+
+/**
+ * Build a `WallboardFocusRequest` from a `wallboard.focus_changed` `/ws`
+ * message. The message carries the same camelCase fields as
+ * `WallboardFocusRequest` (plus a `type` discriminator), so we lift the known
+ * fields and validate them through `isWallboardFocusRequest`. Returns `null`
+ * for anything that does not describe a valid focus request.
+ */
+export function wallboardFocusRequestFromMessage(value: unknown): WallboardFocusRequest | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const candidate = {
+    requestId: raw.requestId,
+    mode: raw.mode,
+    channel: raw.channel,
+    requestedAt: raw.requestedAt,
+    expiresAt: raw.expiresAt,
+  };
+  return isWallboardFocusRequest(candidate) ? candidate : null;
+}
