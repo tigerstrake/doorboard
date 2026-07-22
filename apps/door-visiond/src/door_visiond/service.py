@@ -13,6 +13,7 @@ import shutil
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from doorboard_contracts.events import DoorboardEvent
 from doorboard_esp32_link import Esp32Transport, wire_message_from_event
@@ -46,6 +47,9 @@ from door_visiond.privacy_store import PrivacyStore
 from door_visiond.purge_outbox import PurgeOutbox
 from door_visiond.settings import Settings
 from door_visiond.storage_security import is_luks_backed
+
+if TYPE_CHECKING:
+    from door_visiond.hailo_pipeline import HailoFacePipeline
 
 logger = get_logger("door_visiond.service")
 
@@ -128,6 +132,9 @@ class VisiondService:
         self._pipeline_errors = 0
         self._pipeline_consecutive_errors = 0
         self._runtime_degraded_detail: str | None = None
+        # Shared Hailo face pipeline (built once, lazily, for hardware modes so
+        # the VDevice + models are reused by both the embedder and the backend).
+        self._hailo_pipeline: HailoFacePipeline | None = None
 
         # Startup compatibility check → effective mode.
         self._compat: CompatResult = check_compatibility(
@@ -175,16 +182,40 @@ class VisiondService:
 
     # -- construction helpers ----------------------------------------------
 
+    def _get_hailo_pipeline(self) -> HailoFacePipeline:
+        """Build the shared face pipeline once (lazy import keeps CI safe)."""
+        if self._hailo_pipeline is None:
+            from door_visiond.hailo_pipeline import HailoFacePipeline
+
+            self._hailo_pipeline = HailoFacePipeline(
+                detector_hef_path=str(self._settings.detector_hef_path),
+                recognizer_hef_path=str(self._settings.recognizer_hef_path),
+                model_id=self._settings.model_id,
+                dim=self._settings.model_dim,
+            )
+        return self._hailo_pipeline
+
     def _build_embedder(self) -> Embedder:
         if self._effective_mode in _HARDWARE_MODES:
-            return HailoEmbedder(dim=self._settings.model_dim, model_id=self._settings.model_id)
+            return HailoEmbedder(
+                dim=self._settings.model_dim,
+                model_id=self._settings.model_id,
+                pipeline=self._get_hailo_pipeline(),
+            )
         return MockEmbedder(dim=self._settings.model_dim)
 
     def _build_backend(self) -> VisionBackend:
         if self._effective_mode == "disabled":
             return DisabledBackend(interval_ms=self._settings.frame_interval_ms)
         if self._effective_mode in _HARDWARE_MODES:
-            return HardwareBackend(mode=self._effective_mode, embedder=self._embedder)
+            return HardwareBackend(
+                mode=self._effective_mode,
+                embedder=self._embedder,
+                snapshot_url=self._settings.snapshot_url,
+                snapshot_timeout_s=self._settings.snapshot_timeout_s,
+                pipeline=self._get_hailo_pipeline(),
+                interval_ms=self._settings.frame_interval_ms,
+            )
         # mock
         return ScriptedBackend(
             default_mock_script(self._settings.model_dim),

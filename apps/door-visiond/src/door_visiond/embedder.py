@@ -11,9 +11,12 @@ couple the pipeline to a demo's structure (handoff §10).
 from __future__ import annotations
 
 import hashlib
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from door_visiond.embedding import Embedding
+
+if TYPE_CHECKING:
+    from door_visiond.hailo_pipeline import HailoFacePipeline
 
 
 class Embedder(Protocol):
@@ -91,16 +94,29 @@ class MockEmbedder:
 
 
 class HailoEmbedder:
-    """Hardware embedder placeholder — never instantiated without a Hailo device.
+    """Hardware embedder: detect -> pick largest face -> align -> ArcFace embed.
 
-    Real detect/align/embed is deferred to hardware bring-up (T-302 acceptance:
-    hardware paths behind this adapter).  Constructing/using it in a
-    hardware-absent environment fails loudly rather than pretending.
+    Delegates to a shared :class:`~door_visiond.hailo_pipeline.HailoFacePipeline`
+    (T-305) so the VDevice + models are opened once and reused across enrollment
+    stills and live frames.  Constructed only after the startup compat check
+    passes.  ``hailo_platform``/``cv2`` are imported lazily by the pipeline, so
+    importing this module stays safe in mock/CI environments.
     """
 
-    def __init__(self, *, dim: int, model_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        dim: int,
+        model_id: str,
+        pipeline: HailoFacePipeline | None = None,
+        detector_hef_path: str | None = None,
+        recognizer_hef_path: str | None = None,
+    ) -> None:
         self._dim = dim
         self._model_id = model_id
+        self._pipeline = pipeline
+        self._detector_hef_path = detector_hef_path
+        self._recognizer_hef_path = recognizer_hef_path
 
     @property
     def model_id(self) -> str:
@@ -110,6 +126,28 @@ class HailoEmbedder:
     def dim(self) -> int:
         return self._dim
 
+    @property
+    def pipeline(self) -> HailoFacePipeline:
+        """The shared face pipeline (built lazily from HEF paths if needed)."""
+        if self._pipeline is None:
+            if self._detector_hef_path is None or self._recognizer_hef_path is None:
+                msg = "HailoEmbedder has neither a pipeline nor HEF paths configured"
+                raise RuntimeError(msg)
+            from door_visiond.hailo_pipeline import HailoFacePipeline
+
+            self._pipeline = HailoFacePipeline(
+                detector_hef_path=self._detector_hef_path,
+                recognizer_hef_path=self._recognizer_hef_path,
+                model_id=self._model_id,
+                dim=self._dim,
+            )
+        return self._pipeline
+
     def embed(self, image_bytes: bytes) -> tuple[Embedding, float]:
-        msg = "HailoEmbedder requires the Hailo runtime; unavailable in this environment"
-        raise RuntimeError(msg)
+        face = self.pipeline.embed_primary(image_bytes)
+        if face is None:
+            # No face detected: return a placeholder zero vector with a quality
+            # below min_enroll_quality so enrollment rejects it (never enrolls a
+            # face-less image).
+            return Embedding(tuple([0.0] * self._dim)), 0.0
+        return Embedding(face.vector), face.score

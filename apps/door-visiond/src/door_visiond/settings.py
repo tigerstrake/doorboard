@@ -21,7 +21,8 @@ _ALLOWED_MODES: frozenset[str] = frozenset(
 
 # Pinned Hailo runtime + model versions (ADR-0009 §1 / T-302 startup check).
 # The device must report exactly these or the pipeline degrades to `disabled`.
-PINNED_HAILO_RUNTIME: str = "4.19.0"
+# The Hailo face path (T-305) is validated on HailoRT 4.23.
+PINNED_HAILO_RUNTIME: str = "4.23.0"
 PINNED_MODEL_ID: str = "arcface_mobilefacenet_v1"
 PINNED_MODEL_DIM: int = 512
 
@@ -98,6 +99,30 @@ class Settings(BaseSettings):
 
     # ── capture cadence (mock/hardware frame pacing) ──────────────────────
     frame_interval_ms: int = Field(default=100, alias="VISIOND_FRAME_INTERVAL_MS")
+
+    # ── Hailo face pipeline (T-305) ───────────────────────────────────────
+    # Two HEFs live on the SSD: an SCRFD detector and an ArcFace recognizer.
+    # Paths are only touched in hardware modes; mock/disabled never load them.
+    detector_hef_path: Path = Field(
+        default=Path("/mnt/ssd/doorboard/models/scrfd_2.5g.hef"),
+        alias="VISIOND_DETECTOR_HEF_PATH",
+    )
+    recognizer_hef_path: Path = Field(
+        default=Path("/mnt/ssd/doorboard/models/arcface_mobilefacenet.hef"),
+        alias="VISIOND_RECOGNIZER_HEF_PATH",
+    )
+    # door-media owns the camera; door-visiond pulls a still over HTTP rather
+    # than opening the camera itself (ADR-0007 trust boundary). The MediaMTX
+    # RTSP stream (rtsp://127.0.0.1:8554/visitor) is the alternative source.
+    snapshot_url: str = Field(
+        default="http://127.0.0.1:8082/snapshot",
+        alias="VISIOND_SNAPSHOT_URL",
+    )
+    snapshot_timeout_s: float = Field(
+        default=2.0,
+        alias="VISIOND_SNAPSHOT_TIMEOUT_S",
+        gt=0,
+    )
 
     @field_validator("vision_mode")
     @classmethod

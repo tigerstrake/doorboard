@@ -22,7 +22,7 @@ import collections
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 
 from doorboard_contracts.events import DoorboardEvent
@@ -41,6 +41,9 @@ from door_visiond.events import (
 from door_visiond.identity_cache import CurrentVisitor, IdentityCache
 from door_visiond.logging_setup import get_logger
 from door_visiond.matcher import Matcher, MatchResult
+
+if TYPE_CHECKING:
+    from door_visiond.hailo_pipeline import HailoFacePipeline
 
 logger = get_logger("door_visiond.pipeline")
 
@@ -413,32 +416,97 @@ class ScriptedBackend:
 
 
 class HardwareBackend:
-    """Hailo-backed capture (single/dual-camera/hardware). Seam only in this env.
+    """Hailo-backed capture (single/dual-camera/hardware).
 
-    Real capture + detect + align + embed is deferred to hardware bring-up; the
-    interface is fixed here so the same :class:`PipelineCore` runs unchanged.
+    door-media owns the camera; this backend pulls a still from door-media's
+    HTTP snapshot endpoint (never opening the camera itself), then runs the
+    shared :class:`~door_visiond.hailo_pipeline.HailoFacePipeline` to detect all
+    faces and embed each.  The resulting :class:`FrameCapture` feeds the same
+    unchanged :class:`PipelineCore`.  Blocking HTTP + inference run in a worker
+    thread so the asyncio run loop is never stalled.
+
+    Privacy kill switch (E-6): while ``set_capturing(False)`` is in effect, no
+    snapshot is fetched and ``next_capture`` returns ``None`` — capture stops at
+    the source.
     """
 
-    def __init__(self, *, mode: str, embedder: Embedder, interval_ms: int = 33) -> None:
+    def __init__(
+        self,
+        *,
+        mode: str,
+        embedder: Embedder,
+        snapshot_url: str,
+        snapshot_timeout_s: float = 2.0,
+        pipeline: HailoFacePipeline | None = None,
+        interval_ms: int = 33,
+    ) -> None:
         self._mode = mode
         self._embedder = embedder
+        self._snapshot_url = snapshot_url
+        self._snapshot_timeout_s = snapshot_timeout_s
+        self._pipeline = pipeline
         self._interval_s = interval_ms / 1000.0
         self._capturing = True
+        self._last_inference_ms = 0.0
 
     def set_capturing(self, enabled: bool) -> None:
         self._capturing = enabled
 
-    async def next_capture(self) -> FrameCapture | None:  # pragma: no cover - needs hardware
-        msg = "HardwareBackend requires the Hailo runtime + camera; unavailable here"
-        raise RuntimeError(msg)
+    def _get_pipeline(self) -> HailoFacePipeline:
+        if self._pipeline is None:
+            from door_visiond.embedder import HailoEmbedder
 
-    def status(self) -> BackendStatus:  # pragma: no cover - needs hardware
+            if not isinstance(self._embedder, HailoEmbedder):
+                msg = "HardwareBackend needs a HailoFacePipeline or a HailoEmbedder"
+                raise RuntimeError(msg)
+            self._pipeline = self._embedder.pipeline
+        return self._pipeline
+
+    def _fetch_snapshot(self) -> bytes:
+        import urllib.request
+
+        request = urllib.request.Request(self._snapshot_url, method="GET")  # noqa: S310
+        with urllib.request.urlopen(  # noqa: S310
+            request, timeout=self._snapshot_timeout_s
+        ) as response:
+            return response.read()
+
+    def _capture_blocking(self) -> FrameCapture | None:
+        if not self._capturing:
+            return None
+        image_bytes = self._fetch_snapshot()
+        faces, inference_ms = self._get_pipeline().embed_all(image_bytes)
+        # Re-check the kill switch: do not surface faces captured mid-toggle.
+        if not self._capturing:
+            return None
+        self._last_inference_ms = inference_ms
+        detected = tuple(
+            DetectedFace(
+                size_px=face.size_px,
+                embedding=Embedding(face.vector),
+                quality=face.score,
+            )
+            for face in faces
+        )
+        return FrameCapture(faces=detected, inference_ms=inference_ms)
+
+    async def next_capture(self) -> FrameCapture | None:
+        await asyncio.sleep(self._interval_s)
+        if not self._capturing:
+            return None
+        return await asyncio.to_thread(self._capture_blocking)
+
+    def status(self) -> BackendStatus:
         return BackendStatus(
-            mode=self._mode, hailo_ok=self._capturing, fps=0.0, inference_ms_p50=0.0
+            mode=self._mode,
+            hailo_ok=self._capturing,
+            fps=1.0 / self._interval_s if self._interval_s else 0.0,
+            inference_ms_p50=self._last_inference_ms,
         )
 
-    async def close(self) -> None:  # pragma: no cover - needs hardware
-        return
+    async def close(self) -> None:
+        if self._pipeline is not None:
+            await asyncio.to_thread(self._pipeline.close)
 
 
 def default_mock_script(dim: int) -> list[FrameCapture]:
