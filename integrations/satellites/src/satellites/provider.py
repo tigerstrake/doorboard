@@ -11,7 +11,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 # We import skyfield components lazily or safely
-from skyfield.api import EarthSatellite, load, wgs84
+from skyfield.api import EarthSatellite, Loader, load, wgs84
 
 logger = logging.getLogger("doorboard.satellites")
 
@@ -24,6 +24,10 @@ class SatelliteConfig(BaseModel):
     min_elevation: float = 10.0
     tle_url: str = "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle"
     tle_cache_path: str = "/tmp/tle_cache.txt"
+    # Writable directory for skyfield's ephemeris (de421.bsp). skyfield's global
+    # `load` reads/writes the CWD, which the container worker user cannot write
+    # ([Errno 13] on 'de421.bsp.download'); an explicit Loader dir fixes that.
+    ephemeris_dir: str = "/tmp/skyfield"
 
 
 class SatelliteProvider(abc.ABC):
@@ -40,9 +44,16 @@ class SkyfieldSatelliteProvider(SatelliteProvider):
 
     def _get_ephemeris(self) -> Any:
         if self._eph is None:
-            # Lazy load ephemeris. In production, this downloads/caches de421.bsp locally.
-            # In unit tests, this call is mocked.
-            self._eph = load("de421.bsp")
+            # Lazy load ephemeris via an explicit Loader pointed at a writable
+            # directory (the global `load` uses the CWD, which isn't writable by
+            # the container worker user). The Loader reads de421.bsp from the dir
+            # and only downloads it once, into that same writable dir, if missing.
+            ephemeris_dir = Path(self.config.ephemeris_dir)
+            ephemeris_dir.mkdir(parents=True, exist_ok=True)
+            # A Loader instance is callable: loader("de421.bsp") loads from its
+            # directory and only downloads (into that same dir) when missing.
+            loader = Loader(self.config.ephemeris_dir)
+            self._eph = loader("de421.bsp")
         return self._eph
 
     def _get_tles(self) -> dict[str, tuple[str, str]]:

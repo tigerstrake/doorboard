@@ -52,6 +52,13 @@ class Settings(BaseSettings):
         default="/tmp/satellite_tle_cache.txt",
         alias="SATELLITES_TLE_CACHE_PATH",
     )
+    # Writable dir for skyfield's ephemeris (de421.bsp). Must be writable by the
+    # worker user; the container image bundles de421.bsp here so it never
+    # downloads at runtime.
+    satellites_ephemeris_dir: str = Field(
+        default="/tmp/skyfield",
+        alias="SATELLITES_EPHEMERIS_DIR",
+    )
 
     feature_aircraft: bool = Field(default=False, alias="FEATURE_AIRCRAFT")
     # OpenSky OAuth2 client credentials (Basic auth is no longer accepted by

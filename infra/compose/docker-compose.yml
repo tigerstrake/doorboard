@@ -199,6 +199,19 @@ services:
       AIRCRAFT_OBSERVER_LAT: ${OBSERVER_LAT:-0}
       AIRCRAFT_OBSERVER_LON: ${OBSERVER_LON:-0}
       OCTOPRINT_URL: ${PRINTER_API_URL:-http://octopi.local}
+      # Writable dir for skyfield's ephemeris. The image bundles de421.bsp here
+      # so the satellite job never downloads at runtime (and never crashes on a
+      # read-only CWD). Override only if you mount a different writable path.
+      SATELLITES_EPHEMERIS_DIR: ${SATELLITES_EPHEMERIS_DIR:-/tmp/skyfield}
+      # Food recommendation provider + knobs. Default "mock" keeps behaviour
+      # unchanged; set FOOD_PROVIDER=stanford (with FEATURE_FOOD=true) for the
+      # real Stanford R&DE menus. OPENAI_* only used when FOOD_USE_AI=true.
+      FOOD_PROVIDER: ${FOOD_PROVIDER:-mock}
+      FOOD_HALL_IDS: ${FOOD_HALL_IDS:-}
+      FOOD_MEAL_OVERRIDE: ${FOOD_MEAL_OVERRIDE:-}
+      FOOD_USE_AI: ${FOOD_USE_AI:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
 
   caddy:
     image: caddy:2-alpine

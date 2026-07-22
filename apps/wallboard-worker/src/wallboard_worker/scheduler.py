@@ -9,7 +9,8 @@ from dataclasses import dataclass
 
 from aircraft.provider import AircraftConfig, MockAircraftProvider, OpenSkyAircraftProvider
 from birdnet.provider import BirdnetConfig, BirdnetGoProvider, MockBirdProvider
-from food_recommendation.provider import MockFoodRecommendationProvider
+from food_recommendation.provider import FoodRecommendationProvider, MockFoodRecommendationProvider
+from food_recommendation.stanford.provider import StanfordDiningConfig, StanfordDiningProvider
 from printer.provider import MockPrinterProvider, OctoPrintProvider, PrinterConfig
 from satellites.provider import MockSatelliteProvider, SatelliteConfig, SkyfieldSatelliteProvider
 
@@ -139,6 +140,7 @@ def build_jobs(settings: Settings, *, force_mock: bool = False) -> list[Schedule
                     min_elevation=settings.satellites_min_elevation,
                     tle_url=settings.satellites_tle_url,
                     tle_cache_path=settings.satellites_tle_cache_path,
+                    ephemeris_dir=settings.satellites_ephemeris_dir,
                 )
             )
         )
@@ -196,7 +198,7 @@ def build_jobs(settings: Settings, *, force_mock: bool = False) -> list[Schedule
         )
 
     if settings.feature_food:
-        food = MockFoodRecommendationProvider()
+        food = build_food_provider(settings, force_mock=force_mock)
         jobs.append(
             ScheduledJob(
                 "food-recommendation",
@@ -205,3 +207,29 @@ def build_jobs(settings: Settings, *, force_mock: bool = False) -> list[Schedule
             )
         )
     return jobs
+
+
+def build_food_provider(
+    settings: Settings, *, force_mock: bool = False
+) -> FoodRecommendationProvider:
+    """Select the food recommendation provider from settings.
+
+    Mock is the fallback whenever the feature is off, mocking is forced, or the
+    real provider isn't selected. The real Stanford provider scrapes + optionally
+    calls an LLM, so it only runs when explicitly configured (FOOD_PROVIDER=stanford).
+    Shared by the daemon scheduler and the one-shot CLI so they stay in sync.
+    """
+    if force_mock or not settings.feature_food or settings.food_provider != "stanford":
+        logger.info("Using MockFoodRecommendationProvider")
+        return MockFoodRecommendationProvider()
+
+    logger.info("Using StanfordDiningProvider (ai=%s)", settings.food_use_ai)
+    config = StanfordDiningConfig(
+        hall_ids=settings.food_hall_id_list(),
+        meal_override=settings.food_meal_override or None,
+        preferences_path=settings.food_preferences_path or None,
+        use_ai=settings.food_use_ai,
+        openai_api_key=settings.openai_api_key,
+        openai_model=settings.openai_model,
+    )
+    return StanfordDiningProvider(config)

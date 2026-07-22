@@ -28,6 +28,11 @@ RUN groupadd --system doorboard && useradd --system --gid doorboard --create-hom
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/apps/wallboard-worker /app/apps/wallboard-worker
 
+# Bundle the JPL ephemeris (~16 MB) at the default SATELLITES_EPHEMERIS_DIR so the
+# satellite job never has to download de421.bsp at runtime. skyfield's Loader
+# reads it from this worker-owned, writable dir (avoids the CWD [Errno 13] crash).
+COPY --chown=doorboard:doorboard de421.bsp /tmp/skyfield/de421.bsp
+
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 
