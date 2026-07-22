@@ -46,18 +46,52 @@ export const birdFixture = {
 
 export const aircraftFixture = {
   occurred_at: "2026-07-04T12:34:56.123Z",
+  // Observer = the door (Stanford). Real payloads carry this; the mock includes
+  // it so `pnpm dev` centres the Flights map without a live backend.
+  observer: { latitude: 37.4275, longitude: -122.1697 },
   nearby: [
     {
-      callsign: "UAL123",
-      altitude_ft: 32000,
-      distance_km: 18.2,
-      heading: 94,
-    },
-    {
+      // Fully enriched plane — exercises every field of the rich detail card.
       callsign: "SWA456",
       altitude_ft: 12000,
       distance_km: 8.5,
       heading: 270,
+      icao24: "a1b2c3",
+      latitude: 37.462,
+      longitude: -122.115,
+      ground_speed_kmh: 742,
+      vertical_rate_fpm: 1280,
+      on_ground: false,
+      origin_country: "United States",
+      registration: "N8329B",
+      aircraft_type: "Boeing 737-800",
+      operator: "Southwest Airlines",
+      origin: "LAX",
+      destination: "SFO",
+      photo_url: "https://placehold.co/264x160/0a1420/35d6ff?text=737",
+      photo_attribution: "Photo: Demo / placeholder",
+    },
+    {
+      // Partially enriched — has a position and a couple of extras.
+      callsign: "UAL123",
+      altitude_ft: 32000,
+      distance_km: 18.2,
+      heading: 94,
+      icao24: "d4e5f6",
+      latitude: 37.39,
+      longitude: -122.03,
+      ground_speed_kmh: 905,
+      vertical_rate_fpm: -640,
+      aircraft_type: "Airbus A320",
+      destination: "DEN",
+    },
+    {
+      // Sparse plane — only the original four fields, no coordinates. Proves the
+      // card stays clean and the map tolerates planes it cannot plot.
+      callsign: "N512QS",
+      altitude_ft: 4200,
+      distance_km: 3.1,
+      heading: 30,
     },
   ],
 };

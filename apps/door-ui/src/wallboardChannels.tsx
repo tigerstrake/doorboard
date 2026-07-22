@@ -9,6 +9,7 @@ import type {
 } from "@doorboard/contracts";
 import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
 import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
+import { AircraftFocusPanel } from "./wallboard/AircraftFocusPanel";
 import { WALLBOARD_CHANNELS } from "./wallboardChannelModel";
 import type { WallboardFocusChannel } from "./wallboardChannelModel";
 
@@ -280,17 +281,7 @@ function renderFocusContent(
   switch (channel) {
     case "aircraft":
       return ambient.aircraft ? (
-        <div className="focus-list focus-list--large">
-          {ambient.aircraft.nearby.slice(0, 8).map((aircraft, index) => (
-            <div className="focus-row" key={`${aircraft.callsign}-${index}`}>
-              <strong>{safeText(aircraft.callsign, 16) || "Aircraft"}</strong>
-              <span>{aircraft.altitude_ft.toLocaleString()} ft</span>
-              <span>{aircraft.distance_km} km away</span>
-              <span>Heading {aircraft.heading}°</span>
-            </div>
-          ))}
-          {ambient.aircraft.nearby.length === 0 && <p className="focus-empty">No nearby aircraft in the latest update.</p>}
-        </div>
+        <AircraftFocusPanel payload={ambient.aircraft} />
       ) : <p className="focus-empty">Aircraft data is unavailable.</p>;
     case "satellite":
       return ambient.satellite ? (

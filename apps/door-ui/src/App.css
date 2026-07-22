@@ -1811,6 +1811,261 @@ input:focus-visible {
   font-size: clamp(1.1rem, 1.8vw, 1.7rem);
 }
 
+/* ── Flights focus panel: live map (top) + rich detail list (below) ───────── */
+/* The aircraft channel fills the whole panel rather than centring a card, so
+   the map + scrollable list own the full height. */
+.wallboard-focus-split--aircraft .wallboard-focus-panel {
+  place-items: stretch;
+  padding: 0;
+  overflow: hidden;
+}
+
+.flights-focus {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1.15fr) minmax(0, 1fr);
+}
+
+.flights-map-wrap {
+  position: relative;
+  min-height: 0;
+  border-bottom: 1px solid var(--db-border-hover);
+}
+
+.flights-map {
+  height: 100%;
+  width: 100%;
+  background: #0a1420;
+}
+
+.flights-map .leaflet-container {
+  height: 100%;
+  width: 100%;
+  background: #0a1420;
+  font-family: inherit;
+}
+
+.flights-map .leaflet-control-attribution {
+  background: rgba(3, 14, 29, 0.72);
+  color: var(--db-text-muted);
+  font-size: 0.62rem;
+}
+
+.flights-map .leaflet-control-attribution a {
+  color: var(--db-text-secondary);
+}
+
+.flights-map-note {
+  position: absolute;
+  z-index: 500;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  margin: 0;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid rgba(53, 214, 255, 0.4);
+  border-radius: var(--db-radius-sm);
+  background: rgba(3, 14, 29, 0.9);
+  color: var(--db-text-secondary);
+  font-size: 0.9rem;
+}
+
+/* Plane markers — a heading-rotated glyph + callsign label. */
+.leaflet-container .flight-marker-icon,
+.leaflet-container .flights-observer-icon {
+  background: transparent;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+}
+
+.flight-marker__glyph {
+  display: block;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: var(--db-accent);
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.95), 0 0 12px rgba(53, 214, 255, 0.5);
+}
+
+.flight-marker__label {
+  margin-top: 1px;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--db-font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.02em;
+  color: #eaf6ff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
+}
+
+.flights-observer__ring {
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--db-accent);
+  border-radius: 50%;
+  opacity: 0.6;
+  animation: flights-observer-pulse 2.4s ease-out infinite;
+}
+
+.flights-observer__dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  background: var(--db-accent);
+  box-shadow: 0 0 8px var(--db-accent);
+}
+
+@keyframes flights-observer-pulse {
+  0% { transform: scale(0.55); opacity: 0.75; }
+  100% { transform: scale(1.7); opacity: 0; }
+}
+
+/* Detail list — scrolls inside the panel, one card per plane. */
+.flights-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--db-spacing-md) clamp(1rem, 2vw, 1.75rem);
+  display: grid;
+  gap: var(--db-spacing-sm);
+  align-content: start;
+}
+
+.flights-list__caption {
+  margin: 0 0 0.25rem;
+  color: var(--db-text-muted);
+  font-family: var(--db-font-mono);
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.flight-card {
+  display: flex;
+  gap: var(--db-spacing-md);
+  align-items: center;
+  padding: var(--db-spacing-sm) var(--db-spacing-md);
+  border: 1px solid var(--db-border-color);
+  border-radius: var(--db-radius-md);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.flight-card__photo {
+  flex: none;
+  width: 132px;
+  margin: 0;
+}
+
+.flight-card__photo img {
+  width: 100%;
+  height: 80px;
+  object-fit: cover;
+  border-radius: var(--db-radius-sm);
+  background: rgba(3, 14, 29, 0.6);
+}
+
+.flight-card__photo figcaption {
+  margin-top: 2px;
+  color: var(--db-text-muted);
+  font-size: 0.62rem;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flight-card__body {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.flight-card__head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.flight-card__callsign {
+  font-family: var(--db-font-display);
+  font-size: clamp(1.25rem, 1.9vw, 1.7rem);
+  color: var(--db-text-primary);
+}
+
+.flight-card__reg {
+  font-family: var(--db-font-mono);
+  font-size: 0.95rem;
+  color: var(--db-accent);
+}
+
+.flight-card__operator {
+  color: var(--db-text-secondary);
+  font-size: 0.95rem;
+}
+
+.flight-card__sub {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  color: var(--db-text-secondary);
+  font-size: 0.95rem;
+}
+
+.flight-card__route {
+  font-family: var(--db-font-mono);
+  color: var(--db-text-primary);
+}
+
+.flight-card__route span {
+  color: var(--db-accent);
+  padding: 0 0.15rem;
+}
+
+.flight-card__metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.1rem;
+  margin: 0;
+}
+
+.flight-card__metric {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.flight-card__metric dt {
+  color: var(--db-text-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.flight-card__metric dd {
+  margin: 0;
+  font-family: var(--db-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.05rem;
+  color: var(--db-text-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flights-observer__ring {
+    animation: none;
+  }
+}
+
 /* Secondary rail: the remaining tiles, live and shrunk into a dense grid. */
 .wallboard-focus-rail {
   min-height: 0;

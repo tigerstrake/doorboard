@@ -6,6 +6,30 @@ import type {
   AmbientAircraftSummaryPayload,
   AmbientSatellitePassPayload,
 } from "@doorboard/contracts";
+
+// The aircraft focus panel mounts a Leaflet map, which needs a real DOM/canvas
+// + network tiles. Mock Leaflet (and its CSS) so this suite exercises the split
+// layout in jsdom without the real library.
+vi.mock("leaflet", () => {
+  const chainable = () => {
+    const api: Record<string, unknown> = {};
+    for (const method of ["setView", "addTo", "on", "clearLayers", "remove", "invalidateSize", "fitBounds"]) {
+      api[method] = () => api;
+    }
+    return api;
+  };
+  const L = {
+    map: () => chainable(),
+    tileLayer: () => chainable(),
+    layerGroup: () => chainable(),
+    marker: () => chainable(),
+    divIcon: () => ({}),
+    latLngBounds: () => ({}),
+  };
+  return { default: L, ...L };
+});
+vi.mock("leaflet/dist/leaflet.css", () => ({}));
+
 import { WallboardFocusSplit } from "./wallboardChannels";
 
 afterEach(() => cleanup());
@@ -67,10 +91,11 @@ describe("WallboardFocusSplit (focused-tile split layout)", () => {
     expect(panel).toBeTruthy();
     expect(rail).toBeTruthy();
 
-    // Expanded panel shows the richer aircraft view (incl. the heading column
-    // the shrunken ambient tile omits).
+    // Expanded panel shows the rich Flights view: the live map headline plus a
+    // per-plane detail card (incl. the heading the shrunken ambient tile omits).
+    expect(within(panel).getByTestId("flights-map")).toBeTruthy();
     expect(within(panel).getByText("UAL123")).toBeTruthy();
-    expect(within(panel).getByText(/Heading 270/)).toBeTruthy();
+    expect(within(panel).getByText("270°")).toBeTruthy();
 
     // The other tiles stay visible around it in the rail.
     expect(within(rail).getByTestId("rail-tile-a")).toBeTruthy();
