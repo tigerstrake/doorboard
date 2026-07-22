@@ -33,6 +33,7 @@ from pydantic import BaseModel
 
 from door_api.broadcast import DisplayBroadcast
 from door_api.config import SessionConfig
+from door_api.mqtt_bridge import MqttBridge
 from door_api.persistence import SessionStore
 from door_api.session import SessionMachine
 from door_api.social.config import SocialConfig
@@ -68,6 +69,8 @@ class DoorApiState:
         self._esp32_event_task: asyncio.Task[None] | None = None
         self._media_forward_task: asyncio.Task[None] | None = None
         self._sync_forward_task: asyncio.Task[None] | None = None
+        self.mqtt_bridge: MqttBridge | None = None
+        self._mqtt_bridge_task: asyncio.Task[None] | None = None
 
         def on_event(event: dict[str, Any]) -> None:
             self.broadcast.send_delta(event)
@@ -98,6 +101,7 @@ class DoorApiState:
         self.start_esp32_event_consumer()
         self.start_media_forwarder()
         self.start_sync_forwarder()
+        self.start_mqtt_bridge()
 
     def shutdown(self) -> None:
         """Close resources."""
@@ -107,8 +111,33 @@ class DoorApiState:
             self._media_forward_task.cancel()
         if self._sync_forward_task is not None:
             self._sync_forward_task.cancel()
+        if self._mqtt_bridge_task is not None:
+            self._mqtt_bridge_task.cancel()
         self.machine.close()
         self.social_store.close()
+
+    def start_mqtt_bridge(self) -> None:
+        """Spawn the optional NUC ambient/presence → /ws bridge.
+
+        Inert unless DOOR_API_MQTT_URL is configured. The connection is NEVER
+        awaited here: the loop is fire-and-forget so a broker outage can't delay
+        startup or touch the door interaction path (see mqtt_bridge.py).
+        """
+        if not self.config.mqtt_url or self._mqtt_bridge_task is not None:
+            return
+        self.mqtt_bridge = MqttBridge(
+            url=self.config.mqtt_url,
+            broadcast=self.broadcast,
+            topics=self.config.mqtt_topics,
+            username=self.config.mqtt_username,
+            password=self.config.mqtt_password,
+        )
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+            self._mqtt_bridge_task = loop.create_task(
+                self.mqtt_bridge.run(),
+                name="door-api-mqtt-bridge",
+            )
 
     def start_esp32_event_consumer(self) -> None:
         if self.esp32_transport is None or self._esp32_event_task is not None:
@@ -443,6 +472,16 @@ async def metrics() -> Response:
             "door_api_sync_forward_successes_total": state.sync_forward_successes,
             "door_api_sync_outbox_depth": state.store.sync_outbox_depth(),
             "door_api_sync_outbox_dropped_total": state.store.sync_outbox_dropped_total(),
+            "door_api_mqtt_bridge_enabled": int(state.mqtt_bridge is not None),
+            "door_api_mqtt_bridge_messages_received_total": (
+                state.mqtt_bridge.messages_received if state.mqtt_bridge else 0
+            ),
+            "door_api_mqtt_bridge_messages_broadcast_total": (
+                state.mqtt_bridge.messages_broadcast if state.mqtt_bridge else 0
+            ),
+            "door_api_mqtt_bridge_parse_errors_total": (
+                state.mqtt_bridge.parse_errors if state.mqtt_bridge else 0
+            ),
         }
     )
     lines = [
