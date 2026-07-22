@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,6 +11,10 @@ from satellites.provider import MockSatelliteProvider, SatelliteConfig, Skyfield
 from skyfield.api import load
 from wallboard_worker.jobs import run_satellite_passes
 from wallboard_worker.settings import Settings
+
+# The bundled de421.bsp lives at the repo root; point the Loader there in tests
+# so the real skyfield path never triggers a network download.
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 ISS_TLE = (
     "ISS (ZARYA)\n"
@@ -42,6 +47,8 @@ def test_skyfield_satellite_provider_success(
         observer_lon=-122.4194,
         observer_elevation=100.0,
         tle_cache_path="/tmp/test_tle_cache.txt",
+        # Load the bundled de421.bsp from the repo root instead of downloading.
+        ephemeris_dir=str(REPO_ROOT),
     )
     provider = SkyfieldSatelliteProvider(config)
 
@@ -96,6 +103,41 @@ def test_skyfield_satellite_provider_success(
     assert res["max_elevation_deg"] == 45.0
     assert res["direction"] == "NW"
     assert res["visible"] is True
+
+
+def test_ephemeris_uses_loader_pointed_at_configured_writable_dir(tmp_path) -> None:
+    # Regression: the module-level skyfield `load` writes de421.bsp into the CWD,
+    # which the container worker user can't write ([Errno 13]). The provider must
+    # instead use a Loader pointed at the configured, writable ephemeris_dir and
+    # create that dir before loading.
+    eph_dir = tmp_path / "skyfield_cache"
+    config = SatelliteConfig(
+        observer_lat=37.7749,
+        observer_lon=-122.4194,
+        ephemeris_dir=str(eph_dir),
+    )
+    provider = SkyfieldSatelliteProvider(config)
+
+    sentinel_eph = object()
+    with patch("satellites.provider.Loader") as mock_loader_cls:
+        # A skyfield Loader instance is callable: loader("de421.bsp").
+        mock_loader = MagicMock(return_value=sentinel_eph)
+        mock_loader_cls.return_value = mock_loader
+
+        eph = provider._get_ephemeris()
+
+        # Loader constructed pointing at the configured dir; no CWD/global load.
+        mock_loader_cls.assert_called_once_with(str(eph_dir))
+        mock_loader.assert_called_once_with("de421.bsp")
+
+    assert eph is sentinel_eph
+    # The writable dir was created before loading.
+    assert eph_dir.is_dir()
+
+    # Second call is cached and does not reconstruct the Loader.
+    with patch("satellites.provider.Loader") as mock_loader_again:
+        assert provider._get_ephemeris() is sentinel_eph
+        mock_loader_again.assert_not_called()
 
 
 def test_skyfield_satellite_provider_stale_tle_raises_error(tmp_path) -> None:

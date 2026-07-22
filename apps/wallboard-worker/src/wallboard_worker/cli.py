@@ -6,11 +6,6 @@ from typing import cast
 import click
 from aircraft.provider import AircraftConfig, MockAircraftProvider, OpenSkyAircraftProvider
 from birdnet.provider import BirdnetConfig, BirdnetGoProvider, MockBirdProvider
-from food_recommendation.provider import (
-    FoodRecommendationProvider,
-    MockFoodRecommendationProvider,
-)
-from food_recommendation.stanford.provider import StanfordDiningConfig, StanfordDiningProvider
 from printer.provider import (
     MockPrinterProvider,
     OctoPrintProvider,
@@ -27,7 +22,7 @@ from wallboard_worker.jobs import (
     run_printer_status,
     run_satellite_passes,
 )
-from wallboard_worker.scheduler import Scheduler
+from wallboard_worker.scheduler import Scheduler, build_food_provider
 from wallboard_worker.settings import Settings
 
 logging.basicConfig(level=logging.INFO)
@@ -104,6 +99,7 @@ def satellite_passes(mock: bool) -> None:
             min_elevation=settings.satellites_min_elevation,
             tle_url=settings.satellites_tle_url,
             tle_cache_path=settings.satellites_tle_cache_path,
+            ephemeris_dir=settings.satellites_ephemeris_dir,
         )
         provider = SkyfieldSatelliteProvider(config)
 
@@ -168,26 +164,7 @@ def printer_status(mock: bool, state: str | None) -> None:
 def food_recommendation(mock: bool) -> None:
     """Run the daily food recommendation ingestion job."""
     settings = Settings()
-
-    provider: FoodRecommendationProvider
-    # Mock is the fallback whenever the feature is off, forced, or the real
-    # provider isn't selected. The real Stanford provider scrapes + optionally
-    # calls an LLM, so it only runs when explicitly configured.
-    if mock or not settings.feature_food or settings.food_provider != "stanford":
-        logger.info("Using MockFoodRecommendationProvider")
-        provider = MockFoodRecommendationProvider()
-    else:
-        logger.info("Using StanfordDiningProvider (ai=%s)", settings.food_use_ai)
-        config = StanfordDiningConfig(
-            hall_ids=settings.food_hall_id_list(),
-            meal_override=settings.food_meal_override or None,
-            preferences_path=settings.food_preferences_path or None,
-            use_ai=settings.food_use_ai,
-            openai_api_key=settings.openai_api_key,
-            openai_model=settings.openai_model,
-        )
-        provider = StanfordDiningProvider(config)
-
+    provider = build_food_provider(settings, force_mock=mock)
     run_food_recommendation(settings, provider)
 
 
