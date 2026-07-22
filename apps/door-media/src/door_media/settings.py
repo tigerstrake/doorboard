@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     )
     # Pinned MediaMTX version for health assertion
     mediamtx_version: str = Field(default="1.9.3", alias="MEDIAMTX_VERSION")
+    # RTSP port MediaMTX binds locally (127.0.0.1 only, per the security
+    # invariant in _MEDIAMTX_CONFIG_TEMPLATE). Single source of truth for the
+    # generated config's rtspAddress, the rpicam-vid publisher, and read-only
+    # consumers (snapshot / photo still capture). MediaMTX's default is 8554.
+    mediamtx_rtsp_port: int = Field(default=8554, alias="MEDIAMTX_RTSP_PORT")
 
     # ── camera ────────────────────────────────────────────────────────────────
     visitor_cam_stream: str = Field(
@@ -96,6 +101,25 @@ class Settings(BaseSettings):
     )
     # rpicam-vid segment length (seconds) for the rolling recording buffer.
     segment_s: int = Field(default=2, alias="DOOR_MEDIA_SEGMENT_S")
+
+    # ── snapshot (GET /snapshot) ──────────────────────────────────────────────
+    # A single current JPEG frame grabbed read-only from the live RTSP stream,
+    # used by door-visiond's HardwareBackend for face frames. Best-effort: the
+    # grab is bounded by a short timeout so the face/door path is never blocked,
+    # and on any failure a tiny placeholder JPEG is returned instead. The grab is
+    # a read-only RTSP consumer — it does not disturb the publisher or recording.
+    # ``snapshot_jpeg_quality`` is ffmpeg's ``-q:v`` (2 = best … 31 = worst).
+    snapshot_timeout_s: float = Field(
+        default=3.0,
+        alias="DOOR_MEDIA_SNAPSHOT_TIMEOUT_S",
+        gt=0,
+    )
+    snapshot_jpeg_quality: int = Field(
+        default=3,
+        alias="DOOR_MEDIA_SNAPSHOT_JPEG_QUALITY",
+        ge=2,
+        le=31,
+    )
 
     # ── audio ─────────────────────────────────────────────────────────────────
     # Opt-in USB-microphone capture. When disabled (default) recordings stay
@@ -182,6 +206,15 @@ class Settings(BaseSettings):
     @property
     def port(self) -> int:
         return int(self.bind.split(":")[1])
+
+    def mediamtx_rtsp_url(self, stream: str) -> str:
+        """Loopback RTSP URL for a MediaMTX path.
+
+        Host is pinned to 127.0.0.1 (the security invariant: MediaMTX ports are
+        never exposed off-host); only the port is configurable via
+        ``mediamtx_rtsp_port``.
+        """
+        return f"rtsp://127.0.0.1:{self.mediamtx_rtsp_port}/{stream}"
 
     @property
     def retention(self) -> RetentionConfig:

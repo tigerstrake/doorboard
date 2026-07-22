@@ -61,7 +61,7 @@ api: yes
 apiAddress: 127.0.0.1:9997
 
 # Disable all off-host protocols
-rtspAddress: 127.0.0.1:8554
+rtspAddress: 127.0.0.1:{rtsp_port}
 rtspsAddress: 127.0.0.1:8322
 rtmpAddress: 127.0.0.1:1935
 rtmpsAddress: 127.0.0.1:1936
@@ -120,7 +120,7 @@ def _build_run_on_init(settings: Settings) -> str:
         "--libav-format h264 --profile baseline --level 4.1 --bitrate 2000000 "
         "--inline --flush 1 --timeout 0 --nopreview --output -"
     )
-    rtsp = f"-f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/{stream}"
+    rtsp = f"-f rtsp -rtsp_transport tcp {settings.mediamtx_rtsp_url(stream)}"
     ffmpeg = (
         f"ffmpeg -nostats -loglevel error -fflags nobuffer -f h264 -r 25 -i pipe:0 -c:v copy {rtsp}"
     )
@@ -281,6 +281,7 @@ class MediaMTXRouter:
             stream=self._settings.visitor_cam_stream,
             segments_root=self._settings.segments_root,
             segment_s=self._settings.segment_s,
+            rtsp_port=self._settings.mediamtx_rtsp_port,
             run_on_init=_build_run_on_init(self._settings),
         )
         cfg_path.write_text(cfg_content, encoding="utf-8")
@@ -644,7 +645,7 @@ class MediaMTXRouter:
             "-rtsp_transport",
             "tcp",
             "-i",
-            f"rtsp://127.0.0.1:8554/{stream}",
+            self._settings.mediamtx_rtsp_url(stream),
             "-frames:v",
             "1",
             str(out_path),
@@ -666,6 +667,68 @@ class MediaMTXRouter:
             sha256=sha256,
             captured_monotonic_ms=time.monotonic_ns() // 1_000_000,
         )
+
+    async def snapshot(self) -> bytes | None:
+        """Grab a single current JPEG frame from the live visitor RTSP stream.
+
+        Used by ``GET /snapshot`` (door-visiond's HardwareBackend polls it for
+        face frames). ffmpeg is a **read-only consumer** of the existing RTSP
+        stream, so this does not disturb the rpicam-vid publisher or MediaMTX's
+        segment recording. The frame is written to ``pipe:1`` and returned as
+        bytes — no file touches the SSD.
+
+        Best-effort: the grab is bounded by ``snapshot_timeout_s`` and returns
+        ``None`` on any failure (ffmpeg error, timeout, or a not-yet-live
+        stream) so the caller can fall back to a placeholder. The door/face
+        path must never block for long or 500 on a missing frame.
+        """
+        stream = self._settings.visitor_cam_stream
+        rtsp_url = self._settings.mediamtx_rtsp_url(stream)
+        timeout_s = self._settings.snapshot_timeout_s
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-nostdin",
+                "-nostats",
+                "-loglevel",
+                "error",
+                "-rtsp_transport",
+                "tcp",
+                "-i",
+                rtsp_url,
+                "-frames:v",
+                "1",
+                "-q:v",
+                str(self._settings.snapshot_jpeg_quality),
+                "-f",
+                "image2",
+                "pipe:1",
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except Exception as exc:
+            logger.warning("snapshot_spawn_failed", extra={"error": str(exc)})
+            return None
+
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            logger.warning("snapshot_timeout", extra={"timeout_s": timeout_s})
+            return None
+
+        if proc.returncode != 0 or not stdout:
+            message = stderr.decode(errors="replace")[:300]
+            logger.warning(
+                "snapshot_ffmpeg_failed",
+                extra={"returncode": proc.returncode, "error": message},
+            )
+            return None
+        return stdout
 
     def storage_status(self) -> MediaStorageStatus:
         """Delegate to OS disk stats for the SSD mount."""

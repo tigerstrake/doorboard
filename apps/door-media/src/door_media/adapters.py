@@ -105,6 +105,15 @@ class MediaRouter(Protocol):
         """Capture a visitor-camera still image for explicit photo-booth review."""
         ...
 
+    async def snapshot(self) -> bytes | None:
+        """Return a single current JPEG frame from the live stream, or None.
+
+        Best-effort and non-blocking-ish: implementations must return ``None``
+        (never raise) when no live frame is available so ``GET /snapshot`` can
+        fall back to a placeholder. Returns ``None`` in mock mode (no camera).
+        """
+        ...
+
     def storage_status(self) -> MediaStorageStatus:
         """Return storage state used by retention and sync logic."""
         ...
