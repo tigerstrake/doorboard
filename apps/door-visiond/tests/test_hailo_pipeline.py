@@ -81,9 +81,7 @@ def _fake(**kwargs: Any) -> Any:
 
 def test_embedder_returns_512d_embedding_and_quality() -> None:
     face = _FakeFace(vector=tuple(0.1 for _ in range(_DIM)), score=0.87, size_px=180)
-    embedder = HailoEmbedder(
-        dim=_DIM, model_id=PINNED_MODEL_ID, pipeline=_fake(primary=face)
-    )
+    embedder = HailoEmbedder(dim=_DIM, model_id=PINNED_MODEL_ID, pipeline=_fake(primary=face))
 
     embedding, quality = embedder.embed(b"jpeg-bytes")
 
@@ -96,9 +94,7 @@ def test_embedder_returns_512d_embedding_and_quality() -> None:
 
 
 def test_embedder_rejects_no_face_with_low_quality() -> None:
-    embedder = HailoEmbedder(
-        dim=_DIM, model_id=PINNED_MODEL_ID, pipeline=_fake(primary=None)
-    )
+    embedder = HailoEmbedder(dim=_DIM, model_id=PINNED_MODEL_ID, pipeline=_fake(primary=None))
 
     embedding, quality = embedder.embed(b"jpeg-bytes-no-face")
 

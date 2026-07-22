@@ -188,21 +188,15 @@ class HailoFacePipeline:
 
             def _configure(path: str) -> tuple[object, object, str]:
                 hef = HEF(path)
-                cfg = ConfigureParams.create_from_hef(
-                    hef, interface=HailoStreamInterface.PCIe
-                )
+                cfg = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
                 network_group = vdevice.configure(hef, cfg)[0]
                 in_params = InputVStreamParams.make(network_group, format_type=FormatType.UINT8)
-                out_params = OutputVStreamParams.make(
-                    network_group, format_type=FormatType.FLOAT32
-                )
+                out_params = OutputVStreamParams.make(network_group, format_type=FormatType.FLOAT32)
                 pipe = stack.enter_context(InferVStreams(network_group, in_params, out_params))
                 input_name = hef.get_input_vstream_infos()[0].name
                 return network_group, pipe, input_name
 
-            self._det_ng, self._det_pipe, self._det_input_name = _configure(
-                self._detector_hef_path
-            )
+            self._det_ng, self._det_pipe, self._det_input_name = _configure(self._detector_hef_path)
             self._rec_ng, self._rec_pipe, self._rec_input_name = _configure(
                 self._recognizer_hef_path
             )
