@@ -700,6 +700,11 @@ class MediaMTXRouter:
                 "1",
                 "-q:v",
                 str(self._settings.snapshot_jpeg_quality),
+                # image2 muxer refuses to write a single image to a pipe without
+                # -update (it wants a %d filename pattern); -update 1 makes it emit
+                # the one JPEG to stdout. Verified on-device.
+                "-update",
+                "1",
                 "-f",
                 "image2",
                 "pipe:1",
