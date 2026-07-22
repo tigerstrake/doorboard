@@ -496,7 +496,11 @@ export function App() {
     MOCK_AMBIENT_ENABLED
       ? {
           occurredAt: aircraftFixture.occurred_at,
-          payload: { nearby: aircraftFixture.nearby, as_of: aircraftFixture.occurred_at },
+          payload: {
+            nearby: aircraftFixture.nearby,
+            as_of: aircraftFixture.occurred_at,
+            observer: aircraftFixture.observer,
+          },
         }
       : null
   );

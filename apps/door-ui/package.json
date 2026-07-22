@@ -17,6 +17,7 @@
     "@doorboard/contracts": "workspace:*",
     "@doorboard/event-client": "workspace:*",
     "@doorboard/ui-kit": "workspace:*",
+    "leaflet": "^1.9.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-simple-keyboard": "^3.8.240"
@@ -24,6 +25,7 @@
   "devDependencies": {
     "@playwright/test": "^1.61.1",
     "@testing-library/react": "^16.3.2",
+    "@types/leaflet": "^1.9.12",
     "@types/node": "^26.1.0",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
