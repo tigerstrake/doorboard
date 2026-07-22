@@ -417,6 +417,33 @@ class GalleryTagsBody(BaseModel):
     wallboard_moment: bool | None = None
 
 
+class WallboardFocusBody(BaseModel):
+    # One of ``WALLBOARD_FOCUS_CHANNELS`` or the literal ``"ambient"`` (return to
+    # the full grid). Mirrors the doorpad's ``createWallboardFocusRequest`` input.
+    channel: str
+
+
+# Focusable wallboard tiles — kept in lockstep with the ``WallboardFocusChannel``
+# ids in apps/door-ui/src/wallboardChannelModel.ts. ``"ambient"`` (return to the
+# default grid) is accepted by the endpoint but is not itself a focus channel.
+WALLBOARD_FOCUS_CHANNELS = frozenset(
+    {
+        "aircraft",
+        "satellite",
+        "scoreboard",
+        "birds",
+        "printer",
+        "food",
+        "poll",
+        "guestbook",
+        "moments",
+    }
+)
+# Matches WALLBOARD_FOCUS_TIMEOUT_MS in wallboardChannelModel.ts: a focus auto-
+# returns to ambient after 2 minutes (the wallboard keys off ``expiresAt``).
+WALLBOARD_FOCUS_TIMEOUT_MS = 120_000
+
+
 def _require_photobooth() -> None:
     if not state.config.feature_photobooth:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="photo booth disabled")
@@ -976,6 +1003,40 @@ async def wallboard_moments() -> dict[str, Any]:
             if isinstance(p, dict) and p.get("status") == "approved"
         ]
     }
+
+
+@app.post("/wallboard/focus")
+async def wallboard_focus(body: WallboardFocusBody) -> dict[str, Any]:
+    """Route a doorpad "focus a tile" request to the physically-separate wallboard.
+
+    The doorpad (touchscreen) and the wallboard (a second HDMI display) run as
+    two independent chromium instances with different ``--user-data-dir``
+    profiles, so the old localStorage + ``storage``-event signal never crosses
+    between them. Both surfaces DO connect to this service's ``/ws``, so we reuse
+    that transport: the doorpad POSTs here and we fan a lightweight, EPHEMERAL
+    UI-control message out to every ``/ws`` client (the wallboard picks it up).
+
+    This is deliberately NOT a contract ``DoorboardEvent`` and is never persisted
+    — it is a transient display-control message, mirroring the doorpad's
+    ``createWallboardFocusRequest`` semantics (ambient → mode "ambient", no
+    channel, no expiry; otherwise mode "focus" with a 2-minute ``expiresAt``).
+    """
+    channel = body.channel
+    if channel != "ambient" and channel not in WALLBOARD_FOCUS_CHANNELS:
+        raise HTTPException(status_code=400, detail=f"unknown wallboard channel: {channel!r}")
+
+    is_ambient = channel == "ambient"
+    now_ms = int(time.time() * 1000)
+    message = {
+        "type": "wallboard.focus_changed",
+        "channel": None if is_ambient else channel,
+        "mode": "ambient" if is_ambient else "focus",
+        "requestId": str(uuid4()),
+        "requestedAt": now_ms,
+        "expiresAt": None if is_ambient else now_ms + WALLBOARD_FOCUS_TIMEOUT_MS,
+    }
+    state.broadcast.send_delta(message)
+    return {"ok": True, "focus": message}
 
 
 async def _approved_wallboard_photos() -> dict[str, dict[str, Any]]:

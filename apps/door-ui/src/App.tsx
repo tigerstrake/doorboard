@@ -47,8 +47,10 @@ import { safeRandomUUID } from "./uuid";
 import {
   WALLBOARD_CONTROL_EVENT,
   WALLBOARD_CONTROL_STORAGE_KEY,
+  WALLBOARD_FOCUS_WS_TYPE,
   createWallboardFocusRequest,
   isWallboardFocusRequest,
+  wallboardFocusRequestFromMessage,
 } from "./wallboardChannelModel";
 import type { WallboardFocusChannel, WallboardFocusRequest } from "./wallboardChannelModel";
 
@@ -713,7 +715,16 @@ export function App() {
     const client = new DoorboardEventClient({
       // Connect to simulator ws, or fallback to mock BroadcastChannel
       wsUrl: wsUrlFromApiBase(API_BASE),
-      filters: ["session.*", "vision.*", "door.*", "media.*", "ambient.*", "status.*", "social.*"],
+      filters: [
+        "session.*",
+        "vision.*",
+        "door.*",
+        "media.*",
+        "ambient.*",
+        "status.*",
+        "social.*",
+        "wallboard.*",
+      ],
       onStatusChange: setEventConnection,
       onSnapshot: (snapshot) => {
         const value = snapshot as DoorApiSnapshot["session"] | DoorApiSnapshot;
@@ -883,6 +894,24 @@ export function App() {
       }
     );
 
+    // Wallboard focus control: the doorpad broadcasts "focus a tile" requests via
+    // door-api's /ws (POST /wallboard/focus). This drives the SAME focus state as
+    // the legacy same-profile localStorage path, so the render logic and the 120s
+    // auto-return-to-ambient (keyed off expiresAt) are unchanged.
+    const unsubscribeWallboardFocus = client.subscribe(
+      WALLBOARD_FOCUS_WS_TYPE,
+      (event: DoorboardEvent) => {
+        // This is an ephemeral UI-control message, not a contract event, so read
+        // its fields off the raw payload rather than the DoorboardEvent union.
+        const request = wallboardFocusRequestFromMessage(event as unknown);
+        if (!request) return;
+        setWallboardFocusRequest(request);
+        setWallboardLaunchStatus(
+          request.mode === "ambient" ? "Ambient grid" : `Focused: ${request.channel}`
+        );
+      }
+    );
+
     return () => {
       unsubscribeSession();
       unsubscribeVision();
@@ -895,6 +924,7 @@ export function App() {
       unsubscribeFood();
       unsubscribeMood();
       unsubscribeScoreboard();
+      unsubscribeWallboardFocus();
       client.close();
     };
   }, [applySessionSnapshot, showAmbientAlert]);
@@ -1006,8 +1036,21 @@ export function App() {
     const request = createWallboardFocusRequest(channel);
     setWallboardFocusRequest(request);
     setWallboardLaunchStatus(channel === "ambient" ? "Ambient grid" : `Focused: ${channel}`);
+    // Same-instance fallback: only reaches a wallboard sharing this browser
+    // profile. In production the wallboard is a separate chromium instance, so
+    // this alone does nothing — see the /ws POST below.
     window.localStorage.setItem(WALLBOARD_CONTROL_STORAGE_KEY, JSON.stringify(request));
     window.dispatchEvent(new CustomEvent(WALLBOARD_CONTROL_EVENT, { detail: request }));
+    // Cross-instance: route the focus signal through door-api's /ws so the
+    // physically-separate wallboard display receives it. Best-effort and
+    // fire-and-forget — the local UI already updated above.
+    void fetch(`${API_BASE}/wallboard/focus`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel }),
+    }).catch(() => {
+      /* best-effort: a failed POST must never break the local doorpad UI */
+    });
   };
 
   const returnWallboardAmbient = () => {

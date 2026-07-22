@@ -251,6 +251,51 @@ def test_doorpad_end_is_a_real_local_session_action() -> None:
     assert response.json()["session"]["state"] == "SESSION_END"
 
 
+def test_wallboard_focus_broadcasts_focus_delta_for_valid_channel() -> None:
+    # The doorpad POSTs the focus request; door-api fans it out on /ws so the
+    # physically-separate wallboard chromium (different profile, no shared
+    # localStorage) receives it.
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as websocket:
+        json.loads(websocket.receive_text())  # snapshot
+
+        response = client.post("/wallboard/focus", json={"channel": "aircraft"})
+
+        assert response.status_code == 200
+        focus = response.json()["focus"]
+        assert focus["type"] == "wallboard.focus_changed"
+        assert focus["channel"] == "aircraft"
+        assert focus["mode"] == "focus"
+        assert isinstance(focus["requestId"], str) and focus["requestId"]
+        assert focus["expiresAt"] == focus["requestedAt"] + 120_000
+
+        event = _receive_delta(websocket, "wallboard.focus_changed")
+        assert event["channel"] == "aircraft"
+        assert event["mode"] == "focus"
+        assert event["requestId"] == focus["requestId"]
+        assert event["expiresAt"] == focus["expiresAt"]
+
+
+def test_wallboard_focus_ambient_clears_channel_and_expiry() -> None:
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as websocket:
+        json.loads(websocket.receive_text())  # snapshot
+
+        response = client.post("/wallboard/focus", json={"channel": "ambient"})
+
+        assert response.status_code == 200
+        event = _receive_delta(websocket, "wallboard.focus_changed")
+        assert event["mode"] == "ambient"
+        assert event["channel"] is None
+        assert event["expiresAt"] is None
+
+
+def test_wallboard_focus_rejects_unknown_channel() -> None:
+    client = TestClient(app)
+    response = client.post("/wallboard/focus", json={"channel": "not-a-real-tile"})
+    assert response.status_code == 400
+
+
 def test_admin_can_answer_decline_or_end_a_live_ring(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DOOR_API_SOCIAL_ADMIN_TOKEN", "owner-token")
     state.shutdown()
