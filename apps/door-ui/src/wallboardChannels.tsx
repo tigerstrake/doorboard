@@ -8,7 +8,7 @@ import type {
   AmbientSatellitePassPayload,
 } from "@doorboard/contracts";
 import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
-import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
+import { GuestbookQuote } from "./SocialRenderers";
 import { AircraftFocusPanel } from "./wallboard/AircraftFocusPanel";
 import { WALLBOARD_CHANNELS } from "./wallboardChannelModel";
 import type { WallboardFocusChannel } from "./wallboardChannelModel";
@@ -265,6 +265,201 @@ export function WallboardFocusSplit({
   );
 }
 
+const focusSafeText = (value: string | null | undefined, maxLength = 80) =>
+  (value ?? "").trim().replace(/\s+/g, " ").slice(0, maxLength);
+
+const clampPercentage = (value: number | null) =>
+  value === null || !Number.isFinite(value) ? 0 : Math.min(100, Math.max(0, value));
+
+/**
+ * Large, centred "nothing here yet" state shared by every focus channel that
+ * has no data to show. Keeps sparse channels (scoreboard/food/printer/…) from
+ * rendering as a cramped one-liner at hallway scale, matching the deliberate
+ * emptiness of the rest of the HUD design system.
+ */
+function FocusEmpty({ title, hint }: { title: string; hint?: string }) {
+  return (
+    <div className="focus-empty-state" data-testid="focus-empty-state">
+      <span className="focus-empty-state__glyph" aria-hidden="true" />
+      <p className="focus-empty-state__title">{title}</p>
+      {hint ? <p className="focus-empty-state__hint">{hint}</p> : null}
+    </div>
+  );
+}
+
+// 16-point compass rose → bearing in degrees clockwise from due north. Used to
+// aim the sky-compass needle from the satellite pass's rise direction label.
+const COMPASS_BEARINGS: Record<string, number> = {
+  N: 0, NNE: 22.5, NE: 45, ENE: 67.5,
+  E: 90, ESE: 112.5, SE: 135, SSE: 157.5,
+  S: 180, SSW: 202.5, SW: 225, WSW: 247.5,
+  W: 270, WNW: 292.5, NW: 315, NNW: 337.5,
+};
+
+function bearingForDirection(direction: string): number | null {
+  const key = direction.trim().toUpperCase();
+  return key in COMPASS_BEARINGS ? COMPASS_BEARINGS[key] : null;
+}
+
+/**
+ * A clean SVG compass rose with cardinal ticks and a needle aimed at the
+ * satellite's rise direction. Degrades to a centred dot (no needle) when the
+ * direction label isn't a recognised compass point.
+ */
+function SkyCompass({ direction }: { direction: string }) {
+  const bearing = bearingForDirection(direction);
+  const cardinals: Array<{ label: string; x: number; y: number }> = [
+    { label: "N", x: 100, y: 22 },
+    { label: "E", x: 180, y: 106 },
+    { label: "S", x: 100, y: 188 },
+    { label: "W", x: 20, y: 106 },
+  ];
+  return (
+    <svg
+      className="sky-compass"
+      viewBox="0 0 200 200"
+      role="img"
+      aria-label={
+        bearing === null
+          ? "Rise direction unavailable"
+          : `Rises to the ${direction}`
+      }
+      data-testid="sky-compass"
+    >
+      <circle className="sky-compass__ring" cx="100" cy="100" r="82" />
+      <circle className="sky-compass__ring sky-compass__ring--inner" cx="100" cy="100" r="58" />
+      {Array.from({ length: 16 }).map((_, index) => {
+        const angle = (index * 22.5 * Math.PI) / 180;
+        const isMajor = index % 4 === 0;
+        const outer = 82;
+        const inner = isMajor ? 68 : 74;
+        return (
+          <line
+            key={index}
+            className={`sky-compass__tick${isMajor ? " sky-compass__tick--major" : ""}`}
+            x1={100 + outer * Math.sin(angle)}
+            y1={100 - outer * Math.cos(angle)}
+            x2={100 + inner * Math.sin(angle)}
+            y2={100 - inner * Math.cos(angle)}
+          />
+        );
+      })}
+      {cardinals.map((point) => (
+        <text
+          key={point.label}
+          className="sky-compass__cardinal"
+          x={point.x}
+          y={point.y}
+          textAnchor="middle"
+          dominantBaseline="middle"
+        >
+          {point.label}
+        </text>
+      ))}
+      {bearing === null ? (
+        <circle className="sky-compass__center" cx="100" cy="100" r="7" />
+      ) : (
+        <g transform={`rotate(${bearing} 100 100)`}>
+          <polygon className="sky-compass__needle" points="100,26 111,104 100,92 89,104" />
+          <circle className="sky-compass__center" cx="100" cy="100" r="7" />
+        </g>
+      )}
+    </svg>
+  );
+}
+
+function SatelliteFocusPanel({ payload }: { payload: AmbientSatellitePassPayload }) {
+  const riseTime = new Date(payload.rise_at).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const maxElevation = Number.isFinite(payload.max_elevation_deg)
+    ? Math.round(payload.max_elevation_deg)
+    : null;
+  return (
+    <div className="satellite-focus" data-testid="satellite-focus">
+      <header className="satellite-focus__head">
+        <p className="surface-eyebrow">Next visible pass</p>
+        <strong className="satellite-focus__name">{payload.satellite}</strong>
+        <p className="satellite-focus__meta">
+          {payload.direction} · {maxElevation ?? payload.max_elevation_deg}° max
+        </p>
+        <StatusBadge label={payload.visible ? "available" : "unknown"} />
+      </header>
+      <div className="satellite-focus__body">
+        <SkyCompass direction={payload.direction} />
+        <dl className="satellite-focus__stats">
+          <div className="satellite-focus__stat satellite-focus__stat--hero">
+            <dt>Rise time</dt>
+            <dd>{riseTime}</dd>
+          </div>
+          <div className="satellite-focus__stat">
+            <dt>Direction</dt>
+            <dd>{payload.direction}</dd>
+          </div>
+          <div className="satellite-focus__stat">
+            <dt>Max elevation</dt>
+            <dd>{maxElevation ?? payload.max_elevation_deg}°</dd>
+          </div>
+        </dl>
+      </div>
+    </div>
+  );
+}
+
+function PollFocusPanel({
+  poll,
+  pollResults,
+}: {
+  poll: Poll;
+  pollResults: PollResultRow[] | null;
+}) {
+  const votesFor = (optionId: string) =>
+    pollResults?.find((row) => row.option_id === optionId)?.votes ?? 0;
+  const tallies = poll.options.map((option) => votesFor(option.id));
+  const totalVotes = tallies.reduce((sum, votes) => sum + votes, 0);
+  const maxVotes = tallies.length > 0 ? Math.max(...tallies) : 0;
+
+  return (
+    <div className="poll-focus" data-testid="poll-focus">
+      <h2 className="poll-focus__question">{poll.question}</h2>
+      <div className="poll-focus__options">
+        {poll.options.map((option) => {
+          const votes = votesFor(option.id);
+          const pct = totalVotes > 0 ? (votes / totalVotes) * 100 : 0;
+          const isLeader = totalVotes > 0 && votes === maxVotes;
+          return (
+            <div
+              className={`poll-focus__row${isLeader ? " poll-focus__row--leader" : ""}`}
+              key={option.id}
+            >
+              <div className="poll-focus__row-head">
+                <span className="poll-focus__option">{option.text}</span>
+                <span className="poll-focus__count">
+                  <strong>{votes}</strong> {votes === 1 ? "vote" : "votes"} · {pct.toFixed(0)}%
+                </span>
+              </div>
+              <div
+                className="poll-focus__bar"
+                role="progressbar"
+                aria-valuenow={Math.round(pct)}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label={option.text}
+              >
+                <span style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="poll-focus__total">
+        {totalVotes} total {totalVotes === 1 ? "vote" : "votes"}
+      </p>
+    </div>
+  );
+}
+
 function renderFocusContent(
   channel: WallboardFocusChannel,
   poll: Poll | null,
@@ -273,40 +468,40 @@ function renderFocusContent(
   moments: Array<{ recording_id: string; tags: string[]; approved_at: string | null }>,
   ambient: WallboardFocusSplitProps["ambient"]
 ) {
-  const safeText = (value: string | null | undefined, maxLength = 80) =>
-    (value ?? "").trim().replace(/\s+/g, " ").slice(0, maxLength);
-  const clampPercentage = (value: number | null) =>
-    value === null || !Number.isFinite(value) ? 0 : Math.min(100, Math.max(0, value));
-
   switch (channel) {
     case "aircraft":
       return ambient.aircraft ? (
         <AircraftFocusPanel payload={ambient.aircraft} />
-      ) : <p className="focus-empty">Aircraft data is unavailable.</p>;
+      ) : (
+        <FocusEmpty title="Aircraft data is unavailable." hint="Waiting for the next overhead sweep." />
+      );
     case "satellite":
       return ambient.satellite ? (
-        <div className="focus-hero-stat">
-          <p className="surface-eyebrow">Next visible pass</p>
-          <strong>{ambient.satellite.satellite}</strong>
-          <span>
-            {new Date(ambient.satellite.rise_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-            {" · "}
-            {ambient.satellite.direction} · {ambient.satellite.max_elevation_deg}° max
-          </span>
-          <StatusBadge label={ambient.satellite.visible ? "available" : "unknown"} />
-        </div>
-      ) : <p className="focus-empty">Satellite pass data is unavailable.</p>;
+        <SatelliteFocusPanel payload={ambient.satellite} />
+      ) : (
+        <FocusEmpty
+          title="Satellite pass data is unavailable."
+          hint="The next visible pass will appear here."
+        />
+      );
     case "scoreboard":
-      return ambient.scoreboard ? (
+      return ambient.scoreboard && ambient.scoreboard.length > 0 ? (
         <div className="focus-list focus-list--scores">
           {ambient.scoreboard.slice(0, 16).map((entry, index) => (
-            <div className="focus-row" key={index}>
-              <strong>Resident {index + 1}</strong>
+            <div
+              className={`focus-row${index === 0 ? " focus-row--leader" : ""}`}
+              key={index}
+            >
+              <strong>
+                <span className="focus-rank">{index + 1}</span>Resident {index + 1}
+              </strong>
               <span>{entry.score} pts</span>
             </div>
           ))}
         </div>
-      ) : <p className="focus-empty">Scoreboard data is unavailable.</p>;
+      ) : (
+        <FocusEmpty title="No scores yet." hint="The room scoreboard is still warming up." />
+      );
     case "birds":
       return (
         <div className="focus-list">
@@ -318,14 +513,18 @@ function renderFocusContent(
               </div>
               {ambient.birds.top_species.slice(0, 8).map((species, index) => (
                 <div className="focus-row" key={`${species.name}-${index}`}>
-                  <strong>{safeText(species.name) || "Unknown bird"}</strong>
+                  <strong>{focusSafeText(species.name) || "Unknown bird"}</strong>
                   <span>{species.count} detections</span>
                   <span>{(species.confidence_avg * 100).toFixed(0)}% confidence</span>
                 </div>
               ))}
-              {ambient.birds.top_species.length === 0 && <p className="focus-empty">No bird detections yet today.</p>}
+              {ambient.birds.top_species.length === 0 && (
+                <FocusEmpty title="No bird detections yet today." hint="Species will list here as they arrive." />
+              )}
             </>
-          ) : <p className="focus-empty">Bird summary is unavailable.</p>}
+          ) : (
+            <FocusEmpty title="Bird summary is unavailable." hint="Waiting for the window feeder." />
+          )}
           {ambient.birdCollageUrl && (
             <img
               className="bird-collage bird-collage--focus"
@@ -343,45 +542,40 @@ function renderFocusContent(
       return ambient.printer ? (
         <div className="focus-printer">
           <p className="surface-eyebrow">{ambient.printer.state}</p>
-          <h2>{ambient.printer.job_name ? safeText(ambient.printer.job_name) : "No active print"}</h2>
+          <h2>{ambient.printer.job_name ? focusSafeText(ambient.printer.job_name) : "No active print"}</h2>
           <div className="focus-progress" aria-label={`${ambient.printer.progress_pct ?? 0}% complete`}>
             <span style={{ width: `${clampPercentage(ambient.printer.progress_pct)}%` }} />
           </div>
           <strong>{ambient.printer.progress_pct === null ? "Progress unavailable" : `${ambient.printer.progress_pct}% complete`}</strong>
         </div>
-      ) : <p className="focus-empty">Printer status is unavailable.</p>;
+      ) : (
+        <FocusEmpty title="Printer status is unavailable." hint="No job reported from the lab printer." />
+      );
     case "food":
       return ambient.food ? (
         <div className="focus-hero-stat">
-          <p className="surface-eyebrow">{safeText(ambient.food.provider, 40)}</p>
-          <strong>{safeText(ambient.food.title)}</strong>
-          <span>{safeText(ambient.food.detail, 160)}</span>
-        </div>
-      ) : <p className="focus-empty">Food recommendation is unavailable.</p>;
-    case "poll":
-      return poll ? (
-        <div className="focus-list">
-          <h2>{poll.question}</h2>
-          {poll.options.map((option) => (
-            <PollOptionRow
-              key={option.id}
-              text={option.text}
-              votes={pollResults?.find((row) => row.option_id === option.id)?.votes ?? 0}
-            />
-          ))}
+          <p className="surface-eyebrow">{focusSafeText(ambient.food.provider, 40)}</p>
+          <strong>{focusSafeText(ambient.food.title)}</strong>
+          <span>{focusSafeText(ambient.food.detail, 160)}</span>
         </div>
       ) : (
-        <p className="focus-empty">No poll is running right now.</p>
+        <FocusEmpty title="No food recommendation yet." hint="Today's pick will appear here." />
+      );
+    case "poll":
+      return poll ? (
+        <PollFocusPanel poll={poll} pollResults={pollResults} />
+      ) : (
+        <FocusEmpty title="No poll is running right now." hint="A new question will show up when one opens." />
       );
     case "guestbook":
       return guestbookEntries.length > 0 ? (
-        <div className="focus-guestbook">
-          {guestbookEntries.slice(0, 4).map((entry) => (
+        <div className="guestbook-focus" data-testid="guestbook-focus">
+          {guestbookEntries.slice(0, 5).map((entry) => (
             <GuestbookQuote key={entry.id} text={entry.text} authorLabel={entry.author_label} />
           ))}
         </div>
       ) : (
-        <p className="focus-empty">No approved guestbook notes yet.</p>
+        <FocusEmpty title="No approved guestbook notes yet." hint="Visitors can sign the guestbook at the door." />
       );
     case "moments":
       return moments.length > 0 ? (
@@ -394,7 +588,7 @@ function renderFocusContent(
           ))}
         </div>
       ) : (
-        <p className="focus-empty">No approved moments yet.</p>
+        <FocusEmpty title="No approved moments yet." hint="Photo-booth highlights land here once approved." />
       );
   }
 }

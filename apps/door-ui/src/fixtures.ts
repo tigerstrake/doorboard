@@ -113,12 +113,6 @@ export const printerFixture = {
   eta: new Date(Date.now() + 900000).toISOString(), // 15 minutes in future
 };
 
-export const moodFixture = {
-  occurred_at: "2026-07-04T12:34:56.123Z",
-  mood: "focused",
-  subject_id: "owner",
-};
-
 export const scoreboardFixture = {
   occurred_at: "2026-07-04T12:34:56.123Z",
   board_id: "daily",

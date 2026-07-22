@@ -6,6 +6,7 @@ import type {
   AmbientAircraftSummaryPayload,
   AmbientSatellitePassPayload,
 } from "@doorboard/contracts";
+import type { Poll, PollResultRow } from "./socialApi";
 
 // The aircraft focus panel mounts a Leaflet map, which needs a real DOM/canvas
 // + network tiles. Mock Leaflet (and its CSS) so this suite exercises the split
@@ -49,6 +50,23 @@ const SATELLITE: AmbientSatellitePassPayload = {
   direction: "NW",
   visible: true,
 };
+
+const POLL: Poll = {
+  id: "poll-1",
+  question: "Best late-night study snack?",
+  status: "open",
+  created_at: "2026-07-20T00:00:00Z",
+  closed_at: null,
+  options: [
+    { id: "a", text: "Instant noodles" },
+    { id: "b", text: "Trail mix" },
+  ],
+};
+
+const POLL_RESULTS: PollResultRow[] = [
+  { option_id: "a", text: "Instant noodles", votes: 7 },
+  { option_id: "b", text: "Trail mix", votes: 3 },
+];
 
 const EMPTY_AMBIENT = {
   aircraft: null,
@@ -114,6 +132,39 @@ describe("WallboardFocusSplit (focused-tile split layout)", () => {
     const panel = screen.getByTestId("wallboard-focus-panel");
     expect(within(panel).getByText("ISS (ZARYA)")).toBeTruthy();
     expect(within(panel).getByText(/NW · 72° max/)).toBeTruthy();
+  });
+
+  it("renders the sky-compass aimed at the satellite rise direction", () => {
+    renderSplit({ channel: "satellite", ambient: { ...EMPTY_AMBIENT, satellite: SATELLITE } });
+    const panel = screen.getByTestId("wallboard-focus-panel");
+    const compass = within(panel).getByTestId("sky-compass");
+    expect(compass.getAttribute("aria-label")).toMatch(/NW/);
+    // Max-elevation readout is present as its own large stat.
+    expect(within(panel).getByText("72°")).toBeTruthy();
+  });
+
+  it("lays out the poll question with per-option vote bars and a highlighted leader", () => {
+    renderSplit({ channel: "poll", poll: POLL, pollResults: POLL_RESULTS });
+    const panel = screen.getByTestId("wallboard-focus-panel");
+    expect(within(panel).getByText(/Best late-night study snack/)).toBeTruthy();
+    expect(within(panel).getByText("Instant noodles")).toBeTruthy();
+    expect(within(panel).getByText("Trail mix")).toBeTruthy();
+
+    // 7 of 10 votes → 70% bar for the leader, 30% for the runner-up.
+    const leaderBar = within(panel).getByRole("progressbar", { name: "Instant noodles" });
+    expect(leaderBar.getAttribute("aria-valuenow")).toBe("70");
+    const otherBar = within(panel).getByRole("progressbar", { name: "Trail mix" });
+    expect(otherBar.getAttribute("aria-valuenow")).toBe("30");
+
+    // Total tally is surfaced.
+    expect(within(panel).getByText(/10 total votes/)).toBeTruthy();
+  });
+
+  it("shows a large, graceful empty state when the poll channel has no poll", () => {
+    renderSplit({ channel: "poll", poll: null });
+    const panel = screen.getByTestId("wallboard-focus-panel");
+    expect(within(panel).getByTestId("focus-empty-state")).toBeTruthy();
+    expect(within(panel).getByText(/No poll is running/i)).toBeTruthy();
   });
 
   it("renders a graceful '…unavailable' panel when the channel has no data yet", () => {
