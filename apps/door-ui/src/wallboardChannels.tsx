@@ -182,7 +182,7 @@ export function WallboardLauncher({ selectedChannel, onSelect }: WallboardLaunch
   );
 }
 
-interface WallboardFocusedViewProps {
+interface WallboardFocusSplitProps {
   channel: WallboardFocusChannel;
   poll: Poll | null;
   pollResults: PollResultRow[] | null;
@@ -197,36 +197,68 @@ interface WallboardFocusedViewProps {
     food: AmbientFoodRecommendationPayload | null;
     scoreboard: Array<{ score: number; occurredAt: string }> | null;
   };
+  /**
+   * The remaining ambient tiles (everything except the focused channel),
+   * rendered live and shrunk into the secondary rail beside the focus panel.
+   * Optional so the content renderer can be exercised in isolation by tests.
+   */
+  secondary?: React.ReactNode;
   onReturnAmbient: () => void;
 }
 
-export function WallboardFocusedView({
+/**
+ * The wallboard "focus a tile" experience. Instead of a full-screen single
+ * channel takeover, the focused channel grows into a large panel (~half the
+ * viewport) showing an expanded view of the data we already hold, while every
+ * other tile shrinks into a live secondary rail that stays visible around it.
+ * The grow/shrink is animated with GPU-friendly transform/opacity (see
+ * `.wallboard-focus-panel` / `.wallboard-focus-rail` in App.css), and the whole
+ * surface crossfades in/out via the parent CrossfadeSwitch.
+ */
+export function WallboardFocusSplit({
   channel,
   poll,
   pollResults,
   guestbookEntries,
   moments,
   ambient,
+  secondary,
   onReturnAmbient,
-}: WallboardFocusedViewProps) {
-  const title = WALLBOARD_CHANNELS.find((item) => item.id === channel)?.title ?? "Focused view";
+}: WallboardFocusSplitProps) {
+  const definition = WALLBOARD_CHANNELS.find((item) => item.id === channel);
+  const title = definition?.title ?? "Focused view";
+  const eyebrow = definition?.eyebrow ?? "Wallboard channel";
 
   return (
-    <div className={`wallboard-focus-view wallboard-focus-view--${channel} db-app-theme`}>
+    <div
+      className={`wallboard-focus-split wallboard-focus-split--${channel} db-app-theme`}
+      data-testid="wallboard-focus-split"
+    >
       <header className="wallboard-focus-header">
         <div>
-          <p className="surface-eyebrow">Wallboard channel</p>
+          <p className="surface-eyebrow">Focused · {eyebrow}</p>
           <h1>{title}</h1>
         </div>
         <BigButton className="wallboard-focus-return" onClick={onReturnAmbient}>
           Ambient grid
         </BigButton>
       </header>
-      <main className="wallboard-focus-main">
-        {renderFocusContent(channel, poll, pollResults, guestbookEntries, moments, ambient)}
-      </main>
+      <div className="wallboard-focus-layout">
+        <main className="wallboard-focus-panel" data-testid="wallboard-focus-panel">
+          {renderFocusContent(channel, poll, pollResults, guestbookEntries, moments, ambient)}
+        </main>
+        {secondary != null && (
+          <aside
+            className="wallboard-focus-rail"
+            aria-label="Other wallboard tiles"
+            data-testid="wallboard-focus-rail"
+          >
+            {secondary}
+          </aside>
+        )}
+      </div>
       <footer className="wallboard-focus-footer">
-        Focused from DoorPad. Returns to ambient automatically.
+        Focused from DoorPad. Returns to the ambient grid automatically.
       </footer>
     </div>
   );
@@ -238,7 +270,7 @@ function renderFocusContent(
   pollResults: PollResultRow[] | null,
   guestbookEntries: GuestbookEntry[],
   moments: Array<{ recording_id: string; tags: string[]; approved_at: string | null }>,
-  ambient: WallboardFocusedViewProps["ambient"]
+  ambient: WallboardFocusSplitProps["ambient"]
 ) {
   const safeText = (value: string | null | undefined, maxLength = 80) =>
     (value ?? "").trim().replace(/\s+/g, " ").slice(0, maxLength);
