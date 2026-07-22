@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from aircraft.enrichment import (
+    AircraftEnricher,
+    EnrichmentConfig,
+    build_enricher,
+)
 from aircraft.provider import (
     AircraftConfig,
     AircraftProvider,
@@ -14,4 +19,7 @@ __all__ = [
     "OpenSkyAircraftProvider",
     "MockAircraftProvider",
     "haversine_distance",
+    "AircraftEnricher",
+    "EnrichmentConfig",
+    "build_enricher",
 ]

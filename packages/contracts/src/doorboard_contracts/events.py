@@ -373,11 +373,39 @@ class AmbientAircraftNearby(StrictModel):
     altitude_ft: int
     distance_km: float
     heading: int
+    # Additive per-plane detail (ADR-0015). All optional / backward-compatible:
+    # older producers and the offline mock omit them, so consumers must treat
+    # every field below as "may be absent".
+    #
+    # Derived from the OpenSky state vector already fetched for the summary:
+    icao24: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    ground_speed_kmh: int | None = None
+    vertical_rate_fpm: int | None = None
+    on_ground: bool | None = None
+    origin_country: str | None = None
+    # Best-effort external enrichment (adsbdb / planespotters), nearest planes
+    # only, cached; any lookup miss/timeout leaves the field absent.
+    registration: str | None = None
+    aircraft_type: str | None = None
+    operator: str | None = None
+    origin: str | None = None
+    destination: str | None = None
+    photo_url: str | None = None
+    photo_attribution: str | None = None
+
+
+class AircraftObserver(StrictModel):
+    latitude: float
+    longitude: float
 
 
 class AmbientAircraftSummaryPayload(StrictModel):
     nearby: list[AmbientAircraftNearby]
     as_of: UTCDateTime
+    # Configured observer centre so a UI map can centre on it (ADR-0015).
+    observer: AircraftObserver | None = None
 
 
 class AmbientPrinterStatusPayload(StrictModel):

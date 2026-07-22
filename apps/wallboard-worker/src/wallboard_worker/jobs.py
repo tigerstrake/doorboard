@@ -6,9 +6,11 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
+from aircraft.enrichment import AircraftEnricher, EnrichmentConfig
 from aircraft.provider import AircraftProvider
 from birdnet.provider import BirdProvider
 from doorboard_contracts.events import (
+    AircraftObserver,
     AmbientAircraftNearby,
     AmbientAircraftSummaryEvent,
     AmbientAircraftSummaryPayload,
@@ -203,7 +205,10 @@ def run_satellite_passes(
 
 
 def run_aircraft_summary(
-    settings: Settings, provider: AircraftProvider, now: datetime | None = None
+    settings: Settings,
+    provider: AircraftProvider,
+    now: datetime | None = None,
+    enricher: AircraftEnricher | None = None,
 ) -> dict | None:
     """Fetch nearby aircraft data and ingest it into the control plane."""
     if now is None:
@@ -216,13 +221,44 @@ def run_aircraft_summary(
         # Return None to indicate failure (stale path)
         return None
 
-    # Construct payload
+    # Best-effort external enrichment of the nearest few planes. This must never
+    # break the summary: the enricher swallows its own failures, and we guard the
+    # whole call so a total enrichment outage still emits the basic OpenSky data.
+    if enricher is None and settings.aircraft_enrichment_enabled:
+        enricher = AircraftEnricher(
+            EnrichmentConfig(
+                enabled=True,
+                max_aircraft=settings.aircraft_enrichment_max,
+            )
+        )
+    if enricher is not None:
+        try:
+            aircraft_list = enricher.enrich(aircraft_list)
+        except Exception as exc:  # defensive; enricher already swallows its own errors
+            logger.warning(f"Aircraft enrichment failed, emitting basic summary: {exc}")
+
+    # Construct payload. New per-plane fields are optional; absent ones are
+    # dropped by exclude_none below so the wire stays lean.
     nearby_models = [
         AmbientAircraftNearby(
             callsign=ac["callsign"],
             altitude_ft=ac["altitude_ft"],
             distance_km=ac["distance_km"],
             heading=ac["heading"],
+            icao24=ac.get("icao24"),
+            latitude=ac.get("latitude"),
+            longitude=ac.get("longitude"),
+            ground_speed_kmh=ac.get("ground_speed_kmh"),
+            vertical_rate_fpm=ac.get("vertical_rate_fpm"),
+            on_ground=ac.get("on_ground"),
+            origin_country=ac.get("origin_country"),
+            registration=ac.get("registration"),
+            aircraft_type=ac.get("aircraft_type"),
+            operator=ac.get("operator"),
+            origin=ac.get("origin"),
+            destination=ac.get("destination"),
+            photo_url=ac.get("photo_url"),
+            photo_attribution=ac.get("photo_attribution"),
         )
         for ac in aircraft_list
     ]
@@ -230,6 +266,10 @@ def run_aircraft_summary(
     payload = AmbientAircraftSummaryPayload(
         nearby=nearby_models,
         as_of=now,
+        observer=AircraftObserver(
+            latitude=settings.aircraft_observer_lat,
+            longitude=settings.aircraft_observer_lon,
+        ),
     )
 
     # Construct event
@@ -251,7 +291,9 @@ def run_aircraft_summary(
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    raw_event = event.model_dump(mode="json")
+    # exclude_none so optional per-plane detail that couldn't be resolved is
+    # omitted from the wire rather than sent as explicit nulls.
+    raw_event = event.model_dump(mode="json", exclude_none=True)
     batch = {"batch_id": f"worker-aircraft-{int(time.time())}", "events": [raw_event]}
 
     try:

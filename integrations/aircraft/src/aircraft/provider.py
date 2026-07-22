@@ -151,15 +151,21 @@ class OpenSkyAircraftProvider(AircraftProvider):
                 states = data.get("states") or []
                 nearby = []
                 for s in states:
-                    # Index values check OpenSky API doc:
-                    # 1: callsign, 5: longitude, 6: latitude,
-                    # 7: baro_alt, 8: on_ground, 10: true_track
+                    # OpenSky state-vector indices (see states/all API doc):
+                    # 0: icao24, 1: callsign, 2: origin_country, 5: longitude,
+                    # 6: latitude, 7: baro_altitude, 8: on_ground, 9: velocity
+                    # (m/s), 10: true_track, 11: vertical_rate (m/s),
+                    # 13: geo_altitude.
+                    icao24 = (s[0] or "").strip().lower() or None
                     callsign = (s[1] or "").strip()
+                    origin_country = s[2]
                     lon = s[5]
                     lat = s[6]
                     alt_m = s[7] if s[7] is not None else s[13]  # Fallback to geo_altitude
                     on_ground = s[8]
+                    velocity = s[9]
                     track = s[10]
+                    vertical_rate = s[11]
 
                     if lat is None or lon is None or on_ground:
                         continue
@@ -169,6 +175,11 @@ class OpenSkyAircraftProvider(AircraftProvider):
                     )
                     alt_ft = int(alt_m * 3.28084) if alt_m is not None else 0
                     heading = int(track) if track is not None else 0
+                    # velocity m/s -> km/h; vertical_rate m/s -> feet/min.
+                    ground_speed_kmh = round(velocity * 3.6) if velocity is not None else None
+                    vertical_rate_fpm = (
+                        round(vertical_rate * 196.85) if vertical_rate is not None else None
+                    )
 
                     nearby.append(
                         {
@@ -176,6 +187,13 @@ class OpenSkyAircraftProvider(AircraftProvider):
                             "altitude_ft": alt_ft,
                             "distance_km": round(dist, 2),
                             "heading": heading,
+                            "icao24": icao24,
+                            "latitude": lat,
+                            "longitude": lon,
+                            "ground_speed_kmh": ground_speed_kmh,
+                            "vertical_rate_fpm": vertical_rate_fpm,
+                            "on_ground": bool(on_ground),
+                            "origin_country": origin_country,
                         }
                     )
 

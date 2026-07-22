@@ -4,6 +4,7 @@ import logging
 from typing import cast
 
 import click
+from aircraft.enrichment import AircraftEnricher, EnrichmentConfig
 from aircraft.provider import AircraftConfig, MockAircraftProvider, OpenSkyAircraftProvider
 from birdnet.provider import BirdnetConfig, BirdnetGoProvider, MockBirdProvider
 from printer.provider import (
@@ -112,6 +113,7 @@ def aircraft_summary(mock: bool) -> None:
     """Run the aircraft summary ingestion job."""
     settings = Settings()
 
+    enricher: AircraftEnricher | None = None
     if mock or not settings.feature_aircraft:
         logger.info("Using MockAircraftProvider")
         provider = MockAircraftProvider()
@@ -128,8 +130,15 @@ def aircraft_summary(mock: bool) -> None:
             poll_cooldown_seconds=settings.aircraft_poll_cooldown_seconds,
         )
         provider = OpenSkyAircraftProvider(config)
+        if settings.aircraft_enrichment_enabled:
+            enricher = AircraftEnricher(
+                EnrichmentConfig(
+                    enabled=True,
+                    max_aircraft=settings.aircraft_enrichment_max,
+                )
+            )
 
-    run_aircraft_summary(settings, provider)
+    run_aircraft_summary(settings, provider, enricher=enricher)
 
 
 @cli.command()

@@ -225,11 +225,31 @@ export interface AmbientAircraftNearby {
   altitude_ft: number;
   distance_km: number;
   heading: number;
+  icao24?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  ground_speed_kmh?: number | null;
+  vertical_rate_fpm?: number | null;
+  on_ground?: boolean | null;
+  origin_country?: string | null;
+  registration?: string | null;
+  aircraft_type?: string | null;
+  operator?: string | null;
+  origin?: string | null;
+  destination?: string | null;
+  photo_url?: string | null;
+  photo_attribution?: string | null;
+}
+
+export interface AircraftObserver {
+  latitude: number;
+  longitude: number;
 }
 
 export interface AmbientAircraftSummaryPayload {
   nearby: Array<AmbientAircraftNearby>;
   as_of: string;
+  observer?: AircraftObserver | null;
 }
 
 export interface AmbientPrinterStatusPayload {

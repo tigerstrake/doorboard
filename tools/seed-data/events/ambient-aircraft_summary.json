@@ -7,12 +7,30 @@
     "as_of": "2026-07-04T12:34:56.123000Z",
     "nearby": [
       {
+        "aircraft_type": "Boeing 737-900",
         "altitude_ft": 32000,
         "callsign": "UAL123",
+        "destination": "Los Angeles (LAX)",
         "distance_km": 18.2,
-        "heading": 94
+        "ground_speed_kmh": 812,
+        "heading": 94,
+        "icao24": "a1b2c3",
+        "latitude": 37.45,
+        "longitude": -122.18,
+        "on_ground": false,
+        "operator": "United Airlines",
+        "origin": "San Francisco (SFO)",
+        "origin_country": "United States",
+        "photo_attribution": "Jane Spotter / planespotters.net",
+        "photo_url": "https://example.com/photo/a1b2c3.jpg",
+        "registration": "N12345",
+        "vertical_rate_fpm": -640
       }
-    ]
+    ],
+    "observer": {
+      "latitude": 37.4242,
+      "longitude": -122.1708
+    }
   },
   "source": "doorboard-contracts-test",
   "trace_id": "9d1e8a34-52a1-4b0e-9c0f-2a7d1f66b100",

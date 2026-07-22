@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from aircraft.enrichment import AircraftEnricher
 from aircraft.provider import (
     AircraftConfig,
     MockAircraftProvider,
@@ -113,6 +115,35 @@ def test_opensky_provider_success(mock_get) -> None:
 
 
 @patch("httpx.get")
+def test_opensky_provider_derived_fields(mock_get) -> None:
+    """OpenSky-derived detail (icao24, lat/lon, speeds, country) is populated."""
+    config = AircraftConfig(
+        observer_lat=37.7749,
+        observer_lon=-122.4194,
+        poll_cooldown_seconds=0,
+    )
+    provider = OpenSkyAircraftProvider(config)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = OPENSKY_MOCK_RESPONSE
+    mock_get.return_value = mock_resp
+
+    res = provider.get_nearby_aircraft(datetime(2026, 7, 7, 12, 0, 0, tzinfo=UTC))
+
+    assert len(res) == 1
+    ac = res[0]
+    assert ac["icao24"] == "4b1812"
+    assert ac["latitude"] == pytest.approx(37.8)
+    assert ac["longitude"] == pytest.approx(-122.3)
+    # velocity 200 m/s -> 720 km/h; vertical_rate 0 m/s -> 0 fpm.
+    assert ac["ground_speed_kmh"] == 720
+    assert ac["vertical_rate_fpm"] == 0
+    assert ac["on_ground"] is False
+    assert ac["origin_country"] == "Switzerland"
+
+
+@patch("httpx.get")
 def test_opensky_provider_cooldown_and_cache(mock_get) -> None:
     config = AircraftConfig(
         observer_lat=37.7749,
@@ -211,15 +242,54 @@ def test_run_aircraft_summary_fields_verification(
     payload = event["payload"]
     assert "nearby" in payload
     assert len(payload["nearby"]) == 2
+    # Observer centre is always emitted for the UI map (from settings).
+    assert payload["observer"] == {"latitude": 0.0, "longitude": 0.0}
 
-    # Check for fields
+    # The offline mock provider carries no icao24, so enrichment is a no-op and
+    # exclude_none drops every optional field: only the base OpenSky fields ship.
+    # (This also proves the default-enabled enricher makes no network call here.)
     for ac in payload["nearby"]:
-        # Only these 4 fields are allowed
         assert set(ac.keys()) == {"callsign", "altitude_ft", "distance_km", "heading"}
-        # No fabricated route or destination info
-        assert "route" not in ac
+        # No fabricated route/registration/photo when the source data is absent.
         assert "origin" not in ac
         assert "destination" not in ac
+        assert "registration" not in ac
+        assert "photo_url" not in ac
+
+
+@patch("httpx.post")
+def test_run_aircraft_summary_emits_when_enrichment_raises(
+    mock_post, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A total enrichment failure must not stop the basic summary from emitting."""
+    monkeypatch.setenv("FEATURE_AIRCRAFT", "True")
+    monkeypatch.setenv("CONTROL_PLANE_URL", "http://127.0.0.1:8090")
+    monkeypatch.setenv("CONTROL_PLANE_ADMIN_TOKEN", "test-admin")
+
+    settings = Settings()
+    provider = MockAircraftProvider()
+
+    class _BoomEnricher:
+        def enrich(self, aircraft: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            raise RuntimeError("enrichment upstream is down")
+
+    token_response = MagicMock()
+    token_response.status_code = 200
+    token_response.json.return_value = {"token": "tok_ingest_123"}
+    ingest_response = MagicMock()
+    ingest_response.status_code = 200
+    ingest_response.json.return_value = {"status": "stored"}
+    mock_post.side_effect = [token_response, ingest_response]
+
+    res = run_aircraft_summary(
+        settings, provider, enricher=cast("AircraftEnricher", _BoomEnricher())
+    )
+
+    # The basic summary still posts successfully despite the enricher blowing up.
+    assert res is not None
+    ingest_call = mock_post.mock_calls[1]
+    payload = ingest_call.kwargs["json"]["events"][0]["payload"]
+    assert len(payload["nearby"]) == 2
 
 
 def _oauth_config() -> AircraftConfig:

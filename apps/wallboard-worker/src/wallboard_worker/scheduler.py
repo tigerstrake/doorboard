@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from aircraft.enrichment import AircraftEnricher, EnrichmentConfig
 from aircraft.provider import AircraftConfig, MockAircraftProvider, OpenSkyAircraftProvider
 from birdnet.provider import BirdnetConfig, BirdnetGoProvider, MockBirdProvider
 from food_recommendation.provider import FoodRecommendationProvider, MockFoodRecommendationProvider
@@ -169,11 +170,24 @@ def build_jobs(settings: Settings, *, force_mock: bool = False) -> list[Schedule
                 )
             )
         )
+        # One long-lived enricher per process so its TTL caches persist across
+        # polls. force_mock keeps CI/dev fully offline (mock planes carry no
+        # icao24, so the enricher would no-op anyway).
+        aircraft_enricher = (
+            None
+            if force_mock or not settings.aircraft_enrichment_enabled
+            else AircraftEnricher(
+                EnrichmentConfig(
+                    enabled=True,
+                    max_aircraft=settings.aircraft_enrichment_max,
+                )
+            )
+        )
         jobs.append(
             ScheduledJob(
                 "aircraft-summary",
                 settings.aircraft_interval_s,
-                lambda: run_aircraft_summary(settings, aircraft),
+                lambda: run_aircraft_summary(settings, aircraft, enricher=aircraft_enricher),
             )
         )
 

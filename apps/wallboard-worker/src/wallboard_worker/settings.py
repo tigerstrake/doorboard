@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     aircraft_bbox_half_size_lat: float = Field(default=0.25, alias="AIRCRAFT_BBOX_HALF_SIZE_LAT")
     aircraft_bbox_half_size_lon: float = Field(default=0.25, alias="AIRCRAFT_BBOX_HALF_SIZE_LON")
     aircraft_poll_cooldown_seconds: int = Field(default=30, alias="AIRCRAFT_POLL_COOLDOWN_SECONDS")
+    # Best-effort external enrichment (adsbdb/planespotters) of the nearest few
+    # planes. Default on; a total outage still emits the basic OpenSky summary.
+    aircraft_enrichment_enabled: bool = Field(default=True, alias="AIRCRAFT_ENRICHMENT_ENABLED")
+    aircraft_enrichment_max: int = Field(default=6, alias="AIRCRAFT_ENRICHMENT_MAX")
 
     feature_printer: bool = Field(default=False, alias="FEATURE_PRINTER")
     octoprint_url: str = Field(default="http://octopi.local", alias="OCTOPRINT_URL")
