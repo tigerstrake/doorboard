@@ -41,7 +41,7 @@ import { AdminAboutPanel } from "./AdminAboutPanel";
 import { VisitorPage } from "./VisitorPage";
 import { RevealPage } from "./RevealPage";
 import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
-import { WallboardFocusedView, WallboardLauncher } from "./wallboardChannels";
+import { WallboardFocusSplit, WallboardLauncher } from "./wallboardChannels";
 import { OnScreenKeyboard } from "./OnScreenKeyboard";
 import { safeRandomUUID } from "./uuid";
 import {
@@ -1494,6 +1494,271 @@ export function App() {
         ? wallboardFocusRequest.channel
         : null;
 
+    // Single source of truth for the ambient tiles. The same live nodes are
+    // rendered either as the full ambient grid (unfocused) or, when a channel
+    // is focused, shrunk into the secondary rail beside the focus panel — so
+    // every tile stays live in both layouts. `channel` tags the tile whose
+    // expanded form is shown in the focus panel (null = ambient-only tile).
+    const ambientTiles: Array<{
+      key: string;
+      channel: WallboardFocusChannel | null;
+      node: React.ReactNode;
+    }> = [
+      {
+        key: "presence",
+        channel: null,
+        node: (
+          <Tile title="Presence" asOf={presenceEntries[0]?.occurredAt ?? null} staleAfterMs={15 * 60 * 1000}>
+            <div className="presence-tile-content">
+              {presenceEntries.slice(0, 2).map((presence, index) => (
+                <div className="presence-row" key={index}>
+                  <span>Resident {index + 1}:</span>
+                  <StatusBadge label={presence.label} />
+                </div>
+              ))}
+              {presenceEntries.length === 0 && <p>Presence unavailable.</p>}
+            </div>
+          </Tile>
+        ),
+      },
+      {
+        key: "mood",
+        channel: null,
+        node: (
+          <Tile title="Current Mood" asOf={moodUpdate?.occurredAt ?? null} staleAfterMs={12 * 60 * 60 * 1000}>
+            <div className="mood-tile-content">
+              {moodUpdate ? (
+                <>
+                  <span className="mood-emoji" aria-hidden="true">Status</span>
+                  <span className="mood-text">Resident mood: <strong>{moodUpdate.payload.mood || "Not shared"}</strong></span>
+                </>
+              ) : <span className="mood-text">No mood update available.</span>}
+            </div>
+          </Tile>
+        ),
+      },
+      {
+        key: "birds",
+        channel: "birds",
+        node: (
+          <Tile title="Bird Detections" asOf={birdSummary?.occurredAt ?? null} staleAfterMs={60 * 60 * 1000}>
+            <div className="bird-tile-content">
+              {birdSummary && <p className="bird-stat">Total today: <strong>{birdSummary.payload.total_detections}</strong></p>}
+              {birdSummary?.payload.top_species.slice(0, 5).map((s, idx) => (
+                <div key={idx} className="bird-row">
+                  <span>{safeDisplayText(s.name) || "Unknown bird"} (x{s.count})</span>
+                  <span className="bird-conf">{(s.confidence_avg * 100).toFixed(0)}% conf</span>
+                </div>
+              ))}
+              {!birdSummary && <p>Bird summary unavailable.</p>}
+              {birdSummary && birdSummary.payload.top_species.length === 0 && <p>No detections yet today.</p>}
+              {BIRD_COLLAGE_URL && (
+                <img
+                  className="bird-collage"
+                  src={BIRD_COLLAGE_URL}
+                  alt="Live bird collage from the window feeder"
+                  loading="lazy"
+                  onError={(e) => {
+                    e.currentTarget.style.display = "none";
+                  }}
+                />
+              )}
+            </div>
+          </Tile>
+        ),
+      },
+      {
+        key: "aircraft",
+        channel: "aircraft",
+        node: (
+          <Tile title="Overhead Aircraft" asOf={aircraftSummary?.occurredAt ?? null} staleAfterMs={5 * 60 * 1000}>
+            <div className="aircraft-tile-content">
+              {aircraftSummary?.payload.nearby.slice(0, 5).map((a, idx) => (
+                <div key={idx} className="aircraft-row">
+                  <span className="aircraft-call">{safeDisplayText(a.callsign, 16) || "Aircraft"}</span>
+                  <span>{a.altitude_ft.toLocaleString()} ft</span>
+                  <span>{a.distance_km} km away</span>
+                </div>
+              ))}
+              {!aircraftSummary && <p>Aircraft data unavailable.</p>}
+              {aircraftSummary && aircraftSummary.payload.nearby.length === 0 && <p>No nearby aircraft.</p>}
+            </div>
+          </Tile>
+        ),
+      },
+      {
+        key: "satellite",
+        channel: "satellite",
+        node: (
+          <Tile title="Next Satellite Pass" asOf={satellitePass?.occurredAt ?? null} staleAfterMs={24 * 60 * 60 * 1000}>
+            <div className="satellite-tile-content">
+              {satellitePass ? (
+                <>
+                  <p><strong>{satellitePass.payload.satellite}</strong></p>
+                  <p>Rise: {new Date(satellitePass.payload.rise_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                  <p>Direction: {satellitePass.payload.direction} ({satellitePass.payload.max_elevation_deg}° max elev)</p>
+                </>
+              ) : <p>Satellite pass data unavailable.</p>}
+            </div>
+          </Tile>
+        ),
+      },
+      {
+        key: "printer",
+        channel: "printer",
+        node: (
+          <Tile title="3D Printer" asOf={printerStatus?.occurredAt ?? null} staleAfterMs={5 * 60 * 1000}>
+            <div className="printer-tile-content">
+              {printerStatus ? (
+                <>
+                  <p>Job: <strong>{printerStatus.payload.job_name ?? "None"}</strong> ({printerStatus.payload.state})</p>
+                  <div className="progress-bar-container">
+                    <div className="progress-bar-fill" style={{ width: `${clampPercentage(printerStatus.payload.progress_pct)}%` }} />
+                  </div>
+                  <p className="printer-subtext">
+                    {printerStatus.payload.progress_pct === null ? "Progress unavailable" : `${printerStatus.payload.progress_pct}% completed`}
+                  </p>
+                </>
+              ) : <p>Printer status unavailable.</p>}
+            </div>
+          </Tile>
+        ),
+      },
+      {
+        key: "scoreboard",
+        channel: "scoreboard",
+        node: (
+          <Tile title="Scoreboard" asOf={scoreboardRows[0]?.occurredAt ?? null}>
+            <div className="scoreboard-tile-content">
+              {scoreboardRows.length > 0 ? scoreboardRows.slice(0, 8).map((entry, idx) => (
+                <div key={idx} className="score-row">
+                  <span>Resident {idx + 1}</span>
+                  <span className="score-points"><strong>{entry.score}</strong> pts</span>
+                </div>
+              )) : <p>Scoreboard unavailable.</p>}
+            </div>
+          </Tile>
+        ),
+      },
+      {
+        key: "food",
+        channel: "food",
+        node: (
+          <Tile title="Daily Food Recommendation" asOf={foodRecommendation?.occurredAt ?? null} staleAfterMs={36 * 60 * 60 * 1000}>
+            <div className="food-tile-content">
+              {foodRecommendation ? (
+                <>
+                  <h4>{foodRecommendation.payload.title}</h4>
+                  <p>{foodRecommendation.payload.detail}</p>
+                </>
+              ) : <p>Food recommendation unavailable.</p>}
+            </div>
+          </Tile>
+        ),
+      },
+      {
+        key: "about",
+        channel: null,
+        node: (
+          <Tile title="About Doorboard">
+            <div className="about-tile-content">
+              <p className="about-tagline">{aboutFixture.tagline}</p>
+              <div className="about-stat-chips">
+                <span className="about-chip">
+                  <strong>{aboutFixture.stats.lines_of_code.toLocaleString()}</strong> lines
+                </span>
+                <span className="about-chip">
+                  <strong>{aboutFixture.stats.languages.length}</strong> languages
+                </span>
+                <span className="about-chip">
+                  <strong>{aboutFixture.stats.counts.services}</strong> services
+                </span>
+                <span className="about-chip">
+                  <strong>{aboutFixture.stats.counts.contract_event_types}</strong> event types
+                </span>
+                <span className="about-chip">
+                  <strong>{aboutFixture.stats.counts.adrs}</strong> ADRs
+                </span>
+              </div>
+              <p className="about-langs">
+                {aboutFixture.stats.languages.map((l) => l.name).join(" · ")}
+              </p>
+              <p className="about-asof">Stats as of {aboutFixture.stats.generated_at}</p>
+            </div>
+          </Tile>
+        ),
+      },
+      {
+        key: "poll",
+        channel: "poll",
+        node: (
+          <Tile title="Active Room Poll">
+            <div className="poll-tile-content">
+              {pollAmbientState === "unavailable" && <p>Poll service unavailable; showing no new results.</p>}
+              {pollAmbientState === "ready" && !currentPoll && <p>No poll running right now.</p>}
+              {pollAmbientState === "idle" && <p>Loading current poll…</p>}
+              {currentPoll && (
+                <>
+                  <p className="poll-q"><strong>{currentPoll.question}</strong></p>
+                  {currentPoll.options.map((opt) => (
+                    <PollOptionRow
+                      key={opt.id}
+                      text={opt.text}
+                      votes={pollResults?.find((r) => r.option_id === opt.id)?.votes ?? 0}
+                    />
+                  ))}
+                </>
+              )}
+            </div>
+          </Tile>
+        ),
+      },
+      {
+        key: "guestbook",
+        channel: "guestbook",
+        node: (
+          <Tile
+            title="Guestbook Highlights"
+            asOf={approvedGuestbook[0]?.created_at ?? null}
+          >
+            <div className="guestbook-tile-content">
+              {guestbookAmbientState === "unavailable" && <p>Guestbook unavailable; approved notes below may be stale.</p>}
+              {guestbookAmbientState === "idle" && <p>Loading approved notes…</p>}
+              {guestbookAmbientState === "ready" && approvedGuestbook.length === 0 && <p>No guestbook notes yet — be the first!</p>}
+              {approvedGuestbook.map((e) => (
+                <GuestbookQuote key={e.id} text={e.text} authorLabel={e.author_label} />
+              ))}
+            </div>
+          </Tile>
+        ),
+      },
+      ...(FEATURE_PHOTOBOOTH && wallboardMoments.length > 0
+        ? [
+            {
+              key: "moments",
+              channel: "moments" as const,
+              node: (
+                <Tile title="Moments" asOf={wallboardMoments[0]?.approved_at ?? null}>
+                  <div className="moments-tile-content">
+                    {wallboardMoments.slice(0, 3).map((photo) => (
+                      <div className="moment-row" key={photo.recording_id}>
+                        <div className="moment-thumb-placeholder">
+                          {photo.recording_id.slice(0, 2).toUpperCase()}
+                        </div>
+                        <div>
+                          <strong>{photo.tags.length > 0 ? photo.tags.join(", ") : "Photo Booth"}</strong>
+                          <p>{photo.recording_id.slice(0, 8)}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Tile>
+              ),
+            },
+          ]
+        : []),
+    ];
+
     return (
       <CrossfadeSwitch activeKey={isVisitorMode ? "visitor" : focusedChannel ?? "ambient"}>
         {isVisitorMode ? (
@@ -1508,7 +1773,7 @@ export function App() {
             onDone={endVisitorSession}
           />
         ) : focusedChannel ? (
-          <WallboardFocusedView
+          <WallboardFocusSplit
             channel={focusedChannel}
             poll={currentPoll}
             pollResults={pollResults}
@@ -1523,6 +1788,11 @@ export function App() {
               food: foodRecommendation?.payload ?? null,
               scoreboard: scoreboardRows.length > 0 ? scoreboardRows : null,
             }}
+            secondary={ambientTiles
+              .filter((tile) => tile.channel !== focusedChannel)
+              .map((tile) => (
+                <React.Fragment key={tile.key}>{tile.node}</React.Fragment>
+              ))}
             onReturnAmbient={returnWallboardAmbient}
           />
         ) : (
@@ -1553,211 +1823,17 @@ export function App() {
             )}
 
             <main className="ambient-grid">
-              {/* Tile 1: Presence */}
-              <Tile title="Presence" asOf={presenceEntries[0]?.occurredAt ?? null} staleAfterMs={15 * 60 * 1000}>
-                <div className="presence-tile-content">
-                  {presenceEntries.slice(0, 2).map((presence, index) => (
-                    <div className="presence-row" key={index}>
-                      <span>Resident {index + 1}:</span>
-                      <StatusBadge label={presence.label} />
-                    </div>
-                  ))}
-                  {presenceEntries.length === 0 && <p>Presence unavailable.</p>}
-                </div>
-              </Tile>
+              {/* Tiles come from the shared `ambientTiles` list so they stay
+                  live whether shown here in full or shrunk into the focus rail.
+                  Rendered as direct grid children (Fragments emit no DOM) so the
+                  staggered power-on nth-child delays still line up.
 
-              {/* Tile 2: Mood */}
-              <Tile title="Current Mood" asOf={moodUpdate?.occurredAt ?? null} staleAfterMs={12 * 60 * 60 * 1000}>
-                <div className="mood-tile-content">
-                  {moodUpdate ? (
-                    <>
-                      <span className="mood-emoji" aria-hidden="true">Status</span>
-                      <span className="mood-text">Resident mood: <strong>{moodUpdate.payload.mood || "Not shared"}</strong></span>
-                    </>
-                  ) : <span className="mood-text">No mood update available.</span>}
-                </div>
-              </Tile>
-
-              {/* Tile 3: Birds */}
-              <Tile title="Bird Detections" asOf={birdSummary?.occurredAt ?? null} staleAfterMs={60 * 60 * 1000}>
-                <div className="bird-tile-content">
-                  {birdSummary && <p className="bird-stat">Total today: <strong>{birdSummary.payload.total_detections}</strong></p>}
-                  {birdSummary?.payload.top_species.slice(0, 5).map((s, idx) => (
-                    <div key={idx} className="bird-row">
-                      <span>{safeDisplayText(s.name) || "Unknown bird"} (x{s.count})</span>
-                      <span className="bird-conf">{(s.confidence_avg * 100).toFixed(0)}% conf</span>
-                    </div>
-                  ))}
-                  {!birdSummary && <p>Bird summary unavailable.</p>}
-                  {birdSummary && birdSummary.payload.top_species.length === 0 && <p>No detections yet today.</p>}
-                  {BIRD_COLLAGE_URL && (
-                    <img
-                      className="bird-collage"
-                      src={BIRD_COLLAGE_URL}
-                      alt="Live bird collage from the window feeder"
-                      loading="lazy"
-                      onError={(e) => {
-                        e.currentTarget.style.display = "none";
-                      }}
-                    />
-                  )}
-                </div>
-              </Tile>
-
-              {/* Tile 4: Aircraft */}
-              <Tile title="Overhead Aircraft" asOf={aircraftSummary?.occurredAt ?? null} staleAfterMs={5 * 60 * 1000}>
-                <div className="aircraft-tile-content">
-                  {aircraftSummary?.payload.nearby.slice(0, 5).map((a, idx) => (
-                    <div key={idx} className="aircraft-row">
-                      <span className="aircraft-call">{safeDisplayText(a.callsign, 16) || "Aircraft"}</span>
-                      <span>{a.altitude_ft.toLocaleString()} ft</span>
-                      <span>{a.distance_km} km away</span>
-                    </div>
-                  ))}
-                  {!aircraftSummary && <p>Aircraft data unavailable.</p>}
-                  {aircraftSummary && aircraftSummary.payload.nearby.length === 0 && <p>No nearby aircraft.</p>}
-                </div>
-              </Tile>
-
-              {/* Tile 5: Satellite Pass */}
-              <Tile title="Next Satellite Pass" asOf={satellitePass?.occurredAt ?? null} staleAfterMs={24 * 60 * 60 * 1000}>
-                <div className="satellite-tile-content">
-                  {satellitePass ? (
-                    <>
-                      <p><strong>{satellitePass.payload.satellite}</strong></p>
-                      <p>Rise: {new Date(satellitePass.payload.rise_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-                      <p>Direction: {satellitePass.payload.direction} ({satellitePass.payload.max_elevation_deg}° max elev)</p>
-                    </>
-                  ) : <p>Satellite pass data unavailable.</p>}
-                </div>
-              </Tile>
-
-              {/* Tile 6: Printer Status */}
-              <Tile title="3D Printer" asOf={printerStatus?.occurredAt ?? null} staleAfterMs={5 * 60 * 1000}>
-                <div className="printer-tile-content">
-                  {printerStatus ? (
-                    <>
-                      <p>Job: <strong>{printerStatus.payload.job_name ?? "None"}</strong> ({printerStatus.payload.state})</p>
-                      <div className="progress-bar-container">
-                        <div className="progress-bar-fill" style={{ width: `${clampPercentage(printerStatus.payload.progress_pct)}%` }} />
-                      </div>
-                      <p className="printer-subtext">
-                        {printerStatus.payload.progress_pct === null ? "Progress unavailable" : `${printerStatus.payload.progress_pct}% completed`}
-                      </p>
-                    </>
-                  ) : <p>Printer status unavailable.</p>}
-                </div>
-              </Tile>
-
-              {/* Tile 7: Roommate Scoreboard */}
-              <Tile title="Scoreboard" asOf={scoreboardRows[0]?.occurredAt ?? null}>
-                <div className="scoreboard-tile-content">
-                  {scoreboardRows.length > 0 ? scoreboardRows.slice(0, 8).map((entry, idx) => (
-                    <div key={idx} className="score-row">
-                      <span>Resident {idx + 1}</span>
-                      <span className="score-points"><strong>{entry.score}</strong> pts</span>
-                    </div>
-                  )) : <p>Scoreboard unavailable.</p>}
-                </div>
-              </Tile>
-
-              {/* Tile 8: Daily Food */}
-              <Tile title="Daily Food Recommendation" asOf={foodRecommendation?.occurredAt ?? null} staleAfterMs={36 * 60 * 60 * 1000}>
-                <div className="food-tile-content">
-                  {foodRecommendation ? (
-                    <>
-                      <h4>{foodRecommendation.payload.title}</h4>
-                      <p>{foodRecommendation.payload.detail}</p>
-                    </>
-                  ) : <p>Food recommendation unavailable.</p>}
-                </div>
-              </Tile>
-
-              {/* Tile 8b: About this project — static, build-time project facts */}
-              <Tile title="About Doorboard">
-                <div className="about-tile-content">
-                  <p className="about-tagline">{aboutFixture.tagline}</p>
-                  <div className="about-stat-chips">
-                    <span className="about-chip">
-                      <strong>{aboutFixture.stats.lines_of_code.toLocaleString()}</strong> lines
-                    </span>
-                    <span className="about-chip">
-                      <strong>{aboutFixture.stats.languages.length}</strong> languages
-                    </span>
-                    <span className="about-chip">
-                      <strong>{aboutFixture.stats.counts.services}</strong> services
-                    </span>
-                    <span className="about-chip">
-                      <strong>{aboutFixture.stats.counts.contract_event_types}</strong> event types
-                    </span>
-                    <span className="about-chip">
-                      <strong>{aboutFixture.stats.counts.adrs}</strong> ADRs
-                    </span>
-                  </div>
-                  <p className="about-langs">
-                    {aboutFixture.stats.languages.map((l) => l.name).join(" · ")}
-                  </p>
-                  <p className="about-asof">Stats as of {aboutFixture.stats.generated_at}</p>
-                </div>
-              </Tile>
-
-              {/* Tile 9: Room Poll — fed by the real current poll (T-403) */}
-              <Tile title="Active Room Poll">
-                <div className="poll-tile-content">
-                  {pollAmbientState === "unavailable" && <p>Poll service unavailable; showing no new results.</p>}
-                  {pollAmbientState === "ready" && !currentPoll && <p>No poll running right now.</p>}
-                  {pollAmbientState === "idle" && <p>Loading current poll…</p>}
-                  {currentPoll && (
-                    <>
-                      <p className="poll-q"><strong>{currentPoll.question}</strong></p>
-                      {currentPoll.options.map((opt) => (
-                        <PollOptionRow
-                          key={opt.id}
-                          text={opt.text}
-                          votes={pollResults?.find((r) => r.option_id === opt.id)?.votes ?? 0}
-                        />
-                      ))}
-                    </>
-                  )}
-                </div>
-              </Tile>
-
-              {/* Tile 10: Guestbook Highlights — fed by real approved entries (T-403) */}
-              <Tile
-                title="Guestbook Highlights"
-                asOf={approvedGuestbook[0]?.created_at ?? null}
-              >
-                <div className="guestbook-tile-content">
-                  {guestbookAmbientState === "unavailable" && <p>Guestbook unavailable; approved notes below may be stale.</p>}
-                  {guestbookAmbientState === "idle" && <p>Loading approved notes…</p>}
-                  {guestbookAmbientState === "ready" && approvedGuestbook.length === 0 && <p>No guestbook notes yet — be the first!</p>}
-                  {approvedGuestbook.map((e) => (
-                    <GuestbookQuote key={e.id} text={e.text} authorLabel={e.author_label} />
-                  ))}
-                </div>
-              </Tile>
-
-              {FEATURE_PHOTOBOOTH && wallboardMoments.length > 0 && (
-                <Tile title="Moments" asOf={wallboardMoments[0]?.approved_at ?? null}>
-                  <div className="moments-tile-content">
-                    {wallboardMoments.slice(0, 3).map((photo) => (
-                      <div className="moment-row" key={photo.recording_id}>
-                        <div className="moment-thumb-placeholder">
-                          {photo.recording_id.slice(0, 2).toUpperCase()}
-                        </div>
-                        <div>
-                          <strong>{photo.tags.length > 0 ? photo.tags.join(", ") : "Photo Booth"}</strong>
-                          <p>{photo.recording_id.slice(0, 8)}</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </Tile>
-              )}
-
-              {/* The "Who's Stopped By" visitor collage is intentionally absent
-                  from the public wallboard. It is private all year and only
+                  The "Who's Stopped By" visitor collage is intentionally absent
+                  from the public wallboard — it is private all year and only
                   shown on-demand via the owner-only /reveal#<token> page. */}
+              {ambientTiles.map((tile) => (
+                <React.Fragment key={tile.key}>{tile.node}</React.Fragment>
+              ))}
             </main>
           </div>
         )}

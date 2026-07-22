@@ -3,7 +3,7 @@ import React from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { AmbientBirdSummaryPayload } from "@doorboard/contracts";
-import { WallboardFocusedView } from "./wallboardChannels";
+import { WallboardFocusSplit } from "./wallboardChannels";
 
 afterEach(() => cleanup());
 
@@ -18,7 +18,7 @@ const BIRDS: AmbientBirdSummaryPayload = {
 
 function renderBirds(over: { birds?: AmbientBirdSummaryPayload | null; birdCollageUrl?: string }) {
   return render(
-    <WallboardFocusedView
+    <WallboardFocusSplit
       channel="birds"
       poll={null}
       pollResults={null}
