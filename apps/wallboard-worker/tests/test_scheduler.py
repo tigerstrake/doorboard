@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from food_recommendation.provider import MockFoodRecommendationProvider
@@ -15,8 +16,8 @@ from wallboard_worker.scheduler import (
 from wallboard_worker.settings import Settings
 
 
-def _food_settings(**overrides: object) -> Settings:
-    base: dict[str, object] = {
+def _food_settings(**overrides: Any) -> Settings:
+    base: dict[str, Any] = {
         "FEATURE_FOOD": True,
         "WALLBOARD_WORKER_INGEST_TOKEN": "test-ingest-token",
     }
