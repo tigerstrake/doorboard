@@ -84,6 +84,10 @@ services:
       NTFY_URL: ${NTFY_URL:-}
       NTFY_TOPIC: ${NTFY_TOPIC:-}
       CONTROL_PLANE_ADMIN_TOKEN: ${CONTROL_PLANE_ADMIN_TOKEN:?CONTROL_PLANE_ADMIN_TOKEN must be set in .env}
+      # Enrollment key-release (ADR-0009 §6): LUKS passphrase + its dedicated
+      # release token. Empty = feature off (the /status/keys/enrollment 404s).
+      CONTROL_PLANE_ENROLLMENT_KEY: ${CONTROL_PLANE_ENROLLMENT_KEY:-}
+      CONTROL_PLANE_ENROLLMENT_KEY_TOKEN: ${CONTROL_PLANE_ENROLLMENT_KEY_TOKEN:-}
       CONTROL_PLANE_SYNC_STALL_ALERT_S: ${CONTROL_PLANE_SYNC_STALL_ALERT_S:-14400}
       CONTROL_PLANE_NOTIFY_COOLDOWN_S: ${CONTROL_PLANE_NOTIFY_COOLDOWN_S:-3600}
       # Telegram video-message delivery + door-api admin media source. This
