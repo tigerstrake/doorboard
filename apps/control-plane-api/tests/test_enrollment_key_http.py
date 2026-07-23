@@ -5,7 +5,8 @@ from __future__ import annotations
 from control_plane_api.app import app
 from control_plane_api.settings import override_settings
 from fastapi.testclient import TestClient
-from tests.conftest import TestSettings
+
+from .conftest import TestSettings
 
 
 class _KeySettings(TestSettings):
