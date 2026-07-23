@@ -113,6 +113,34 @@ def _require_admin(request: Request, authorization: str | None = Header(default=
 AdminAuth = Annotated[None, Depends(_require_admin)]
 
 
+def _require_enrollment_key_token(
+    request: Request, authorization: str | None = Header(default=None)
+) -> None:
+    """Gate the enrollment key-release endpoint with its own token (ADR-0009 §6).
+
+    Deliberately NOT the admin token: the door Pi holds this narrow token only,
+    so a stolen (powered, on-network) Pi can fetch the LUKS key but nothing else.
+    Both the key and its token must be configured, else the feature is absent (404).
+    """
+    cfg: Settings = _state(request).settings
+    if not cfg.enrollment_key or not cfg.enrollment_key_token:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="enrollment key release is not configured",
+        )
+    prefix = "Bearer "
+    presented = ""
+    if authorization is not None and authorization.startswith(prefix):
+        presented = authorization[len(prefix) :]
+    if not presented or not secrets.compare_digest(presented, cfg.enrollment_key_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid enrollment key token"
+        )
+
+
+EnrollmentKeyAuth = Annotated[None, Depends(_require_enrollment_key_token)]
+
+
 def _scoped_token_auth(scope: ServiceTokenScope):
     def dependency(
         request: Request, authorization: str | None = Header(default=None)
@@ -136,6 +164,20 @@ _config_auth = _scoped_token_auth("config")
 async def health(request: Request) -> dict[str, Any]:
     cfg = _state(request).settings
     return {"service": "control-plane-api", "status": "ok", "detail": None, "door_id": cfg.door_id}
+
+
+@app.get("/status/keys/enrollment")
+async def enrollment_key(request: Request, _auth: EnrollmentKeyAuth) -> dict[str, str]:
+    """Release the door Pi's LUKS enrollment passphrase (ADR-0009 §6, Option C).
+
+    The Pi calls this once at boot to unlock its encrypted visiond/ volume and
+    caches the key only in RAM. Log the release (never the key itself).
+    """
+    cfg = _state(request).settings
+    logging.getLogger("control_plane_api.keys").info(
+        "enrollment_key_released", extra={"door_id": cfg.door_id}
+    )
+    return {"key": cfg.enrollment_key}
 
 
 _start_time = time.monotonic()

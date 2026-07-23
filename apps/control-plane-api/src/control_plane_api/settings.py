@@ -122,6 +122,16 @@ class Settings(BaseSettings):
     # ── admin auth (stopgap — see packages/auth README) ──────────────────
     admin_token: str = Field(default="", alias="CONTROL_PLANE_ADMIN_TOKEN")
 
+    # ── visiond enrollment key release (ADR-0009 §6, Option C) ───────────
+    # The LUKS passphrase for the door Pi's encrypted enrollment volume lives
+    # HERE (on the NUC), never on the Pi. The Pi fetches it at boot over the
+    # LAN, unlocks the volume, and caches the key only in RAM — so a stolen,
+    # powered-off Pi is ciphertext-without-key. Both must be set for release to
+    # work; the release endpoint is gated by its OWN token (least privilege —
+    # the Pi never holds the admin token). Empty = feature off (endpoint 404s).
+    enrollment_key: str = Field(default="", alias="CONTROL_PLANE_ENROLLMENT_KEY")
+    enrollment_key_token: str = Field(default="", alias="CONTROL_PLANE_ENROLLMENT_KEY_TOKEN")
+
     # ── presence engine (T-504) ──────────────────────────────────────────
     # How many `presence_history` rows to retain per subject_id — an
     # append-only label-change log grows forever otherwise. 500 rows is
