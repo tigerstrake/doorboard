@@ -9,7 +9,9 @@ never leak biometric data to disk or a log aggregator.
 Redaction rules (a value is scrubbed to ``"[REDACTED]"`` when):
 
 - it is a byte string longer than 64 bytes;
-- it is a sequence of more than 16 numbers (a candidate embedding vector);
+- it is a sequence of more than 16 numbers (a candidate embedding vector) —
+  ``list``/``tuple``, ``array.array``, a ``set``/``frozenset``, or a numpy-style
+  array (detected by duck typing so this package keeps no heavy dependency);
 - it is a base64-looking string longer than 64 characters;
 - its mapping key is one of ``{"embedding", "vector", "face_crop", "frame"}``.
 
@@ -23,6 +25,7 @@ review-blocking defect per ADR-0009 §2).
 
 from __future__ import annotations
 
+import array
 import logging
 import re
 from collections.abc import Mapping, Sequence
@@ -58,6 +61,28 @@ def _is_long_base64ish(value: str) -> bool:
     return len(value) > MAX_BASE64_CHARS and bool(_BASE64_RE.match(value))
 
 
+def _coerce_to_list(value: object) -> list[object] | None:
+    """Coerce an array-like into a plain (possibly nested) Python list, or None.
+
+    Handles ``array.array`` and numpy-style arrays. numpy is detected by duck
+    typing (``.tolist`` + ``.shape`` + ``.dtype``) so observability never depends
+    on numpy; ``.tolist()`` also converts numpy scalars (``np.float32`` etc.) into
+    native ``int``/``float`` so the number-sequence rule can recognise them.
+    """
+    if isinstance(value, array.array):
+        return cast("list[object]", value.tolist())
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist) and hasattr(value, "shape") and hasattr(value, "dtype"):
+        try:
+            result = tolist()
+        except Exception:  # pragma: no cover - defensive; never fail a log record
+            return None
+        if isinstance(result, list):
+            return cast("list[object]", result)
+        return [result]
+    return None
+
+
 def redact_value(value: object, *, depth: int = 0) -> object:
     """Return *value* with any biometric-looking payload replaced by REDACTED."""
     if depth > _MAX_DEPTH:
@@ -89,6 +114,20 @@ def redact_value(value: object, *, depth: int = 0) -> object:
             return REDACTED
         redacted = [redact_value(item, depth=depth + 1) for item in seq]
         return tuple(redacted) if isinstance(value, tuple) else redacted
+
+    # numpy-style arrays and array.array: coerce to a plain list (turning numpy
+    # scalars into int/float) and re-run so the list rule above applies. A 2-D
+    # array becomes nested lists whose inner number rows are redacted on recursion.
+    coerced = _coerce_to_list(value)
+    if coerced is not None:
+        return redact_value(coerced, depth=depth)
+
+    # Unordered number collections (set/frozenset) — e.g. a set of distances.
+    if isinstance(value, (set, frozenset)):
+        members = list(cast("set[object] | frozenset[object]", value))
+        if _is_number_sequence(members) and len(members) > MAX_FLOAT_SEQUENCE:
+            return REDACTED
+        return {redact_value(item, depth=depth + 1) for item in members}
 
     return value
 
