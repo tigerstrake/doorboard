@@ -146,8 +146,11 @@ class PahoMqttPublisher:
             logger.warning("mqtt_publish_failed", extra={"type": event.type}, exc_info=True)
 
     def close(self) -> None:
-        self._client.loop_stop()
+        # Send DISCONNECT while the network loop is still running so the broker
+        # sees a graceful close (and any in-flight publish is flushed); only then
+        # stop the loop. The reverse order drops the link without a DISCONNECT.
         self._client.disconnect()
+        self._client.loop_stop()
 
 
 def build_publisher(*, url: str, username: str = "", password: str = "") -> MqttPublisher:
