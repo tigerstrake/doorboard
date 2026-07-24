@@ -15,3 +15,7 @@ Operational procedures, written in M7 (task T-703) but stubbed as soon as the su
 - [backup-procedures.md](backup-procedures.md) — overall system backup cadence, scopes, and recovery guidelines (**Verified 2026-07-08**)
 - [monitoring-dashboards.md](monitoring-dashboards.md) — metrics catalog, health endpoints, and log event reference (**Verified 2026-07-08**)
 - `security-checklist.md` — deployment security checklist (T-701 output, owned by T-701)
+
+## Additional
+
+- [enrollment-encrypted-volume.md](enrollment-encrypted-volume.md) — LUKS enrollment volume with key-on-NUC (ADR-0009 §6, T-302) (**Draft — pending on-device validation**)
