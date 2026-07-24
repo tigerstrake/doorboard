@@ -509,6 +509,9 @@ async def metrics() -> Response:
             "door_api_mqtt_bridge_parse_errors_total": (
                 state.mqtt_bridge.parse_errors if state.mqtt_bridge else 0
             ),
+            "door_api_mqtt_bridge_broadcast_errors_total": (
+                state.mqtt_bridge.broadcast_errors if state.mqtt_bridge else 0
+            ),
         }
     )
     lines = [
