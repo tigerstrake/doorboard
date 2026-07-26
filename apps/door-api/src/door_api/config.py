@@ -6,9 +6,12 @@ Override via environment variables prefixed with ``DOOR_API_``.
 
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 from dataclasses import dataclass
+
+logger = logging.getLogger("door_api.config")
 
 
 def _env_float(name: str, default: float) -> float:
@@ -80,7 +83,12 @@ class SessionConfig:
     max_recording_s: float = 60.0
 
     # How long VIDEO_MESSAGE_REVIEW stays active before auto-SESSION_END (seconds).
-    review_timeout_s: float = 30.0
+    # MUST be >= max_recording_s plus decision margin: the review timer is a fixed
+    # countdown from entering REVIEW and is NOT paused while the visitor plays the
+    # clip back, so a value below the recording ceiling silently auto-discards a
+    # full-length message mid-review (trigger "timeout:review" -> outcome
+    # "abandoned"). Default comfortably fits watching a 60s message and saving it.
+    review_timeout_s: float = 180.0
 
     # How long VIDEO_MESSAGE_SAVED shows confirmation before SESSION_END (seconds).
     saved_linger_s: float = 5.0
@@ -108,10 +116,13 @@ class SessionConfig:
     cors_origins: tuple[str, ...] = _DEFAULT_CORS_ORIGINS
 
     # door-media base URL used for fire-and-forget recording lifecycle forwarding.
-    media_base_url: str = "http://127.0.0.1:8001"
+    # door-media binds 127.0.0.1:8082 (see deploy/pi-door doorboard.env.example);
+    # the old :8001 default was wrong and silently broke media forwarding whenever
+    # DOOR_API_MEDIA_BASE_URL was not set explicitly.
+    media_base_url: str = "http://127.0.0.1:8082"
 
     # Browser-reachable media URL for local DoorPad playback.
-    media_public_base_url: str = "http://127.0.0.1:8001"
+    media_public_base_url: str = "http://127.0.0.1:8082"
 
     # Bounded timeout for door-api -> door-media local loopback calls.
     media_timeout_s: float = 1.0
@@ -164,12 +175,23 @@ class SessionConfig:
                 raise RuntimeError("Either DOOR_API_DB_PATH or SSD_DATA_ROOT must be set")
             db_path = os.path.join(ssd_root, "door-api", "session.sqlite")
 
+        max_recording_s = _env_float("DOOR_API_MAX_RECORDING_S", 60.0)
+        review_timeout_s = _env_float("DOOR_API_REVIEW_TIMEOUT_S", 180.0)
+        if review_timeout_s < max_recording_s:
+            logger.warning(
+                "DOOR_API_REVIEW_TIMEOUT_S (%.0fs) is below DOOR_API_MAX_RECORDING_S "
+                "(%.0fs); a full-length video message can be auto-discarded before the "
+                "visitor finishes reviewing it. Set the review timeout >= max recording.",
+                review_timeout_s,
+                max_recording_s,
+            )
+
         return SessionConfig(
             ring_timeout_s=_env_float("DOOR_API_RING_TIMEOUT_S", 30.0),
             visitor_mode_auto_ring_s=_env_float("DOOR_API_VISITOR_MODE_AUTO_RING_S", 2.0),
             offer_delay_s=_env_float("DOOR_API_OFFER_DELAY_S", 3.0),
-            max_recording_s=_env_float("DOOR_API_MAX_RECORDING_S", 60.0),
-            review_timeout_s=_env_float("DOOR_API_REVIEW_TIMEOUT_S", 30.0),
+            max_recording_s=max_recording_s,
+            review_timeout_s=review_timeout_s,
             saved_linger_s=_env_float("DOOR_API_SAVED_LINGER_S", 5.0),
             inactivity_timeout_s=_env_float("DOOR_API_INACTIVITY_TIMEOUT_S", 120.0),
             approach_timeout_s=_env_float("DOOR_API_APPROACH_TIMEOUT_S", 10.0),
@@ -177,10 +199,10 @@ class SessionConfig:
             db_path=db_path,
             door_id=os.environ.get("DOOR_API_DOOR_ID", "primary"),
             cors_origins=_cors_origins_from_env("DOOR_API_CORS_ORIGINS"),
-            media_base_url=os.environ.get("DOOR_API_MEDIA_BASE_URL", "http://127.0.0.1:8001"),
+            media_base_url=os.environ.get("DOOR_API_MEDIA_BASE_URL", "http://127.0.0.1:8082"),
             media_public_base_url=os.environ.get(
                 "DOOR_API_MEDIA_PUBLIC_BASE_URL",
-                os.environ.get("DOOR_API_MEDIA_BASE_URL", "http://127.0.0.1:8001"),
+                os.environ.get("DOOR_API_MEDIA_BASE_URL", "http://127.0.0.1:8082"),
             ),
             media_timeout_s=_env_float("DOOR_API_MEDIA_TIMEOUT_S", 1.0),
             media_admin_token=os.environ.get("DOOR_MEDIA_ADMIN_TOKEN", ""),
