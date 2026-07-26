@@ -357,6 +357,7 @@ version = "0.0.0"
 source = { editable = "apps/door-visiond" }
 dependencies = [
     { name = "doorboard-contracts" },
+    { name = "doorboard-esp32-link" },
     { name = "doorboard-observability" },
     { name = "fastapi" },
     { name = "pydantic-settings" },
@@ -367,6 +368,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "doorboard-esp32-link", editable = "packages/esp32-link" },
     { name = "doorboard-observability", editable = "packages/observability" },
     { name = "fastapi" },
     { name = "pydantic-settings", specifier = ">=2.6" },
