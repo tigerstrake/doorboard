@@ -332,7 +332,6 @@ version = "0.0.0"
 source = { editable = "apps/door-sync" }
 dependencies = [
     { name = "doorboard-contracts" },
-    { name = "doorboard-observability" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -343,7 +342,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "doorboard-contracts", editable = "packages/contracts" },
-    { name = "doorboard-observability", editable = "packages/observability" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pydantic", specifier = ">=2.9" },
@@ -467,7 +465,6 @@ dependencies = [
     { name = "doorboard-door-api" },
     { name = "doorboard-door-media" },
     { name = "doorboard-door-visiond" },
-    { name = "doorboard-esp32-link" },
 ]
 
 [package.metadata]
@@ -476,7 +473,6 @@ requires-dist = [
     { name = "doorboard-door-api", editable = "apps/door-api" },
     { name = "doorboard-door-media", editable = "apps/door-media" },
     { name = "doorboard-door-visiond", editable = "apps/door-visiond" },
-    { name = "doorboard-esp32-link", editable = "packages/esp32-link" },
 ]
 
 [[package]]
@@ -487,7 +483,6 @@ dependencies = [
     { name = "click" },
     { name = "doorboard-aircraft" },
     { name = "doorboard-birdnet" },
-    { name = "doorboard-config" },
     { name = "doorboard-contracts" },
     { name = "doorboard-food-recommendation" },
     { name = "doorboard-printer" },
@@ -502,7 +497,6 @@ requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "doorboard-aircraft", editable = "integrations/aircraft" },
     { name = "doorboard-birdnet", editable = "integrations/birdnet" },
-    { name = "doorboard-config", editable = "packages/config" },
     { name = "doorboard-contracts", editable = "packages/contracts" },
     { name = "doorboard-food-recommendation", editable = "integrations/food-recommendation" },
     { name = "doorboard-printer", editable = "integrations/printer" },
