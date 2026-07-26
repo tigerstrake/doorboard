@@ -865,7 +865,14 @@ class SessionMachine:
         async def _fire() -> None:
             await asyncio.sleep(delay_s)
             self.metrics.timer_fires += 1
-            self.transition(target, trigger)
+            # Illegal transitions are handled inside transition() (counted +
+            # returns False). Guard against an *unexpected* raise (e.g. a
+            # persistence error) so it surfaces in logs instead of vanishing as
+            # an unretrieved asyncio task exception.
+            try:
+                self.transition(target, trigger)
+            except Exception:
+                logger.exception("session_timer_transition_error")
 
         try:
             loop = asyncio.get_running_loop()
