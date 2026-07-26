@@ -80,6 +80,7 @@ class MqttBridge:
         self.messages_received = 0
         self.messages_broadcast = 0
         self.parse_errors = 0
+        self.broadcast_errors = 0
 
     def handle_payload(self, payload: bytes | bytearray | str) -> bool:
         """Parse one MQTT payload into a DoorboardEvent and broadcast it.
@@ -98,8 +99,15 @@ class MqttBridge:
 
         # Same envelope door-api uses for locally-produced contract events
         # (cf. the vision.* handlers in app.py): send_delta wraps the event dict
-        # as {"type": "delta", "event": {...}} for /ws clients.
-        self.broadcast.send_delta(event.model_dump(mode="json"))
+        # as {"type": "delta", "event": {...}} for /ws clients. Guarded too so a
+        # dump/broadcast failure can't escape handle_payload and unwind run()'s
+        # `async for`, which would force an unnecessary broker reconnect.
+        try:
+            self.broadcast.send_delta(event.model_dump(mode="json"))
+        except Exception:
+            self.broadcast_errors += 1
+            logger.warning("mqtt_bridge_broadcast_failed", exc_info=True)
+            return False
         self.messages_broadcast += 1
         logger.debug("mqtt_bridge_broadcast", extra={"type": event.type})
         return True

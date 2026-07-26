@@ -26,8 +26,26 @@ class FakeBroadcast:
         self.deltas.append(event)
 
 
+class FailingBroadcast:
+    """send_delta raises — models a downstream broadcast failure."""
+
+    def send_delta(self, event: dict[str, Any]) -> None:
+        raise RuntimeError("broadcast boom")
+
+
 def _bridge(broadcast: Any) -> MqttBridge:
     return MqttBridge(url="mqtt://nuc.local:1883", broadcast=broadcast)
+
+
+def test_broadcast_failure_is_swallowed_and_counted() -> None:
+    bridge = _bridge(FailingBroadcast())
+    payload = example_event("ambient.aircraft_summary").model_dump_json()
+
+    # Must NOT raise (else run()'s async-for unwinds and forces a reconnect).
+    assert bridge.handle_payload(payload) is False
+    assert bridge.messages_broadcast == 0
+    assert bridge.broadcast_errors == 1
+    assert bridge.parse_errors == 0
 
 
 def test_ambient_aircraft_payload_routes_to_broadcast() -> None:
