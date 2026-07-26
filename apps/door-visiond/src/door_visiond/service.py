@@ -443,6 +443,15 @@ class VisiondService:
     def unenroll(self, person_id: str) -> dict[str, object]:
         if self._enrollment_locked:
             raise EnrollmentLockedError
+        # Write-ahead ordering (intentional — do NOT reorder): durably queue the
+        # remote-archive purge BEFORE the local delete. The purge outbox is a
+        # crash-safe, retrying queue (_purge_loop), so once enqueued the NUC
+        # archive is guaranteed to be purged eventually. A crash or error between
+        # the two leaves at worst a transient LOCAL copy, which self-heals when
+        # the admin retries (enqueue is idempotent). The reverse order (delete
+        # then enqueue) would risk a crash after the local delete but before the
+        # intent is recorded -> the remote archive is never purged: a permanent
+        # remote leak, the dangerous direction for a deletion invariant.
         newly_queued = self._purge_outbox.enqueue(person_id)
         existed = self._store.unenroll(person_id)
         self._reload_matcher()
