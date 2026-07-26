@@ -590,9 +590,11 @@ class MediaMTXRouter:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await proc.communicate()
+            _, stderr = await _communicate_bounded(
+                proc, timeout_s=_FINALIZE_FFMPEG_TIMEOUT_S, what="audio mux"
+            )
             if proc.returncode != 0 or not muxed_tmp.exists() or muxed_tmp.stat().st_size == 0:
-                message = stderr.decode(errors="replace")[:500]
+                message = (stderr or b"").decode(errors="replace")[:500]
                 logger.warning(
                     "audio_mux_failed_video_only",
                     extra={
@@ -652,11 +654,18 @@ class MediaMTXRouter:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
+        try:
+            _, stderr = await _communicate_bounded(
+                proc, timeout_s=_PHOTO_CAPTURE_TIMEOUT_S, what="still capture"
+            )
+        except RuntimeError:
             with contextlib.suppress(OSError):
                 out_path.unlink(missing_ok=True)
-            msg = stderr.decode(errors="replace")[:500]
+            raise
+        if proc.returncode != 0 or stderr is None:
+            with contextlib.suppress(OSError):
+                out_path.unlink(missing_ok=True)
+            msg = (stderr or b"").decode(errors="replace")[:500]
             raise RuntimeError(f"ffmpeg still capture failed: {msg}")
         sha256 = _sha256_file(out_path)
         return CapturedPhoto(
@@ -871,6 +880,33 @@ def _prune_segments(root: Path, *, older_than_epoch: float) -> int:
     return deleted
 
 
+# Bounded ffmpeg waits: a stalled/not-yet-live RTSP read or an otherwise wedged
+# ffmpeg must never hang a coroutine forever and leak the process (mirrors the
+# hardening in MediaMTXRouter.snapshot). Live-stream still capture is short;
+# finalize-time mux/concat work on local files and get a generous cap that still
+# bounds a pathological hang.
+_PHOTO_CAPTURE_TIMEOUT_S = 20.0
+_FINALIZE_FFMPEG_TIMEOUT_S = 300.0
+
+
+async def _communicate_bounded(
+    proc: asyncio.subprocess.Process, *, timeout_s: float, what: str
+) -> tuple[bytes | None, bytes | None]:
+    """Await ``proc.communicate()`` with a timeout; kill + reap then raise on hang.
+
+    Without this, ffmpeg blocked on a stalled RTSP stream would make
+    ``communicate()`` never return, hanging the coroutine and leaking the child.
+    """
+    try:
+        return await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        raise RuntimeError(f"ffmpeg {what} timed out after {timeout_s:.0f}s") from None
+
+
 async def _concat_segments(segments: list[Path], out_path: Path) -> None:
     """Concatenate MP4 segments into a single output file using ffmpeg."""
     # Build ffmpeg concat list
@@ -895,9 +931,11 @@ async def _concat_segments(segments: list[Path], out_path: Path) -> None:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        _, stderr = await _communicate_bounded(
+            proc, timeout_s=_FINALIZE_FFMPEG_TIMEOUT_S, what="concat"
+        )
         if proc.returncode != 0:
-            message = stderr.decode(errors="replace")[:500]
+            message = (stderr or b"").decode(errors="replace")[:500]
             raise RuntimeError(f"ffmpeg concat failed ({proc.returncode}): {message}")
     finally:
         with contextlib.suppress(OSError):
