@@ -20,12 +20,16 @@ never logged or serialized.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import threading
 import time
 from dataclasses import dataclass
 
 import cv2  # type: ignore[import-not-found]
 import numpy as np
+
+logger = logging.getLogger("door_visiond.hailo_pipeline")
 
 # ArcFace canonical 5-point destination landmarks for a 112x112 crop.
 ARCFACE_DST = np.array(
@@ -169,8 +173,6 @@ class HailoFacePipeline:
     def _ensure_open(self) -> None:
         if self._opened:
             return
-        import contextlib
-
         from hailo_platform import (  # type: ignore[import-not-found]
             HEF,
             ConfigureParams,
@@ -206,12 +208,22 @@ class HailoFacePipeline:
         self._exit_stack = stack
         self._opened = True
 
+    def _reset_locked(self) -> None:
+        """Tear down device handles so the next call reopens. Caller holds _lock.
+
+        Used by close() and on an inference/device error: if a Hailo/PCIe fault
+        wedges the VDevice mid-infer, drop the (possibly dead) handles instead of
+        reusing them forever, forcing _ensure_open to rebuild on the next call.
+        """
+        if self._exit_stack is not None:
+            with contextlib.suppress(Exception):
+                self._exit_stack.close()  # type: ignore[attr-defined]
+        self._exit_stack = None
+        self._opened = False
+
     def close(self) -> None:
         with self._lock:
-            if self._exit_stack is not None:
-                self._exit_stack.close()  # type: ignore[attr-defined]
-            self._exit_stack = None
-            self._opened = False
+            self._reset_locked()
 
     # -- inference primitives ----------------------------------------------
 
@@ -291,8 +303,13 @@ class HailoFacePipeline:
             )
         return detections
 
-    def _embed(self, img_bgr: np.ndarray, det: _Detection) -> tuple[float, ...]:
+    def _embed(self, img_bgr: np.ndarray, det: _Detection) -> tuple[float, ...] | None:
         matrix, _inliers = cv2.estimateAffinePartial2D(det.landmarks, ARCFACE_DST)
+        if matrix is None:
+            # Degenerate / near-collinear landmarks yield no similarity transform.
+            # cv2.warpAffine(img, None, ...) would raise, so skip this face (the
+            # caller drops it) rather than crashing the whole frame.
+            return None
         aligned = cv2.warpAffine(img_bgr, matrix, (_ARCFACE_INPUT, _ARCFACE_INPUT))
         rgb = cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB)
         nhwc = rgb[np.newaxis, ...].astype(np.uint8)
@@ -336,11 +353,18 @@ class HailoFacePipeline:
             return None
         with self._lock:
             self._ensure_open()
-            detections = self._detect(img)
-            if not detections:
-                return None
-            largest = max(detections, key=self._size_px)
-            vector = self._embed(img, largest)
+            try:
+                detections = self._detect(img)
+                if not detections:
+                    return None
+                largest = max(detections, key=self._size_px)
+                vector = self._embed(img, largest)
+            except Exception:
+                logger.warning("hailo_inference_failed_resetting", exc_info=True)
+                self._reset_locked()
+                raise
+        if vector is None:
+            return None
         return PipelineFace(
             vector=vector, score=self._quality(largest), size_px=self._size_px(largest)
         )
@@ -357,14 +381,23 @@ class HailoFacePipeline:
         with self._lock:
             self._ensure_open()
             start = time.perf_counter()
-            detections = self._detect(img)
-            faces = [
-                PipelineFace(
-                    vector=self._embed(img, det),
-                    score=self._quality(det),
-                    size_px=self._size_px(det),
-                )
-                for det in detections
-            ]
+            try:
+                detections = self._detect(img)
+                faces = []
+                for det in detections:
+                    vector = self._embed(img, det)
+                    if vector is None:
+                        continue
+                    faces.append(
+                        PipelineFace(
+                            vector=vector,
+                            score=self._quality(det),
+                            size_px=self._size_px(det),
+                        )
+                    )
+            except Exception:
+                logger.warning("hailo_inference_failed_resetting", exc_info=True)
+                self._reset_locked()
+                raise
             inference_ms = (time.perf_counter() - start) * 1000.0
         return faces, inference_ms
