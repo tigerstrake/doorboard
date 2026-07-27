@@ -1,6 +1,8 @@
 # Encrypted Enrollment Volume (LUKS, key-on-NUC)
 
-**Status:** Draft — pending on-device validation (written offline during a network outage; scripts syntax-checked, cryptsetup/mount steps not yet exercised on the Pi).
+**Status:** Verified on-device 2026-07-27 (door-pi + NUC). Deployed end-to-end: NUC releases the key (401 without/with-bad token, 200 with the correct token); the Pi built the LUKS2 volume, the boot-unlock unit fetches the key and re-opens the volume from a fully-closed state (reboot-survival confirmed), and door-visiond runs `enrollment_locked: false` with `enrollment.sqlite` on the encrypted mount.
+
+**As-deployed note (live door-pi):** the door Pi runs door-visiond as `tigerstrake` from `/home/tigerstrake/doorboard` (not the repo-canonical `doorboard`/`/opt/doorboard`), so the installed unit's `ExecStart` and `enrollment-unlock.env`'s `ENROLLMENT_OWNER` are set to match. door-visiond sources `~/doorboard/.env`, so `VISIOND_ENROLLMENT_ROOT` + `VISIOND_REQUIRE_ENCRYPTED_STORAGE` go there; the `Wants=`/`After=` on door-visiond is installed as a drop-in (`door-visiond.service.d/enrollment-unlock.conf`) rather than editing the hand-adapted unit.
 
 ## The Guarantee This Runbook Protects
 
@@ -110,3 +112,5 @@ Outcome for a **stolen, powered-off Pi**: the enrollment DB is *ciphertext witho
 ## Residual risk (tracked)
 
 The Pi fetches the passphrase over **plaintext HTTP on the LAN**, so a LAN traffic sniffer could capture it in transit. This is outside Option C's threat model (stolen *powered-off* Pi = ciphertext-at-rest) and consistent with the rest of the internal control-plane, but front the control-plane with TLS (the `infra/caddy` reverse proxy) to close it. Follow-up, not a blocker.
+
+**No unlock retry (cold-boot race).** `doorboard-enrollment-unlock.service` is a `oneshot` that runs once at boot. On a simultaneous power restoration where the Pi finishes booting before the NUC's control-plane is serving, the key fetch fails and the volume stays locked — door-visiond then runs `enrollment_locked` (recognition disabled; door/UI/recording unaffected) until the unit is re-run (manual `systemctl start`, or next reboot). This satisfies ADR-0009's "recognition disabled until the NUC is reachable once," but it is **not auto-healing**. Follow-up: add a `.timer` (or `Restart=`-with-backoff wrapper) that retries the unlock until it succeeds.
