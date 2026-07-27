@@ -95,5 +95,9 @@ log "unlocked + mounted at ${MOUNT} (enrollment root: ${MOUNT}/${DATA_SUBDIR})"
 # a periodic retry never restart-storms the dependent.
 if [ -n "${ENROLLMENT_UNLOCK_NOTIFY_UNIT:-}" ]; then
 	log "notifying ${ENROLLMENT_UNLOCK_NOTIFY_UNIT} to re-evaluate (try-restart)"
-	systemctl try-restart "${ENROLLMENT_UNLOCK_NOTIFY_UNIT}" || true
+	# --no-block is REQUIRED: the notified unit is ordered After= this one, so a
+	# blocking try-restart would wait on a job that itself waits for this unit to
+	# finish activating -> deadlock. Enqueue the restart and return; it runs once
+	# this unit is active.
+	systemctl try-restart --no-block "${ENROLLMENT_UNLOCK_NOTIFY_UNIT}" || true
 fi
