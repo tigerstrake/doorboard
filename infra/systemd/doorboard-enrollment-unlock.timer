@@ -1,0 +1,19 @@
+[Unit]
+Description=Retry unlocking the Doorboard encrypted enrollment volume (ADR-0009 §6)
+Documentation=file:/opt/doorboard/docs/runbooks/enrollment-encrypted-volume.md
+
+[Timer]
+# doorboard-enrollment-unlock.service is a RemainAfterExit oneshot. If the NUC
+# was unreachable at boot the service is left FAILED; this timer re-runs it a
+# couple of minutes after each failure so a cold-boot race (the Pi finishing
+# boot before the NUC's control-plane is serving) self-heals. Once the unlock
+# succeeds the service stays active (exited) and never re-enters the
+# inactive/failed state, so OnUnitInactiveSec stops firing — no polling once up.
+# On a successful retry the unlock script nudges door-visiond (via
+# ENROLLMENT_UNLOCK_NOTIFY_UNIT) to re-evaluate enrollment_locked.
+OnBootSec=120
+OnUnitInactiveSec=120
+Unit=doorboard-enrollment-unlock.service
+
+[Install]
+WantedBy=timers.target
