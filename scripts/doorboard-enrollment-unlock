@@ -85,3 +85,15 @@ chown "$OWNER" "${MOUNT}/${DATA_SUBDIR}"
 chmod 0700 "${MOUNT}/${DATA_SUBDIR}"
 
 log "unlocked + mounted at ${MOUNT} (enrollment root: ${MOUNT}/${DATA_SUBDIR})"
+
+# A dependent service may evaluate its lock-state only once, at startup (e.g.
+# door-visiond computes enrollment_locked when it boots). On a cold boot where
+# the NUC wasn't reachable yet, that service will have started locked; when a
+# retry (doorboard-enrollment-unlock.timer) finally unlocks the volume, nudge it
+# to re-evaluate so recognition auto-heals. This runs ONLY on a real unlock —
+# the mountpoint check near the top returns before here when already mounted, so
+# a periodic retry never restart-storms the dependent.
+if [ -n "${ENROLLMENT_UNLOCK_NOTIFY_UNIT:-}" ]; then
+	log "notifying ${ENROLLMENT_UNLOCK_NOTIFY_UNIT} to re-evaluate (try-restart)"
+	systemctl try-restart "${ENROLLMENT_UNLOCK_NOTIFY_UNIT}" || true
+fi

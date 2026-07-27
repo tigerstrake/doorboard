@@ -67,11 +67,15 @@ Outcome for a **stolen, powered-off Pi**: the enrollment DB is *ciphertext witho
    VISIOND_ENROLLMENT_ROOT=/mnt/vision-enrollment/doorboard
    VISIOND_REQUIRE_ENCRYPTED_STORAGE=true
    ```
-5. Install + enable the boot-unlock unit, then restart visiond:
+5. Install + enable the boot-unlock unit **and its retry timer**, then restart
+   visiond. Set `ENROLLMENT_UNLOCK_NOTIFY_UNIT=door-visiond.service` in
+   `enrollment-unlock.env` so a successful retry nudges visiond to re-evaluate:
    ```bash
    sudo cp infra/systemd/doorboard-enrollment-unlock.service /etc/systemd/system/
+   sudo cp infra/systemd/doorboard-enrollment-unlock.timer   /etc/systemd/system/
    sudo systemctl daemon-reload
    sudo systemctl enable --now doorboard-enrollment-unlock.service
+   sudo systemctl enable --now doorboard-enrollment-unlock.timer
    sudo systemctl restart door-visiond.service
    ```
 
@@ -113,4 +117,4 @@ Outcome for a **stolen, powered-off Pi**: the enrollment DB is *ciphertext witho
 
 The Pi fetches the passphrase over **plaintext HTTP on the LAN**, so a LAN traffic sniffer could capture it in transit. This is outside Option C's threat model (stolen *powered-off* Pi = ciphertext-at-rest) and consistent with the rest of the internal control-plane, but front the control-plane with TLS (the `infra/caddy` reverse proxy) to close it. Follow-up, not a blocker.
 
-**No unlock retry (cold-boot race).** `doorboard-enrollment-unlock.service` is a `oneshot` that runs once at boot. On a simultaneous power restoration where the Pi finishes booting before the NUC's control-plane is serving, the key fetch fails and the volume stays locked — door-visiond then runs `enrollment_locked` (recognition disabled; door/UI/recording unaffected) until the unit is re-run (manual `systemctl start`, or next reboot). This satisfies ADR-0009's "recognition disabled until the NUC is reachable once," but it is **not auto-healing**. Follow-up: add a `.timer` (or `Restart=`-with-backoff wrapper) that retries the unlock until it succeeds.
+**Cold-boot race — resolved by `doorboard-enrollment-unlock.timer`.** If the Pi finishes booting before the NUC's control-plane is serving, the boot unlock fails and the volume stays locked — door-visiond runs `enrollment_locked` (recognition disabled; door/UI/recording unaffected), as ADR-0009 accepts ("disabled until the NUC is reachable once"). The retry timer now makes this **auto-heal**: because the unlock service is a `RemainAfterExit` oneshot, the timer's `OnUnitInactiveSec` re-runs it every ~2 min *only while it is failed*, and stops once it succeeds. On the successful retry the unlock script `try-restart`s `ENROLLMENT_UNLOCK_NOTIFY_UNIT` (door-visiond), so visiond re-evaluates and recognition comes up without a manual touch or reboot.
