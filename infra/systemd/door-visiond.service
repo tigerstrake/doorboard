@@ -2,6 +2,11 @@
 Description=Doorboard vision service
 Requires=doorboard-storage-ready.service
 After=doorboard-storage-ready.service
+# Soft dependency (ADR-0009 §6): pull in the enrollment-volume unlock and order
+# after it, but do NOT require it — if unlock fails, visiond still starts and
+# reports enrollment_locked (recognition disabled; door/UI/recording unaffected).
+Wants=doorboard-enrollment-unlock.service
+After=doorboard-enrollment-unlock.service
 
 [Service]
 Type=simple

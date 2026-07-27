@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# create-enrollment-volume — ADR-0009 §6 (Option C), one-time setup.
+#
+# Build the LUKS2-encrypted volume that holds door-visiond's enrollment DB.
+# The passphrase is fetched from the NUC (same source the boot-unlock uses),
+# so there is exactly one authoritative key and it lives only on the NUC.
+# The passphrase is never written to disk here either.
+#
+# Run once, as root, on the door Pi AFTER the NUC key-release endpoint is
+# configured and reachable. Refuses to clobber an existing container.
+set -euo pipefail
+
+CONF="${ENROLLMENT_UNLOCK_ENV:-/etc/doorboard/enrollment-unlock.env}"
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+
+CONTAINER="${ENROLLMENT_CONTAINER:?ENROLLMENT_CONTAINER unset (see enrollment-unlock.env)}"
+MAPPER="${ENROLLMENT_MAPPER:-vision-enrollment}"
+MOUNT="${ENROLLMENT_MOUNT:-/mnt/vision-enrollment}"
+DATA_SUBDIR="${ENROLLMENT_DATA_SUBDIR:-doorboard}"
+OWNER="${ENROLLMENT_OWNER:-doorboard:doorboard}"
+SIZE_MB="${ENROLLMENT_SIZE_MB:-256}"
+KEY_URL="${ENROLLMENT_KEY_URL:?ENROLLMENT_KEY_URL unset (see enrollment-unlock.env)}"
+TOKEN_FILE="${ENROLLMENT_KEY_TOKEN_FILE:-/etc/doorboard/enrollment-key.token}"
+CURL_MAX_TIME="${ENROLLMENT_CURL_MAX_TIME:-10}"
+
+log() { echo "create-enrollment-volume: $*" >&2; }
+
+[ -e "$CONTAINER" ] && {
+	log "refusing: $CONTAINER already exists (delete it deliberately to rebuild)"
+	exit 1
+}
+[ -r "$TOKEN_FILE" ] || {
+	log "release token file $TOKEN_FILE is unreadable"
+	exit 1
+}
+
+token="$(cat "$TOKEN_FILE")"
+pass="$(
+	curl -fsS --max-time "$CURL_MAX_TIME" \
+		-H "Authorization: Bearer ${token}" "$KEY_URL" |
+		python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])'
+)" || {
+	unset token
+	log "key fetch failed (NUC unreachable or unauthorized)"
+	exit 1
+}
+unset token
+[ -n "$pass" ] || {
+	log "control-plane returned an empty passphrase"
+	exit 1
+}
+
+# Allocate the backing file on the SSD (fallocate, falling back to dd).
+mkdir -p "$(dirname "$CONTAINER")"
+if ! fallocate -l "${SIZE_MB}M" "$CONTAINER" 2>/dev/null; then
+	dd if=/dev/zero of="$CONTAINER" bs=1M count="$SIZE_MB" status=none
+fi
+chmod 0600 "$CONTAINER"
+
+# Format LUKS2, open, make the filesystem, mount, and hand ownership to the
+# service account. Passphrase piped via stdin, never written to disk.
+printf '%s' "$pass" | cryptsetup luksFormat --type luks2 --batch-mode --key-file=- "$CONTAINER"
+printf '%s' "$pass" | cryptsetup luksOpen --key-file=- "$CONTAINER" "$MAPPER"
+unset pass
+
+mkfs.ext4 -q -L vision-enroll "/dev/mapper/${MAPPER}"
+mkdir -p "$MOUNT"
+mount "/dev/mapper/${MAPPER}" "$MOUNT"
+mkdir -p "${MOUNT}/${DATA_SUBDIR}"
+chown "$OWNER" "${MOUNT}/${DATA_SUBDIR}"
+chmod 0700 "${MOUNT}/${DATA_SUBDIR}"
+
+log "created LUKS2 enrollment volume: ${CONTAINER} -> ${MOUNT}/${DATA_SUBDIR} (${SIZE_MB} MB)"
+log "next: enable doorboard-enrollment-unlock.service so it re-opens on boot"

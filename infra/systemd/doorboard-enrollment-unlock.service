@@ -1,0 +1,21 @@
+[Unit]
+Description=Unlock Doorboard encrypted enrollment volume (ADR-0009 §6)
+Documentation=file:/opt/doorboard/docs/runbooks/enrollment-encrypted-volume.md
+# Needs the network to reach the NUC key-release endpoint.
+After=network-online.target
+Wants=network-online.target
+# Must open + mount before visiond checks whether the enrollment root is
+# LUKS-backed. This is ordering only — a failed unlock does NOT block visiond
+# (fail-closed: visiond starts and reports enrollment_locked instead).
+Before=door-visiond.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Runs as root: cryptsetup luksOpen + mount require it.
+EnvironmentFile=-/etc/doorboard/enrollment-unlock.env
+ExecStart=/opt/doorboard/scripts/doorboard-enrollment-unlock
+ExecStop=/bin/sh -c 'umount /mnt/vision-enrollment 2>/dev/null; cryptsetup luksClose vision-enrollment 2>/dev/null; true'
+
+[Install]
+WantedBy=multi-user.target
