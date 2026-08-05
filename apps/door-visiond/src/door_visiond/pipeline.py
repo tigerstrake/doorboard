@@ -274,6 +274,7 @@ class PipelineCore:
             profile_id=result.profile_id,
             expires_at_monotonic_ms=expires_mono,
             expires_at_utc=expires_utc,
+            consent_version=result.consent_version,
         )
         self._cache.set(visitor)
         if self._cache_update_sink is not None:
@@ -296,6 +297,7 @@ class PipelineCore:
                 trace_id=trace,
                 person_id=person_id,
                 display_name=result.display_name,
+                consent_version=result.consent_version,
                 confidence=result.score,
                 expires_at=expires_utc,
                 expires_at_monotonic_ms=expires_mono,

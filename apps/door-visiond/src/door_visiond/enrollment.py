@@ -163,6 +163,9 @@ class EnrolledPerson:
     color: str
     sound: str | None
     vectors: tuple[Embedding, ...]
+    # Which statement they enrolled under. Carried all the way to the identity
+    # event so door-api can gate attribution on it (ADR-0018).
+    consent_version: str = ""
 
 
 @dataclass(frozen=True)
@@ -562,11 +565,12 @@ class EnrollmentStore:
         """Load every enrolled person with their vectors (for the in-memory matcher)."""
         with self._lock:
             people = self._conn.execute(
-                "SELECT p.person_id, p.display_name, pr.profile_id, pr.color, pr.sound "
+                "SELECT p.person_id, p.display_name, pr.profile_id, pr.color, pr.sound, "
+                "       p.consent_version "
                 "FROM person p JOIN profile pr ON pr.person_id = p.person_id"
             ).fetchall()
             result: list[EnrolledPerson] = []
-            for person_id, display_name, profile_id, color, sound in people:
+            for person_id, display_name, profile_id, color, sound, consent_version in people:
                 vectors = [
                     Embedding.from_le_float32_bytes(blob)
                     for (blob,) in self._conn.execute(
@@ -581,6 +585,7 @@ class EnrollmentStore:
                         color=color,
                         sound=sound,
                         vectors=tuple(vectors),
+                        consent_version=consent_version,
                     )
                 )
         return result

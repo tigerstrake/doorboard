@@ -67,6 +67,7 @@ export interface VisionFaceVisiblePayload {
 export interface VisionIdentityStablePayload {
   person_id: string;
   display_name: string;
+  consent_version?: string | null;
   confidence: number;
   expires_at: string;
   expires_at_monotonic_ms: number;

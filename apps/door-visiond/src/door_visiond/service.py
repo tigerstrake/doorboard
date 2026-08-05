@@ -21,7 +21,10 @@ from doorboard_contracts.enrollment_relay import (
     PickupAck,
     SealedBundle,
 )
-from doorboard_contracts.events import DoorboardEvent
+from doorboard_contracts.events import (
+    DoorboardEvent,
+    consent_covers_extended_personalisation,
+)
 from doorboard_esp32_link import Esp32Transport, wire_message_from_event
 
 from door_visiond._uuid7 import uuid7
@@ -836,7 +839,7 @@ class VisiondService:
 
     # -- ESP32 profile mirroring ------------------------------------------
 
-    def _record_visit_sighting(self, person_id: str) -> None:
+    def _record_visit_sighting(self, person_id: str, consent_version: str = "") -> None:
         """Log that a recognised person is at the door (ADR-0018 §1).
 
         Throttled per person: the identity cache refreshes every couple of seconds
@@ -846,6 +849,11 @@ class VisiondService:
         visit for as long as the person is present.
         """
         if self._enrollment_locked:
+            return
+        # Withhold the arrival log from anyone whose consent predates v3: they
+        # agreed to a greeting, not to being logged (ADR-0018). Fails closed, so an
+        # unparseable version logs nothing.
+        if not consent_covers_extended_personalisation(consent_version):
             return
         now_ms = self._clock.monotonic_ms()
         last_ms = self._visit_write_ms.get(person_id)
@@ -863,7 +871,7 @@ class VisiondService:
             logger.warning("visit_record_failed", extra={"error_class": type(exc).__name__})
 
     def _on_cache_refresh(self, visitor: CurrentVisitor, priority: str, trace_id) -> None:
-        self._record_visit_sighting(visitor.person_id)
+        self._record_visit_sighting(visitor.person_id, visitor.consent_version)
         event = make_door_profile_update(
             clock=self._clock,
             door_id=self._settings.door_id,

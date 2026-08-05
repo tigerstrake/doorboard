@@ -240,13 +240,66 @@ def test_the_recognition_path_throttles_visit_writes(ssd_settings: Settings) -> 
     person_id = _enrol(svc._store, "Tiger", "warm_amber")
 
     for _ in range(20):
-        svc._record_visit_sighting(person_id)
+        svc._record_visit_sighting(person_id, CONSENT_VERSION)
     # All within the throttle interval, so exactly one write reached the store.
     assert len(svc._store.list_visits()) == 1
 
     clock.advance(ssd_settings.visit_write_interval_ms + 1)
-    svc._record_visit_sighting(person_id)
+    svc._record_visit_sighting(person_id, CONSENT_VERSION)
     visits = svc._store.list_visits()
     # Still one visit (inside the merge window), but last_seen_at moved on.
     assert len(visits) == 1
     assert visits[0]["last_seen_at"] != visits[0]["arrived_at"]
+
+
+# -- the consent gate (ADR-0018) -------------------------------------------
+
+
+@pytest.mark.parametrize("version", ["v1", "v2", "", None, "banana"])
+def test_older_consent_is_not_logged(ssd_settings: Settings, version: str | None) -> None:
+    """Someone enrolled before v3 agreed to a greeting, not to being logged.
+
+    Fails closed: an empty or unparseable version logs nothing rather than
+    defaulting someone into the arrival log.
+    """
+    from door_visiond.clock import FakeClock
+    from door_visiond.service import VisiondService
+
+    svc = VisiondService(ssd_settings, clock=FakeClock())
+    person_id = _enrol(svc._store, "Tiger", "warm_amber")
+
+    svc._record_visit_sighting(person_id, version or "")
+
+    assert svc._store.list_visits() == [], f"consent {version!r} should not be logged"
+
+
+def test_current_consent_is_logged(ssd_settings: Settings) -> None:
+    from door_visiond.clock import FakeClock
+    from door_visiond.service import VisiondService
+
+    svc = VisiondService(ssd_settings, clock=FakeClock())
+    person_id = _enrol(svc._store, "Tiger", "warm_amber")
+
+    svc._record_visit_sighting(person_id, CONSENT_VERSION)
+
+    visits = svc._store.list_visits()
+    assert len(visits) == 1
+    assert visits[0]["person_id"] == person_id
+
+
+def test_the_consent_version_reaches_the_matcher(ssd_settings: Settings) -> None:
+    """The gate is only enforceable if the version travels with the identity."""
+    from door_visiond.matcher import Matcher
+
+    store = EnrollmentStore(ssd_settings.enrollment_db_path)
+    _enrol(store, "Tiger", "warm_amber")
+
+    enrolled = store.load_enrolled()
+    assert enrolled[0].consent_version == CONSENT_VERSION
+
+    matcher = Matcher(ssd_settings.match_threshold)
+    matcher.refresh(enrolled)
+    emb, _q = MockEmbedder(dim=TEST_DIM).embed(b"Tiger")
+    result = matcher.match(emb)
+    assert result is not None
+    assert result.consent_version == CONSENT_VERSION
