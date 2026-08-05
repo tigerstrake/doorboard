@@ -1,0 +1,58 @@
+{
+  "$defs": {
+    "VisitorPollOption": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "option_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Option Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "option_id",
+        "label"
+      ],
+      "title": "VisitorPollOption",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "options": {
+      "items": {
+        "$ref": "#/$defs/VisitorPollOption"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Options",
+      "type": "array"
+    },
+    "poll_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Poll Id",
+      "type": "string"
+    },
+    "question": {
+      "maxLength": 280,
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+    }
+  },
+  "required": [
+    "poll_id",
+    "question",
+    "options"
+  ],
+  "title": "VisitorPoll",
+  "type": "object"
+}

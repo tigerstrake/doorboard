@@ -190,6 +190,127 @@ class RelayHealth(StrictModel):
     pending_bundles: int = Field(ge=0)
 
 
+# ---------------------------------------------------------------------------
+# Visitor surface (ADR-0017)
+#
+# Unlike the enrollment shapes above, these carry plaintext — a guestbook note
+# exists in order to be shown on a hallway wallboard, so encrypting it would be
+# theatre (ADR-0017 §"The data is public by design").  What keeps this safe is
+# scope, not secrecy: the snapshot below is an *allow-list* projection of public
+# session state, and `test_enrollment_relay.py` enforces that no identity, media,
+# or diagnostic field creeps into it (E-15).
+# ---------------------------------------------------------------------------
+
+
+class VisitorPollOption(StrictModel):
+    option_id: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=120)
+
+
+class VisitorPoll(StrictModel):
+    poll_id: str = Field(min_length=1, max_length=64)
+    question: str = Field(min_length=1, max_length=280)
+    options: list[VisitorPollOption] = Field(min_length=1, max_length=8)
+
+
+class VisitorPollResult(StrictModel):
+    option_id: str = Field(min_length=1, max_length=64)
+    votes: int = Field(ge=0)
+
+
+class VisitorActionOutcome(StrictModel):
+    """Echoes back what became of one queued action, so the phone can confirm."""
+
+    action_id: OpaqueId
+    kind: Literal["note", "vote", "deletion_request"]
+    status: Literal["applied", "rejected"]
+    reason: str | None = Field(default=None, max_length=200)
+    entry_id: str | None = Field(default=None, max_length=64)
+
+
+class VisitorSessionSnapshot(StrictModel):
+    """What door-api pushes and a phone may read (ADR-0017 §2 — binding allow-list).
+
+    Deliberately *not* derived from the session machine's own object: every field
+    is named here, so adding one is a visible, reviewable act rather than a
+    side effect of a refactor upstream.
+    """
+
+    session_token_sha256: Base64Url
+    session_id: OpaqueId
+    state: str = Field(min_length=1, max_length=32)
+    expires_at: UTCDateTime
+    poll: VisitorPoll | None = None
+    poll_results: list[VisitorPollResult] | None = None
+    outcomes: list[VisitorActionOutcome] = Field(
+        default_factory=list[VisitorActionOutcome], max_length=16
+    )
+    pushed_at: UTCDateTime
+
+
+class VisitorPublicSnapshot(StrictModel):
+    """The snapshot minus the token hash — what actually reaches the phone.
+
+    The hash authorises the request; there is no reason to hand it back, and not
+    returning it keeps it out of browser history, screenshots, and logs.
+    """
+
+    session_id: OpaqueId
+    state: str = Field(min_length=1, max_length=32)
+    expires_at: UTCDateTime
+    poll: VisitorPoll | None = None
+    poll_results: list[VisitorPollResult] | None = None
+    outcomes: list[VisitorActionOutcome] = Field(
+        default_factory=list[VisitorActionOutcome], max_length=16
+    )
+    pushed_at: UTCDateTime
+
+
+class VisitorNoteAction(StrictModel):
+    kind: Literal["note"] = "note"
+    text: str = Field(min_length=1, max_length=500)
+
+
+class VisitorVoteAction(StrictModel):
+    kind: Literal["vote"] = "vote"
+    poll_id: str = Field(min_length=1, max_length=64)
+    option_id: str = Field(min_length=1, max_length=64)
+
+
+class VisitorDeletionAction(StrictModel):
+    kind: Literal["deletion_request"] = "deletion_request"
+    target_kind: Literal["guestbook", "checkin", "photo", "video_message"]
+    target_id: str = Field(min_length=1, max_length=64)
+
+
+class VisitorQueuedAction(StrictModel):
+    """One visitor write, waiting for door-api to collect it."""
+
+    action_id: OpaqueId
+    session_id: OpaqueId
+    submitted_at: UTCDateTime
+    note: VisitorNoteAction | None = None
+    vote: VisitorVoteAction | None = None
+    deletion_request: VisitorDeletionAction | None = None
+
+
+class VisitorActionBatch(StrictModel):
+    items: list[VisitorQueuedAction] = Field(
+        default_factory=list[VisitorQueuedAction], max_length=16
+    )
+
+
+class VisitorActionAck(StrictModel):
+    """door-api reporting what it did with a collected action."""
+
+    outcomes: list[VisitorActionOutcome] = Field(min_length=1, max_length=16)
+
+
+class VisitorActionAccepted(StrictModel):
+    action_id: OpaqueId
+    status: Literal["queued"] = "queued"
+
+
 SEALED_PLAINTEXT_MODELS: tuple[type[StrictModel], ...] = (
     SealedProfile,
     SealedManifest,
@@ -210,5 +331,22 @@ RELAY_MODELS: tuple[type[StrictModel], ...] = (
     PickupBatch,
     PickupAck,
     RelayHealth,
+    VisitorPollOption,
+    VisitorPoll,
+    VisitorPollResult,
+    VisitorActionOutcome,
+    VisitorSessionSnapshot,
+    VisitorPublicSnapshot,
+    VisitorNoteAction,
+    VisitorVoteAction,
+    VisitorDeletionAction,
+    VisitorQueuedAction,
+    VisitorActionBatch,
+    VisitorActionAck,
+    VisitorActionAccepted,
 )
+
+VISITOR_SNAPSHOT_FIELDS: frozenset[str] = frozenset(VisitorSessionSnapshot.model_fields)
+"""ADR-0017 §2's allow-list, as data. The door-api projection test asserts against
+this so the binding list and the code cannot drift."""
 """Rendered to TypeScript and JSON Schema by ``contracts generate-ts`` / ``export-schemas``."""

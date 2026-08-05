@@ -18,7 +18,7 @@ The owner wants to finish a face enrollment from a phone that is not on the hous
   - invite store (SQLite, `sha256(secret)` only) with mint/list/revoke and single-use consumption in the enrolling transaction;
   - outbound relay client task: register invites, publish door key + consent text, poll pickup, decrypt, call existing `enroll()`, ack. Bounded backoff, hard timeouts, never in the door path;
   - admin endpoints for invite mint/list/revoke and relay status; `/health` + `/metrics` additions.
-- `apps/enroll-web`: Next.js app on Vercel. `/e/[token]` flow — verify invite, render consent v2 verbatim from the Pi-published copy, capture via `getUserMedia`, pin the key fingerprint from the URL fragment, seal, submit, poll status. API routes for door-key/invite/submit/status/pickup/ack backed by Vercel KV with TTLs. Rate-limited. No admin surface (E-14).
+- `apps/public-relay`: Next.js app on Vercel. `/e/[token]` flow — verify invite, render consent v2 verbatim from the Pi-published copy, capture via `getUserMedia`, pin the key fingerprint from the URL fragment, seal, submit, poll status. API routes for door-key/invite/submit/status/pickup/ack backed by Vercel KV with TTLs. Rate-limited. No admin surface (E-14).
 - `apps/door-ui`: admin invite panel that mints an invite and displays the QR on the doorboard, shows pending/completed remote enrollments, and revokes. At-door capture keeps using the real Pi camera via door-media `/snapshot`.
 - Docs: deployment + env-var reference for the relay, security-checklist additions, runbook for key rotation.
 - Tests: P-12 … P-19 from ADR-0016 §8, by ID.

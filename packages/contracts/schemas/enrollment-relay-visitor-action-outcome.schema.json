@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "OpaqueId": {
+      "pattern": "^[a-z]{3,6}_[A-Za-z0-9]{16,32}$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Echoes back what became of one queued action, so the phone can confirm.",
+  "properties": {
+    "action_id": {
+      "$ref": "#/$defs/OpaqueId"
+    },
+    "entry_id": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Entry Id"
+    },
+    "kind": {
+      "enum": [
+        "note",
+        "vote",
+        "deletion_request"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "status": {
+      "enum": [
+        "applied",
+        "rejected"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "action_id",
+    "kind",
+    "status"
+  ],
+  "title": "VisitorActionOutcome",
+  "type": "object"
+}

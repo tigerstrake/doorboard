@@ -15,6 +15,7 @@ from doorboard_contracts.enrollment_relay import (
     RELAY_MODELS,
     SEAL_SUITE,
     SEALED_PLAINTEXT_MODELS,
+    VISITOR_SNAPSHOT_FIELDS,
     BundleStatus,
     DoorKeyPublication,
     InviteRegistration,
@@ -22,6 +23,10 @@ from doorboard_contracts.enrollment_relay import (
     SealedBundle,
     SealedItem,
     SealedManifest,
+    VisitorNoteAction,
+    VisitorPublicSnapshot,
+    VisitorQueuedAction,
+    VisitorSessionSnapshot,
 )
 from pydantic import BaseModel, ValidationError
 
@@ -183,4 +188,69 @@ def test_status_and_ack_reasons_are_bounded() -> None:
             status="failed",
             reason="x" * 201,
             updated_at=datetime.now(UTC),
+        )
+
+
+# -- visitor surface (ADR-0017) --------------------------------------------
+
+
+def test_visitor_snapshot_is_exactly_the_binding_allow_list() -> None:
+    """ADR-0017 §2 enumerates what may reach a phone. Drift is a review failure.
+
+    Written as an equality rather than a subset check on purpose: a *new* field is
+    just as much a violation as a missing one, because the whole security argument
+    for this surface is that it is a narrow enumerated projection rather than a
+    window into door-api.
+    """
+    assert {
+        "session_token_sha256",
+        "session_id",
+        "state",
+        "expires_at",
+        "poll",
+        "poll_results",
+        "outcomes",
+        "pushed_at",
+    } == VISITOR_SNAPSHOT_FIELDS
+
+
+def test_visitor_snapshot_carries_no_identity_or_media_fields() -> None:
+    forbidden = {
+        "display_name",
+        "person_id",
+        "profile_id",
+        "embedding",
+        "recording_id",
+        "thumbnail",
+        "clip_path",
+        "media_url",
+        "visitor_name",
+        "photo_id",
+    }
+    assert VISITOR_SNAPSHOT_FIELDS & forbidden == set()
+
+
+def test_public_snapshot_withholds_the_token_hash() -> None:
+    """The hash authorises a request; handing it back would put it in history."""
+    assert "session_token_sha256" in VisitorSessionSnapshot.model_fields
+    assert "session_token_sha256" not in VisitorPublicSnapshot.model_fields
+    # Otherwise the two must agree, so the phone sees the same shape it was pushed.
+    assert set(VisitorPublicSnapshot.model_fields) == VISITOR_SNAPSHOT_FIELDS - {
+        "session_token_sha256"
+    }
+
+
+def test_visitor_note_length_is_bounded() -> None:
+    with pytest.raises(ValidationError):
+        VisitorNoteAction(text="x" * 501)
+    assert VisitorNoteAction(text="hello").kind == "note"
+
+
+def test_queued_action_ids_are_opaque() -> None:
+    with pytest.raises(ValidationError):
+        VisitorQueuedAction(
+            action_id="tiger",
+            session_id="act_" + "a" * 20,
+            submitted_at=datetime.now(UTC),
+            note=VisitorNoteAction(text="hi"),
         )

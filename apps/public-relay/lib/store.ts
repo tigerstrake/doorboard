@@ -254,6 +254,116 @@ export async function pendingCount(): Promise<number> {
   return redis().zcard(KEY.pending);
 }
 
+// -- visitor surface (ADR-0017) --------------------------------------------
+
+/**
+ * A visitor session lives as long as the door session plus a small grace. Short
+ * on purpose: this is transient interaction state, and nothing here should outlive
+ * the person standing at the door by more than a few minutes.
+ */
+export const VISITOR_SNAPSHOT_GRACE_S = 5 * 60;
+export const VISITOR_ACTION_TTL_S = 15 * 60;
+export const VISITOR_LEASE_S = 30;
+export const MAX_VISITOR_BATCH = 16;
+
+export interface StoredVisitorSnapshot {
+  session_token_sha256: string;
+  session_id: string;
+  state: string;
+  expires_at: string;
+  poll: unknown;
+  poll_results: unknown;
+  outcomes: unknown[];
+  pushed_at: string;
+}
+
+const VISITOR_KEY = {
+  snapshot: (sessionId: string) => `visitor:snap:${sessionId}`,
+  byToken: (tokenHash: string) => `visitor:tok:${tokenHash}`,
+  action: (actionId: string) => `visitor:act:${actionId}`,
+  pendingActions: "visitor:pending",
+} as const;
+
+export async function putVisitorSnapshot(snapshot: StoredVisitorSnapshot): Promise<void> {
+  const ttl = ttlUntil(snapshot.expires_at, VISITOR_SNAPSHOT_GRACE_S);
+  const r = redis();
+  await r.set(VISITOR_KEY.snapshot(snapshot.session_id), JSON.stringify(snapshot), { ex: ttl });
+  // A phone presents a token, not a session id, so keep a hash → session lookup.
+  await r.set(VISITOR_KEY.byToken(snapshot.session_token_sha256), snapshot.session_id, { ex: ttl });
+}
+
+export async function getVisitorSnapshotByTokenHash(
+  tokenHash: string,
+): Promise<StoredVisitorSnapshot | null> {
+  const sessionId = await redis().get(VISITOR_KEY.byToken(tokenHash));
+  if (typeof sessionId !== "string" || sessionId.length === 0) return null;
+  const snapshot = readJson<StoredVisitorSnapshot>(
+    await redis().get(VISITOR_KEY.snapshot(sessionId)),
+  );
+  if (!snapshot) return null;
+  // Defence in depth: the hash must still match the snapshot we found, so a stale
+  // pointer cannot hand one visitor another visitor's session.
+  return snapshot.session_token_sha256 === tokenHash ? snapshot : null;
+}
+
+export async function queueVisitorAction(actionId: string, action: unknown): Promise<void> {
+  const r = redis();
+  await r.set(VISITOR_KEY.action(actionId), JSON.stringify(action), { ex: VISITOR_ACTION_TTL_S });
+  await r.zadd(VISITOR_KEY.pendingActions, { score: Date.now(), member: actionId });
+}
+
+/** Claim pending visitor actions, leasing them so a concurrent poll skips them. */
+export async function leaseVisitorActions(): Promise<unknown[]> {
+  const r = redis();
+  const now = Date.now();
+  const ids = (await r.zrange(VISITOR_KEY.pendingActions, 0, now, {
+    byScore: true,
+    offset: 0,
+    count: MAX_VISITOR_BATCH,
+  })) as string[];
+
+  const leased: unknown[] = [];
+  for (const id of ids) {
+    const action = readJson<unknown>(await r.get(VISITOR_KEY.action(id)));
+    if (!action) {
+      await r.zrem(VISITOR_KEY.pendingActions, id);
+      continue;
+    }
+    await r.zadd(VISITOR_KEY.pendingActions, { score: now + VISITOR_LEASE_S * 1000, member: id });
+    leased.push(action);
+  }
+  return leased;
+}
+
+/** Retire a collected action and fold its outcome into the visitor's snapshot. */
+export async function completeVisitorAction(
+  sessionId: string,
+  actionId: string,
+  outcome: unknown,
+): Promise<void> {
+  const r = redis();
+  await r.del(VISITOR_KEY.action(actionId));
+  await r.zrem(VISITOR_KEY.pendingActions, actionId);
+
+  const snapshot = readJson<StoredVisitorSnapshot>(await r.get(VISITOR_KEY.snapshot(sessionId)));
+  if (!snapshot) return;
+  const outcomes = [
+    ...snapshot.outcomes.filter(
+      (existing) => (existing as { action_id?: string }).action_id !== actionId,
+    ),
+    outcome,
+  ].slice(-16);
+  await r.set(
+    VISITOR_KEY.snapshot(sessionId),
+    JSON.stringify({ ...snapshot, outcomes }),
+    { ex: ttlUntil(snapshot.expires_at, VISITOR_SNAPSHOT_GRACE_S) },
+  );
+}
+
+export async function pendingVisitorActionCount(): Promise<number> {
+  return redis().zcard(VISITOR_KEY.pendingActions);
+}
+
 // -- rate limiting ----------------------------------------------------------
 
 /** Fixed-window counter. Returns true when the caller is still within budget. */

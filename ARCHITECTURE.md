@@ -49,7 +49,7 @@ REAL-TIME DOOR PLANE (hallway, medium/low trust, latency-critical)
 | ESP32 | Low | No secrets at all; profile cache holds only opaque profile IDs |
 | Public screens | Low | Anyone can touch/see. Broad status only — never GPS, calendars, private notes, diagnostics |
 | QR/PWA visitor endpoints | Low | Tokenized, rate-limited, short-lived |
-| Enrollment relay (Vercel) | **None** | Public, outside the house. Holds AEAD ciphertext and opaque ids only; no key that can open them, no route toward the Pi, no admin surface. Treated as a hostile courier by design (ADR-0016) |
+| Public relay (Vercel) | **None** | Public, outside the house. Enrollment payloads cross it as AEAD ciphertext it holds no key for (ADR-0016); the visitor surface crosses it as plaintext that is already destined for a hallway wallboard, protected by a narrow allow-list rather than secrecy (ADR-0017). No route toward the Pi, no admin surface, per-service scoped tokens. Treated as a hostile courier by design |
 
 ## 3. Services
 
@@ -64,7 +64,7 @@ Each service has a full spec in its directory README. Every service exposes `GET
 | [door-sync](apps/door-sync/) | Pi | Upload queue Pi→NUC/NAS, backoff, dedupe, checksum-verified cleanup | Delete local media before integrity verification |
 | [control-plane-api](apps/control-plane-api/) | NUC | Event history, HA bridge, statuses, social features, integrations, notifications, config distribution | Sit in the door critical path |
 | [wallboard-worker](apps/wallboard-worker/) | NUC | Scheduled jobs: satellite passes, aircraft polling, bird summaries, collages | Run on the door Pi |
-| [enroll-web](apps/enroll-web/) | Vercel | Public phone-enrollment relay: ciphertext in, ciphertext out, 15-min TTL | Hold a decryption key; receive a name or a photo in the clear; expose an admin surface; initiate anything toward the Pi |
+| [public-relay](apps/public-relay/) | Vercel | Public relay for phone enrollment (ciphertext only) and the visitor page (allow-listed public session state) | Hold a decryption key; receive an enrollee's name or photo in the clear; publish identity, media, or diagnostics; expose an admin surface; initiate anything toward the Pi |
 | [simulator](apps/simulator/) | dev | Fake button/vision/camera/outage events for hardware-free development | — |
 | [esp32-door-controller](firmware/esp32-door-controller/) | ESP32 | Button debounce, generic <30 ms feedback, profile cache, LED/audio, knock detection, watchdog fallback | Hold secrets; wait on anything before generic feedback |
 
@@ -136,7 +136,8 @@ Button press enters visitor mode immediately; generic feedback precedes any netw
 - Deletion flows exist for messages, guestbook entries, photos, and enrollments.
 - Presence uses broad labels only (Available/Busy/DND/Sleeping/At Class/At Library/Away/Unknown); manual override outranks inference; no raw GPS anywhere.
 - Never log raw biometric data.
-- Face templates never leave the door Pi. Enrollment *photos* may cross the internet on the phone path, but only sealed to a door-held key that no intermediary has — and the relay never receives a name (ADR-0016).
+- Face templates never leave the door Pi. Enrollment *photos* may cross the internet on the phone path, but only sealed to a door-held key that no intermediary has — and the relay never receives an enrollee's name (ADR-0016).
+- The public visitor surface carries only what a hallway wallboard already shows: ring state, the current poll, and the visitor's own note. Never identity, media, or diagnostics (ADR-0017 §2).
 
 Any PR touching enrollment, embeddings, retention, or public display content requires `agent:claude` review before merge (ADR-0005, ADR-0008).
 
@@ -150,7 +151,7 @@ Any PR touching enrollment, embeddings, retention, or public display content req
 | Camera unavailable | button/UI still work; UI shows "video unavailable" |
 | ESP32 offline | Pi surfaces admin error; never pretend a physical effect occurred |
 | Pi restart | ESP32 runs generic fallback animation / unavailable state |
-| Internet offline | no impact on core flow |
+| Internet offline | no impact on core flow; the visitor QR falls back to its LAN URL, so it keeps working on the house wifi and stops working only for phones on cellular (ADR-0017 §4) |
 | Storage low | stop recording safely, preserve interaction, alert control plane |
 
 ## 11. Technology stack (ADR-0003)

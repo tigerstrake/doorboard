@@ -253,7 +253,7 @@ describe("E-14 the relay exposes no privileged surface", () => {
     await seedDoorKeyAndInvite();
     const body = (await (await getHealth()).json()) as Record<string, unknown>;
     expect(body).toEqual({
-      service: "enroll-web",
+      service: "public-relay",
       status: "ok",
       storage_configured: true,
       device_token_configured: true,

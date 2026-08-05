@@ -17,7 +17,7 @@ The question is therefore not "how do we let the internet reach the Pi" but "how
 
 ## Decision
 
-A standalone Next.js application on Vercel (`apps/enroll-web`) acts as a **blind courier**. It moves sealed bytes and knows nothing about their contents.
+A standalone Next.js application on Vercel (`apps/public-relay`) acts as a **blind courier**. It moves sealed bytes and knows nothing about their contents.
 
 ```text
 phone (anywhere)                    vercel relay                    door pi
@@ -139,9 +139,9 @@ The relay client is an `asyncio` task in door-visiond alongside the existing pur
 | ID | Test (exact behavior) | Where |
 |---|---|---|
 | P-12 | `test_sealed_bundle_round_trip` — seal with the TS implementation's vectors, open with the Python implementation and vice versa; corrupt one AAD byte, one nonce byte, one ciphertext byte → each raises, none partially decrypts. | contracts/visiond |
-| P-13 | `test_relay_never_sees_plaintext` — drive a full submit through the relay's own handlers with a sentinel-bearing image and sentinel display name; byte-scan every value written to the KV double, plus captured request/response logs → sentinels absent. | enroll-web |
+| P-13 | `test_relay_never_sees_plaintext` — drive a full submit through the relay's own handlers with a sentinel-bearing image and sentinel display name; byte-scan every value written to the KV double, plus captured request/response logs → sentinels absent. | public-relay |
 | P-14 | `test_invite_single_use_and_expiry` — a consumed invite, an expired invite, a hash-mismatched secret, and an `invite_id` the Pi never issued are each rejected by the Pi; concurrent pickups of one invite enroll exactly once. | visiond |
-| P-15 | `test_fingerprint_mismatch_refuses_seal` — relay serves a substituted door key; the client refuses to seal and surfaces a tamper error; no upload occurs. | enroll-web |
+| P-15 | `test_fingerprint_mismatch_refuses_seal` — relay serves a substituted door key; the client refuses to seal and surfaces a tamper error; no upload occurs. | public-relay |
 | P-16 | `test_remote_enroll_plaintext_is_transient` — after a successful and an exception-injected remote enrollment, byte-scan everything under `${SSD_DATA_ROOT}` (including WAL/tmp) for an image sentinel → absent; enrollment succeeded in the success case. Extends ADR-0009 P-9 to the relay path. | visiond |
 | P-17 | `test_relay_outage_never_blocks_door` — relay returns 500s / hangs past the timeout for the whole run: button→session flow completes normally through the simulator, `/health` reports the service `ok` with `relay_status: "degraded"`, backoff is bounded. | visiond |
 | P-18 | `test_relay_poller_respects_privacy_and_lock` — privacy mode on, and separately the enrollment volume locked: pending bundles are not collected and no plaintext is produced. | visiond |
@@ -167,7 +167,7 @@ Existing v1 enrollments keep `consent_version: "v1"` — that is the historical 
 
 - door-visiond gains a `cryptography` dependency (P-256 ECDH, HKDF, AES-GCM). Standard, audited, already the de facto Python choice; ADR-0003 is extended by this line.
 - door-visiond gains outbound internet egress for the first time, to exactly one configured origin. Deployment docs and the security checklist must say so.
-- `apps/enroll-web` is the first artifact deployed outside the house. It holds no secret capable of reading user data, so its compromise is contained as described in §9.
+- `apps/public-relay` is the first artifact deployed outside the house. It holds no secret capable of reading user data, so its compromise is contained as described in §9.
 - The relay is optional: unset `VISIOND_RELAY_BASE_URL` and the poller never starts. The at-door flow is unaffected and remains the default.
 - ADR-0009 §1's "no contracts change is needed" no longer holds for the relay path; E-13 defines the replacement rule.
-- Rate limits and the absence of an admin surface on the relay (E-14) are review-blocking invariants for any future change to `apps/enroll-web`.
+- Rate limits and the absence of an admin surface on the relay (E-14) are review-blocking invariants for any future change to `apps/public-relay`.

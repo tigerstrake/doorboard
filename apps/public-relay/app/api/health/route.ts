@@ -13,7 +13,7 @@ export async function GET(): Promise<Response> {
   const configured = storageConfigured() && deviceTokenConfigured();
   if (!configured) {
     return jsonOk({
-      service: "enroll-web",
+      service: "public-relay",
       status: "degraded",
       storage_configured: storageConfigured(),
       device_token_configured: deviceTokenConfigured(),
@@ -33,7 +33,7 @@ export async function GET(): Promise<Response> {
   }
 
   return jsonOk({
-    service: "enroll-web",
+    service: "public-relay",
     status,
     storage_configured: true,
     device_token_configured: true,

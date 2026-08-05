@@ -34,7 +34,7 @@ the service must never claim `hailo_ok` while the placeholder adapter is active.
 
 ## Remote enrollment (ADR-0016)
 
-Enrollment works two ways. **At the door** is the default and unchanged: the admin UI captures from the Pi's own camera and nothing touches the internet. **From a phone** goes through a relay ([apps/enroll-web](../enroll-web/)) that only ever holds ciphertext:
+Enrollment works two ways. **At the door** is the default and unchanged: the admin UI captures from the Pi's own camera and nothing touches the internet. **From a phone** goes through a relay ([apps/public-relay](../public-relay/)) that only ever holds ciphertext:
 
 ```text
 admin mints an invite  →  QR on the doorboard  →  phone seals photos + name to

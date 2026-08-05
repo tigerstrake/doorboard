@@ -149,6 +149,22 @@ class SessionConfig:
     visitor_token_ttl_s: float = 300.0
     visitor_public_base_url: str = "http://door.local"
 
+    # Public visitor relay (ADR-0017).  The LAN base URL above cannot load on a
+    # phone that is on cellular — which is every stranger at the door — so the QR
+    # points at the relay when it is reachable and falls back to the LAN URL when
+    # it is not (E-19).  Empty base URL => relay DISABLED: no worker, no egress,
+    # QR behaves exactly as it did before.
+    visitor_relay_base_url: str = ""
+    visitor_relay_device_token: str = ""
+    # Origin used to build the QR link, when it differs from the API base.
+    visitor_relay_public_url: str = ""
+    visitor_relay_poll_interval_s: float = 2.0
+    visitor_relay_timeout_s: float = 4.0
+    visitor_relay_backoff_max_s: float = 60.0
+    # How long a successful exchange keeps the relay considered reachable for QR
+    # selection. Short, so a dead relay stops being advertised quickly.
+    visitor_relay_freshness_s: float = 30.0
+
     # ESP32 feedback effect requested for DoorPad touch actions.
     doorpad_effect_id: str = "generic_chime"
     doorpad_effect_duration_ms: int = 900
@@ -227,6 +243,13 @@ class SessionConfig:
                 "DOOR_API_VISITOR_PUBLIC_BASE_URL",
                 "http://door.local",
             ),
+            visitor_relay_base_url=os.environ.get("DOOR_API_VISITOR_RELAY_BASE_URL", ""),
+            visitor_relay_device_token=os.environ.get("DOOR_API_VISITOR_RELAY_DEVICE_TOKEN", ""),
+            visitor_relay_public_url=os.environ.get("DOOR_API_VISITOR_RELAY_PUBLIC_URL", ""),
+            visitor_relay_poll_interval_s=_env_float("DOOR_API_VISITOR_RELAY_POLL_S", 2.0),
+            visitor_relay_timeout_s=_env_float("DOOR_API_VISITOR_RELAY_TIMEOUT_S", 4.0),
+            visitor_relay_backoff_max_s=_env_float("DOOR_API_VISITOR_RELAY_BACKOFF_MAX_S", 60.0),
+            visitor_relay_freshness_s=_env_float("DOOR_API_VISITOR_RELAY_FRESHNESS_S", 30.0),
             doorpad_effect_id=os.environ.get("DOOR_API_DOORPAD_EFFECT_ID", "generic_chime"),
             doorpad_effect_duration_ms=int(
                 _env_float("DOOR_API_DOORPAD_EFFECT_DURATION_MS", 900.0)

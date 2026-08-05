@@ -1,6 +1,6 @@
 """Test-side sealing: what the phone's WebCrypto code does, in Python.
 
-This mirrors ``apps/enroll-web/lib/seal.ts`` step for step.  Keeping an
+This mirrors ``apps/public-relay/lib/seal.ts`` step for step.  Keeping an
 independent second implementation is the point — if the two drift, the
 round-trip tests fail, which is ADR-0016 P-12.  It is test-only and must never
 be imported by service code (the Pi only ever *opens* bundles).

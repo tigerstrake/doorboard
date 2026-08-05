@@ -387,3 +387,32 @@ code {
   border-radius: 5px;
   overflow-wrap: anywhere;
 }
+
+/* Visitor flow (ADR-0017): a note field and neutral notices. */
+
+textarea {
+  font: inherit;
+  width: 100%;
+  padding: 0.8rem 0.9rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  resize: vertical;
+  min-height: 6rem;
+}
+
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.notice:not(.ok):not(.warn):not(.error) {
+  border-color: var(--border);
+  background: var(--surface-raised);
+}
+
+.checkline input[type="radio"] {
+  width: 1.3rem;
+  height: 1.3rem;
+}

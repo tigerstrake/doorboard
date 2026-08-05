@@ -1,6 +1,6 @@
 packages:
   - "apps/door-ui"
-  - "apps/enroll-web"
+  - "apps/public-relay"
   - "packages/contracts"
   - "packages/ui-kit"
   - "packages/media-client"

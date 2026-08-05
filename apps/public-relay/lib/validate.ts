@@ -180,3 +180,187 @@ export function parseInviteToken(token: string): { inviteId: string; secret: str
   if (!BASE64URL.test(secret) || secret.length < 16 || secret.length > 128) return null;
   return { inviteId, secret };
 }
+
+// -- visitor surface (ADR-0017) --------------------------------------------
+
+const SESSION_STATES = [
+  "IDLE",
+  "VISITOR_MODE",
+  "RINGING",
+  "ANSWERED",
+  "UNANSWERED_TIMEOUT",
+  "VIDEO_MESSAGE_OFFERED",
+  "VIDEO_MESSAGE_RECORDING",
+  "VIDEO_MESSAGE_REVIEW",
+  "VIDEO_MESSAGE_SAVED",
+  "SESSION_END",
+] as const;
+
+/**
+ * The snapshot door-api pushes (ADR-0017 §2).
+ *
+ * Allow-listed like everything else here, and that matters more on this route than
+ * most: the snapshot is a projection of live session state, so an over-broad parser
+ * would quietly let a future door-api refactor start publishing identity or media
+ * fields to a public page. Unknown field → rejection (E-15).
+ */
+export function parseVisitorSnapshot(value: unknown): {
+  session_token_sha256: string;
+  session_id: string;
+  state: string;
+  expires_at: string;
+  poll: unknown;
+  poll_results: unknown;
+  outcomes: unknown[];
+  pushed_at: string;
+} {
+  const raw = object(
+    value,
+    [
+      "session_token_sha256",
+      "session_id",
+      "state",
+      "expires_at",
+      "poll",
+      "poll_results",
+      "outcomes",
+      "pushed_at",
+    ],
+    "snapshot",
+  );
+
+  if (typeof raw.state !== "string" || !SESSION_STATES.includes(raw.state as never)) {
+    fail("snapshot.state is not a known session state");
+  }
+
+  return {
+    session_token_sha256: b64url(raw.session_token_sha256, "snapshot.session_token_sha256", 64),
+    session_id: opaqueId(raw.session_id, "snapshot.session_id"),
+    state: raw.state as string,
+    expires_at: isoTimestamp(raw.expires_at, "snapshot.expires_at"),
+    poll: raw.poll === undefined ? null : parsePollOrNull(raw.poll),
+    poll_results: raw.poll_results === undefined ? null : parseResultsOrNull(raw.poll_results),
+    outcomes: Array.isArray(raw.outcomes) ? raw.outcomes.slice(0, 16) : [],
+    pushed_at: isoTimestamp(raw.pushed_at, "snapshot.pushed_at"),
+  };
+}
+
+function parsePollOrNull(value: unknown): unknown {
+  if (value === null) return null;
+  const poll = object(value, ["poll_id", "question", "options"], "snapshot.poll");
+  if (!Array.isArray(poll.options) || poll.options.length < 1 || poll.options.length > 8) {
+    fail("snapshot.poll.options must hold 1-8 entries");
+  }
+  return {
+    poll_id: boundedString(poll.poll_id, "snapshot.poll.poll_id", 64),
+    question: boundedString(poll.question, "snapshot.poll.question", 280),
+    options: poll.options.map((entry, index) => {
+      const option = object(entry, ["option_id", "label"], `snapshot.poll.options[${index}]`);
+      return {
+        option_id: boundedString(option.option_id, "option_id", 64),
+        label: boundedString(option.label, "label", 120),
+      };
+    }),
+  };
+}
+
+function parseResultsOrNull(value: unknown): unknown {
+  if (value === null) return null;
+  if (!Array.isArray(value) || value.length > 8) fail("snapshot.poll_results must hold 0-8 entries");
+  return value.map((entry, index) => {
+    const row = object(entry, ["option_id", "votes"], `snapshot.poll_results[${index}]`);
+    return {
+      option_id: boundedString(row.option_id, "option_id", 64),
+      votes: boundedInt(row.votes, "votes", 0, 1_000_000),
+    };
+  });
+}
+
+export type VisitorWrite =
+  | { kind: "note"; text: string }
+  | { kind: "vote"; poll_id: string; option_id: string }
+  | { kind: "deletion_request"; target_kind: string; target_id: string };
+
+const DELETION_KINDS = ["guestbook", "checkin", "photo", "video_message"] as const;
+
+/**
+ * One visitor write from a phone.
+ *
+ * Size caps here are a first line only — door-api's existing sanitiser and social
+ * rate limits stay the authority on content, so the relay cannot become a second,
+ * weaker validator that diverges from the LAN path (E-18).
+ */
+export function parseVisitorWrite(value: unknown): VisitorWrite {
+  const raw = object(value, ["kind", "text", "poll_id", "option_id", "target_kind", "target_id"], "write");
+
+  if (raw.kind === "note") {
+    return { kind: "note", text: boundedString(raw.text, "write.text", 500) };
+  }
+  if (raw.kind === "vote") {
+    return {
+      kind: "vote",
+      poll_id: boundedString(raw.poll_id, "write.poll_id", 64),
+      option_id: boundedString(raw.option_id, "write.option_id", 64),
+    };
+  }
+  if (raw.kind === "deletion_request") {
+    if (typeof raw.target_kind !== "string" || !DELETION_KINDS.includes(raw.target_kind as never)) {
+      fail("write.target_kind is not a deletable kind");
+    }
+    return {
+      kind: "deletion_request",
+      target_kind: raw.target_kind as string,
+      target_id: boundedString(raw.target_id, "write.target_id", 64),
+    };
+  }
+  return fail("write.kind must be note, vote, or deletion_request");
+}
+
+export interface VisitorAckOutcome {
+  action_id: string;
+  session_id: string;
+  kind: string;
+  status: string;
+  reason: string | null;
+  entry_id: string | null;
+}
+
+export function parseVisitorAck(value: unknown): VisitorAckOutcome[] {
+  const raw = object(value, ["outcomes"], "ack");
+  if (!Array.isArray(raw.outcomes) || raw.outcomes.length < 1 || raw.outcomes.length > 16) {
+    fail("ack.outcomes must hold 1-16 entries");
+  }
+  return raw.outcomes.map((entry, index) => {
+    const outcome = object(
+      entry,
+      ["action_id", "session_id", "kind", "status", "reason", "entry_id"],
+      `ack.outcomes[${index}]`,
+    );
+    if (outcome.status !== "applied" && outcome.status !== "rejected") {
+      fail(`ack.outcomes[${index}].status must be applied or rejected`);
+    }
+    return {
+      action_id: opaqueId(outcome.action_id, `ack.outcomes[${index}].action_id`),
+      session_id: opaqueId(outcome.session_id, `ack.outcomes[${index}].session_id`),
+      kind: boundedString(outcome.kind, "kind", 32),
+      status: outcome.status,
+      reason:
+        outcome.reason === undefined || outcome.reason === null
+          ? null
+          : boundedString(outcome.reason, "reason", 200),
+      entry_id:
+        outcome.entry_id === undefined || outcome.entry_id === null
+          ? null
+          : boundedString(outcome.entry_id, "entry_id", 64),
+    };
+  });
+}
+
+/** Opaque id for a queued action, matching the Pi's format. */
+export function newActionId(): string {
+  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const random = crypto.getRandomValues(new Uint8Array(22));
+  let body = "";
+  for (const byte of random) body += alphabet[byte % alphabet.length];
+  return `act_${body}`;
+}

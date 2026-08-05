@@ -1,0 +1,210 @@
+{
+  "$defs": {
+    "OpaqueId": {
+      "pattern": "^[a-z]{3,6}_[A-Za-z0-9]{16,32}$",
+      "type": "string"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "VisitorActionOutcome": {
+      "additionalProperties": false,
+      "description": "Echoes back what became of one queued action, so the phone can confirm.",
+      "properties": {
+        "action_id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "entry_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entry Id"
+        },
+        "kind": {
+          "enum": [
+            "note",
+            "vote",
+            "deletion_request"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "status": {
+          "enum": [
+            "applied",
+            "rejected"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action_id",
+        "kind",
+        "status"
+      ],
+      "title": "VisitorActionOutcome",
+      "type": "object"
+    },
+    "VisitorPoll": {
+      "additionalProperties": false,
+      "properties": {
+        "options": {
+          "items": {
+            "$ref": "#/$defs/VisitorPollOption"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Options",
+          "type": "array"
+        },
+        "poll_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Poll Id",
+          "type": "string"
+        },
+        "question": {
+          "maxLength": 280,
+          "minLength": 1,
+          "title": "Question",
+          "type": "string"
+        }
+      },
+      "required": [
+        "poll_id",
+        "question",
+        "options"
+      ],
+      "title": "VisitorPoll",
+      "type": "object"
+    },
+    "VisitorPollOption": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "option_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Option Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "option_id",
+        "label"
+      ],
+      "title": "VisitorPollOption",
+      "type": "object"
+    },
+    "VisitorPollResult": {
+      "additionalProperties": false,
+      "properties": {
+        "option_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Option Id",
+          "type": "string"
+        },
+        "votes": {
+          "minimum": 0,
+          "title": "Votes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "option_id",
+        "votes"
+      ],
+      "title": "VisitorPollResult",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The snapshot minus the token hash \u2014 what actually reaches the phone.\n\nThe hash authorises the request; there is no reason to hand it back, and not\nreturning it keeps it out of browser history, screenshots, and logs.",
+  "properties": {
+    "expires_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "outcomes": {
+      "items": {
+        "$ref": "#/$defs/VisitorActionOutcome"
+      },
+      "maxItems": 16,
+      "title": "Outcomes",
+      "type": "array"
+    },
+    "poll": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VisitorPoll"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "poll_results": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/VisitorPollResult"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Poll Results"
+    },
+    "pushed_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "session_id": {
+      "$ref": "#/$defs/OpaqueId"
+    },
+    "state": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "State",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "state",
+    "expires_at",
+    "pushed_at"
+  ],
+  "title": "VisitorPublicSnapshot",
+  "type": "object"
+}

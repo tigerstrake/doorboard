@@ -32,7 +32,7 @@ export default [
     // Next.js App Router files are required to export non-components
     // (`metadata`, `viewport`, `dynamic`, route handlers), so the Vite-oriented
     // fast-refresh rule does not apply to them.
-    files: ["apps/enroll-web/**/*.{ts,tsx}"],
+    files: ["apps/public-relay/**/*.{ts,tsx}"],
     rules: {
       "react-refresh/only-export-components": "off",
     },

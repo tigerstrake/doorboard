@@ -1,0 +1,23 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "label": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Label",
+      "type": "string"
+    },
+    "option_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Option Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "option_id",
+    "label"
+  ],
+  "title": "VisitorPollOption",
+  "type": "object"
+}

@@ -1,7 +1,7 @@
 """Cross-language seal compatibility (ADR-0016 P-12).
 
 The fixture here was sealed by the browser implementation
-(``apps/enroll-web/lib/seal.ts``, exercised through its own vitest run).  This
+(``apps/public-relay/lib/seal.ts``, exercised through its own vitest run).  This
 test opens it with the production Python code.  If the two implementations drift —
 a changed HKDF ``info``, a different AAD layout, a swapped nonce length — this
 fails, which is the whole point of keeping a committed vector rather than testing
@@ -9,7 +9,7 @@ each side against itself.
 
 Regenerate after any deliberate format change:
 
-    WRITE_SEAL_VECTOR=1 pnpm --filter @doorboard/enroll-web test
+    WRITE_SEAL_VECTOR=1 pnpm --filter @doorboard/public-relay test
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def vector() -> dict[str, object]:
     if not VECTOR_PATH.exists():
         pytest.fail(
             f"missing {VECTOR_PATH}; regenerate with "
-            "`WRITE_SEAL_VECTOR=1 pnpm --filter @doorboard/enroll-web test`"
+            "`WRITE_SEAL_VECTOR=1 pnpm --filter @doorboard/public-relay test`"
         )
     return json.loads(VECTOR_PATH.read_text(encoding="utf-8"))
 

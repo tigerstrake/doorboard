@@ -377,6 +377,90 @@ export interface RelayHealth {
   pending_bundles: number;
 }
 
+export interface VisitorPollOption {
+  option_id: string;
+  label: string;
+}
+
+export interface VisitorPoll {
+  poll_id: string;
+  question: string;
+  options: Array<VisitorPollOption>;
+}
+
+export interface VisitorPollResult {
+  option_id: string;
+  votes: number;
+}
+
+export interface VisitorActionOutcome {
+  action_id: string;
+  kind: "note" | "vote" | "deletion_request";
+  status: "applied" | "rejected";
+  reason?: string | null;
+  entry_id?: string | null;
+}
+
+export interface VisitorSessionSnapshot {
+  session_token_sha256: string;
+  session_id: string;
+  state: string;
+  expires_at: string;
+  poll?: VisitorPoll | null;
+  poll_results?: Array<VisitorPollResult> | null;
+  outcomes: Array<VisitorActionOutcome>;
+  pushed_at: string;
+}
+
+export interface VisitorPublicSnapshot {
+  session_id: string;
+  state: string;
+  expires_at: string;
+  poll?: VisitorPoll | null;
+  poll_results?: Array<VisitorPollResult> | null;
+  outcomes: Array<VisitorActionOutcome>;
+  pushed_at: string;
+}
+
+export interface VisitorNoteAction {
+  kind: "note";
+  text: string;
+}
+
+export interface VisitorVoteAction {
+  kind: "vote";
+  poll_id: string;
+  option_id: string;
+}
+
+export interface VisitorDeletionAction {
+  kind: "deletion_request";
+  target_kind: "guestbook" | "checkin" | "photo" | "video_message";
+  target_id: string;
+}
+
+export interface VisitorQueuedAction {
+  action_id: string;
+  session_id: string;
+  submitted_at: string;
+  note?: VisitorNoteAction | null;
+  vote?: VisitorVoteAction | null;
+  deletion_request?: VisitorDeletionAction | null;
+}
+
+export interface VisitorActionBatch {
+  items: Array<VisitorQueuedAction>;
+}
+
+export interface VisitorActionAck {
+  outcomes: Array<VisitorActionOutcome>;
+}
+
+export interface VisitorActionAccepted {
+  action_id: string;
+  status: "queued";
+}
+
 export interface DoorButtonPressedEvent {
   event_id: string;
   type: "door.button_pressed";

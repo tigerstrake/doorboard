@@ -21,7 +21,7 @@ from door_visiond.relay_client import HttpRelayTransport
 
 from .conftest import REPO_ROOT
 
-RELAY_API_ROOT = REPO_ROOT / "apps" / "enroll-web" / "app" / "api"
+RELAY_API_ROOT = REPO_ROOT / "apps" / "public-relay" / "app" / "api"
 
 # (method, path template) for every exchange HttpRelayTransport performs. Keep in
 # step with the method bodies below it.

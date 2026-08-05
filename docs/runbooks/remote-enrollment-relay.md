@@ -1,6 +1,6 @@
 # Runbook: remote enrollment relay
 
-Operating the phone-enrollment path (ADR-0016). Applies to `apps/enroll-web` on Vercel and the relay client inside door-visiond.
+Operating the phone-enrollment path (ADR-0016). Applies to `apps/public-relay` on Vercel and the relay client inside door-visiond.
 
 **First thing to know when something is wrong:** none of this can affect the door. The button, the ESP32, the local UI, recording, and at-door enrollment all keep working with the relay dead, unreachable, or deleted. If someone reports the door misbehaving, the relay is not your suspect.
 
