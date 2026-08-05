@@ -97,6 +97,16 @@ class Settings(BaseSettings):
         ge=1,
     )
 
+    # ── arrival log (ADR-0018) ────────────────────────────────────────────
+    # Sightings closer together than the merge window extend one visit rather
+    # than opening another (E-22), so someone lingering is one arrival.
+    visit_merge_window_s: float = Field(default=600.0, alias="VISIOND_VISIT_MERGE_WINDOW_S", gt=0)
+    # How often a sighting may reach SQLite, per person. Defaults to the greeting
+    # cooldown: a visit log needs no finer resolution than that.
+    visit_write_interval_ms: int = Field(
+        default=30_000, alias="VISIOND_VISIT_WRITE_INTERVAL_MS", ge=0
+    )
+
     # ── remote enrollment relay (ADR-0016) ────────────────────────────────
     # Empty base URL disables remote enrollment entirely: the worker never
     # starts, no key is published, and the at-door flow is unaffected.

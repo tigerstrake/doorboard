@@ -20,6 +20,7 @@ import type {
   DoorboardEvent,
   PresenceLabel,
 } from "@doorboard/contracts";
+import { ApproachGreeting } from "./ApproachGreeting";
 import { WallboardVisitorMode } from "./wallboard/WallboardVisitorMode";
 import {
   presenceFixture,
@@ -369,6 +370,7 @@ interface Recording {
 // Wallboard keeps rendering its takeover view through SESSION_END so the
 // thank-you screen is visible before the session auto-expires to IDLE.
 const WALLBOARD_TAKEOVER_STATES: SessionState[] = [...VISITOR_STATES, "SESSION_END"];
+
 
 export function App() {
   const [route, setRoute] = useState<string>(window.location.pathname);
@@ -1733,6 +1735,13 @@ export function App() {
     ];
 
     return (
+      <>
+      {/* The ESP32 light already fires on this same event; this is the screen half. */}
+      <ApproachGreeting
+        sessionState={sessionState}
+        displayName={activeDisplayName}
+        profileId={activeProfile}
+      />
       <CrossfadeSwitch activeKey={isVisitorMode ? "visitor" : focusedChannel ?? "ambient"}>
         {isVisitorMode ? (
           <WallboardVisitorMode
@@ -1811,6 +1820,7 @@ export function App() {
           </div>
         )}
       </CrossfadeSwitch>
+      </>
     );
   };
 

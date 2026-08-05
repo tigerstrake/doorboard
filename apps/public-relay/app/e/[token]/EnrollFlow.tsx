@@ -53,6 +53,7 @@ export default function EnrollFlow({ token }: { token: string }) {
   const [consentChecked, setConsentChecked] = useState(false);
   const [photos, setPhotos] = useState<Uint8Array[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
+  const [cameraReady, setCameraReady] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [profileId, setProfileId] = useState(PROFILES[0]!.id);
   const [statusReason, setStatusReason] = useState<string | null>(null);
@@ -145,26 +146,61 @@ export default function EnrollFlow({ token }: { token: string }) {
 
   const startCamera = useCallback(async () => {
     setError(null);
+    setCameraReady(false);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      // Release any previous stream first: re-entering this step (via "Back to
+      // photos") would otherwise open a second camera track, which some phones
+      // refuse outright and others answer with a black frame.
+      stopCamera();
+      streamRef.current = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 1280 } },
         audio: false,
       });
-      streamRef.current = stream;
+      // Attaching the stream happens in an effect, not here: the <video> does not
+      // exist until React has committed this step, and there is no reliable way to
+      // wait for that commit from inside an async handler.
       setStep("capture");
-      // The <video> only exists once the capture step has rendered.
-      requestAnimationFrame(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          void videoRef.current.play();
-        }
-      });
-    } catch {
+    } catch (caught) {
+      const denied = caught instanceof DOMException && caught.name === "NotAllowedError";
       setError(
-        "Could not open the camera. Allow camera access for this site, or enrol at the door instead.",
+        denied
+          ? "Camera access was blocked. Allow it for this site in your browser settings, then tap again — or enrol at the door instead."
+          : "Could not open the camera. It may be in use by another app. Close that and tap again, or enrol at the door instead.",
       );
     }
-  }, []);
+  }, [stopCamera]);
+
+  /**
+   * Attach the live stream once the capture step is actually on screen.
+   *
+   * This must be an effect rather than a callback after `setStep`: effects run
+   * after the DOM commit, so `videoRef.current` is guaranteed to exist. Doing it
+   * in a `requestAnimationFrame` raced React's commit and left the preview black
+   * with the stream never attached.
+   */
+  useEffect(() => {
+    if (step !== "capture") return;
+    const video = videoRef.current;
+    const stream = streamRef.current;
+    if (!video || !stream) return;
+
+    video.srcObject = stream;
+    const markReady = () => {
+      // videoWidth is only trustworthy once metadata has arrived.
+      if (video.videoWidth > 0) setCameraReady(true);
+    };
+    video.addEventListener("loadedmetadata", markReady);
+    video.addEventListener("canplay", markReady);
+    void video.play().catch(() => {
+      setError("The camera preview could not start. Tap 'Back to photos' to try again.");
+    });
+    markReady();
+
+    return () => {
+      video.removeEventListener("loadedmetadata", markReady);
+      video.removeEventListener("canplay", markReady);
+    };
+  }, [step]);
 
   const capture = useCallback(async () => {
     const video = videoRef.current;
@@ -352,9 +388,11 @@ export default function EnrollFlow({ token }: { token: string }) {
           <div className="viewfinder">
             <video ref={videoRef} playsInline muted autoPlay />
             <div className="pose">
-              {photos.length >= targetPhotos
-                ? "That's all of them."
-                : (POSES[photos.length] ?? "One more, straight on.")}
+              {!cameraReady
+                ? "Starting the camera…"
+                : photos.length >= targetPhotos
+                  ? "That's all of them."
+                  : (POSES[photos.length] ?? "One more, straight on.")}
             </div>
           </div>
           <div className="thumbs">
@@ -370,8 +408,10 @@ export default function EnrollFlow({ token }: { token: string }) {
           </div>
           <div className="button-row">
             {photos.length < targetPhotos ? (
-              <button className="primary" onClick={() => void capture()}>
-                Take photo {photos.length + 1} of {targetPhotos}
+              <button className="primary" onClick={() => void capture()} disabled={!cameraReady}>
+                {cameraReady
+                  ? `Take photo ${photos.length + 1} of ${targetPhotos}`
+                  : "Starting the camera…"}
               </button>
             ) : (
               <button className="primary" onClick={() => setStep("details")}>

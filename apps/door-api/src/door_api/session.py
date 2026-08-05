@@ -416,6 +416,11 @@ class SessionMachine:
                 to_state=to_state,
                 trigger=trigger,
                 recipients=recipients,
+                # Carries the recognised visitor's name so the control plane can
+                # say "Tiger is here" instead of "Someone's at the door"
+                # (ADR-0018 §4). None for an unrecognised visitor, which keeps the
+                # generic notification path exactly as it was.
+                display_name=self._display_name,
             ),
         )
         state_event_dict = state_event.model_dump(mode="json")

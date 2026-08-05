@@ -2966,3 +2966,34 @@ input:focus-visible {
   max-width: 180px;
   font-weight: 600;
 }
+
+/* Approach greeting (ADR-0018): recognition without a bell press.
+   An overlay rather than a takeover — someone walking past gets greeted without
+   the ambient wallboard being replaced. Pointer-events off so it never eats a
+   touch meant for the tiles underneath. */
+.db-approach-greeting {
+  position: fixed;
+  top: 2.5vh;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 900;
+  pointer-events: none;
+  animation: db-approach-in 400ms ease-out;
+}
+
+@keyframes db-approach-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -1.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .db-approach-greeting {
+    animation: none;
+  }
+}

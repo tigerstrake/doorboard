@@ -160,6 +160,10 @@ class VisiondService:
         self._relay_transport: RelayTransport | None = relay_transport
         self._relay_worker: RelayWorker | None = None
         self._relay_tasks: set[asyncio.Task[None]] = set()
+
+        # Arrival log (ADR-0018). Per-person throttle so the recognition path does
+        # not touch SQLite on every cache refresh.
+        self._visit_write_ms: dict[str, int] = {}
         # Shared Hailo face pipeline (built once, lazily, for hardware modes so
         # the VDevice + models are reused by both the embedder and the backend).
         self._hailo_pipeline: HailoFacePipeline | None = None
@@ -760,6 +764,36 @@ class VisiondService:
             "last_success_at": stats.last_success_at,
         }
 
+    # -- arrival log reads (ADR-0018 §1, admin-only per E-24) ---------------
+
+    def list_visits(
+        self, *, limit: int = 200, person_id: str | None = None
+    ) -> list[dict[str, object]]:
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        return self._store.list_visits(limit=limit, person_id=person_id)
+
+    def visit_counts(self) -> list[dict[str, object]]:
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        return self._store.visit_counts()
+
+    def purge_visits(self, *, person_id: str | None = None) -> dict[str, object]:
+        """Forget arrival history while keeping the person enrolled.
+
+        Unenroll already cascades visits away; this is the narrower control.
+        """
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        deleted = self._store.purge_visits(person_id=person_id)
+        # Drop the throttle memo so the next sighting opens a fresh visit rather
+        # than being suppressed by a timestamp whose row no longer exists.
+        if person_id is None:
+            self._visit_write_ms.clear()
+        else:
+            self._visit_write_ms.pop(person_id, None)
+        return {"deleted": deleted}
+
     # -- privacy mode ------------------------------------------------------
 
     def set_privacy_mode(self, *, enabled: bool, changed_by: str) -> None:
@@ -802,7 +836,34 @@ class VisiondService:
 
     # -- ESP32 profile mirroring ------------------------------------------
 
+    def _record_visit_sighting(self, person_id: str) -> None:
+        """Log that a recognised person is at the door (ADR-0018 §1).
+
+        Throttled per person: the identity cache refreshes every couple of seconds
+        while someone stands there, and this runs on the recognition path. A visit
+        log needs no better resolution than the greeting cooldown, so writing at
+        most that often keeps SQLite off the hot path while still extending an open
+        visit for as long as the person is present.
+        """
+        if self._enrollment_locked:
+            return
+        now_ms = self._clock.monotonic_ms()
+        last_ms = self._visit_write_ms.get(person_id)
+        if last_ms is not None and (now_ms - last_ms) < self._settings.visit_write_interval_ms:
+            return
+        self._visit_write_ms[person_id] = now_ms
+        try:
+            self._store.record_sighting(
+                person_id,
+                now=self._clock.utc_now(),
+                merge_window_s=self._settings.visit_merge_window_s,
+            )
+        except Exception as exc:
+            # A visit-log failure must never disturb recognition or the door.
+            logger.warning("visit_record_failed", extra={"error_class": type(exc).__name__})
+
     def _on_cache_refresh(self, visitor: CurrentVisitor, priority: str, trace_id) -> None:
+        self._record_visit_sighting(visitor.person_id)
         event = make_door_profile_update(
             clock=self._clock,
             door_id=self._settings.door_id,

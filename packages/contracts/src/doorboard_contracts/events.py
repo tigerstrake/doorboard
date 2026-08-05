@@ -225,6 +225,12 @@ class SessionStateChangedPayload(StrictModel):
     from_state: SessionState
     to_state: SessionState
     trigger: str
+    # Recognised visitor's display name, or None when nobody is recognised
+    # (ADR-0018 §4). The control plane evaluates notification rules from this
+    # event and has no other route to the name, so "Tiger is here" needs it here.
+    # Deliberately the name alone -- never person_id alongside it in a message
+    # that leaves the house -- and None keeps the generic notification path intact.
+    display_name: str | None = None
     # Chosen recipient KEYS for per-recipient video-message routing (ADR-0014).
     # Only populated on the VIDEO_MESSAGE_SAVED transition, when the visitor
     # picked who the clip should go to (e.g. ["tiger"], ["adam"], or both). Keys

@@ -94,6 +94,7 @@ export interface SessionStateChangedPayload {
   from_state: SessionState;
   to_state: SessionState;
   trigger: string;
+  display_name?: string | null;
   recipients?: Array<string> | null;
 }
 

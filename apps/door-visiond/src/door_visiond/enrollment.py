@@ -77,7 +77,29 @@ CREATE TABLE IF NOT EXISTS relay_invite (
     person_id        TEXT                -- set on consumption: the enrollment it produced
 );
 
+-- Arrival log (ADR-0018 §1). This lives HERE, in the enrollment database, rather
+-- than beside check-ins in door-api's social DB, and that placement is
+-- load-bearing rather than convenient:
+--
+--   * ON DELETE CASCADE means unenrolling destroys a person's arrival history in
+--     the same transaction as their embeddings (E-21). Retention is unbounded by
+--     owner decision, so a copy in the social DB would outlive revoked consent
+--     forever, silently — the failure mode ADR-0005 §6 exists to prevent.
+--   * This file is on the LUKS volume (ADR-0009 §6), which is where unbounded
+--     presence history belongs given the stolen-Pi threat model.
+--   * secure_delete=ON applies, so purged visit rows are zeroed like vectors.
+--
+-- One row per *visit*, not per sighting: sightings within the merge window extend
+-- last_seen_at on the open visit (E-22).
+CREATE TABLE IF NOT EXISTS visit (
+    visit_id         TEXT PRIMARY KEY,   -- 'vst_' + base62
+    person_id        TEXT NOT NULL REFERENCES person(person_id) ON DELETE CASCADE,
+    arrived_at       TEXT NOT NULL,      -- UTC ISO-8601
+    last_seen_at     TEXT NOT NULL       -- extended while they remain visible
+);
+
 CREATE INDEX IF NOT EXISTS idx_embedding_person ON embedding(person_id);
+CREATE INDEX IF NOT EXISTS idx_visit_person_seen ON visit(person_id, last_seen_at DESC);
 """
 
 
@@ -95,6 +117,10 @@ def new_embedding_id() -> str:
 
 def new_invite_id() -> str:
     return "inv_" + _base62()
+
+
+def new_visit_id() -> str:
+    return "vst_" + _base62()
 
 
 def new_invite_secret() -> str:
@@ -240,6 +266,123 @@ class EnrollmentStore:
             extra={"person_id": person_id, "embeddings": len(embeddings)},
         )
         return person_id
+
+    # ------------------------------------------------------------------
+    # Arrival log (ADR-0018 §1)
+    # ------------------------------------------------------------------
+
+    def record_sighting(
+        self,
+        person_id: str,
+        *,
+        now: datetime,
+        merge_window_s: float,
+    ) -> tuple[str, bool]:
+        """Log that a person is at the door. Returns ``(visit_id, opened_new)``.
+
+        Sightings inside ``merge_window_s`` of this person's most recent one extend
+        that visit rather than starting another (E-22) — someone lingering in the
+        hallway is one visit, not one per recognition cycle.
+
+        Silently does nothing if the person is not enrolled (the FK would reject
+        it anyway); a visit for a non-existent person is a bug elsewhere, and
+        raising here would be on the recognition path.
+        """
+        now_iso = now.astimezone(UTC).isoformat()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT visit_id, last_seen_at FROM visit WHERE person_id=? "
+                "ORDER BY last_seen_at DESC LIMIT 1",
+                (person_id,),
+            ).fetchone()
+
+            if row is not None:
+                visit_id, last_seen_at = row
+                gap_s = (now - datetime.fromisoformat(last_seen_at)).total_seconds()
+                if 0 <= gap_s <= merge_window_s:
+                    self._conn.execute(
+                        "UPDATE visit SET last_seen_at=? WHERE visit_id=?",
+                        (now_iso, visit_id),
+                    )
+                    self._conn.commit()
+                    return str(visit_id), False
+
+            if (
+                self._conn.execute(
+                    "SELECT 1 FROM person WHERE person_id=?", (person_id,)
+                ).fetchone()
+                is None
+            ):
+                return "", False
+
+            visit_id = new_visit_id()
+            self._conn.execute(
+                "INSERT INTO visit (visit_id, person_id, arrived_at, last_seen_at) "
+                "VALUES (?, ?, ?, ?)",
+                (visit_id, person_id, now_iso, now_iso),
+            )
+            self._conn.commit()
+        logger.info("visit_opened", extra={"person_id": person_id, "visit_id": visit_id})
+        return visit_id, True
+
+    def list_visits(
+        self, *, limit: int = 200, person_id: str | None = None
+    ) -> list[dict[str, object]]:
+        """Most recent visits first, joined to the display name for admin views."""
+        query = (
+            "SELECT v.visit_id, v.person_id, p.display_name, v.arrived_at, "
+            "       v.last_seen_at "
+            "FROM visit v JOIN person p ON p.person_id = v.person_id"
+        )
+        params: list[object] = []
+        if person_id is not None:
+            query += " WHERE v.person_id=?"
+            params.append(person_id)
+        query += " ORDER BY v.last_seen_at DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        return [
+            {
+                "visit_id": r[0],
+                "person_id": r[1],
+                "display_name": r[2],
+                "arrived_at": r[3],
+                "last_seen_at": r[4],
+            }
+            for r in rows
+        ]
+
+    def visit_counts(self) -> list[dict[str, object]]:
+        """Per-person visit totals. Admin-only — never a public payload (E-24)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT v.person_id, p.display_name, COUNT(*), MAX(v.last_seen_at) "
+                "FROM visit v JOIN person p ON p.person_id = v.person_id "
+                "GROUP BY v.person_id ORDER BY COUNT(*) DESC"
+            ).fetchall()
+        return [
+            {"person_id": r[0], "display_name": r[1], "visits": int(r[2]), "last_seen_at": r[3]}
+            for r in rows
+        ]
+
+    def purge_visits(self, *, person_id: str | None = None) -> int:
+        """Delete arrival history, for one person or all of it.
+
+        Unenroll already cascades; this is the separate 'forget where I've been but
+        keep recognising me' control the owner can offer.
+        """
+        with self._lock:
+            if person_id is None:
+                cursor = self._conn.execute("DELETE FROM visit")
+            else:
+                cursor = self._conn.execute("DELETE FROM visit WHERE person_id=?", (person_id,))
+            self._conn.commit()
+            # Zero the freed pages, same reasoning as unenroll (E-5).
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self._conn.commit()
+        logger.info("visits_purged", extra={"person_id": person_id, "deleted": cursor.rowcount})
+        return cursor.rowcount
 
     # ------------------------------------------------------------------
     # Remote-enrollment invites (ADR-0016 §4)
