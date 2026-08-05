@@ -29,8 +29,35 @@ the service must never claim `hailo_ok` while the placeholder adapter is active.
 ## Interfaces
 
 - Events out: `vision.face_visible`, `vision.identity_stable`, `vision.identity_expired`, `vision.privacy_mode_changed`, `vision.pipeline_status`; `door.profile_update`/`door.profile_clear` via Esp32Transport.
-- HTTP: `GET /health`, `GET /metrics`, `GET /current-visitor`, `POST /enroll`, `POST /unenroll`, `POST /privacy-mode` (enroll/unenroll/privacy are admin-authenticated).
+- HTTP: `GET /health`, `GET /metrics`, `GET /current-visitor`, `POST /enroll`, `POST /unenroll`, `POST /privacy-mode`, `POST|GET /invites`, `POST /invites/{id}/revoke`, `GET /relay-status`, `POST /relay-key/rotate` (everything except health/metrics/current-visitor is admin-authenticated).
 - Reads: enrollment DB (SSD), pinned model files, config from `packages/config`.
+
+## Remote enrollment (ADR-0016)
+
+Enrollment works two ways. **At the door** is the default and unchanged: the admin UI captures from the Pi's own camera and nothing touches the internet. **From a phone** goes through a relay ([apps/enroll-web](../enroll-web/)) that only ever holds ciphertext:
+
+```text
+admin mints an invite  →  QR on the doorboard  →  phone seals photos + name to
+this door's public key  →  relay stores ciphertext (15-min TTL)  →  this service
+polls outbound, decrypts, embeds, wipes
+```
+
+The sealing keypair lives at `${enrollment_root}/relay/door_key.json` — on the encrypted enrollment volume, alongside the embedding database. Only the public half is ever published. The QR carries the key fingerprint in its URL fragment so a phone can detect a relay that substituted its own key.
+
+Remote enrollment is **off unless configured**, and its failure modes never touch the door path:
+
+| Variable | Meaning |
+|---|---|
+| `VISIOND_RELAY_BASE_URL` | Relay origin. Empty (default) → the poller never starts. |
+| `VISIOND_RELAY_DEVICE_TOKEN` | Bearer token authenticating this Pi to the relay. |
+| `VISIOND_RELAY_PUBLIC_URL` | Origin used to build invite URLs, if it differs from the API base. |
+| `VISIOND_RELAY_POLL_INTERVAL_S` | Collection cadence (default 5 s). |
+| `VISIOND_RELAY_INVITE_TTL_S` | How long a minted invite stays usable (default 1 h). |
+| `VISIOND_RELAY_MAX_IMAGES` | Photos one invite may carry (default 5). |
+
+An unreachable relay produces bounded backoff, `relay_status: "degraded"` in health, and nothing else — service status stays `ok`, because remote enrollment is a convenience and recognition is never authorization. Privacy mode or a locked enrollment volume stops collection entirely, so no plaintext is produced.
+
+Outbound HTTPS to that one origin is the only internet egress this service has.
 
 ## Must never
 

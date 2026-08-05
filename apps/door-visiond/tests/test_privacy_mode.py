@@ -13,7 +13,7 @@ from door_visiond.privacy_store import PrivacyStore
 from door_visiond.service import PrivacyModeActiveError, VisiondService
 from door_visiond.settings import Settings
 
-from .conftest import TEST_DIM, face
+from .conftest import CONSENT_VERSION, TEST_DIM, face
 
 
 class _CollectingEmitter(EventEmitter):
@@ -83,7 +83,7 @@ def test_privacy_mode_kills_capture_not_door(ssd_settings: Settings) -> None:
     try:
         svc.enroll(
             display_name="Alex",
-            consent_version="v1",
+            consent_version=CONSENT_VERSION,
             consent_confirmed=True,
             images=[b"alex-photo-bytes"],
             profile=ProfileSpec("blue_wave", "#00f", None),

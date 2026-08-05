@@ -25,6 +25,11 @@ node_modules/
 .vite/
 coverage/
 
+# Next.js / Vercel (enroll-web build output and local link state)
+.next/
+next-env.d.ts
+.vercel/
+
 # Playwright — snapshot baselines are committed, run artifacts are not
 test-results/
 playwright-report/

@@ -75,6 +75,41 @@ export interface EnrolledPerson {
   sound: string | null;
 }
 
+/** A minted remote-enrollment invite (ADR-0016 §4). */
+export interface CreatedInvite {
+  invite_id: string;
+  /** Single-use enrollment URL, secret in the path and key fingerprint in the fragment. */
+  url: string;
+  expires_at: string;
+  max_images: number;
+  relay_configured: boolean;
+  door_key_fingerprint: string;
+}
+
+export interface InviteSummary {
+  invite_id: string;
+  label: string | null;
+  max_images: number;
+  created_at: string;
+  expires_at: string;
+  consumed_at: string | null;
+  revoked_at: string | null;
+  person_id: string | null;
+  status: "open" | "consumed" | "expired" | "revoked";
+}
+
+export interface RelayStatus {
+  configured: boolean;
+  status: "disabled" | "stopped" | "ok" | "degraded";
+  polls_ok?: number;
+  polls_failed?: number;
+  bundles_enrolled?: number;
+  bundles_rejected?: number;
+  consecutive_failures?: number;
+  last_error?: string | null;
+  last_success_at?: string | null;
+}
+
 export const enrollmentApi = {
   async getPeople(token: string): Promise<EnrolledPerson[]> {
     return request<EnrolledPerson[]>(VISIOND_BASE_URL, "/people", { adminToken: token });
@@ -114,6 +149,37 @@ export const enrollmentApi = {
       adminToken: token,
       body: { enabled, changed_by: "admin" },
     });
+  },
+
+  /**
+   * Mint a single-use phone-enrollment invite.
+   *
+   * The returned URL is the only copy of the invite secret — it is not stored on
+   * the door and cannot be retrieved again. Losing it means minting a new invite.
+   */
+  async createInvite(token: string, label?: string): Promise<CreatedInvite> {
+    return request<CreatedInvite>(VISIOND_BASE_URL, "/invites", {
+      method: "POST",
+      adminToken: token,
+      body: { label: label && label.trim().length > 0 ? label.trim() : null },
+    });
+  },
+
+  async listInvites(token: string, includeClosed = false): Promise<InviteSummary[]> {
+    const query = includeClosed ? "?include_closed=true" : "";
+    return request<InviteSummary[]>(VISIOND_BASE_URL, `/invites${query}`, { adminToken: token });
+  },
+
+  async revokeInvite(token: string, inviteId: string): Promise<{ revoked: boolean }> {
+    return request<{ revoked: boolean }>(
+      VISIOND_BASE_URL,
+      `/invites/${encodeURIComponent(inviteId)}/revoke`,
+      { method: "POST", adminToken: token }
+    );
+  },
+
+  async getRelayStatus(token: string): Promise<RelayStatus> {
+    return request<RelayStatus>(VISIOND_BASE_URL, "/relay-status", { adminToken: token });
   },
 
   async captureSnapshot(token: string): Promise<Blob> {

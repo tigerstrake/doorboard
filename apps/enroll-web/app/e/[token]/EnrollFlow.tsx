@@ -1,0 +1,556 @@
+"use client";
+
+/**
+ * The phone-side enrolment flow (ADR-0016).
+ *
+ * Order of operations is a security property, not a UX preference:
+ *
+ *   1. check the invite is open
+ *   2. fetch the door key and **verify it against the QR's fragment** (E-10)
+ *   3. show the consent statement verbatim, as published by the Pi (E-7)
+ *   4. capture photos with the phone camera
+ *   5. seal name + consent + photos to the door key, then upload (E-8)
+ *   6. poll for the door to collect and enrol
+ *
+ * Step 2 gates step 5: if the fingerprint does not match, sealing never happens
+ * and nothing is uploaded. There is no "continue anyway".
+ */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import type { DoorKeyPublication, InvitePublicState, SealedProfile } from "@/lib/contracts";
+import { KeyFingerprintMismatch, assertKeyMatchesFingerprint, newBundleId, sealBundle } from "@/lib/seal";
+
+type Step = "checking" | "blocked" | "consent" | "capture" | "details" | "sending" | "waiting" | "done";
+
+/** The effects catalogue the doorboard understands (T-103). */
+const PROFILES: ReadonlyArray<{ id: string; color: string; name: string }> = [
+  { id: "warm_amber", color: "#ffb300", name: "Amber" },
+  { id: "blue_wave", color: "#3a86ff", name: "Blue" },
+  { id: "green_pulse", color: "#3ddc84", name: "Green" },
+  { id: "violet_dusk", color: "#9b5de5", name: "Violet" },
+  { id: "coral_glow", color: "#ff6b5e", name: "Coral" },
+  { id: "cool_white", color: "#e8eef5", name: "White" },
+];
+
+const POSES = [
+  "Look straight at the camera.",
+  "Turn your head slightly left.",
+  "Turn your head slightly right.",
+  "Tilt your chin down a little.",
+  "One more, straight on.",
+];
+
+const MAX_EDGE_PX = 1000;
+const POLL_INTERVAL_MS = 2000;
+const POLL_TIMEOUT_MS = 3 * 60 * 1000;
+
+export default function EnrollFlow({ token }: { token: string }) {
+  const [step, setStep] = useState<Step>("checking");
+  const [error, setError] = useState<string | null>(null);
+  const [blockedReason, setBlockedReason] = useState<string | null>(null);
+  const [invite, setInvite] = useState<InvitePublicState | null>(null);
+  const [doorKey, setDoorKey] = useState<DoorKeyPublication | null>(null);
+  const [consentChecked, setConsentChecked] = useState(false);
+  const [photos, setPhotos] = useState<Uint8Array[]>([]);
+  const [previews, setPreviews] = useState<string[]>([]);
+  const [displayName, setDisplayName] = useState("");
+  const [profileId, setProfileId] = useState(PROFILES[0]!.id);
+  const [statusReason, setStatusReason] = useState<string | null>(null);
+
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  const maxImages = invite?.max_images ?? 3;
+  const targetPhotos = Math.min(3, maxImages);
+
+  // -- step 1 + 2: invite state, then key verification --------------------
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function prepare() {
+      try {
+        const inviteResp = await fetch(`/api/enroll/${encodeURIComponent(token)}`, {
+          cache: "no-store",
+        });
+        const inviteState = (await inviteResp.json()) as InvitePublicState;
+        if (cancelled) return;
+
+        if (inviteState.status !== "open") {
+          setBlockedReason(
+            {
+              consumed: "This invitation has already been used. Ask for a fresh QR code.",
+              expired: "This invitation has expired. Ask for a fresh QR code.",
+              revoked: "This invitation was cancelled. Ask the household admin for a new one.",
+              unknown: "This link is not valid. Check you scanned the whole QR code.",
+            }[inviteState.status] ?? "This link cannot be used.",
+          );
+          setStep("blocked");
+          return;
+        }
+        setInvite(inviteState);
+
+        const keyResp = await fetch("/api/door-key", { cache: "no-store" });
+        if (!keyResp.ok) {
+          setBlockedReason(
+            "The door device has not checked in, so there is nothing to send to yet. " +
+              "Make sure it is powered on and online, then reload this page.",
+          );
+          setStep("blocked");
+          return;
+        }
+        const key = (await keyResp.json()) as DoorKeyPublication;
+
+        // The fragment never reaches a server, so this comparison is the one thing
+        // a tampered relay cannot quietly satisfy (E-10).
+        const expected = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("k");
+        if (!expected) {
+          setBlockedReason(
+            "This link is missing its security check. Scan the QR code from the doorboard " +
+              "again rather than copying the address by hand.",
+          );
+          setStep("blocked");
+          return;
+        }
+        await assertKeyMatchesFingerprint(key.public_key, expected);
+
+        if (cancelled) return;
+        setDoorKey(key);
+        setStep("consent");
+      } catch (caught) {
+        if (cancelled) return;
+        if (caught instanceof KeyFingerprintMismatch) {
+          setBlockedReason(caught.message);
+        } else {
+          setBlockedReason("Could not reach the enrolment service. Check your connection and reload.");
+        }
+        setStep("blocked");
+      }
+    }
+
+    void prepare();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  // -- camera lifecycle ---------------------------------------------------
+
+  const stopCamera = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }, []);
+
+  useEffect(() => stopCamera, [stopCamera]);
+
+  const startCamera = useCallback(async () => {
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 1280 } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      setStep("capture");
+      // The <video> only exists once the capture step has rendered.
+      requestAnimationFrame(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          void videoRef.current.play();
+        }
+      });
+    } catch {
+      setError(
+        "Could not open the camera. Allow camera access for this site, or enrol at the door instead.",
+      );
+    }
+  }, []);
+
+  const capture = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0) {
+      setError("The camera is not ready yet — give it a moment and try again.");
+      return;
+    }
+
+    const scale = Math.min(1, MAX_EDGE_PX / Math.max(video.videoWidth, video.videoHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
+    const context = canvas.getContext("2d");
+    if (!context) {
+      setError("This browser cannot process the photo. Try a different browser.");
+      return;
+    }
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.9),
+    );
+    if (!blob) {
+      setError("Could not save the photo. Try again.");
+      return;
+    }
+
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    setPhotos((current) => [...current, bytes]);
+    setPreviews((current) => [...current, URL.createObjectURL(blob)]);
+    setError(null);
+  }, []);
+
+  const retakeAll = useCallback(() => {
+    previews.forEach((url) => URL.revokeObjectURL(url));
+    setPhotos([]);
+    setPreviews([]);
+  }, [previews]);
+
+  // -- step 5: seal and upload --------------------------------------------
+
+  const submit = useCallback(async () => {
+    if (!doorKey || !invite) return;
+    const trimmed = displayName.trim();
+    if (trimmed.length === 0) {
+      setError("Please enter the name the door should greet you by.");
+      return;
+    }
+
+    setError(null);
+    setStep("sending");
+    stopCamera();
+
+    try {
+      const chosen = PROFILES.find((entry) => entry.id === profileId) ?? PROFILES[0]!;
+      const profile: SealedProfile = { profile_id: chosen.id, color: chosen.color, sound: null };
+      const bundleId = newBundleId();
+
+      const secret = token.slice(token.indexOf(".") + 1);
+      const bundle = await sealBundle({
+        doorPublicKey: doorKey.public_key,
+        doorKeyId: doorKey.door_key_id,
+        inviteId: invite.invite_id,
+        bundleId,
+        manifest: {
+          invite_secret: secret,
+          display_name: trimmed,
+          consent_version: doorKey.consent_version,
+          consent_confirmed: true,
+          profile,
+          captured_at: new Date().toISOString(),
+          image_count: photos.length,
+        },
+        images: photos,
+      });
+
+      const resp = await fetch(`/api/enroll/${encodeURIComponent(token)}/submit`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(bundle),
+      });
+      if (!resp.ok) {
+        const body = (await resp.json().catch(() => ({}))) as { error?: string };
+        setError(uploadErrorMessage(body.error));
+        setStep("details");
+        return;
+      }
+
+      // The photos have left the phone sealed; drop the plaintext copies.
+      retakeAll();
+      setStep("waiting");
+      void pollUntilSettled(bundleId, setStep, setStatusReason);
+    } catch {
+      setError("Could not encrypt and send the photos. Please try again.");
+      setStep("details");
+    }
+  }, [doorKey, displayName, invite, photos, profileId, retakeAll, stopCamera, token]);
+
+  const stepIndex = useMemo(() => {
+    const order: Step[] = ["consent", "capture", "details", "sending", "waiting", "done"];
+    return Math.max(0, order.indexOf(step));
+  }, [step]);
+
+  // -- rendering ----------------------------------------------------------
+
+  if (step === "checking") {
+    return (
+      <div className="center">
+        <div className="spinner" />
+        <p>Checking your invitation…</p>
+      </div>
+    );
+  }
+
+  if (step === "blocked") {
+    return (
+      <>
+        <h1>Cannot enrol</h1>
+        <div className="notice error">
+          <p>{blockedReason}</p>
+        </div>
+        <p className="footnote">
+          You can always enrol at the doorboard itself. That path uses the door&apos;s own camera and
+          sends nothing over the internet.
+        </p>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <span className="badge">Encrypted on this phone before sending</span>
+
+      <ol className="steps" aria-hidden="true">
+        {["consent", "capture", "details", "send"].map((name, index) => (
+          <li
+            key={name}
+            data-state={stepIndex > index ? "done" : stepIndex === index ? "active" : "todo"}
+          />
+        ))}
+      </ol>
+
+      {error ? (
+        <div className="notice error" role="alert">
+          <p>{error}</p>
+        </div>
+      ) : null}
+
+      {step === "consent" && doorKey ? (
+        <>
+          <p className="step-label">Step 1 of 4</p>
+          <h1>Please read and agree</h1>
+          <p className="lede">
+            This is the doorboard&apos;s own consent statement, shown word for word.
+          </p>
+          <div className="card">
+            <div className="consent">{doorKey.consent_text}</div>
+            <label className="checkline">
+              <input
+                type="checkbox"
+                checked={consentChecked}
+                onChange={(event) => setConsentChecked(event.target.checked)}
+              />
+              <span>
+                I have read this and I agree. I am enrolling my own face
+                <span style={{ color: "var(--text-dim)" }}> (version {doorKey.consent_version})</span>
+              </span>
+            </label>
+            <div className="button-row">
+              <button className="primary" disabled={!consentChecked} onClick={() => void startCamera()}>
+                Continue to photos
+              </button>
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {step === "capture" ? (
+        <>
+          <p className="step-label">Step 2 of 4</p>
+          <h1>Take {targetPhotos} photos</h1>
+          <p className="lede">
+            Good even light, no sunglasses or hat. A few angles help the door recognise you reliably.
+          </p>
+          <div className="viewfinder">
+            <video ref={videoRef} playsInline muted autoPlay />
+            <div className="pose">
+              {photos.length >= targetPhotos
+                ? "That's all of them."
+                : (POSES[photos.length] ?? "One more, straight on.")}
+            </div>
+          </div>
+          <div className="thumbs">
+            {Array.from({ length: targetPhotos }).map((_unused, index) =>
+              previews[index] ? (
+                // A plain <img>: these are blob: URLs for local previews, so
+                // there is nothing for an image optimiser to fetch or cache.
+                <img key={index} src={previews[index]} alt={`Photo ${index + 1}`} />
+              ) : (
+                <div key={index} className="thumb-empty" />
+              ),
+            )}
+          </div>
+          <div className="button-row">
+            {photos.length < targetPhotos ? (
+              <button className="primary" onClick={() => void capture()}>
+                Take photo {photos.length + 1} of {targetPhotos}
+              </button>
+            ) : (
+              <button className="primary" onClick={() => setStep("details")}>
+                Looks good, continue
+              </button>
+            )}
+            {photos.length > 0 ? (
+              <button className="secondary" onClick={retakeAll}>
+                Start the photos again
+              </button>
+            ) : null}
+          </div>
+        </>
+      ) : null}
+
+      {step === "details" ? (
+        <>
+          <p className="step-label">Step 3 of 4</p>
+          <h1>How should the door greet you?</h1>
+          <div className="card">
+            <label htmlFor="display-name">Your name</label>
+            <input
+              id="display-name"
+              type="text"
+              value={displayName}
+              maxLength={64}
+              autoComplete="given-name"
+              placeholder="e.g. Tiger"
+              onChange={(event) => setDisplayName(event.target.value)}
+            />
+            <p className="hint">Shown on the doorboard when it recognises you.</p>
+
+            <label htmlFor="colour-choice">Your colour</label>
+            <p className="hint">The light the door shows for you.</p>
+            <div className="swatches" id="colour-choice">
+              {PROFILES.map((entry) => (
+                <div key={entry.id}>
+                  <button
+                    className="swatch"
+                    style={{ background: entry.color }}
+                    aria-pressed={profileId === entry.id}
+                    aria-label={entry.name}
+                    onClick={() => setProfileId(entry.id)}
+                  >
+                    {entry.name}
+                  </button>
+                  <span className="swatch-name">{entry.name}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="button-row">
+              <button className="primary" onClick={() => void submit()}>
+                Encrypt and send
+              </button>
+              <button className="secondary" onClick={() => void startCamera()}>
+                Back to photos
+              </button>
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {step === "sending" ? (
+        <div className="center">
+          <div className="spinner" />
+          <h1>Encrypting…</h1>
+          <p className="lede">Sealing your photos and name so only the door can open them.</p>
+        </div>
+      ) : null}
+
+      {step === "waiting" ? (
+        <div className="center">
+          <div className="spinner" />
+          <h1>Waiting for the door</h1>
+          <p className="lede">
+            The door device is collecting your encrypted photos. This usually takes a few seconds.
+          </p>
+        </div>
+      ) : null}
+
+      {step === "done" ? (
+        <>
+          <h1>{statusReason ? "Not quite" : "You're enrolled"}</h1>
+          {statusReason ? (
+            <div className="notice warn">
+              <p>{outcomeMessage(statusReason)}</p>
+            </div>
+          ) : (
+            <div className="notice ok">
+              <p>
+                The door has your face templates and will greet you by name. Your photos were deleted
+                after processing.
+              </p>
+            </div>
+          )}
+          <p className="footnote">
+            You can revoke this at any time by asking the household admin. Revoking deletes your face
+            templates immediately.
+          </p>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+async function pollUntilSettled(
+  bundleId: string,
+  setStep: (step: Step) => void,
+  setStatusReason: (reason: string | null) => void,
+): Promise<void> {
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    try {
+      const resp = await fetch(`/api/status/${encodeURIComponent(bundleId)}`, { cache: "no-store" });
+      if (!resp.ok) continue;
+      const body = (await resp.json()) as { status: string; reason: string | null };
+
+      if (body.status === "enrolled") {
+        setStatusReason(null);
+        setStep("done");
+        return;
+      }
+      if (body.status === "failed" || body.status === "expired") {
+        setStatusReason(body.reason ?? body.status);
+        setStep("done");
+        return;
+      }
+    } catch {
+      // Transient network trouble: keep waiting until the deadline.
+    }
+  }
+
+  setStatusReason("timed_out");
+  setStep("done");
+}
+
+function uploadErrorMessage(code: string | undefined): string {
+  switch (code) {
+    case "invite_already_used":
+      return "This invitation has already been used. Ask for a fresh QR code.";
+    case "invite_expired":
+      return "This invitation expired while you were enrolling. Ask for a fresh QR code.";
+    case "invite_not_found":
+      return "This link is not valid any more. Ask for a fresh QR code.";
+    case "rate_limited":
+      return "Too many attempts. Wait a few minutes and try again.";
+    case "too_many_images":
+      return "That is more photos than this invitation allows. Start the photos again.";
+    case "storage_not_configured":
+      return "The enrolment service is not fully set up yet. Ask the household admin.";
+    default:
+      return "The service would not accept the upload. Please try again.";
+  }
+}
+
+function outcomeMessage(reason: string): string {
+  switch (reason) {
+    case "quality_too_low":
+      return "The door could not get a clear enough read of your face. Try again in brighter, even light.";
+    case "invite_already_consumed":
+    case "unknown_invite":
+    case "invite_secret_mismatch":
+      return "The door would not accept this invitation. Ask for a fresh QR code.";
+    case "invite_expired":
+      return "The invitation expired before the door collected your photos. Ask for a fresh QR code.";
+    case "stale_consent":
+      return "The consent wording changed while you were enrolling. Please reload and start again.";
+    case "privacy_mode":
+      return "Recognition is currently switched off at the door, so enrolment was declined.";
+    case "enrollment_storage_locked":
+      return "The door's secure storage is locked right now. Ask the household admin, then try again.";
+    case "timed_out":
+      return "The door did not collect your photos in time. It may be offline — the encrypted copy is deleted automatically. Try again later.";
+    case "bundle_expired":
+      return "The encrypted copy expired before the door collected it. Try again while the door is online.";
+    default:
+      return "Enrolment did not complete. Ask the household admin to check the doorboard, then try again.";
+  }
+}

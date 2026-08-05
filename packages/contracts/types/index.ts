@@ -287,6 +287,96 @@ export interface SystemLatencySamplePayload {
   window_s: number;
 }
 
+export interface SealedProfile {
+  profile_id: string;
+  color: string;
+  sound?: string | null;
+}
+
+export interface SealedManifest {
+  invite_secret: string;
+  display_name: string;
+  consent_version: string;
+  consent_confirmed: true;
+  profile: SealedProfile;
+  captured_at: string;
+  image_count: number;
+}
+
+export interface SealedItem {
+  index: number;
+  nonce: string;
+  ciphertext: string;
+}
+
+export interface SealedBundle {
+  v: 1;
+  suite: "ecies-p256-hkdf-sha256-aes256gcm";
+  bundle_id: string;
+  invite_id: string;
+  door_key_id: string;
+  ephemeral_public_key: string;
+  salt: string;
+  items: Array<SealedItem>;
+}
+
+export interface DoorKeyPublication {
+  door_key_id: string;
+  suite: "ecies-p256-hkdf-sha256-aes256gcm";
+  public_key: string;
+  fingerprint: string;
+  consent_version: string;
+  consent_text: string;
+  published_at: string;
+}
+
+export interface InviteRegistration {
+  invite_id: string;
+  secret_sha256: string;
+  expires_at: string;
+  max_images: number;
+}
+
+export interface InvitePublicState {
+  invite_id: string;
+  status: "open" | "consumed" | "expired" | "revoked" | "unknown";
+  max_images: number;
+  expires_at?: string | null;
+}
+
+export interface BundleSubmitAccepted {
+  bundle_id: string;
+  status: "pending";
+  expires_at: string;
+}
+
+export interface BundleStatus {
+  bundle_id: string;
+  status: "pending" | "collected" | "enrolled" | "failed" | "expired";
+  reason?: string | null;
+  updated_at: string;
+}
+
+export interface PickupItem {
+  bundle: SealedBundle;
+  submitted_at: string;
+}
+
+export interface PickupBatch {
+  items: Array<PickupItem>;
+}
+
+export interface PickupAck {
+  bundle_id: string;
+  outcome: "enrolled" | "failed" | "rejected";
+  reason?: string | null;
+}
+
+export interface RelayHealth {
+  status: "ok" | "degraded";
+  pending_bundles: number;
+}
+
 export interface DoorButtonPressedEvent {
   event_id: string;
   type: "door.button_pressed";

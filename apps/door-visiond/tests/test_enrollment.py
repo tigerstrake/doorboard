@@ -11,7 +11,7 @@ from door_visiond.enrollment import EnrollmentStore, ProfileSpec
 from door_visiond.matcher import Matcher
 from door_visiond.settings import Settings
 
-from .conftest import TEST_DIM, sentinel
+from .conftest import CONSENT_VERSION, TEST_DIM, sentinel
 
 
 def _sidecar_bytes(db_path: Path) -> bytes:
@@ -28,7 +28,7 @@ def test_enroll_load_and_match_roundtrip(ssd_settings: Settings) -> None:
     emb, _q = MockEmbedder(dim=TEST_DIM).embed(b"alex")
     person_id = store.enroll(
         display_name="Alex",
-        consent_version="v1",
+        consent_version=CONSENT_VERSION,
         consent_at=datetime.now(UTC),
         embeddings=[(emb, "mock", 0.9)],
         profile=ProfileSpec(profile_id="blue_wave", color="#0000ff", sound="chime"),
@@ -56,7 +56,7 @@ def test_unenroll_purges_bytes(ssd_settings: Settings) -> None:
     emb = sentinel_embedding(marker, TEST_DIM)
     person_id = store.enroll(
         display_name="Alex",
-        consent_version="v1",
+        consent_version=CONSENT_VERSION,
         consent_at=datetime.now(UTC),
         embeddings=[(emb, "mock", 0.9)],
         profile=ProfileSpec(profile_id="blue_wave", color="#0000ff", sound=None),

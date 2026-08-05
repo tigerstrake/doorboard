@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import { enrollmentApi, EnrolledPerson } from "./enrollmentApi";
 import { LiveVideoPreview } from "@doorboard/ui-kit";
+import { AdminRemoteEnrollPanel } from "./AdminRemoteEnrollPanel";
 
 const ADMIN_TOKEN_KEY = "doorboard_admin_social_token";
 
@@ -564,6 +565,14 @@ export function AdminEnrollmentPanel() {
           </div>
         </div>
       )}
+
+      {/* Remote enrollment via the relay (ADR-0016). The at-door wizard above
+          stays the default; this is the "scan it with your phone" path. */}
+      <AdminRemoteEnrollPanel
+        token={token}
+        privacyEnabled={privacyEnabled}
+        onEnrollmentLikely={() => loadData(token)}
+      />
     </div>
   );
 }

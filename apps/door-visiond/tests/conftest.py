@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from door_visiond.app import app
 from door_visiond.clock import FakeClock
+from door_visiond.consent import load_consent_statement
 from door_visiond.identity_cache import IdentityCache
 from door_visiond.matcher import Matcher
 from door_visiond.pipeline import DetectedFace, FrameCapture, PipelineCore
@@ -23,6 +24,13 @@ from fastapi.testclient import TestClient
 
 # Small model dim keeps pure-Python matching fast in tests (>= 8 for a sentinel).
 TEST_DIM = 64
+
+# The consent statement is the single source of its own version (ADR-0009 E-7), so
+# tests read it rather than hardcoding a tag — a wording change bumps the version
+# and must not require touching every enrollment test.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+CONSENT_STATEMENT_PATH = REPO_ROOT / "docs" / "policies" / "consent-statement.md"
+CONSENT_VERSION = load_consent_statement(CONSENT_STATEMENT_PATH).version
 
 _SENTINEL_PREFIX = b"DOORBOARD_SENTINEL_"  # 19 bytes
 

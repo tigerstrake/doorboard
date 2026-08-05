@@ -97,6 +97,25 @@ class Settings(BaseSettings):
         ge=1,
     )
 
+    # ── remote enrollment relay (ADR-0016) ────────────────────────────────
+    # Empty base URL disables remote enrollment entirely: the worker never
+    # starts, no key is published, and the at-door flow is unaffected.
+    relay_base_url: str = Field(default="", alias="VISIOND_RELAY_BASE_URL")
+    relay_device_token: str = Field(default="", alias="VISIOND_RELAY_DEVICE_TOKEN")
+    # Public origin used to build invite URLs for the QR code; defaults to the
+    # API base when unset (they are normally the same deployment).
+    relay_public_url: str = Field(default="", alias="VISIOND_RELAY_PUBLIC_URL")
+    relay_poll_interval_s: float = Field(default=5.0, alias="VISIOND_RELAY_POLL_INTERVAL_S", gt=0)
+    relay_timeout_s: float = Field(default=5.0, alias="VISIOND_RELAY_TIMEOUT_S", gt=0)
+    relay_backoff_max_s: float = Field(default=300.0, alias="VISIOND_RELAY_BACKOFF_MAX_S", ge=1)
+    relay_invite_ttl_s: float = Field(default=3600.0, alias="VISIOND_RELAY_INVITE_TTL_S", gt=0)
+    # Retired sealing keys are kept only long enough for bundles already in the
+    # relay (15-min TTL) to still open, then deleted (E-12).
+    relay_retired_key_ttl_s: float = Field(
+        default=3600.0, alias="VISIOND_RELAY_RETIRED_KEY_TTL_S", ge=900
+    )
+    relay_max_images: int = Field(default=5, alias="VISIOND_RELAY_MAX_IMAGES", ge=1, le=15)
+
     # ── capture cadence (mock/hardware frame pacing) ──────────────────────
     frame_interval_ms: int = Field(default=100, alias="VISIOND_FRAME_INTERVAL_MS")
 
@@ -155,6 +174,19 @@ class Settings(BaseSettings):
     @property
     def purge_outbox_path(self) -> Path:
         return self.visiond_root / "purge_outbox.sqlite"
+
+    @property
+    def relay_key_path(self) -> Path:
+        """Door sealing keypair — on the encrypted enrollment volume (ADR-0016 §3)."""
+        return self.enrollment_root / "relay" / "door_key.json"
+
+    @property
+    def relay_enabled(self) -> bool:
+        return bool(self.relay_base_url and self.relay_device_token)
+
+    @property
+    def relay_invite_base_url(self) -> str:
+        return (self.relay_public_url or self.relay_base_url).rstrip("/")
 
     @property
     def host(self) -> str:

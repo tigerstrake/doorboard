@@ -1,0 +1,35 @@
+{
+  "$defs": {
+    "Base64Url": {
+      "maxLength": 1400000,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One AES-256-GCM item: the manifest (index 0) or a photo (index 1..N).\n\n``aad`` is not transmitted \u2014 both sides recompute it from\n``bundle_id || \":\" || door_key_id || \":\" || index`` so a tampered index or a\nbundle transplanted from another door fails authentication (ADR-0016 \u00a72).",
+  "properties": {
+    "ciphertext": {
+      "$ref": "#/$defs/Base64Url",
+      "description": "GCM ciphertext with appended 16-byte tag"
+    },
+    "index": {
+      "maximum": 16,
+      "minimum": 0,
+      "title": "Index",
+      "type": "integer"
+    },
+    "nonce": {
+      "$ref": "#/$defs/Base64Url",
+      "description": "12-byte GCM nonce, base64url"
+    }
+  },
+  "required": [
+    "index",
+    "nonce",
+    "ciphertext"
+  ],
+  "title": "SealedItem",
+  "type": "object"
+}

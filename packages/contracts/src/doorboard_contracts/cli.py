@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Iterable
 from datetime import date, datetime
 from enum import StrEnum
@@ -12,6 +13,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel
 
+from doorboard_contracts.enrollment_relay import RELAY_MODELS, SEALED_PLAINTEXT_MODELS
 from doorboard_contracts.events import (
     EVENT_MODELS,
     EVENT_TYPE_TO_MODEL,
@@ -42,6 +44,9 @@ def export_schemas(output_dir: Path = SCHEMA_DIR) -> None:
     _write_json(output_dir / "doorboard-event.schema.json", event_json_schema())
     _write_json(output_dir / "error-envelope.schema.json", ErrorEnvelope.model_json_schema())
     _write_json(output_dir / "health-payload.schema.json", HealthPayload.model_json_schema())
+    for relay_model in RELAY_MODELS:
+        filename = "enrollment-relay-" + _kebab(relay_model.__name__) + ".schema.json"
+        _write_json(output_dir / filename, relay_model.model_json_schema())
     for event_model in EVENT_MODELS:
         event_type = _event_type(event_model)
         filename = event_type.replace(".", "-") + ".schema.json"
@@ -58,6 +63,10 @@ def export_fixtures(output_dir: Path = FIXTURE_DIR) -> None:
 def generate_ts(output_path: Path = TS_TYPES_PATH) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(_render_ts(), encoding="utf-8")
+
+
+def _kebab(name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "-", name).lower()
 
 
 def _event_type(model: type[BaseEvent]) -> str:
@@ -190,6 +199,11 @@ def _render_ts() -> str:
     ]
     for model in _payload_models():
         sections.extend(_render_model_interface(model))
+        sections.append("")
+    # Remote-enrollment relay API models (ADR-0016 E-13) — not events, but
+    # shared verbatim between the Vercel relay and the Pi.
+    for relay_model in (*SEALED_PLAINTEXT_MODELS, *RELAY_MODELS):
+        sections.extend(_render_model_interface(relay_model))
         sections.append("")
     event_names: list[str] = []
     for event_model in EVENT_MODELS:

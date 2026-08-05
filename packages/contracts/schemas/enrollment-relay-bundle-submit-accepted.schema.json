@@ -1,0 +1,33 @@
+{
+  "$defs": {
+    "OpaqueId": {
+      "pattern": "^[a-z]{3,6}_[A-Za-z0-9]{16,32}$",
+      "type": "string"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "bundle_id": {
+      "$ref": "#/$defs/OpaqueId"
+    },
+    "expires_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "status": {
+      "const": "pending",
+      "default": "pending",
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "bundle_id",
+    "expires_at"
+  ],
+  "title": "BundleSubmitAccepted",
+  "type": "object"
+}
