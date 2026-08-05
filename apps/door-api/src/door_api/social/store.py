@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS guestbook_entries (
     id TEXT PRIMARY KEY,
     text TEXT NOT NULL,
     author_label TEXT,
+    -- Recognised enrollee who wrote this, when the door knew them (ADR-0018 §2).
+    -- NULL for an anonymous visitor, which is the unchanged default: recognition
+    -- adds attribution, it never gates writing.
+    person_id TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     ip_hash TEXT,
     session_key_hash TEXT,
@@ -51,6 +55,10 @@ CREATE TABLE IF NOT EXISTS poll_votes (
     poll_id TEXT NOT NULL,
     session_token TEXT NOT NULL,
     option_id TEXT NOT NULL,
+    -- Recognised voter (ADR-0018 §2). Attributed votes are not secret ballots,
+    -- which the owner accepted knowingly; the interface says who it is voting as
+    -- before the write so no voter is surprised afterwards (E-23).
+    person_id TEXT,
     created_at TEXT NOT NULL,
     PRIMARY KEY (poll_id, session_token)
 );
@@ -88,6 +96,8 @@ class GuestbookEntry:
     status: GuestbookStatus
     created_at: str
     deleted_at: str | None
+    # Recognised author, or None for an anonymous visitor (ADR-0018 §2).
+    person_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -162,6 +172,14 @@ class SocialStore:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_checkins_photo ON checkins(photo_recording_id)"
             )
+            # Additive columns (ADR-0018 §2): attribute a write to the recognised
+            # person. Existing rows stay NULL, i.e. anonymous, which is the honest
+            # reading -- they were written before attribution existed.
+            self._ensure_column("guestbook_entries", "person_id", "TEXT")
+            self._ensure_column("poll_votes", "person_id", "TEXT")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_guestbook_person ON guestbook_entries(person_id)"
+            )
             self._conn.commit()
 
     def _ensure_column(self, table: str, column: str, sql_type: str) -> None:
@@ -183,20 +201,31 @@ class SocialStore:
         ip_hash: str,
         session_key_hash: str,
         created_at: str,
+        person_id: str | None = None,
     ) -> None:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO guestbook_entries "
-                "(id, text, author_label, status, ip_hash, session_key_hash, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (entry_id, text, author_label, status, ip_hash, session_key_hash, created_at),
+                "(id, text, author_label, status, ip_hash, session_key_hash, created_at, "
+                " person_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    entry_id,
+                    text,
+                    author_label,
+                    status,
+                    ip_hash,
+                    session_key_hash,
+                    created_at,
+                    person_id,
+                ),
             )
             self._conn.commit()
 
     def get_guestbook_entry(self, entry_id: str) -> GuestbookEntry | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, text, author_label, status, created_at, deleted_at "
+                "SELECT id, text, author_label, status, created_at, deleted_at, person_id "
                 "FROM guestbook_entries WHERE id = ?",
                 (entry_id,),
             ).fetchone()
@@ -208,14 +237,14 @@ class SocialStore:
         with self._lock:
             if cursor_created_at is None:
                 rows = self._conn.execute(
-                    "SELECT id, text, author_label, status, created_at, deleted_at "
+                    "SELECT id, text, author_label, status, created_at, deleted_at, person_id "
                     "FROM guestbook_entries WHERE status = ? "
                     "ORDER BY created_at DESC LIMIT ?",
                     (status, limit),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    "SELECT id, text, author_label, status, created_at, deleted_at "
+                    "SELECT id, text, author_label, status, created_at, deleted_at, person_id "
                     "FROM guestbook_entries WHERE status = ? AND created_at < ? "
                     "ORDER BY created_at DESC LIMIT ?",
                     (status, cursor_created_at, limit),
@@ -261,6 +290,8 @@ class SocialStore:
             status=row[3],
             created_at=row[4],
             deleted_at=row[5],
+            # Older rows predate attribution and select as NULL, i.e. anonymous.
+            person_id=row[6] if len(row) > 6 else None,
         )
 
     # ------------------------------------------------------------------
@@ -362,15 +393,22 @@ class SocialStore:
         return row is not None
 
     def insert_vote(
-        self, *, poll_id: str, session_token: str, option_id: str, created_at: str
+        self,
+        *,
+        poll_id: str,
+        session_token: str,
+        option_id: str,
+        created_at: str,
+        person_id: str | None = None,
     ) -> bool:
         """Insert a vote. Returns False if this (poll_id, session_token) already voted."""
         with self._lock:
             try:
                 self._conn.execute(
-                    "INSERT INTO poll_votes (poll_id, session_token, option_id, created_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (poll_id, session_token, option_id, created_at),
+                    "INSERT INTO poll_votes "
+                    "(poll_id, session_token, option_id, created_at, person_id) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (poll_id, session_token, option_id, created_at, person_id),
                 )
                 self._conn.commit()
                 return True

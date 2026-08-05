@@ -245,6 +245,10 @@ class VisitorSessionSnapshot(StrictModel):
     outcomes: list[VisitorActionOutcome] = Field(
         default_factory=list[VisitorActionOutcome], max_length=16
     )
+    # Display name of the recognised person, when their consent covers attribution
+    # (ADR-0018 §2). Present so the page can disclose whose name will be attached
+    # before they write; None for an unrecognised visitor.
+    attributed_to: str | None = Field(default=None, max_length=64)
     pushed_at: UTCDateTime
 
 
@@ -263,6 +267,7 @@ class VisitorPublicSnapshot(StrictModel):
     outcomes: list[VisitorActionOutcome] = Field(
         default_factory=list[VisitorActionOutcome], max_length=16
     )
+    attributed_to: str | None = Field(default=None, max_length=64)
     pushed_at: UTCDateTime
 
 

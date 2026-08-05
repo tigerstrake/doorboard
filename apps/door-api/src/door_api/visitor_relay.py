@@ -292,6 +292,7 @@ def build_snapshot(
     poll: dict[str, Any] | None,
     poll_results: list[dict[str, Any]] | None,
     outcomes: list[VisitorActionOutcome] | None = None,
+    attributed_to: str | None = None,
 ) -> VisitorSessionSnapshot:
     """Project public session state into the ADR-0017 §2 allow-list.
 
@@ -331,5 +332,8 @@ def build_snapshot(
         poll_results=projected_results,
         # Newest last, and bounded to the contract's cap.
         outcomes=list(outcomes or [])[-16:],
+        # Disclosed so the phone can say whose name will be attached, before they
+        # write anything (ADR-0018 E-23). Only set when consent covers attribution.
+        attributed_to=attributed_to,
         pushed_at=datetime.now(UTC),
     )

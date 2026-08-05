@@ -29,6 +29,7 @@ from doorboard_contracts.events import (
     HealthStatus,
     SocialDeletionRequestedEvent,
     SocialDeletionRequestedPayload,
+    consent_covers_extended_personalisation,
 )
 from doorboard_esp32_link import Esp32Transport, WireMessage
 from doorboard_esp32_link.esp32 import uuid7_now
@@ -230,6 +231,7 @@ class DoorApiState:
                 display_name=payload.display_name,
                 profile_id=payload.profile_id,
                 trace_id=event.trace_id,
+                consent_version=payload.consent_version,
             )
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "vision.identity_expired":
@@ -424,6 +426,27 @@ class DoorApiState:
         self._push_visitor_snapshot_soon(token)
         return {"token": token, "url": url, "expires_at": expires_at, "via": via}
 
+    def attributable_person_id(self) -> str | None:
+        """The recognised person a write may be attributed to, or None.
+
+        One gate for every attribution path — guestbook, votes, check-ins — so they
+        cannot drift apart. Returns None unless somebody is currently recognised
+        **and** their consent covers attribution (ADR-0018 §2, E-25): v1/v2
+        enrollees agreed to a greeting, not to having their name attached to what
+        they write.
+
+        Fails closed in two ways worth naming: an unparseable or missing consent
+        version is not attributable, and a session restored from SQLite after a
+        restart has no consent version (it is not persisted), so writes in that
+        window are anonymous rather than optimistically attributed.
+        """
+        snapshot = self.machine.snapshot()
+        if snapshot.person_id is None:
+            return None
+        if not consent_covers_extended_personalisation(snapshot.consent_version):
+            return None
+        return snapshot.person_id
+
     # -- visitor relay (ADR-0017) ------------------------------------------
 
     def _visitor_relay_is_fresh(self) -> bool:
@@ -493,6 +516,9 @@ class DoorApiState:
             # phone is polling for — `_visitor_relay_applied` is cleared on
             # session end, so it holds only this session's results.
             outcomes=list(self._visitor_relay_applied.values()),
+            # Only when consent covers attribution, so an unattributed visitor is
+            # never told a name will be attached (ADR-0018 §2, E-23).
+            attributed_to=snapshot.display_name if self.attributable_person_id() else None,
         )
 
     def visitor_relay_apply(self, action: VisitorQueuedAction) -> VisitorActionOutcome:
@@ -525,6 +551,8 @@ class DoorApiState:
             # rather not collect them anyway.
             pseudo_ip = f"relay:{action.session_id}"
 
+            attributed = self.attributable_person_id()
+
             if action.note is not None:
                 kind = "note"
                 entry = self.social_service.create_guestbook_entry(
@@ -533,6 +561,7 @@ class DoorApiState:
                     ip=pseudo_ip,
                     session_token=token,
                     trace_id=str(uuid4()),
+                    person_id=attributed,
                 )
                 outcome = VisitorActionOutcome(
                     action_id=action.action_id, kind=kind, status="applied", entry_id=entry.id
@@ -545,6 +574,7 @@ class DoorApiState:
                     ip=pseudo_ip,
                     session_token=token,
                     trace_id=str(uuid4()),
+                    person_id=attributed,
                 )
                 outcome = VisitorActionOutcome(
                     action_id=action.action_id, kind=kind, status="applied"
@@ -683,7 +713,8 @@ app.add_middleware(
 app.include_router(
     build_social_router(
         lambda: state.social_service,
-        lambda: state.machine.snapshot().person_id,
+        # Gated, not raw: attribution requires consent that covers it (ADR-0018).
+        state.attributable_person_id,
         lambda token: state.verify_visitor_token(token).session_id,
     )
 )

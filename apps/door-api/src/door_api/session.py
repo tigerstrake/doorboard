@@ -109,6 +109,9 @@ class SessionSnapshot:
     display_name: str | None
     profile_id: str | None
     had_cached_profile: bool
+    # Which consent statement the recognised person enrolled under (ADR-0018).
+    # Gates attribution: v1/v2 enrollees agreed to a greeting only.
+    consent_version: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -118,6 +121,7 @@ class SessionSnapshot:
             "display_name": self.display_name,
             "profile_id": self.profile_id,
             "had_cached_profile": self.had_cached_profile,
+            "consent_version": self.consent_version,
         }
 
 
@@ -188,6 +192,7 @@ class SessionMachine:
     _session_id: UUID | None = field(default=None, init=False)
     _trace_id: UUID | None = field(default=None, init=False)
     _person_id: str | None = field(default=None, init=False)
+    _consent_version: str | None = field(default=None, init=False)
     _display_name: str | None = field(default=None, init=False)
     _profile_id: str | None = field(default=None, init=False)
     _had_cached_profile: bool = field(default=False, init=False)
@@ -306,6 +311,7 @@ class SessionMachine:
             state=self._state,
             person_id=self._person_id,
             display_name=self._display_name,
+            consent_version=self._consent_version,
             profile_id=self._profile_id,
             had_cached_profile=self._had_cached_profile,
         )
@@ -576,8 +582,14 @@ class SessionMachine:
         display_name: str,
         profile_id: str,
         trace_id: UUID | None = None,
+        consent_version: str | None = None,
     ) -> bool:
         """Handle a ``vision.identity_stable`` event."""
+        # Recorded before branching so it is present on the first transition as
+        # well as on later refreshes — attribution is gated on it, and a missing
+        # value fails closed to "not attributable".
+        if consent_version is not None:
+            self._consent_version = consent_version
         current = self._state
 
         if current == SessionState.IDLE:
@@ -607,6 +619,8 @@ class SessionMachine:
             self._display_name = display_name
         if profile_id is not None:
             self._profile_id = profile_id
+        if consent_version is not None:
+            self._consent_version = consent_version
 
         self._persist()
         return False

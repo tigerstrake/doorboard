@@ -411,6 +411,7 @@ export interface VisitorSessionSnapshot {
   poll?: VisitorPoll | null;
   poll_results?: Array<VisitorPollResult> | null;
   outcomes: Array<VisitorActionOutcome>;
+  attributed_to?: string | null;
   pushed_at: string;
 }
 
@@ -421,6 +422,7 @@ export interface VisitorPublicSnapshot {
   poll?: VisitorPoll | null;
   poll_results?: Array<VisitorPollResult> | null;
   outcomes: Array<VisitorActionOutcome>;
+  attributed_to?: string | null;
   pushed_at: string;
 }
 

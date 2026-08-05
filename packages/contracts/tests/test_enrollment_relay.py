@@ -210,6 +210,11 @@ def test_visitor_snapshot_is_exactly_the_binding_allow_list() -> None:
         "poll",
         "poll_results",
         "outcomes",
+        # Added deliberately by ADR-0018 §2: the page must disclose whose name a
+        # write will carry BEFORE they write it (E-23), which it cannot do without
+        # being told. It is the recognised person's own name shown back to them,
+        # not a disclosure about anyone else.
+        "attributed_to",
         "pushed_at",
     } == VISITOR_SNAPSHOT_FIELDS
 

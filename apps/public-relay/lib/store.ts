@@ -274,6 +274,7 @@ export interface StoredVisitorSnapshot {
   poll: unknown;
   poll_results: unknown;
   outcomes: unknown[];
+  attributed_to: string | null;
   pushed_at: string;
 }
 

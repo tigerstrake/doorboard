@@ -38,6 +38,7 @@ export async function GET(
     poll: snapshot.poll ?? null,
     poll_results: snapshot.poll_results ?? null,
     outcomes: snapshot.outcomes ?? [],
+    attributed_to: snapshot.attributed_to ?? null,
     pushed_at: snapshot.pushed_at,
   });
 }
