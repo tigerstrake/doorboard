@@ -12,6 +12,7 @@ import logging
 import logging.config
 
 import uvicorn
+from doorboard_observability.logging_json import json_logging_config
 from doorboard_observability.redaction import redaction_filter
 
 from door_visiond.logging_setup import get_logger
@@ -20,34 +21,14 @@ from door_visiond.settings import settings
 
 def _configure_logging() -> None:
     logging.config.dictConfig(
-        {
-            "version": 1,
-            "disable_existing_loggers": False,
-            "filters": {
+        json_logging_config(
+            "door-visiond",
+            filters={
                 # Defense in depth: also scrub at the handler for any non-visiond
                 # logger that reaches stdout (ADR-0009 E-3).
                 "biometric_redaction": {"()": lambda: redaction_filter()},
             },
-            "formatters": {
-                "json": {
-                    "()": "logging.Formatter",
-                    "fmt": (
-                        '{"time":"%(asctime)s","level":"%(levelname)s",'
-                        '"service":"door-visiond","logger":"%(name)s",'
-                        '"message":"%(message)s"}'
-                    ),
-                }
-            },
-            "handlers": {
-                "stdout": {
-                    "class": "logging.StreamHandler",
-                    "stream": "ext://sys.stdout",
-                    "formatter": "json",
-                    "filters": ["biometric_redaction"],
-                }
-            },
-            "root": {"level": "INFO", "handlers": ["stdout"]},
-        }
+        )
     )
     # Ensure the door_visiond tree carries the filter regardless of config order.
     get_logger("door_visiond")
