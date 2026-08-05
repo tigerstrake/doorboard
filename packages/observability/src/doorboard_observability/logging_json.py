@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Final
+from collections.abc import Iterable, Mapping
+from typing import Any, Final, cast
 
 # Attributes a vanilla LogRecord always carries. Anything else came from
 # ``extra=`` and is what we actually want to surface.
@@ -40,7 +41,7 @@ _STANDARD_ATTRS: Final[frozenset[str]] = frozenset(
 ) | {"message", "asctime", "taskName"}
 
 
-def _jsonable(value: Any) -> Any:
+def _jsonable(value: object) -> object:
     """Coerce a value into something ``json.dumps`` accepts.
 
     Falls back to ``repr`` rather than raising: a log line must never be the
@@ -48,10 +49,12 @@ def _jsonable(value: Any) -> Any:
     """
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
+    if isinstance(value, Mapping):
+        mapping = cast("Mapping[object, object]", value)
+        return {str(key): _jsonable(item) for key, item in mapping.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
+        members = cast("Iterable[object]", value)
+        return [_jsonable(item) for item in members]
     return repr(value)
 
 

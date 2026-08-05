@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
+import pytest
 from doorboard_observability.logging_json import JsonLogFormatter, json_logging_config
 from doorboard_observability.redaction import redaction_filter
 
 
-def _render(record: logging.LogRecord, service: str = "door-visiond") -> dict:
-    return json.loads(JsonLogFormatter(service).format(record))
+def _render(record: logging.LogRecord, service: str = "door-visiond") -> dict[str, Any]:
+    payload: dict[str, Any] = json.loads(JsonLogFormatter(service).format(record))
+    return payload
 
 
 def _record(msg: str = "event", **extra: object) -> logging.LogRecord:
@@ -128,7 +131,7 @@ def test_config_builder_wires_the_formatter_and_filters() -> None:
     assert with_filter["handlers"]["stdout"]["filters"] == ["biometric_redaction"]
 
 
-def test_config_actually_applies_end_to_end(capsys) -> None:
+def test_config_actually_applies_end_to_end(capsys: pytest.CaptureFixture[str]) -> None:
     """dictConfig accepts it and a real logger call produces parseable JSON."""
     import logging.config
 
