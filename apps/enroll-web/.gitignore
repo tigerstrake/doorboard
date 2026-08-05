@@ -1,2 +1,9 @@
+# Vercel CLI link state and pulled env — machine-local, never committed.
 .vercel
-.env*
+.env
+.env.local
+.env.*.local
+
+# The example file documents which variables are required (values empty) and is
+# committed on purpose. Listed after the rules above so it wins.
+!.env.example
