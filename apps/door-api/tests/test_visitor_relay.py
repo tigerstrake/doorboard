@@ -421,3 +421,54 @@ async def test_worker_acks_with_the_session_id_the_relay_needs(
     assert acked["session_id"] == snapshot.session_id
     assert acked["status"] == "applied"
     assert set(acked) >= set(VisitorActionOutcome.model_fields) | {"session_id"}
+
+
+def test_snapshot_republishes_applied_outcomes(relay_state: Any) -> None:
+    """A push replaces the relay's snapshot, so it must carry the receipts.
+
+    Regression: the first live run applied both writes correctly but the phone
+    never saw a confirmation, because each 2-second push overwrote the outcomes
+    the relay had folded in on ack. door-api is the authority on what it applied,
+    so every push republishes the full set.
+    """
+    client = TestClient(app)
+    _issue_token(relay_state, client)
+    snapshot = relay_state.visitor_relay_snapshot()
+    assert snapshot is not None
+    assert snapshot.outcomes == []
+
+    action = VisitorQueuedAction(
+        action_id=new_action_id(),
+        session_id=snapshot.session_id,
+        submitted_at=snapshot.pushed_at,
+        note=VisitorNoteAction(text="receipt please"),
+    )
+    outcome = relay_state.visitor_relay_apply(action)
+    assert outcome.status == "applied"
+
+    republished = relay_state.visitor_relay_snapshot()
+    assert republished is not None
+    assert [o.action_id for o in republished.outcomes] == [action.action_id]
+    assert republished.outcomes[0].entry_id == outcome.entry_id
+
+
+def test_outcomes_are_dropped_when_the_session_ends(relay_state: Any) -> None:
+    """One visitor's receipts must not appear in the next visitor's snapshot."""
+    client = TestClient(app)
+    _issue_token(relay_state, client)
+    snapshot = relay_state.visitor_relay_snapshot()
+    assert snapshot is not None
+    relay_state.visitor_relay_apply(
+        VisitorQueuedAction(
+            action_id=new_action_id(),
+            session_id=snapshot.session_id,
+            submitted_at=snapshot.pushed_at,
+            note=VisitorNoteAction(text="first visitor"),
+        )
+    )
+    assert relay_state.visitor_relay_snapshot().outcomes  # type: ignore[union-attr]
+
+    client.post("/doorpad/session/end")
+    assert relay_state._visitor_relay_applied == {}
+    # And with no live token there is nothing published at all.
+    assert relay_state.visitor_relay_snapshot() is None

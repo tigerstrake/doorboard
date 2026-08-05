@@ -488,6 +488,11 @@ class DoorApiState:
             expires_at=datetime.fromtimestamp(claims.expires_at, tz=UTC),
             poll=poll_payload,
             poll_results=results,
+            # Every outcome applied for this session. A push replaces the relay's
+            # snapshot, so leaving these out would wipe the receipt the visitor's
+            # phone is polling for — `_visitor_relay_applied` is cleared on
+            # session end, so it holds only this session's results.
+            outcomes=list(self._visitor_relay_applied.values()),
         )
 
     def visitor_relay_apply(self, action: VisitorQueuedAction) -> VisitorActionOutcome:

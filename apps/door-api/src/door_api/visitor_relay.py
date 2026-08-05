@@ -291,11 +291,18 @@ def build_snapshot(
     expires_at: datetime,
     poll: dict[str, Any] | None,
     poll_results: list[dict[str, Any]] | None,
+    outcomes: list[VisitorActionOutcome] | None = None,
 ) -> VisitorSessionSnapshot:
     """Project public session state into the ADR-0017 §2 allow-list.
 
     Every field is named explicitly. Adding one here is a deliberate, reviewable
     act — which is the whole point (E-15).
+
+    ``outcomes`` must carry every outcome door-api has produced for this session,
+    not just new ones: a push replaces the relay's stored snapshot wholesale, so
+    omitting them would erase the receipts a visitor's phone is waiting on. This
+    service is the authority on what it applied; the relay's own fold-on-ack is
+    only there to make the confirmation appear before the next push.
     """
     projected_poll: VisitorPoll | None = None
     if poll is not None:
@@ -322,6 +329,7 @@ def build_snapshot(
         expires_at=expires_at.astimezone(UTC),
         poll=projected_poll,
         poll_results=projected_results,
-        outcomes=[],
+        # Newest last, and bounded to the contract's cap.
+        outcomes=list(outcomes or [])[-16:],
         pushed_at=datetime.now(UTC),
     )

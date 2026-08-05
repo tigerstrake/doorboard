@@ -3,7 +3,18 @@
 .env
 .env.local
 .env.*.local
+.env*
+
+# Vendor documentation installed by the Upstash marketplace integration
+# (`vercel integration add`). Regenerable third-party material, not project
+# source; ADR-0016/0017 and the READMEs are the reference for this app.
+.agents/
+.claude/
+skills-lock.json
 
 # The example file documents which variables are required (values empty) and is
-# committed on purpose. Listed after the rules above so it wins.
+# committed on purpose. This negation must stay LAST: `vercel link` and
+# `vercel integration add` append `.env*` to whichever .gitignore they run
+# beside, and for gitignore the last matching pattern wins. If a .env.example
+# ever stops being tracked, check whether the CLI appended below this line.
 !.env.example
