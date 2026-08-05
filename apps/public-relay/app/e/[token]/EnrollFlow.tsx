@@ -496,7 +496,7 @@ export default function EnrollFlow({ token }: { token: string }) {
       {step === "done" ? (
         <>
           <h1>{statusReason ? "Not quite" : "You're enrolled"}</h1>
-          {statusReason ? (
+          {statusReason && !statusReason.startsWith("profile_reassigned") ? (
             <div className="notice warn">
               <p>{outcomeMessage(statusReason)}</p>
             </div>
@@ -506,6 +506,13 @@ export default function EnrollFlow({ token }: { token: string }) {
                 The door has your face templates and will greet you by name. Your photos were deleted
                 after processing.
               </p>
+              {statusReason?.startsWith("profile_reassigned") ? (
+                <p style={{ marginBottom: 0 }}>
+                  Someone already had the colour you picked, so the door gave you{" "}
+                  <strong>{reassignedColourName(statusReason)}</strong> instead — each person needs a
+                  different light so the door can tell you apart.
+                </p>
+              ) : null}
             </div>
           )}
           <p className="footnote">
@@ -533,7 +540,9 @@ async function pollUntilSettled(
       const body = (await resp.json()) as { status: string; reason: string | null };
 
       if (body.status === "enrolled") {
-        setStatusReason(null);
+        // A reason on success means something worth telling them (a reassigned
+        // colour), not a failure — the done screen decides which box to show.
+        setStatusReason(body.reason ?? null);
         setStep("done");
         return;
       }
@@ -570,6 +579,12 @@ function uploadErrorMessage(code: string | undefined): string {
   }
 }
 
+/** "profile_reassigned:green_pulse" -> "Green". */
+function reassignedColourName(reason: string): string {
+  const id = reason.split(":", 2)[1] ?? "";
+  return PROFILES.find((entry) => entry.id === id)?.name ?? "another colour";
+}
+
 function outcomeMessage(reason: string): string {
   switch (reason) {
     case "quality_too_low":
@@ -590,7 +605,13 @@ function outcomeMessage(reason: string): string {
       return "The door did not collect your photos in time. It may be offline — the encrypted copy is deleted automatically. Try again later.";
     case "bundle_expired":
       return "The encrypted copy expired before the door collected it. Try again while the door is online.";
+    case "no_profile_available":
+      return "Every light colour is already taken by someone enrolled. Ask the household admin to free one up.";
+    case "too_many_images":
+      return "That was more photos than this invitation allows. Ask for a fresh QR code.";
+    case "internal_error":
+      return "The door hit an unexpected error saving your enrolment. Nothing was saved — ask the household admin to check the doorboard logs, then try again.";
     default:
-      return "Enrolment did not complete. Ask the household admin to check the doorboard, then try again.";
+      return `Enrolment did not complete (${reason}). Nothing was saved. Show this to the household admin.`;
   }
 }

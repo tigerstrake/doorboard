@@ -37,6 +37,7 @@ from door_visiond.enrollment import (
     EnrollmentStore,
     InviteConsumption,
     InviteUnusableError,
+    NoProfileAvailableError,
     ProfileSpec,
     hash_invite_secret,
 )
@@ -111,6 +112,12 @@ class EnrollResult:
     person_id: str
     embeddings_created: int
     quality: list[float]
+    # The profile actually assigned, and whether it differs from what was asked
+    # for. Two people wanting the same colour is ordinary: the second gets the
+    # next free catalogue entry, and the enrollee is told rather than left to
+    # discover it (ADR-0009 §1 keeps profile_id unique per person).
+    profile_id: str = ""
+    profile_reassigned: bool = False
 
 
 class VisiondService:
@@ -518,6 +525,8 @@ class VisiondService:
             person_id=person_id,
             embeddings_created=len(embeddings),
             quality=qualities,
+            profile_id=self._store.last_assigned_profile,
+            profile_reassigned=self._store.last_profile_was_reassigned,
         )
 
     def unenroll(self, person_id: str) -> dict[str, object]:
@@ -720,6 +729,10 @@ class VisiondService:
                 ),
                 invite=invite,
             )
+        except NoProfileAvailableError:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="failed", reason="no_profile_available"
+            )
         except InviteUnusableError as exc:
             return PickupAck(bundle_id=bundle.bundle_id, outcome="rejected", reason=exc.reason)
         except StaleConsentError:
@@ -747,7 +760,13 @@ class VisiondService:
                 "embeddings": result.embeddings_created,
             },
         )
-        return PickupAck(bundle_id=bundle.bundle_id, outcome="enrolled")
+        return PickupAck(
+            bundle_id=bundle.bundle_id,
+            outcome="enrolled",
+            # Tells the phone their colour was taken so it can say so, rather than
+            # letting them find out from the doorboard later.
+            reason=f"profile_reassigned:{result.profile_id}" if result.profile_reassigned else None,
+        )
 
     def relay_status(self) -> dict[str, object]:
         if not self._settings.relay_enabled:

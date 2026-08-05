@@ -29,6 +29,26 @@ logger = get_logger("door_visiond.enrollment")
 
 _BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
+# The effects catalogue (T-103), mirroring the choices the enrollment surfaces
+# offer. `profile.profile_id` is UNIQUE (ADR-0009 §1) so each person gets a
+# distinguishable light — but two people picking the same colour must not be an
+# error, so a taken choice is reassigned to the next free entry rather than
+# rejected. Ids stay inside this catalogue so the ESP32 and UI always receive one
+# they recognise; inventing `blue_wave_2` would produce an unknown effect id.
+PROFILE_CATALOG: tuple[tuple[str, str], ...] = (
+    ("warm_amber", "#ffb300"),
+    ("blue_wave", "#3a86ff"),
+    ("green_pulse", "#3ddc84"),
+    ("violet_dusk", "#9b5de5"),
+    ("coral_glow", "#ff6b5e"),
+    ("cool_white", "#e8eef5"),
+)
+
+
+class NoProfileAvailableError(Exception):
+    """Every entry in the effects catalogue is already assigned."""
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS person (
     person_id        TEXT PRIMARY KEY,
@@ -187,6 +207,9 @@ class EnrollmentStore:
         self._configure(self._conn)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        # Set by enroll() so callers can tell the enrollee their colour changed.
+        self.last_assigned_profile: str = ""
+        self.last_profile_was_reassigned: bool = False
         logger.info("enrollment_db_opened", extra={"path": str(db_path)})
 
     @staticmethod
@@ -255,10 +278,12 @@ class EnrollmentStore:
                             now,
                         ),
                     )
+                assigned = self._allocate_profile_locked(profile)
                 self._conn.execute(
                     "INSERT INTO profile (person_id, profile_id, color, sound) VALUES (?, ?, ?, ?)",
-                    (person_id, profile.profile_id, profile.color, profile.sound),
+                    (person_id, assigned.profile_id, assigned.color, assigned.sound),
                 )
+                reassigned = assigned.profile_id != profile.profile_id
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
@@ -266,9 +291,32 @@ class EnrollmentStore:
 
         logger.info(
             "person_enrolled",
-            extra={"person_id": person_id, "embeddings": len(embeddings)},
+            extra={
+                "person_id": person_id,
+                "embeddings": len(embeddings),
+                "profile_id": assigned.profile_id,
+                "profile_reassigned": reassigned,
+            },
         )
+        self.last_assigned_profile = assigned.profile_id
+        self.last_profile_was_reassigned = reassigned
         return person_id
+
+    def _allocate_profile_locked(self, preferred: ProfileSpec) -> ProfileSpec:
+        """Resolve a free profile id. Caller holds the lock and an open transaction.
+
+        Two people wanting the same colour is ordinary, not exceptional: the second
+        one gets the next free entry instead of an IntegrityError. Resolved inside
+        the caller's transaction so a concurrent enrollment cannot claim the same id
+        between the check and the insert.
+        """
+        taken = {row[0] for row in self._conn.execute("SELECT profile_id FROM profile").fetchall()}
+        if preferred.profile_id not in taken:
+            return preferred
+        for profile_id, color in PROFILE_CATALOG:
+            if profile_id not in taken:
+                return ProfileSpec(profile_id=profile_id, color=color, sound=preferred.sound)
+        raise NoProfileAvailableError(f"all {len(PROFILE_CATALOG)} catalogue profiles are assigned")
 
     # ------------------------------------------------------------------
     # Arrival log (ADR-0018 §1)

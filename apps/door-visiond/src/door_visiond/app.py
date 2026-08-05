@@ -195,6 +195,8 @@ async def enroll(
         "person_id": result.person_id,
         "embeddings_created": result.embeddings_created,
         "quality": result.quality,
+        "profile_id": result.profile_id,
+        "profile_reassigned": result.profile_reassigned,
     }
 
 
