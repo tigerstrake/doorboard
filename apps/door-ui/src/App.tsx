@@ -21,6 +21,7 @@ import type {
   PresenceLabel,
 } from "@doorboard/contracts";
 import { ApproachGreeting } from "./ApproachGreeting";
+import { AttributionNotice } from "./AttributionNotice";
 import { WallboardVisitorMode } from "./wallboard/WallboardVisitorMode";
 import {
   presenceFixture,
@@ -231,6 +232,8 @@ interface DoorApiSnapshot {
     state?: SessionState;
     session_id?: string | null;
     display_name?: string | null;
+    /** Recognised person whose name writes will carry (ADR-0018 E-23). */
+    attributed_to?: string | null;
     profile_id?: string | null;
   };
   config?: { max_recording_s?: number };
@@ -377,6 +380,9 @@ export function App() {
   const [sessionState, setSessionState] = useState<SessionState>("IDLE");
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
   const [activeDisplayName, setActiveDisplayName] = useState<string | null>(null);
+  // Whose name the door will attach to a note or vote made here. Derived by
+  // door-api's consent gate, never by this UI (ADR-0018 E-23).
+  const [attributedTo, setAttributedTo] = useState<string | null>(null);
   const [mockSessionId, setMockSessionId] = useState<string>(() => safeRandomUUID());
   const [showSimPanel, setShowSimPanel] = useState<boolean>(DEV_TOOLS_ENABLED);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
@@ -581,6 +587,7 @@ export function App() {
       });
       if (snapshot?.session_id) setMockSessionId(snapshot.session_id);
       if (snapshot?.display_name !== undefined) setActiveDisplayName(snapshot.display_name);
+      if (snapshot?.attributed_to !== undefined) setAttributedTo(snapshot.attributed_to);
       if (snapshot?.profile_id !== undefined) setActiveProfile(snapshot.profile_id);
       const target = doorPadRouteForState(nextState);
       setDoorPadScreen(target.screen);
@@ -2691,6 +2698,8 @@ export function App() {
             <div className={`doorpad-sub-content${guestbookKeyboardOpen ? " osk-open" : ""}`}>
               <h2>Leave a Guestbook Note</h2>
               <p className="placeholder-subtext">Pick a phrase or write a short note (280 chars max)</p>
+              {/* Above the composer, so it is read before anything is written (E-23). */}
+              <AttributionNotice attributedTo={attributedTo} />
               <div className="phrase-grid">
                 {CANNED_GUESTBOOK_PHRASES.map((phrase) => (
                   <button
@@ -2775,6 +2784,8 @@ export function App() {
               {!currentPoll && <p>No poll is running right now — check back later!</p>}
               {currentPoll && (
                 <>
+                  {/* An attributed vote is not a secret ballot; say so first (E-23). */}
+                  <AttributionNotice attributedTo={attributedTo} verb="vote on" />
                   <p className="poll-q"><strong>{currentPoll.question}</strong></p>
                   {pollVoteError && <p className="poll-error">{pollVoteError}</p>}
                   <div className="poll-choices">

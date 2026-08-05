@@ -472,3 +472,63 @@ def test_outcomes_are_dropped_when_the_session_ends(relay_state: Any) -> None:
     assert relay_state._visitor_relay_applied == {}
     # And with no live token there is nothing published at all.
     assert relay_state.visitor_relay_snapshot() is None
+
+
+# -- the disclosure name reaches every surface (ADR-0018 E-23) --------------
+
+
+def test_disclosure_name_is_gated_on_consent(relay_state: Any) -> None:
+    """E-23 is only meetable if surfaces are told whose name will be attached.
+
+    Gated on the same consent check as attribution itself, so a v2 enrollee is
+    neither attributed nor told they will be.
+    """
+    client = TestClient(app)
+    _ring(client)
+
+    relay_state.machine.handle_identity_stable(
+        person_id="prs_tiger", display_name="Tiger", profile_id="warm_amber", consent_version="v2"
+    )
+    assert relay_state.attributed_display_name() is None
+
+    relay_state.machine.handle_identity_stable(
+        person_id="prs_tiger", display_name="Tiger", profile_id="warm_amber", consent_version="v3"
+    )
+    assert relay_state.attributed_display_name() == "Tiger"
+
+
+def test_every_surface_receives_the_disclosure_name(relay_state: Any) -> None:
+    """The kiosk snapshot, /session, and /visitor-session must all carry it.
+
+    Regression: the doorpad and the on-wifi visitor page attributed silently
+    because nothing told them. Checked per surface rather than once, since each
+    reads a different endpoint.
+    """
+    client = TestClient(app)
+    _ring(client)
+    relay_state.machine.handle_identity_stable(
+        person_id="prs_tiger", display_name="Tiger", profile_id="warm_amber", consent_version="v3"
+    )
+
+    # The WebSocket snapshot the doorpad and wallboard render from.
+    assert relay_state.session_snapshot_dict()["attributed_to"] == "Tiger"
+
+    # GET /session, read on kiosk load.
+    assert client.get("/session").json()["session"]["attributed_to"] == "Tiger"
+
+    # GET /visitor-session, the on-wifi visitor page's only source.
+    token = client.get("/visitor-token").json()["token"]
+    assert (
+        client.get("/visitor-session", params={"token": token}).json()["attributed_to"] == "Tiger"
+    )
+
+
+def test_no_disclosure_name_without_recognition(relay_state: Any) -> None:
+    """E-25: the unrecognised path is byte-identical to before."""
+    client = TestClient(app)
+    _ring(client)
+
+    assert relay_state.attributed_display_name() is None
+    assert relay_state.session_snapshot_dict()["attributed_to"] is None
+    token = client.get("/visitor-token").json()["token"]
+    assert client.get("/visitor-session", params={"token": token}).json()["attributed_to"] is None
