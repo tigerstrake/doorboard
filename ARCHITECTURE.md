@@ -49,6 +49,7 @@ REAL-TIME DOOR PLANE (hallway, medium/low trust, latency-critical)
 | ESP32 | Low | No secrets at all; profile cache holds only opaque profile IDs |
 | Public screens | Low | Anyone can touch/see. Broad status only — never GPS, calendars, private notes, diagnostics |
 | QR/PWA visitor endpoints | Low | Tokenized, rate-limited, short-lived |
+| Enrollment relay (Vercel) | **None** | Public, outside the house. Holds AEAD ciphertext and opaque ids only; no key that can open them, no route toward the Pi, no admin surface. Treated as a hostile courier by design (ADR-0016) |
 
 ## 3. Services
 
@@ -63,6 +64,7 @@ Each service has a full spec in its directory README. Every service exposes `GET
 | [door-sync](apps/door-sync/) | Pi | Upload queue Pi→NUC/NAS, backoff, dedupe, checksum-verified cleanup | Delete local media before integrity verification |
 | [control-plane-api](apps/control-plane-api/) | NUC | Event history, HA bridge, statuses, social features, integrations, notifications, config distribution | Sit in the door critical path |
 | [wallboard-worker](apps/wallboard-worker/) | NUC | Scheduled jobs: satellite passes, aircraft polling, bird summaries, collages | Run on the door Pi |
+| [enroll-web](apps/enroll-web/) | Vercel | Public phone-enrollment relay: ciphertext in, ciphertext out, 15-min TTL | Hold a decryption key; receive a name or a photo in the clear; expose an admin surface; initiate anything toward the Pi |
 | [simulator](apps/simulator/) | dev | Fake button/vision/camera/outage events for hardware-free development | — |
 | [esp32-door-controller](firmware/esp32-door-controller/) | ESP32 | Button debounce, generic <30 ms feedback, profile cache, LED/audio, knock detection, watchdog fallback | Hold secrets; wait on anything before generic feedback |
 
@@ -134,6 +136,7 @@ Button press enters visitor mode immediately; generic feedback precedes any netw
 - Deletion flows exist for messages, guestbook entries, photos, and enrollments.
 - Presence uses broad labels only (Available/Busy/DND/Sleeping/At Class/At Library/Away/Unknown); manual override outranks inference; no raw GPS anywhere.
 - Never log raw biometric data.
+- Face templates never leave the door Pi. Enrollment *photos* may cross the internet on the phone path, but only sealed to a door-held key that no intermediary has — and the relay never receives a name (ADR-0016).
 
 Any PR touching enrollment, embeddings, retention, or public display content requires `agent:claude` review before merge (ADR-0005, ADR-0008).
 

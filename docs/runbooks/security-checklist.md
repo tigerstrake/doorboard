@@ -43,6 +43,26 @@ Legend: ✅ verified in code/config now · ☐ verify at deployment (network/hos
 
 Credentials live only in `wallboard-worker` settings on the NUC. **At deployment:** allow the NUC egress only to these hosts.
 
+## Door-Pi egress: the enrollment relay (ADR-0016)
+
+Remote enrollment gives the door Pi its **only** internet egress. Everything else it does is LAN-local.
+
+| Direction | Endpoint | Auth | Carries |
+|---|---|---|---|
+| Pi → relay | `VISIOND_RELAY_BASE_URL` only, HTTPS enforced in code | `VISIOND_RELAY_DEVICE_TOKEN` bearer | door public key, consent text, invite id + `sha256(secret)`, acks |
+| Pi → relay | same origin, outbound poll | same | collects AEAD ciphertext |
+| relay → Pi | **none** | — | there is no inbound path; no port, no tunnel |
+
+**At deployment:**
+
+- ☐ Allow the door Pi egress to that one origin (443) and nothing else. `HttpRelayTransport` refuses any non-HTTPS base URL except loopback, but the firewall should not rely on that.
+- ☐ Confirm `RELAY_DEVICE_TOKEN` on Vercel and `VISIOND_RELAY_DEVICE_TOKEN` on the Pi match, and that neither is in git (`.env.example` only).
+- ☐ Confirm the relay's environment contains **no** private key and no door-reachable credential. It should hold exactly two secrets: the device token and the Upstash pair (ADR-0016 E-9).
+- ☐ Confirm `GET /api/health` on the deployment reports `door_checked_in: true` and that production is publicly reachable without a Vercel auth bypass (a protected production deployment silently breaks every phone).
+- ☐ Leave `VISIOND_RELAY_BASE_URL` unset on any door that should not offer phone enrollment. Unset means the poller never starts and no sealing key is generated.
+
+**Blast radius if the relay is fully compromised** (documented so it can be checked against reality, not re-derived under pressure): the attacker gets AEAD ciphertext they hold no key for, plus timing metadata. They cannot read a face or a name, and cannot enroll anyone — the Pi re-verifies every invite against its own database (E-11). They *can* deny service, and they *can* serve malicious JavaScript to someone enrolling during the compromise; that residual risk is accepted and disclosed in the consent statement, with the at-door flow as the alternative (ADR-0016 §9).
+
 ## Stolen-Pi drill ⏸ (deferred — requires hardware; runbook ready)
 
 Procedure to execute on real hardware (documents the T-301 threat model against the built system):

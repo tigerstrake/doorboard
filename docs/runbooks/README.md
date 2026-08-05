@@ -19,3 +19,4 @@ Operational procedures, written in M7 (task T-703) but stubbed as soon as the su
 ## Additional
 
 - [enrollment-encrypted-volume.md](enrollment-encrypted-volume.md) — LUKS enrollment volume with key-on-NUC (ADR-0009 §6, T-302) (**Draft — pending on-device validation**)
+- [remote-enrollment-relay.md](remote-enrollment-relay.md) — phone-enrollment relay: health checks, symptoms, sealing-key rotation, disabling it (ADR-0016, T-306) (**Draft — pending on-device validation**)
