@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from "react";
 import { enrollmentApi, EnrolledPerson } from "./enrollmentApi";
 import { LiveVideoPreview } from "@doorboard/ui-kit";
 import { AdminRemoteEnrollPanel } from "./AdminRemoteEnrollPanel";
+import { AdminVisitLogPanel } from "./AdminVisitLogPanel";
 
 const ADMIN_TOKEN_KEY = "doorboard_admin_social_token";
 
@@ -573,6 +574,9 @@ export function AdminEnrollmentPanel() {
         privacyEnabled={privacyEnabled}
         onEnrollmentLikely={() => loadData(token)}
       />
+
+      {/* Arrival history (ADR-0018 §1). Admin-only; never a public surface. */}
+      <AdminVisitLogPanel token={token} />
     </div>
   );
 }

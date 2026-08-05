@@ -110,6 +110,22 @@ export interface RelayStatus {
   last_success_at?: string | null;
 }
 
+/** One arrival, from door-visiond's visit log (ADR-0018 §1). Admin-only. */
+export interface Visit {
+  visit_id: string;
+  person_id: string;
+  display_name: string;
+  arrived_at: string;
+  last_seen_at: string;
+}
+
+export interface VisitCount {
+  person_id: string;
+  display_name: string;
+  visits: number;
+  last_seen_at: string;
+}
+
 export const enrollmentApi = {
   async getPeople(token: string): Promise<EnrolledPerson[]> {
     return request<EnrolledPerson[]>(VISIOND_BASE_URL, "/people", { adminToken: token });
@@ -180,6 +196,28 @@ export const enrollmentApi = {
 
   async getRelayStatus(token: string): Promise<RelayStatus> {
     return request<RelayStatus>(VISIOND_BASE_URL, "/relay-status", { adminToken: token });
+  },
+
+  /**
+   * Arrival history. Admin-only by design — this is presence data, and ADR-0005 §5
+   * keeps visitor logs off public routes (ADR-0018 E-24).
+   */
+  async getVisits(token: string, personId?: string): Promise<Visit[]> {
+    const query = personId ? `?person_id=${encodeURIComponent(personId)}` : "";
+    return request<Visit[]>(VISIOND_BASE_URL, `/visits${query}`, { adminToken: token });
+  },
+
+  async getVisitCounts(token: string): Promise<VisitCount[]> {
+    return request<VisitCount[]>(VISIOND_BASE_URL, "/visits/counts", { adminToken: token });
+  },
+
+  /** Forget arrival history without unenrolling. Unenroll already cascades. */
+  async purgeVisits(token: string, personId?: string): Promise<{ deleted: number }> {
+    const query = personId ? `?person_id=${encodeURIComponent(personId)}` : "";
+    return request<{ deleted: number }>(VISIOND_BASE_URL, `/visits/purge${query}`, {
+      method: "POST",
+      adminToken: token,
+    });
   },
 
   async captureSnapshot(token: string): Promise<Blob> {
