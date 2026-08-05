@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
-
 from dataclasses import astuple
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from door_visiond.embedder import MockEmbedder, sentinel_embedding
 from door_visiond.enrollment import EnrollmentStore, ProfileSpec
 from door_visiond.matcher import Matcher

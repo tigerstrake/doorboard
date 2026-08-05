@@ -12,6 +12,7 @@
       "monotonic_ms": 100,
       "payload": {
         "confidence": 0.93,
+        "consent_version": null,
         "display_name": "Alice",
         "expires_at": "2026-07-04T12:00:02.600000Z",
         "expires_at_monotonic_ms": 2600,
@@ -55,6 +56,7 @@
       "monotonic_ms": 300,
       "payload": {
         "confidence": 0.93,
+        "consent_version": null,
         "display_name": "Bob",
         "expires_at": "2026-07-04T12:00:02.800000Z",
         "expires_at_monotonic_ms": 2800,
