@@ -159,7 +159,11 @@ class SessionConfig:
 
     # Short-lived visitor QR tokens.  If unset, a per-process boot secret is used.
     visitor_token_secret: str = ""
-    visitor_token_ttl_s: float = 300.0
+    # Matches inactivity_timeout_s: with the DoorPad allowing ten minutes to write
+    # a message, a five-minute token made the token the thing that cut the visitor
+    # off instead. The exposure is one session's scoped capability (read snapshot,
+    # leave a note, vote, request deletion), rate-limited, for five extra minutes.
+    visitor_token_ttl_s: float = 600.0
     visitor_public_base_url: str = "http://door.local"
 
     # Public visitor relay (ADR-0017).  The LAN base URL above cannot load on a
@@ -269,7 +273,7 @@ class SessionConfig:
                 "DOOR_API_VISITOR_TOKEN_SECRET",
                 secrets.token_urlsafe(32),
             ),
-            visitor_token_ttl_s=_env_float("DOOR_API_VISITOR_TOKEN_TTL_S", 300.0),
+            visitor_token_ttl_s=_env_float("DOOR_API_VISITOR_TOKEN_TTL_S", 600.0),
             visitor_public_base_url=os.environ.get(
                 "DOOR_API_VISITOR_PUBLIC_BASE_URL",
                 "http://door.local",

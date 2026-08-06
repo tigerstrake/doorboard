@@ -39,12 +39,13 @@ describe("doorpadResetTimeoutMs", () => {
     }
   });
 
-  it("outlives the visitor token, so the token decides the link's lifetime", () => {
-    // door-api's visitor_token_ttl_s is 300s. If this timer were the shorter of the
-    // two, the doorboard would revoke a link the token still considered valid —
-    // which is exactly the failure this module was written to end.
-    const VISITOR_TOKEN_TTL_MS = 300_000;
-    expect(VISITOR_WRITING_TIMEOUT_MS).toBeGreaterThan(VISITOR_TOKEN_TTL_MS);
+  it("is not shorter than door-api's visitor token TTL", () => {
+    // Three limits govern this link: this timer, visitor_token_ttl_s and
+    // inactivity_timeout_s. The shortest is the one a visitor feels, so they are kept
+    // equal. If this timer were the shortest, the doorboard would again revoke a
+    // link the token still considered valid.
+    const VISITOR_TOKEN_TTL_MS = 600_000;
+    expect(VISITOR_WRITING_TIMEOUT_MS).toBeGreaterThanOrEqual(VISITOR_TOKEN_TTL_MS);
   });
 
   it("still resets an abandoned doorboard promptly", () => {

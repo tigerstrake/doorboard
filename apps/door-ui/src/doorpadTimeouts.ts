@@ -16,8 +16,9 @@
  * at all.
  *
  * Ten minutes is a cap, not an expectation — the session ends as soon as the note
- * is submitted. It is deliberately longer than the visitor token's 5-minute TTL so
- * that the token, not this timer, decides how long the link lives.
+ * is submitted. It matches door-api's visitor_token_ttl_s and inactivity_timeout_s,
+ * both 600s: three separate limits govern this link, and the shortest of them is the
+ * one a visitor actually feels, so they are kept equal on purpose.
  */
 export const DOORPAD_IDLE_TIMEOUT_MS = 30_000;
 export const VISITOR_WRITING_TIMEOUT_MS = 10 * 60_000;
