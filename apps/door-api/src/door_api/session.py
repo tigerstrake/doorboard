@@ -404,6 +404,28 @@ class SessionMachine:
         self._last_transition_mono_ms = now_ms
         self.metrics.transitions += 1
 
+        # Every accepted transition, with what caused it.
+        #
+        # Only *rejected* transitions were logged before, which made a live door
+        # undiagnosable: a visitor session was observed ending 31s after a ring
+        # without passing through UNANSWERED_TIMEOUT, and the journal could not say
+        # which trigger did it — the scheduler and the contracts table both allow
+        # the message path, so the answer was only ever going to be in a log line
+        # that did not exist.
+        #
+        # Uses extra= rather than this module's json.dumps-into-the-message style so
+        # the fields arrive as real fields (JsonLogFormatter emits extras), which is
+        # what makes `trigger` filterable instead of buried in an escaped string.
+        logger.info(
+            "session_transition",
+            extra={
+                "from_state": from_state.value,
+                "to_state": to_state.value,
+                "trigger": trigger,
+                "session_id": str(self._session_id),
+            },
+        )
+
         # Emit session.state_changed event.
         assert self._session_id is not None
         assert self._trace_id is not None
