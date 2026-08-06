@@ -3,21 +3,22 @@
 # Install the door-Pi systemd units for a repo-in-home deployment.
 #
 # The units in infra/systemd/ describe the intended production layout: a
-# `doorboard` system user, the repo at /opt/doorboard, one virtualenv at
-# .venv, and configuration in /etc/doorboard/doorboard.env. The door Pi has
-# never been built that way -- it runs from a login user's home with two
-# virtualenvs and the .env inside the working tree -- so `install-systemd`
-# cannot be used there and nothing was installed at all: every service ran as a
-# process orphaned from an SSH session, none survived a reboot, and door-api's
-# stdout went to a closed socket so its logs were discarded outright.
+# `doorboard` system user, the repo at /opt/doorboard, one virtualenv at .venv,
+# and configuration in /etc/doorboard/doorboard.env. The door Pi has never been
+# built that way -- it runs from a login user's home with two virtualenvs and the
+# .env inside the working tree -- so `install-systemd` refuses it outright.
 #
-# This script installs the same canonical units and layers a drop-in per unit
-# that redirects user, paths and virtualenv at the real deployment. The canonical
-# files stay the single description of the service; the drop-ins carry only what
-# differs, so a change to ordering or hardening still applies here.
+# It had been adapted by hand on the Pi instead: units existed and ran everything
+# except door-visiond, but only on that machine's disk, with no record here of
+# what they contained. Reinstalling from the repo therefore meant *replacing* a
+# working configuration nobody could review. This script exists so the adaptation
+# is written down: the canonical units stay the single description of each
+# service, and one drop-in per unit carries only what differs -- user, paths,
+# virtualenv, config source -- so changes to ordering or hardening still apply
+# here.
 #
 # Migrating the Pi to /opt is the better end state and this does not replace it.
-# It stops the door from depending on shell sessions in the meantime.
+# It makes the current deployment reproducible in the meantime.
 #
 # Usage: sudo bash deploy/pi-door/install-home-layout [repo-root] [run-user]
 set -euo pipefail
@@ -104,11 +105,21 @@ python_service door-visiond.service "$visiond_venv" door_visiond
 write_dropin doorboard-storage-ready.service "ExecStart=
 ExecStart=/bin/bash -c 'set -a; . $env_file; set +a; exec $venv/bin/python $repo/scripts/check-door-storage'"
 
-# Binds 0.0.0.0, unlike the canonical unit's 127.0.0.1: the dev server this
-# replaces was started with --host 0.0.0.0, and narrowing it would quietly cut
-# off anything opening the door UI from another machine on the LAN.
+# Keeps serving through the Vite dev server, which is what this Pi has always run
+# and what the two kiosks are pointed at (http://localhost:5173/doorpad and
+# /wallboard). The canonical unit serves a built bundle from apps/door-ui/dist
+# instead, which is the better end state for a kiosk -- no HMR socket, minified,
+# far less memory -- but switching is a visible change to the door's screen and a
+# new build step on every deploy, so it is a decision to make deliberately rather
+# than a side effect of installing units. To switch: build the bundle
+# (`pnpm --filter @doorboard/door-ui build`), delete this ExecStart override, and
+# restart door-ui.
+#
+# --host 0.0.0.0 rather than the canonical 127.0.0.1 for the same reason: that is
+# how it runs today, and narrowing it would cut off anyone opening the door UI
+# from another machine on the LAN.
 write_dropin door-ui.service "ExecStart=
-ExecStart=$venv/bin/python $repo/scripts/serve_door_ui.py --directory $repo/apps/door-ui/dist --host 0.0.0.0 --port 5173"
+ExecStart=/usr/local/bin/pnpm --filter @doorboard/door-ui exec vite --host 0.0.0.0"
 
 # This Pi's mediamtx config lives on the SSD next to its recordings, not in /etc.
 mediamtx_config=/mnt/ssd/doorboard/mediamtx/mediamtx.yml
@@ -143,17 +154,22 @@ systemctl enable \
   doorboard-health-agent.timer
 
 cat <<'EOF'
-Units installed and enabled, but NOT started -- anything already running as an
-ad-hoc process still owns its port.
+Units installed and enabled. Nothing was started or restarted: a unit that is
+already active keeps running its previous ExecStart until you restart it, and a
+service still running outside systemd keeps owning its port.
 
-Migrate one service at a time, checking health between each:
+Adopt them one at a time, checking health in between (`systemctl restart` for one
+already active, `start` for one that is dead):
 
-  pkill -f 'door_sync'   && systemctl start door-sync    && curl -s localhost:8083/health
-  pkill -f 'door_media'  && systemctl start door-media   && curl -s localhost:8082/health
-  pkill -f 'door_api'    && systemctl start door-api     && curl -s localhost:8080/health
-  pkill -f 'door_visiond'&& systemctl start door-visiond && curl -s localhost:8081/health
+  systemctl restart door-sync    && curl -s localhost:8083/health
+  systemctl restart door-media   && curl -s localhost:8082/health
+  systemctl restart door-api     && curl -s localhost:8080/health
+  systemctl restart door-ui      && curl -sI localhost:5173/ | head -1
+  systemctl start   door-visiond && curl -s localhost:8081/health
+  systemctl start   doorboard-health-agent.timer
 
-door-ui serves a built bundle, so build it before starting that unit:
+Anything left running outside systemd must be stopped first, or the unit will
+fail to bind. Find it by port rather than by name:
 
-  pnpm --filter @doorboard/door-ui build
+  ss -ltnp | grep :8081
 EOF
