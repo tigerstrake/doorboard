@@ -4,3 +4,22 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=4
 CONFIG_FREERTOS_HZ=1000
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# Console on the native USB port; the Pi link keeps UART1 to itself.
+#
+# Left unset, IDF puts the console on UART0, which on the ESP32-S3 means GPIO
+# 43/44 — the same pads main.c hands to UART1 for the link (see
+# doorboard_pinout.h). Two UART peripherals on one pad is not a shared bus: the
+# log lines either corrupt the frame stream the Pi is parsing, or the console
+# disappears, depending on which peripheral attaches to the pad last. Neither is
+# a failure you would enjoy diagnosing from the far side of a door.
+#
+# The DevKitC has two USB connectors, so each stream gets its own. The onboard
+# USB-UART bridge is wired to 43/44, so it carries frames; the native
+# USB-Serial/JTAG peripheral carries the console. On the Pi that is
+# /dev/ttyACM1 for frames and /dev/ttyACM0 for logs.
+#
+# Every ESP_LOG call in main.c sits on a queue-full or generation-failed path,
+# never on the button-press happy path, so the console's write latency cannot
+# enter the button -> feedback budget.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

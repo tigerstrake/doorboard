@@ -554,7 +554,10 @@ static void configure_audio(void)
             },
         },
     };
-    ESP_ERROR_CHECK(i2s_channel_init_std_tx(s_tx_chan, &std_cfg));
+    // i2s_channel_init_std_tx() never existed; the IDF 5.x name is
+    // i2s_channel_init_std_mode(), and the channel's direction comes from
+    // i2s_new_channel() above (tx handle set, rx NULL).
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_tx_chan, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx_chan));
 }
 
