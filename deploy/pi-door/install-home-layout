@@ -135,9 +135,6 @@ ProtectHome=no
 ReadWritePaths=$repo
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=
-# The agent keeps its failure counters under /run/doorboard, which nothing else
-# creates; RuntimeDirectory makes systemd create and clean it up.
-RuntimeDirectory=doorboard
 ExecStart=
 ExecStart=$venv/bin/python $repo/scripts/doorboard-health-agent
 EOF

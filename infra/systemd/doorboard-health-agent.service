@@ -8,4 +8,15 @@ ExecStart=/opt/doorboard/.venv/bin/python /opt/doorboard/scripts/doorboard-healt
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
+# The agent restarts a unit only after three *consecutive* failed probes, and it
+# keeps that count in /run/doorboard/health-failures.json. Both halves of this are
+# required for the count to survive:
+#
+#   RuntimeDirectory alone creates the directory but systemd deletes it when the
+#   unit deactivates -- and this is a oneshot fired every 30s by the timer, so it
+#   deactivates immediately. The counters were wiped between every probe, the
+#   threshold could never be reached, and a genuinely hung service would have been
+#   noticed and then forgotten forever.
+RuntimeDirectory=doorboard
+RuntimeDirectoryPreserve=yes
 ReadWritePaths=/run/doorboard
