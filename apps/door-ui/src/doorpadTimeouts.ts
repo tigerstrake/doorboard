@@ -15,8 +15,11 @@
  * never reached UNANSWERED_TIMEOUT, so the server's own message path never opened
  * at all.
  *
- * Ten minutes is a cap, not an expectation — the session ends as soon as the note
- * is submitted. It matches door-api's visitor_token_ttl_s and inactivity_timeout_s,
+ * Ten minutes is a cap. Note that it is currently also the *only* limit: submitting
+ * a note is a social write and triggers no session transition, so the session runs
+ * to this cap rather than ending when the visitor is done. Ending early on submit
+ * would need door-api to end the session when a guestbook entry lands against it.
+ * It matches door-api's visitor_token_ttl_s and inactivity_timeout_s,
  * both 600s: three separate limits govern this link, and the shortest of them is the
  * one a visitor actually feels, so they are kept equal on purpose.
  */

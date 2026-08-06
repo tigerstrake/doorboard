@@ -99,7 +99,9 @@ class SessionConfig:
     # so it is really "how long the door waits while a visitor decides what to do".
     #
     # Ten minutes because that state is where a visitor sits while writing a note on
-    # their phone, and the DoorPad now allows the same budget
+    # their phone. It is a cap rather than a completion signal: a submitted note is a
+    # social write and causes no transition, so the session runs the full window even
+    # after the visitor has finished. The DoorPad allows the same budget
     # (VISITOR_WRITING_TIMEOUT_MS in door-ui/src/doorpadTimeouts.ts). The two must
     # agree: whichever is shorter is the real limit, and when this was 120s the
     # server cut a visitor off two and a half minutes into a message the doorboard
