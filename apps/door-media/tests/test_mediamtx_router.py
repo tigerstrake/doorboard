@@ -687,3 +687,86 @@ async def test_snapshot_returns_none_when_ffmpeg_missing(
 
     router = MediaMTXRouter(cfg)
     assert await router.snapshot() is None
+
+
+class _MjpegStream:
+    """Stdout stub that emits a scripted MJPEG byte sequence, then EOF."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+
+    async def read(self, _n: int) -> bytes:
+        return self._chunks.pop(0) if self._chunks else b""
+
+
+def _jpeg(marker: bytes) -> bytes:
+    """A minimal JPEG-framed payload: SOI, body, EOI."""
+    return b"\xff\xd8" + marker + b"\xff\xd9"
+
+
+@pytest.mark.anyio
+async def test_reader_publishes_each_frame_from_a_split_mjpeg_stream(tmp_path: Path) -> None:
+    """The frame parser must handle MJPEG arriving in arbitrary chunks.
+
+    ffmpeg writes into a pipe, so a JPEG's SOI and EOI routinely land in different
+    reads. Getting this wrong looks like recognition working intermittently, which
+    is far harder to spot than it not working at all.
+    """
+    cfg = Settings(SSD_DATA_ROOT=tmp_path)
+    router = MediaMTXRouter(cfg)
+    router._last_snapshot_request_at = time.monotonic()
+
+    first, second = _jpeg(b"AAA"), _jpeg(b"BBB")
+    stream = _MjpegStream(
+        [
+            first[:3],  # SOI split mid-marker
+            first[3:] + second[:4],  # rest of one frame plus the head of the next
+            second[4:],
+        ]
+    )
+
+    class _Proc:
+        def __init__(self) -> None:
+            self.stdout = stream
+            self.killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+        async def wait(self) -> int:
+            return 0
+
+    proc = _Proc()
+
+    async def _fake_exec(*_args: str, **_kwargs: object) -> _Proc:
+        return proc
+
+    original = asyncio.create_subprocess_exec
+    asyncio.create_subprocess_exec = _fake_exec  # type: ignore[assignment]
+    try:
+        await router._read_frames_once()
+    finally:
+        asyncio.create_subprocess_exec = original  # type: ignore[assignment]
+
+    assert router.reader_frames == 2
+    # The newest frame wins, and it is a complete JPEG.
+    assert router._latest_frame == second
+    assert proc.killed, "ffmpeg must be reaped when the reader stops"
+
+
+@pytest.mark.anyio
+async def test_a_stale_cached_frame_is_not_served(tmp_path: Path) -> None:
+    """A frame older than max_age_s describes a doorway that has moved on.
+
+    Serving it would make the door greet someone who has already left, and would
+    hide a dead reader behind a plausible-looking image.
+    """
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, DOOR_MEDIA_SNAPSHOT_MAX_AGE_S=0.5)
+    router = MediaMTXRouter(cfg)
+
+    router._latest_frame = _jpeg(b"fresh")
+    router._latest_frame_at = time.monotonic()
+    assert router._fresh_frame() == _jpeg(b"fresh")
+
+    router._latest_frame_at = time.monotonic() - 5.0
+    assert router._fresh_frame() is None

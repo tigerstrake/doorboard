@@ -12,11 +12,14 @@ enrolled set is small (a household), so this is trivially fast.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 
 from door_visiond.embedding import Embedding
 from door_visiond.enrollment import EnrolledPerson
+
+logger = logging.getLogger("door_visiond.matcher")
 
 
 @dataclass(frozen=True)
@@ -89,15 +92,36 @@ class Matcher:
 
         best: _EnrolledVector | None = None
         best_score = -1.0
+        comparable = 0
         for candidate in self._vectors:
             if len(candidate.unit) != len(query):
+                # A template from a different model dimension can never match. It
+                # was skipped silently, which would present as "recognition simply
+                # does not work" with no way to tell from the outside.
                 continue
+            comparable += 1
             score = sum(a * b for a, b in zip(candidate.unit, query, strict=True))
             if score > best_score:
                 best_score = score
                 best = candidate
 
         if best is None or best_score < self._threshold:
+            # Log the near miss. A failed match was previously indistinguishable
+            # from "no face was ever looked at": the door greeted nobody for a day
+            # with an enrolled person in front of it, and nothing recorded whether
+            # the score was 0.61 (raise-the-lid territory) or 0.03 (the templates
+            # are unusable). Only the scalar score and the candidate's person_id go
+            # out — never the embedding, which ADR-0009 E-3 forbids logging.
+            logger.info(
+                "match_below_threshold",
+                extra={
+                    "best_score": round(best_score, 4) if best is not None else None,
+                    "threshold": self._threshold,
+                    "candidates": len(self._vectors),
+                    "comparable_candidates": comparable,
+                    "best_person_id": best.person_id if best is not None else None,
+                },
+            )
             return None
         return MatchResult(
             person_id=best.person_id,

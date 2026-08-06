@@ -121,6 +121,45 @@ class Settings(BaseSettings):
         le=31,
     )
 
+    # Continuous frame reader for the recognition path.
+    #
+    # Spawning one ffmpeg per snapshot costs a process start, an RTSP handshake and
+    # a wait for the next keyframe: measured at ~2.0s per frame on the door Pi. That
+    # made door-visiond run at 0.5 fps against an 11ms inference budget, so a person
+    # walking up contributed a couple of frames and recognition never stabilised —
+    # the face path was spending 99.5% of its time waiting for ffmpeg to start.
+    #
+    # Instead one long-lived ffmpeg decodes the same RTSP stream to MJPEG and the
+    # newest frame is kept in memory, so /snapshot answers from RAM. Still a
+    # read-only consumer: the publisher and MediaMTX recording are untouched.
+    #
+    # ``reader_fps`` bounds the decode cost; there is no point producing frames
+    # faster than visiond's frame_interval_ms consumes them. ``max_age_s`` is how
+    # stale a cached frame may be before /snapshot falls back to a one-shot grab —
+    # generous enough to cover a reader restart, short enough that recognition never
+    # sees a face that has already walked away. ``idle_stop_s`` stops the reader when
+    # nothing is asking, so privacy mode and an empty doorway cost no CPU.
+    snapshot_reader_enabled: bool = Field(
+        default=True,
+        alias="DOOR_MEDIA_SNAPSHOT_READER_ENABLED",
+    )
+    snapshot_reader_fps: float = Field(
+        default=10.0,
+        alias="DOOR_MEDIA_SNAPSHOT_READER_FPS",
+        gt=0,
+        le=30,
+    )
+    snapshot_max_age_s: float = Field(
+        default=1.0,
+        alias="DOOR_MEDIA_SNAPSHOT_MAX_AGE_S",
+        gt=0,
+    )
+    snapshot_reader_idle_stop_s: float = Field(
+        default=30.0,
+        alias="DOOR_MEDIA_SNAPSHOT_READER_IDLE_STOP_S",
+        gt=0,
+    )
+
     # ── audio ─────────────────────────────────────────────────────────────────
     # Opt-in USB-microphone capture. When disabled (default) recordings stay
     # video-only, matching historical behaviour. When enabled, mic audio is
