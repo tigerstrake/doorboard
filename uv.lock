@@ -383,6 +383,7 @@ dependencies = [
     { name = "doorboard-auth" },
     { name = "doorboard-config" },
     { name = "doorboard-contracts" },
+    { name = "doorboard-observability" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "paho-mqtt" },
@@ -399,6 +400,7 @@ requires-dist = [
     { name = "doorboard-auth", editable = "packages/auth" },
     { name = "doorboard-config", editable = "packages/config" },
     { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "doorboard-observability", editable = "packages/observability" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "paho-mqtt", specifier = ">=2.1" },
@@ -417,6 +419,7 @@ dependencies = [
     { name = "aiomqtt" },
     { name = "doorboard-contracts" },
     { name = "doorboard-esp32-link" },
+    { name = "doorboard-observability" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "uvicorn" },
@@ -428,6 +431,7 @@ requires-dist = [
     { name = "aiomqtt", specifier = ">=2.0,<3.0" },
     { name = "doorboard-contracts", editable = "packages/contracts" },
     { name = "doorboard-esp32-link", editable = "packages/esp32-link" },
+    { name = "doorboard-observability", editable = "packages/observability" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "uvicorn" },
@@ -442,6 +446,7 @@ dependencies = [
     { name = "anyio" },
     { name = "doorboard-config" },
     { name = "doorboard-contracts" },
+    { name = "doorboard-observability" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -454,6 +459,7 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.7" },
     { name = "doorboard-config", editable = "packages/config" },
     { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "doorboard-observability", editable = "packages/observability" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pydantic", specifier = ">=2.9" },
@@ -467,6 +473,7 @@ version = "0.0.0"
 source = { editable = "apps/door-sync" }
 dependencies = [
     { name = "doorboard-contracts" },
+    { name = "doorboard-observability" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -477,6 +484,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "doorboard-observability", editable = "packages/observability" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pydantic", specifier = ">=2.9" },
