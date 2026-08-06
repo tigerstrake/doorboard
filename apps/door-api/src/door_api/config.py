@@ -93,9 +93,22 @@ class SessionConfig:
     # How long VIDEO_MESSAGE_SAVED shows confirmation before SESSION_END (seconds).
     saved_linger_s: float = 5.0
 
-    # Inactivity timeout: if no transition occurs within this many seconds,
-    # the session auto-expires to IDLE regardless of current state (seconds).
-    inactivity_timeout_s: float = 120.0
+    # Inactivity timeout: if no transition occurs within this many seconds, the
+    # session auto-expires (seconds). In practice this only schedules a timer for
+    # VIDEO_MESSAGE_OFFERED — every other non-IDLE state has a timer of its own —
+    # so it is really "how long the door waits while a visitor decides what to do".
+    #
+    # Ten minutes because that state is where a visitor sits while writing a note on
+    # their phone, and the DoorPad now allows the same budget
+    # (VISITOR_WRITING_TIMEOUT_MS in door-ui/src/doorpadTimeouts.ts). The two must
+    # agree: whichever is shorter is the real limit, and when this was 120s the
+    # server cut a visitor off two and a half minutes into a message the doorboard
+    # had promised them ten for.
+    #
+    # It also bounds how long a persisted session survives a door-api restart
+    # (see restore_from_persistence), which the same reasoning favours: a restart
+    # mid-message should not silently discard the visitor's session.
+    inactivity_timeout_s: float = 600.0
 
     # APPROACH_DETECTED / IDENTITY_CACHED expire back to IDLE after this long
     # with no button press (seconds).
@@ -227,7 +240,7 @@ class SessionConfig:
             max_recording_s=max_recording_s,
             review_timeout_s=review_timeout_s,
             saved_linger_s=_env_float("DOOR_API_SAVED_LINGER_S", 5.0),
-            inactivity_timeout_s=_env_float("DOOR_API_INACTIVITY_TIMEOUT_S", 120.0),
+            inactivity_timeout_s=_env_float("DOOR_API_INACTIVITY_TIMEOUT_S", 600.0),
             approach_timeout_s=_env_float("DOOR_API_APPROACH_TIMEOUT_S", 10.0),
             session_end_linger_s=_env_float("DOOR_API_SESSION_END_LINGER_S", 3.0),
             db_path=db_path,

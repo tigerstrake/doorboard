@@ -66,7 +66,10 @@ const CANNED_GUESTBOOK_PHRASES = ["Hey, stopped by!", "Call me later!", "Awesome
 type MyContentRef = { kind: "guestbook" | "checkin"; id: string; label: string };
 type MyContentStore = Record<string, MyContentRef[]>;
 const MY_CONTENT_KEY = "doorboard_my_social_content_v2";
+import { doorpadResetTimeoutMs } from "./doorpadTimeouts";
+
 const ADMIN_TOKEN_KEY = "doorboard_admin_social_token";
+
 const MAX_STORED_VISITOR_SESSIONS = 16;
 const MAX_CONTENT_ITEMS_PER_SESSION = 32;
 
@@ -2345,7 +2348,7 @@ export function App() {
               ? discardPhotoFlow
               : handleReset
         }
-        timeoutMs={30000}
+        timeoutMs={doorpadResetTimeoutMs(doorPadScreen, videoStep)}
         paused={
           doorPadScreen === "ringing" ||
           (doorPadScreen === "message" && videoStep !== "offer" && videoStep !== "qr") ||
