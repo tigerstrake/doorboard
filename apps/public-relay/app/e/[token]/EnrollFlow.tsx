@@ -560,7 +560,14 @@ async function pollUntilSettled(
   setStep("done");
 }
 
-function uploadErrorMessage(code: string | undefined): string {
+/**
+ * Relay-side rejection codes, as returned by `/api/enroll/[token]/submit`.
+ *
+ * Exported for `tests/enrollFlow.test.tsx`, which reads the route's `jsonError`
+ * codes off disk and asserts each one lands somewhere useful. That check is only
+ * possible if the mapping is reachable from a test.
+ */
+export function uploadErrorMessage(code: string | undefined): string {
   switch (code) {
     case "invite_already_used":
       return "This invitation has already been used. Ask for a fresh QR code.";
@@ -574,8 +581,17 @@ function uploadErrorMessage(code: string | undefined): string {
       return "That is more photos than this invitation allows. Start the photos again.";
     case "storage_not_configured":
       return "The enrolment service is not fully set up yet. Ask the household admin.";
+    case "invalid_bundle":
+    case "malformed_json":
+    case "invite_mismatch":
+      // Only reachable if this page itself sent something wrong, so retrying is
+      // pointless; the code is what an admin needs to see.
+      return `This page sent something the service could not accept (${code}). Reload and start again, and tell the household admin if it happens twice.`;
     default:
-      return "The service would not accept the upload. Please try again.";
+      // The reason is echoed rather than swallowed: an unmapped code used to
+      // reach the phone as advice to "please try again", which sent people round
+      // the same loop and told whoever they asked for help nothing at all.
+      return `The service would not accept the upload (${code ?? "no reason given"}). Please try again.`;
   }
 }
 
@@ -585,7 +601,16 @@ function reassignedColourName(reason: string): string {
   return PROFILES.find((entry) => entry.id === id)?.name ?? "another colour";
 }
 
-function outcomeMessage(reason: string): string {
+/**
+ * Pi-side outcomes, as returned in the pickup ack.
+ *
+ * Exported for `tests/enrollFlow.test.tsx`, which scrapes every `reason=` the Pi
+ * can send out of `door_visiond/{service,enrollment}.py` and asserts none of them
+ * falls through to the default. `internal_error` was missing here once and a
+ * colour clash reached a real phone as "Ask the household admin to check the
+ * doorboard" — true, and useless to both of them.
+ */
+export function outcomeMessage(reason: string): string {
   switch (reason) {
     case "quality_too_low":
       return "The door could not get a clear enough read of your face. Try again in brighter, even light.";
@@ -593,6 +618,8 @@ function outcomeMessage(reason: string): string {
     case "unknown_invite":
     case "invite_secret_mismatch":
       return "The door would not accept this invitation. Ask for a fresh QR code.";
+    case "invite_revoked":
+      return "This invitation was cancelled before the door collected your photos. Ask the household admin for a new one.";
     case "invite_expired":
       return "The invitation expired before the door collected your photos. Ask for a fresh QR code.";
     case "stale_consent":
@@ -612,6 +639,8 @@ function outcomeMessage(reason: string): string {
     case "internal_error":
       return "The door hit an unexpected error saving your enrolment. Nothing was saved — ask the household admin to check the doorboard logs, then try again.";
     default:
+      // Same rule as uploadErrorMessage: echo the raw reason so an unmapped one
+      // is at least diagnosable from a screenshot.
       return `Enrolment did not complete (${reason}). Nothing was saved. Show this to the household admin.`;
   }
 }

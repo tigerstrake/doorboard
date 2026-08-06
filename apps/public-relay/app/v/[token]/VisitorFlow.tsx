@@ -55,9 +55,27 @@ const RING_STATUS_COPY: Record<string, string> = {
   SESSION_END: "Session ended.",
 };
 
+/** An outcome that will not change again, so it is safe to remember. */
+function isSettled(outcome: { status: string }): boolean {
+  return outcome.status === "applied" || outcome.status === "rejected";
+}
+
+/** Reasons where offering another attempt would only waste the visitor's time. */
+const TERMINAL_VOTE_REASONS = new Set(["poll_closed", "already_voted"]);
+
 export default function VisitorFlow({ token }: { token: string }) {
   const [access, setAccess] = useState<Access>("checking");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  /**
+   * Settled outcomes, latched by action id.
+   *
+   * The snapshot is a live view of the door, and door-api repeats every outcome on
+   * each push so a receipt survives. It used not to, and a note that had been
+   * delivered reverted to "Sending to the door…" seconds later. Remembering
+   * settled outcomes here means one dropped push can no longer unsay something
+   * the door already confirmed.
+   */
+  const [settled, setSettled] = useState<Record<string, Snapshot["outcomes"][number]>>({});
 
   const [noteText, setNoteText] = useState("");
   const [noteActionId, setNoteActionId] = useState<string | null>(null);
@@ -83,6 +101,11 @@ export default function VisitorFlow({ token }: { token: string }) {
       if (!resp.ok) return;
       const body = (await resp.json()) as Snapshot;
       setSnapshot(body);
+      setSettled((current) => {
+        const arriving = body.outcomes.filter(isSettled).filter((entry) => !current[entry.action_id]);
+        if (arriving.length === 0) return current;
+        return { ...current, ...Object.fromEntries(arriving.map((entry) => [entry.action_id, entry])) };
+      });
       setAccess("valid");
     } catch {
       // Transient network trouble on a phone is normal; keep the last snapshot.
@@ -113,11 +136,22 @@ export default function VisitorFlow({ token }: { token: string }) {
   );
 
   const outcomeFor = (actionId: string | null) =>
-    actionId ? snapshot?.outcomes.find((entry) => entry.action_id === actionId) : undefined;
+    actionId
+      ? (settled[actionId] ?? snapshot?.outcomes.find((entry) => entry.action_id === actionId))
+      : undefined;
 
   const noteOutcome = outcomeFor(noteActionId);
   const voteOutcome = outcomeFor(voteActionId);
   const deletionOutcome = outcomeFor(deletionActionId);
+
+  const voteInFlight = Boolean(voteActionId) && voteOutcome === undefined;
+  // Retrying is offered for a transient refusal (rate limiting, a door error) but
+  // not for one that will refuse again — being told to try again and then refused
+  // identically is worse than being told why.
+  const voteRetryable =
+    !voteInFlight &&
+    voteOutcome?.status !== "applied" &&
+    !TERMINAL_VOTE_REASONS.has(voteOutcome?.reason ?? "");
 
   const sendNote = async () => {
     const text = noteText.trim();
@@ -314,6 +348,13 @@ export default function VisitorFlow({ token }: { token: string }) {
             </ul>
           ) : (
             <>
+              {/* A vote the door refused used to show nothing at all: the button
+                  sat on "Recording…" forever and the reason was never rendered. */}
+              {voteOutcome?.status === "rejected" ? (
+                <div className="notice warn">
+                  <p>{outcomeMessage(voteOutcome.reason)}</p>
+                </div>
+              ) : null}
               {snapshot.poll.options.map((option) => (
                 <label key={option.option_id} className="checkline">
                   <input
@@ -330,15 +371,24 @@ export default function VisitorFlow({ token }: { token: string }) {
                   <p>{voteError}</p>
                 </div>
               ) : null}
-              <div className="button-row">
-                <button
-                  className="primary"
-                  onClick={() => void sendVote()}
-                  disabled={!selectedOptionId || Boolean(voteActionId) || !canWrite}
-                >
-                  {voteActionId ? "Recording…" : "Vote"}
-                </button>
-              </div>
+              {/* No button at all once the refusal is final: a disabled "Try
+                  again" invites something that cannot work. The notice above
+                  already says why. */}
+              {voteRetryable || voteInFlight ? (
+                <div className="button-row">
+                  <button
+                    className="primary"
+                    onClick={() => void sendVote()}
+                    disabled={!selectedOptionId || voteInFlight || !canWrite}
+                  >
+                    {voteInFlight
+                      ? "Recording…"
+                      : voteOutcome?.status === "rejected"
+                        ? "Try again"
+                        : "Vote"}
+                  </button>
+                </div>
+              ) : null}
             </>
           )}
         </div>
@@ -372,7 +422,15 @@ function writeErrorMessage(code: string | undefined, status: number): string {
   }
 }
 
-function outcomeMessage(reason: string | null): string {
+/**
+ * Outcomes door-api can return through the relay (`_visitor_reject_reason`).
+ *
+ * Exported for `tests/visitorFlow.test.tsx`, which scrapes that function off disk
+ * and asserts none of its reasons falls through to the default — the same check
+ * the enrolment page grew after `internal_error` reached a phone as generic
+ * advice.
+ */
+export function outcomeMessage(reason: string | null): string {
   switch (reason) {
     case "rate_limited":
       return "The door is rate-limiting notes right now. Try again in a few minutes.";
@@ -384,7 +442,17 @@ function outcomeMessage(reason: string | null): string {
       return "That poll closed before your vote arrived.";
     case "already_voted":
       return "A vote was already recorded for this session.";
+    case "not_found":
+      return "The door could not find what this refers to. It may have been removed already.";
+    case "not_deletable":
+      return "That is not something the door can delete from here. Ask the household directly.";
+    case "empty_action":
+      return "That arrived at the door empty. Try writing it again.";
+    case "door_error":
+      return "The door hit an error handling that, and nothing was saved. Try again in a moment.";
     default:
-      return "The door could not accept that. Nothing was saved.";
+      // Echoed rather than swallowed: an unmapped reason is still worth showing,
+      // because a visitor with no account has no other way to report it.
+      return `The door could not accept that (${reason ?? "no reason given"}). Nothing was saved.`;
   }
 }
