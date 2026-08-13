@@ -30,6 +30,7 @@ from doorboard_contracts.events import (
     SocialDeletionRequestedEvent,
     SocialDeletionRequestedPayload,
     consent_covers_extended_personalisation,
+    parse_event,
 )
 from doorboard_esp32_link import Esp32Transport, WireMessage
 from doorboard_esp32_link.esp32 import uuid7_now
@@ -952,6 +953,65 @@ async def metrics() -> Response:
 @app.get("/session")
 async def get_session() -> dict[str, Any]:
     return state.snapshot_response()
+
+
+def _require_internal_event_token(authorization: str | None = Header(default=None)) -> None:
+    configured = state.config.internal_event_token
+    if not configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="internal event ingest is not configured",
+        )
+    prefix = "Bearer "
+    presented = (
+        authorization[len(prefix) :] if authorization and authorization.startswith(prefix) else ""
+    )
+    if not presented or not secrets.compare_digest(presented, configured):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid internal event token"
+        )
+
+
+@app.post(
+    "/internal/events",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(_require_internal_event_token)],
+)
+async def internal_events(payload: dict[str, Any]) -> dict[str, Any]:
+    """Ingest one contract event from another Pi-local service (door-visiond).
+
+    This is the hop that lets a recognised face reach the screen. door-visiond emits
+    ``vision.identity_stable``; the session machine turns it into
+    ``APPROACH_DETECTED``; door-ui renders the greeting from the resulting ``/ws``
+    delta. Without it the event never left door-visiond's process, so a recognised
+    person got the ESP32 light and a silent wallboard — the greeting ADR-0018 §3
+    calls the entire point of the feature, and a T-303 deliverable.
+
+    Narrow on purpose:
+
+    - **``vision.*`` only.** The route can never be used to fake a button press, a
+      contact change, or a session transition — the door's own inputs stay on the
+      ESP32 link, which is the trust boundary that gives them meaning.
+    - **Token required, 503 when unset.** An open identity ingest would let anything
+      that can reach door-api assert who is standing at the door, and identity is
+      what personalisation reads. Loopback binding is not the control here: the
+      kiosk browsers run on this Pi too.
+    - **202 whether or not state changed.** The caller is a fire-and-forget
+      forwarder; a no-op must not read as a failure worth retrying.
+    """
+    try:
+        event = parse_event(payload)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid event envelope"
+        ) from exc
+    if not event.type.startswith("vision."):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"event type {event.type} is not accepted on this route",
+        )
+    changed = state.handle_contract_event(event)
+    return {"accepted": True, "changed": changed}
 
 
 @app.post("/doorpad/ring")

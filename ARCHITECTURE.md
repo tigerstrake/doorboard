@@ -88,7 +88,7 @@ The performance harness (M1/M7) makes these observable. A change that regresses 
 Recognition is proactive, never bell-triggered:
 
 1. Recognition camera runs continuously; `door-visiond` requires a stable match (2 of last 3 frames, minimum face size).
-2. On stability it writes a short-lived `current_visitor` cache (2.5 s TTL) and pushes a `door.profile_update` to the ESP32 (profile ID + monotonic expiry only).
+2. On stability it writes a short-lived `current_visitor` cache (2.5 s TTL), pushes a `door.profile_update` to the ESP32 (profile ID + monotonic expiry only), and forwards `vision.identity_stable` to door-api, which is the only service the kiosks are connected to. All three legs are required: the ESP32 leg is the door light, the door-api leg is the on-screen greeting, and a leg that silently does nothing looks exactly like recognition not working.
 3. Button press consumes the cache instantly; no cache means an immediate generic greeting.
 4. Late recognition may update the display but never delays the initial interaction.
 5. Greeting cooldown: 30 s per person. Unknown faces: generic greeting, nothing persisted.
@@ -110,7 +110,8 @@ Camera streams **before** the bell press — no cold-start capture on press. Rec
 All events use the shared envelope and catalog in [docs/protocols/events.md](docs/protocols/events.md), implemented once in `packages/contracts` (Pydantic v2 models + exported JSON Schema + generated TypeScript types). Transports:
 
 - **UART** (preferred) Pi ↔ ESP32 for immediate profile/action messages ([wire protocol](docs/protocols/esp32-pi-protocol.md)); UDP acceptable; MQTT never the only immediate transport.
-- **WebSockets** between Pi-local services and the kiosk displays.
+- **WebSockets** between door-api and the kiosk displays (door-api is the hub; the kiosks never connect to another service).
+- **Loopback HTTP** between Pi-local services, for events one service owns and another has to act on — door-visiond's identity events into door-api's session machine, door-visiond's purge requests into door-sync. Token-authenticated and best-effort: a Pi-local hop may drop an event, never block the emitter.
 - **MQTT (Mosquitto on NUC)** for control-plane fan-out, HA integration, and audit — never in the critical path.
 
 Conventions: UTC internally, local timezone only at the display boundary; monotonic clocks for latency and expiry; opaque `person_id`s (never a name as a key); `trace_id` propagated end to end.

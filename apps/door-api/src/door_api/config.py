@@ -156,6 +156,13 @@ class SessionConfig:
     sync_retry_base_s: float = 0.5
     sync_retry_max_s: float = 30.0
 
+    # Shared secret door-visiond presents on POST /internal/events, the hop that
+    # carries recognised identities into the session machine and onto the kiosk
+    # WebSocket (ADR-0018 §3). Empty closes the route with 503 — an unauthenticated
+    # identity ingest would let anything that can reach door-api assert who is at
+    # the door, which is the one claim personalisation reads.
+    internal_event_token: str = ""
+
     # Feature gate for the explicit photo-booth + private gallery flow.
     feature_photobooth: bool = False
 
@@ -270,6 +277,7 @@ class SessionConfig:
             sync_forward_poll_s=_env_float("DOOR_API_SYNC_FORWARD_POLL_S", 0.25),
             sync_retry_base_s=_env_float("DOOR_API_SYNC_RETRY_BASE_S", 0.5),
             sync_retry_max_s=_env_float("DOOR_API_SYNC_RETRY_MAX_S", 30.0),
+            internal_event_token=os.environ.get("DOOR_API_INTERNAL_EVENT_TOKEN", ""),
             feature_photobooth=_env_bool("FEATURE_PHOTOBOOTH", False),
             visitor_token_secret=os.environ.get(
                 "DOOR_API_VISITOR_TOKEN_SECRET",
