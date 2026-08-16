@@ -92,6 +92,7 @@ Recognition is proactive, never bell-triggered:
 3. Button press consumes the cache instantly; no cache means an immediate generic greeting.
 4. Late recognition may update the display but never delays the initial interaction.
 5. Greeting cooldown: 30 s per person. Unknown faces: generic greeting, nothing persisted.
+6. door-api holds the recognised identity for the *interaction*, not the frame (ADR-0020): ~12 s idle, re-armed to ~2 min by any doorpad use. The 2.5 s cache above is about the next button press; this is about the person still tapping the screen. `identity_expired` therefore does not end it — a face leaving the frame is not a person leaving the door — but privacy mode does, and it is never persisted.
 
 ## 6. Media pipeline
 

@@ -9,6 +9,8 @@ import {
   CrossfadeSwitch,
   SessionState,
   Gauge,
+  profileAccent,
+  accentInk,
 } from "@doorboard/ui-kit";
 import { DoorboardEventClient, uuidv7 } from "@doorboard/event-client";
 import type {
@@ -596,8 +598,12 @@ export function App() {
       setDoorPadScreen(target.screen);
       setVideoStep(target.video);
       if (nextState === "IDLE") {
-        setActiveDisplayName(null);
-        setActiveProfile(null);
+        // Only forget the person if the server has also forgotten them. door-api now
+        // holds a recognised identity across the approach timer (ADR-0020), so IDLE no
+        // longer implies "nobody is here" — clearing unconditionally is what made the
+        // greeting vanish and "Check in as <name>" disappear mid-interaction.
+        if (!snapshot?.display_name) setActiveDisplayName(null);
+        if (!snapshot?.profile_id) setActiveProfile(null);
         setRingRequestState("idle");
         // Fresh session: clear any post-bell check-in photo state.
         setPostRingPhoto(null);
@@ -2271,12 +2277,51 @@ export function App() {
 
   const renderVideoPreview = () => <LiveVideoPreview title="Live self-preview" />;
 
+  // Tell door-api somebody is using the panel, so a recognised identity lasts as long as
+  // the interaction (ADR-0020). Screen changes here are client-side and reach no route,
+  // so without this the name is dropped ~12 s after the greeting and "Check in as
+  // <name>" disappears while the visitor is still reading the screen.
+  //
+  // Fire-and-forget and debounced: it must never block a touch, and a failure means the
+  // identity lapses on the idle window — the pre-existing behaviour, not a broken door.
+  const lastActivityPingRef = useRef(0);
+  const reportDoorpadActivity = useCallback(() => {
+    const now = Date.now();
+    if (now - lastActivityPingRef.current < 5000) return;
+    lastActivityPingRef.current = now;
+    // sendBeacon, not fetch: this is a keepalive with nothing to read back. It does not
+    // block the touch that triggered it, it survives the page going away, and it stays
+    // out of the request/response flow the screens actually depend on.
+    //
+    // The response is deliberately unused either way. Feeding it to
+    // applySessionSnapshot would re-derive the doorpad screen from the session state and
+    // bounce the visitor out of whatever they just opened; the name and accent arrive
+    // over /ws regardless.
+    const url = `${API_BASE}/doorpad/activity`;
+    if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+      navigator.sendBeacon(url);
+      return;
+    }
+    void fetch(url, { method: "POST", keepalive: true }).catch(() => {
+      /* the identity simply expires on the idle window */
+    });
+  }, []);
+
+  // The colour the recognised person picked during onboarding, applied as CSS custom
+  // properties so any styled surface can opt in without threading a prop. Falls back to
+  // the default accent when nobody is recognised, so the door has one look for guests.
+  const accentStyle = {
+    "--db-accent": profileAccent(activeProfile),
+    "--db-accent-ink": accentInk(profileAccent(activeProfile)),
+  } as React.CSSProperties;
+
   const renderDoorPad = () => {
     const handleActionClick = (actionName: string, targetScreen: DoorPadScreen) => {
       if (targetScreen === "ringing") {
         ringDoorbell();
       } else {
         setDoorPadScreen(targetScreen);
+        reportDoorpadActivity();
         triggerToast(`${actionName} flow opened`);
       }
     };
@@ -2288,7 +2333,16 @@ export function App() {
           ref={doorPadFocusRef}
           tabIndex={-1}
           aria-label="DoorPad home"
+          style={accentStyle}
         >
+          {/* The doorpad greets too. ApproachGreeting was written to be shared ("so the
+              doorpad can reuse it unchanged") but only ever rendered on the wallboard,
+              so someone standing at the panel that recognised them saw nothing. */}
+          <ApproachGreeting
+            sessionState={sessionState}
+            displayName={activeDisplayName}
+            profileId={activeProfile}
+          />
           <header className="doorpad-header">
             <h2>Room {ROOM_LABEL} DoorPad</h2>
             {RESIDENTS_LABEL && <p className="doorpad-residents">{RESIDENTS_LABEL}</p>}

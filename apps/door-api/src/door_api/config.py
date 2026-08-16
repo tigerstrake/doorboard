@@ -163,6 +163,14 @@ class SessionConfig:
     # the door, which is the one claim personalisation reads.
     internal_event_token: str = ""
 
+    # How long door-api keeps treating a recognised person as present (ADR-0020).
+    # `idle` is the window with nobody touching anything — a passer-by's name must not
+    # sit in memory. `interaction` is re-armed by every doorpad action, so the identity
+    # lasts as long as the interaction and no longer. Bound to session state instead,
+    # the name vanished ten seconds after the greeting and Check In refused to offer it.
+    recognised_identity_idle_ttl_s: float = 12.0
+    recognised_identity_interaction_ttl_s: float = 120.0
+
     # Feature gate for the explicit photo-booth + private gallery flow.
     feature_photobooth: bool = False
 
@@ -278,6 +286,10 @@ class SessionConfig:
             sync_retry_base_s=_env_float("DOOR_API_SYNC_RETRY_BASE_S", 0.5),
             sync_retry_max_s=_env_float("DOOR_API_SYNC_RETRY_MAX_S", 30.0),
             internal_event_token=os.environ.get("DOOR_API_INTERNAL_EVENT_TOKEN", ""),
+            recognised_identity_idle_ttl_s=_env_float("DOOR_API_IDENTITY_IDLE_TTL_S", 12.0),
+            recognised_identity_interaction_ttl_s=_env_float(
+                "DOOR_API_IDENTITY_INTERACTION_TTL_S", 120.0
+            ),
             feature_photobooth=_env_bool("FEATURE_PHOTOBOOTH", False),
             visitor_token_secret=os.environ.get(
                 "DOOR_API_VISITOR_TOKEN_SECRET",

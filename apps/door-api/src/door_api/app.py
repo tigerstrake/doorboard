@@ -34,7 +34,16 @@ from doorboard_contracts.events import (
 )
 from doorboard_esp32_link import Esp32Transport, WireMessage
 from doorboard_esp32_link.esp32 import uuid7_now
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -44,6 +53,7 @@ from door_api.config import SessionConfig
 from door_api.esp32_link import Esp32LinkSettings, Esp32LinkSupervisor
 from door_api.mqtt_bridge import MqttBridge
 from door_api.persistence import SessionStore
+from door_api.recognised_identity import RecognisedIdentity
 from door_api.session import SessionMachine
 from door_api.social.config import SocialConfig
 from door_api.social.routes import build_social_router
@@ -95,6 +105,13 @@ class DoorApiState:
             media_outbox_max_rows=self.config.media_outbox_max_rows,
             sync_outbox_max_rows=self.config.sync_outbox_max_rows,
         )
+        # Who the door is talking to, for the length of this interaction (ADR-0020).
+        # Separate from the session state machine on purpose: the approach timer is
+        # about an empty doorway, this is about a person still tapping the screen.
+        self.identity = RecognisedIdentity(
+            idle_ttl_s=self.config.recognised_identity_idle_ttl_s,
+            interaction_ttl_s=self.config.recognised_identity_interaction_ttl_s,
+        )
         self.esp32_transport: Esp32Transport | None = None
         self.effect_requests = 0
         self.effect_unavailable = 0
@@ -133,6 +150,14 @@ class DoorApiState:
                 self._visitor_relay_applied.clear()
 
         self.machine = SessionMachine(config=self.config, store=self.store, on_event=on_event)
+        self.machine.set_identity_observer(
+            lambda person_id, display_name, consent_version, profile_id: self.identity.remember(
+                person_id=person_id,
+                display_name=display_name,
+                consent_version=consent_version,
+                profile_id=profile_id,
+            )
+        )
 
         self.social_config = SocialConfig.from_env()
         self.social_store = SocialStore(self.social_config.db_path)
@@ -155,10 +180,24 @@ class DoorApiState:
         ``attributed_to`` is derived here rather than in the UI so the consent gate
         lives in exactly one place; a surface that computed it itself could drift
         and start attributing silently.
+
+        ``display_name``/``profile_id`` come from the interaction-scoped identity
+        (ADR-0020) rather than the session machine, so a greeting and an accent colour
+        survive the approach timer. The session's own copy stays authoritative for
+        session semantics — ``had_cached_profile`` still records what the *press* knew.
         """
+        snapshot = self.machine.snapshot().to_dict()
+        held = self.identity.current()
+        if held is not None:
+            snapshot["display_name"] = held.display_name
+            snapshot["profile_id"] = held.profile_id
+            snapshot["consent_version"] = held.consent_version
         return {
-            **self.machine.snapshot().to_dict(),
+            **snapshot,
             "attributed_to": self.attributed_display_name(),
+            # The UI shows a countdown so "why did my name disappear" is answerable
+            # from the screen rather than from the logs.
+            "identity_expires_in_s": round(self.identity.seconds_remaining(), 1),
         }
 
     def startup(self) -> None:
@@ -306,6 +345,8 @@ class DoorApiState:
             )
         elif event.type == "vision.identity_stable":
             payload = event.payload
+            # The holder is updated by the machine's identity observer, wired in
+            # __init__ — every path that reports an identity feeds both.
             changed = self.machine.handle_identity_stable(
                 person_id=payload.person_id,
                 display_name=payload.display_name,
@@ -316,7 +357,20 @@ class DoorApiState:
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "vision.identity_expired":
             payload = event.payload
+            # Deliberately does NOT drop the held identity (ADR-0020). This fires when
+            # door-visiond's 2.5 s cache lapses — i.e. a face left the frame, which
+            # happens constantly while someone stands at the doorpad looking down at it.
+            # Clearing here would reinstate the bug this holder exists to fix.
             changed = self.machine.handle_identity_expired(person_id=payload.person_id)
+            self.broadcast.send_delta(event.model_dump(mode="json"))
+        elif event.type == "vision.privacy_mode_changed":
+            payload = event.payload
+            # Recognition being switched off has to take the remembered name with it
+            # (ADR-0009 §4). Previously door-api held nothing across states so there
+            # was nothing to flush; now there is, and a privacy flip that left a name
+            # on screen would be a privacy defect rather than a cosmetic one.
+            if payload.enabled:
+                self.identity.forget()
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "door.contact_changed":
             payload = event.payload
@@ -516,7 +570,8 @@ class DoorApiState:
         """
         if self.attributable_person_id() is None:
             return None
-        return self.machine.snapshot().display_name
+        held = self.identity.current()
+        return held.display_name if held is not None else None
 
     def attributable_person_id(self) -> str | None:
         """The recognised person a write may be attributed to, or None.
@@ -527,17 +582,22 @@ class DoorApiState:
         enrollees agreed to a greeting, not to having their name attached to what
         they write.
 
+        Reads the interaction-scoped identity rather than the session snapshot
+        (ADR-0020). Bound to session state this returned None ten seconds after
+        recognition, so tapping through to Check In lost the name that had just been
+        displayed — the door greeted someone and then refused to let them be
+        themselves.
+
         Fails closed in two ways worth naming: an unparseable or missing consent
-        version is not attributable, and a session restored from SQLite after a
-        restart has no consent version (it is not persisted), so writes in that
-        window are anonymous rather than optimistically attributed.
+        version is not attributable, and the identity is memory-only, so a restart
+        leaves writes anonymous rather than optimistically attributed.
         """
-        snapshot = self.machine.snapshot()
-        if snapshot.person_id is None:
+        held = self.identity.current()
+        if held is None:
             return None
-        if not consent_covers_extended_personalisation(snapshot.consent_version):
+        if not consent_covers_extended_personalisation(held.consent_version):
             return None
-        return snapshot.person_id
+        return held.person_id
 
     # -- visitor relay (ADR-0017) ------------------------------------------
 
@@ -796,6 +856,29 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+# Paths whose use means "a person is interacting with the door right now", so the
+# recognised identity should outlive the approach timer (ADR-0020). A middleware rather
+# than a `touch()` in each handler because there are a dozen of these and more coming:
+# one forgotten call would look like the intermittent version of the bug this fixes.
+_INTERACTION_PATH_PREFIXES = ("/doorpad", "/social", "/visitor")
+
+
+@app.middleware("http")
+async def _extend_identity_on_interaction(request: Request, call_next: Any) -> Any:
+    """Re-arm the identity window when the doorpad or a visitor surface is used.
+
+    Reads (`GET`) count: paging through screens is interaction, and the doorpad polls
+    its own state as the visitor moves. Deliberately excludes `/admin` (the owner's
+    phone is not a person at the door) and `/internal/events` (recognition itself must
+    not extend its own window, or one match would hold a name indefinitely).
+    """
+    if request.method != "OPTIONS" and request.url.path.startswith(_INTERACTION_PATH_PREFIXES):
+        state.identity.touch()
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(state.config.cors_origins),
@@ -1026,9 +1109,34 @@ async def doorpad_ring() -> dict[str, Any]:
     return {"accepted": accepted, "effect": effect, **state.snapshot_response()}
 
 
+@app.post("/doorpad/activity")
+async def doorpad_activity() -> dict[str, Any]:
+    """ "Somebody is using me" — sent by the doorpad on touch, so identity persists.
+
+    The doorpad is a single-page app: moving from the home screen to Check In is
+    client-side and reaches no route, so server-side writes alone cannot tell that
+    someone is mid-interaction. Without this, reading the screen for fifteen seconds
+    silently loses the name that was just greeted.
+
+    The `touch()` itself happens in the interaction middleware; this route exists so the
+    UI has something to call that does nothing else. It cannot create or extend a
+    *session*, and it cannot resurrect an expired identity (see
+    :meth:`RecognisedIdentity.touch`), so an idle doorpad cannot hold a stranger's name
+    on screen by polling.
+    """
+    return {
+        "identity_expires_in_s": round(state.identity.seconds_remaining(), 1),
+        **state.snapshot_response(),
+    }
+
+
 @app.post("/doorpad/session/end")
 async def doorpad_session_end() -> dict[str, Any]:
     accepted = state.machine.handle_session_end(trigger="visitor:end")
+    # "Done" means finished, so the name goes with the session rather than lingering for
+    # the interaction window. Ordered after the transition because the middleware has
+    # already touched the identity on the way in — forgetting last is what sticks.
+    state.identity.forget()
     return {"accepted": accepted, **state.snapshot_response()}
 
 
@@ -1047,6 +1155,8 @@ async def admin_session_cannot_answer() -> dict[str, Any]:
 @app.post("/admin/session/end", dependencies=[Depends(_require_admin)])
 async def admin_session_end() -> dict[str, Any]:
     accepted = state.machine.handle_session_end(trigger="admin:reset")
+    # An owner resetting the door expects a clean slate, including the held name.
+    state.identity.forget()
     return {"accepted": accepted, **state.snapshot_response()}
 
 
