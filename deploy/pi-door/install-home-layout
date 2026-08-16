@@ -54,6 +54,19 @@ for group in dialout video render; do
   fi
 done
 
+# Same class of failure, in configuration (T-311): the greeting path is gated on a
+# shared token, and an existing .env predating it has no such line. Unset, door-api
+# closes POST /internal/events with 503 and door-visiond reports
+# `event_forwarding: disabled` -- a recognised face gets the door light and a silent
+# screen, which looks exactly like recognition not working.
+event_token="$(sed -n 's/^[[:space:]]*DOOR_API_INTERNAL_EVENT_TOKEN=//p' "$env_file" | head -1)"
+event_token="${event_token%%#*}"
+event_token="$(tr -d '[:space:]"'"'" <<<"$event_token")"
+if [[ -z "$event_token" || "$event_token" == CHANGE_ME ]]; then
+  echo "warning: DOOR_API_INTERNAL_EVENT_TOKEN is unset in $env_file;" >&2
+  echo "         recognition will work and the wallboard greeting will not fire" >&2
+fi
+
 install -m 0644 "$repo"/infra/systemd/*.service /etc/systemd/system/
 install -m 0644 "$repo"/infra/systemd/*.timer /etc/systemd/system/
 
