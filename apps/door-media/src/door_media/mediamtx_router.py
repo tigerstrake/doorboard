@@ -102,8 +102,26 @@ def _build_run_on_init(settings: Settings) -> str:
 
     The command is a ``sh -c`` wrapper (MediaMTX does not run runOnInit through a
     shell) around ``rpicam-vid | ffmpeg``. Video is always copied (``-c:v copy``);
-    the Pi 5 has no HW H.264 block so rpicam-vid encodes via libav with an
-    explicit ``--libav-format h264`` and baseline/4.1 profile.
+    the Pi 5 has no HW H.264 block so rpicam-vid encodes via libav.
+
+    Every parameter is configurable because the shipped defaults were costing picture
+    quality for nothing (measured on the door, T-314):
+
+    - **720p at 2 Mbps.** Now 1080p at 6 Mbps, measured at ~90% of one core (of four,
+      against a load of 2.2) versus ~40% before.
+    - **No autofocus mode.** The imx708 has a focus motor; with no mode set the lens
+      stayed wherever it powered up and the stream was soft.
+    - **No tuning file.** Both sensors are NoIR variants, but libcamera was loading the
+      default ``imx708`` tuning, which assumes an IR-cut filter this camera does not
+      have. ``imx708_noir.json``/``imx708_wide_noir.json`` exist for exactly this.
+
+    A larger frame also helps recognition rather than competing with it: door-visiond
+    reads the same stream through ``/snapshot``, so more pixels reach the detector
+    before it downscales for inference.
+
+    The profile deliberately stays ``baseline`` — see ``Settings.video_h264_profile``.
+    ``main``/``high`` publish successfully and are then undecodable downstream, which
+    presents as a live-looking path serving nothing but placeholder frames.
 
     This command is **video-only** regardless of ``audio_enabled``. Audio does
     not go through MediaMTX: its live fmp4 recorder cannot mux an AAC track (it
@@ -115,14 +133,33 @@ def _build_run_on_init(settings: Settings) -> str:
     ``{stream}``/``{segments_root}``/``{segment_s}`` placeholders.
     """
     stream = settings.visitor_cam_stream
-    rpicam = (
-        "rpicam-vid --width 1280 --height 720 --framerate 25 --codec h264 "
-        "--libav-format h264 --profile baseline --level 4.1 --bitrate 2000000 "
-        "--inline --flush 1 --timeout 0 --nopreview --output -"
+    rpicam = " ".join(
+        [
+            "rpicam-vid",
+            f"--camera {settings.visitor_cam_index}",
+            f"--width {settings.video_width}",
+            f"--height {settings.video_height}",
+            f"--framerate {settings.video_framerate}",
+            "--codec h264",
+            "--libav-format h264",
+            f"--profile {settings.video_h264_profile}",
+            f"--level {settings.video_h264_level}",
+            f"--bitrate {settings.video_bitrate_bps}",
+            # The imx708 has a focus motor and no default AF mode was ever set, so the
+            # lens sat wherever it powered up: the live stream was visibly soft.
+            f"--autofocus-mode {settings.video_autofocus_mode}",
+            *(
+                [f"--tuning-file {settings.camera_tuning_file}"]
+                if settings.camera_tuning_file
+                else []
+            ),
+            "--inline --flush 1 --timeout 0 --nopreview --output -",
+        ]
     )
     rtsp = f"-f rtsp -rtsp_transport tcp {settings.mediamtx_rtsp_url(stream)}"
     ffmpeg = (
-        f"ffmpeg -nostats -loglevel error -fflags nobuffer -f h264 -r 25 -i pipe:0 -c:v copy {rtsp}"
+        "ffmpeg -nostats -loglevel error -fflags nobuffer -f h264 "
+        f"-r {settings.video_framerate} -i pipe:0 -c:v copy {rtsp}"
     )
     return f"sh -c '{rpicam} | {ffmpeg}'"
 

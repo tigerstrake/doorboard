@@ -99,8 +99,59 @@ class Settings(BaseSettings):
         default="visitor",
         alias="VISITOR_CAM_STREAM",
     )
+    # Which physical camera publishes the visitor stream. With two connected (ADR
+    # pending / T-314), the wide sensor frames the doorway and the narrow one is left
+    # to the face path, which wants pixels-on-face rather than coverage.
+    visitor_cam_index: int = Field(default=0, alias="VISITOR_CAM_INDEX", ge=0, le=7)
+
+    # Encode parameters. Defaults raised from 1280x720/2Mbps/baseline after measuring
+    # the door: see `_build_run_on_init` for why each one mattered.
+    video_width: int = Field(default=1920, alias="DOOR_MEDIA_VIDEO_WIDTH", ge=320)
+    video_height: int = Field(default=1080, alias="DOOR_MEDIA_VIDEO_HEIGHT", ge=240)
+    video_framerate: int = Field(default=25, alias="DOOR_MEDIA_VIDEO_FRAMERATE", ge=1, le=60)
+    video_bitrate_bps: int = Field(
+        default=6_000_000, alias="DOOR_MEDIA_VIDEO_BITRATE_BPS", ge=250_000
+    )
+    # Stays `baseline`, and not for a decoder's sake: `main`/`high` enable B-frames,
+    # and this pipeline copies rpicam-vid's elementary stream into RTSP with a synthetic
+    # framerate (`-f h264 -r N -c:v copy`), which has no real timestamps to reorder them
+    # against. Verified on the door: at `high` the path went `ready` with a publisher and
+    # every /snapshot still came back a placeholder, because the reader could not decode
+    # what was being published. The picture wins here are resolution, bitrate, the NoIR
+    # tuning file and autofocus — not the profile. Changing this needs the publish
+    # pipeline to carry real PTS first.
+    video_h264_profile: str = Field(default="baseline", alias="DOOR_MEDIA_VIDEO_H264_PROFILE")
+    video_h264_level: str = Field(default="4.2", alias="DOOR_MEDIA_VIDEO_H264_LEVEL")
+    # `continuous` keeps a visitor sharp as they approach. `manual` plus a fixed lens
+    # position is the alternative if hunting ever becomes visible on the stream.
+    video_autofocus_mode: str = Field(default="continuous", alias="DOOR_MEDIA_VIDEO_AUTOFOCUS_MODE")
+    # Empty means "libcamera default", which is wrong for a NoIR sensor: it applies the
+    # IR-cut-filter tuning and the picture comes out washed out. Set per sensor.
+    camera_tuning_file: str = Field(
+        default="/usr/share/libcamera/ipa/rpi/pisp/imx708_noir.json",
+        alias="DOOR_MEDIA_CAMERA_TUNING_FILE",
+    )
+
     # rpicam-vid segment length (seconds) for the rolling recording buffer.
     segment_s: int = Field(default=2, alias="DOOR_MEDIA_SEGMENT_S")
+
+    @field_validator("video_h264_profile")
+    @classmethod
+    def _validate_profile(cls, v: str) -> str:
+        allowed = {"baseline", "main", "high"}
+        if v not in allowed:
+            msg = f"DOOR_MEDIA_VIDEO_H264_PROFILE must be one of {sorted(allowed)}, got {v!r}"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("video_autofocus_mode")
+    @classmethod
+    def _validate_autofocus(cls, v: str) -> str:
+        allowed = {"default", "manual", "auto", "continuous"}
+        if v not in allowed:
+            msg = f"DOOR_MEDIA_VIDEO_AUTOFOCUS_MODE must be one of {sorted(allowed)}, got {v!r}"
+            raise ValueError(msg)
+        return v
 
     # ── snapshot (GET /snapshot) ──────────────────────────────────────────────
     # A single current JPEG frame grabbed read-only from the live RTSP stream,
