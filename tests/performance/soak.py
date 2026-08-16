@@ -187,7 +187,12 @@ async def run_simulator_soak(config: SoakConfig) -> SoakResult:
             else:
                 _ = await vision.face_visible(face_count=1, largest_face_px=150)
                 unknown_arrivals += 1
-            latency_samples["face_to_stable_identity"].append((time.monotonic() - t0) * 1000.0)
+            # Sentinel 0.0 → "simulator N/A", for the reason spelled out in
+            # harness.py: without a camera and the Hailo this timed event
+            # construction, not recognition. The arrival traffic above still earns
+            # its place in the soak -- it exercises the ESP32 path, the queues and
+            # the backlog checks -- but it cannot speak to the p95 < 600 ms budget.
+            latency_samples["face_to_stable_identity"].append(0.0)
 
         if sim_s % config.recording_interval_s == 0:
             storage = media.storage_status()

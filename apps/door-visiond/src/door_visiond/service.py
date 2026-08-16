@@ -1036,6 +1036,10 @@ class VisiondService:
             "esp32_profile_push_status": "degraded" if esp32_profile_warning else "ok",
             "esp32_profile_warning": esp32_profile_warning,
             "privacy_state_status": "invalid_fail_closed" if self._privacy_state_degraded else "ok",
+            # Frames door-media re-served unchanged. Climbing steadily means its
+            # snapshot reader has stalled and the doorway is being judged on stale
+            # pictures -- recognition looks alive and is not seeing anything new.
+            "snapshot_duplicate_frames": status.duplicate_frames,
             "archive_purge_queue_depth": self._purge_outbox.depth(),
             # The screen half of the greeting path. Reported but NOT part of
             # `healthy`: door-api being unreachable costs the display greeting, it
@@ -1060,6 +1064,7 @@ class VisiondService:
 
     def metrics_snapshot(self) -> dict[str, float]:
         snap = self._core.metrics_snapshot()
+        snap["snapshot_duplicate_frames"] = float(self._backend.status().duplicate_frames)
         snap["cache_hit_rate"] = self.cache_hit_rate()
         snap["enrolled"] = float(self._matcher.enrolled_count)
         snap["esp32_profile_updates_acked"] = float(self._esp32_profile_updates_acked)

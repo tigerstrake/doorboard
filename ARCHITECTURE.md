@@ -81,7 +81,7 @@ Each service has a full spec in its directory README. Every service exposes `GET
 | Local live video (WebRTC) | < 750 ms |
 | NAS upload | non-critical, after interaction |
 
-The performance harness (M1/M7) makes these observable. A change that regresses a p95 target is a bug regardless of features added.
+The performance harness (M1/M7) makes these observable, with two exceptions it reports as `simulator_na` rather than passing: `webrtc_glass_to_glass` needs MediaMTX and a browser, and **`face_to_stable_identity` needs a camera and the Hailo** — frame cadence, detection and embedding are the whole budget and none of them exist in the simulator. On the door that path is measured only by door-visiond's own `face_to_identity_ms_p95` (`/metrics`), timed from the first frame a face appears in. A change that regresses a p95 target is a bug regardless of features added.
 
 ## 5. Identity cache (proactive recognition)
 
