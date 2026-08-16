@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Mint a single-use remote-enrollment invite on the door Pi and render it as a QR
+# (ADR-0016; docs/runbooks/remote-enrollment-relay.md).
+#
+# The admin panel is supposed to have a "Create QR invite" button and does not, so
+# this is the scriptable stand-in: preflight the door, mint, render.
+#
+# The URL contains the ONLY copy of the invite secret -- door-visiond never stores
+# or logs it -- so it is printed once here and a lost invite means minting another.
+# Nothing is written to disk unless you ask for a PNG.
+#
+# Usage:
+#   scripts/enrollment-qr "Sam"                 # QR in the terminal
+#   scripts/enrollment-qr "Sam" /tmp/sam.png    # ...and a PNG to send them
+#   scripts/enrollment-qr --url '<invite-url>'  # render a URL you already have
+#
+# Env: DOORBOARD_PI_HOST (default door-pi.local), DOORBOARD_PI_REPO (default
+# ~/doorboard on the Pi -- where the .env holding the admin token lives).
+set -euo pipefail
+
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+host="${DOORBOARD_PI_HOST:-door-pi.local}"
+pi_repo="${DOORBOARD_PI_REPO:-\$HOME/doorboard}"
+
+render() {
+  # Run from the package that owns the qrcode dependency: pnpm keeps it in
+  # packages/ui-kit/node_modules, and `node -e` resolves imports from cwd.
+  cd "$repo/packages/ui-kit"
+  node --input-type=module -e '
+    import QRCode from "qrcode";
+    import { writeFileSync } from "node:fs";
+    const [url, png] = process.argv.slice(1);
+    // Level L keeps the module count (and so the printed size) down: a ~110-char
+    // invite URL still fits a normal terminal window, and the phone is 20 cm away.
+    console.log(await QRCode.toString(url, { type: "terminal", small: true, errorCorrectionLevel: "L" }));
+    if (png) {
+      writeFileSync(png, await QRCode.toBuffer(url, { width: 640, margin: 2 }));
+      console.error(`PNG written: ${png}`);
+    }
+  ' "$1" "${2:-}"
+}
+
+if [[ "${1:-}" == "--url" ]]; then
+  [[ -n "${2:-}" ]] || { echo "--url needs a value" >&2; exit 2; }
+  render "$2" "${3:-}"
+  exit 0
+fi
+
+label="${1:-}"
+png="${2:-}"
+
+# Preflight, because /invites answers 503 or 409 for reasons that are much clearer
+# read from /health than from a bare status code.
+echo "Checking $host ..." >&2
+health="$(ssh -o ConnectTimeout=10 "$host" 'curl -fsS localhost:8081/health')" || {
+  echo "could not reach door-visiond on $host:8081 -- is the Pi up and the service running?" >&2
+  exit 1
+}
+
+python3 - "$health" <<'PY' >&2 || exit 1
+import json, sys
+h = json.loads(sys.argv[1])
+problems = []
+if h.get("enrollment_locked"):
+    problems.append(
+        "enrollment volume is LOCKED -- the sealing key lives on it, so remote\n"
+        "  enrollment is unavailable by design. See docs/runbooks/enrollment-encrypted-volume.md"
+    )
+if h.get("privacy_enabled"):
+    problems.append("privacy mode is ON -- invites are refused (409) and collection is suspended")
+if h.get("relay_configured") is False:
+    problems.append(
+        "relay is not configured -- set VISIOND_RELAY_BASE_URL and\n"
+        "  VISIOND_RELAY_DEVICE_TOKEN in the Pi's .env, then restart door-visiond"
+    )
+elif h.get("relay_status") not in (None, "ok"):
+    problems.append(f"relay status is {h.get('relay_status')!r} -- the phone page may say the door has not checked in")
+if h.get("mode") not in ("single-camera", "dual-camera", "hardware"):
+    problems.append(
+        f"vision mode is {h.get('mode')!r}, not a hardware mode -- enrollment would\n"
+        "  store MOCK embeddings that can never match a real face"
+    )
+print(f"  mode={h.get('mode')} hailo_ok={h.get('hailo_ok')} enrolled={h.get('enrolled')} relay={h.get('relay_status')}")
+if problems:
+    print("\nNot ready to enrol:")
+    for p in problems:
+        print(f"- {p}")
+    sys.exit(1)
+PY
+
+echo "Minting invite${label:+ for \"$label\"} ..." >&2
+# The token is read from the Pi's own .env on the Pi, so it never reaches this
+# machine's shell history, argv, or scrollback.
+response="$(ssh -o ConnectTimeout=10 "$host" \
+  "set -a; . $pi_repo/.env; set +a; \
+   curl -fsS -X POST localhost:8081/invites \
+     -H \"Authorization: Bearer \$DOOR_VISIOND_ADMIN_TOKEN\" \
+     -H 'Content-Type: application/json' \
+     --data-binary @-" <<EOF
+$(python3 -c 'import json,sys; l=sys.argv[1]; print(json.dumps({"label": l[:64]} if l else {}))' "$label")
+EOF
+)"
+
+url="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])' <<<"$response")"
+expires="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("expires_at",""))' <<<"$response")"
+
+render "$url" "$png"
+echo "$url"
+echo >&2
+echo "Single use${expires:+, expires $expires}. Scan it, or send the PNG." >&2

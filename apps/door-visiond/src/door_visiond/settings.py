@@ -139,6 +139,16 @@ class Settings(BaseSettings):
     )
     relay_max_images: int = Field(default=5, alias="VISIOND_RELAY_MAX_IMAGES", ge=1, le=15)
 
+    # ── self-service enrollment (ADR-0019) ────────────────────────────────
+    # A visitor at the doorpad can mint their own invite with no admin credential.
+    # Presence at the door is the authorization, exactly as it already is for the
+    # bell and the guestbook; these two caps are what stop a passer-by loading the
+    # encrypted volume with strangers' biometrics. 0 disables self-service.
+    self_enroll_per_hour: int = Field(default=6, alias="VISIOND_SELF_ENROLL_PER_HOUR", ge=0)
+    self_enroll_max_enrolled: int = Field(
+        default=50, alias="VISIOND_SELF_ENROLL_MAX_ENROLLED", ge=0
+    )
+
     # ── capture cadence (mock/hardware frame pacing) ──────────────────────
     frame_interval_ms: int = Field(default=100, alias="VISIOND_FRAME_INTERVAL_MS")
 

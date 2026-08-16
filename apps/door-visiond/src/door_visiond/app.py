@@ -8,6 +8,7 @@ Routes:
   POST /unenroll         — admin-auth, delete a person (E-5 semantics)
   POST /privacy-mode     — admin-auth, capture-layer kill switch (E-6)
   POST /invites          — admin-auth, mint a remote-enrollment invite (ADR-0016 §4)
+  POST /self-enroll/invites — NO auth, the doorpad minting its own invite (ADR-0019)
   GET  /invites          — admin-auth, list invites and their state
   POST /invites/{id}/revoke — admin-auth, revoke an unconsumed invite
   GET  /relay-status     — admin-auth, remote-enrollment relay reachability
@@ -46,9 +47,11 @@ from door_visiond.consent import ConsentStatementUnavailable, load_consent_state
 from door_visiond.enrollment import ProfileSpec
 from door_visiond.logging_setup import get_logger
 from door_visiond.service import (
+    DisplayNameTakenError,
     EnrollmentLockedError,
     PrivacyModeActiveError,
     QualityTooLowError,
+    SelfEnrollClosedError,
     StaleConsentError,
     VisiondService,
 )
@@ -186,6 +189,11 @@ async def enroll(
             status_code=status.HTTP_409_CONFLICT,
             detail={"error": "stale_consent", "current_version": exc.current_version},
         ) from None
+    except DisplayNameTakenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "display_name_taken", "display_name": exc.display_name},
+        ) from None
     except QualityTooLowError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -249,6 +257,47 @@ class _InviteBody(BaseModel):
     """
 
     label: str | None = Field(default=None, max_length=64)
+
+
+@app.post("/self-enroll/invites", status_code=status.HTTP_201_CREATED)
+async def create_self_enroll_invite(request: Request) -> dict[str, object]:
+    """Mint an invite for whoever is standing at the doorpad (ADR-0019).
+
+    Deliberately unauthenticated, and the only route here that is: door-visiond binds
+    to loopback, so reaching this means running on the Pi, and the doorpad reaches it
+    through door-api rather than holding a credential of its own. Presence is the
+    authorization; the caps in the service are what make that safe.
+
+    Takes no body on purpose — a visitor has no admin note to write, and accepting a
+    caller-supplied label would let them forge one that looks owner-minted and so
+    escape the hourly cap, which is counted by label.
+    """
+    try:
+        return _svc(request).create_self_enroll_invite()
+    except SelfEnrollClosedError as exc:
+        code = (
+            status.HTTP_429_TOO_MANY_REQUESTS
+            if exc.reason == "rate_limited"
+            else status.HTTP_409_CONFLICT
+        )
+        headers = {"Retry-After": str(exc.retry_after_s)} if exc.retry_after_s is not None else None
+        raise HTTPException(
+            status_code=code,
+            detail={"error": "self_enroll_closed", "reason": exc.reason},
+            headers=headers,
+        ) from None
+    except PrivacyModeActiveError:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="privacy_mode") from None
+    except EnrollmentLockedError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="encrypted enrollment storage is locked",
+        ) from None
+    except ConsentStatementUnavailable:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="canonical consent statement unavailable",
+        ) from None
 
 
 @app.post("/invites", status_code=status.HTTP_201_CREATED)

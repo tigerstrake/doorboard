@@ -34,6 +34,7 @@ from door_visiond.consent import load_consent_statement
 from door_visiond.embedder import Embedder, HailoEmbedder, MockEmbedder
 from door_visiond.embedding import Embedding
 from door_visiond.enrollment import (
+    DisplayNameTakenError,
     EnrollmentStore,
     InviteConsumption,
     InviteUnusableError,
@@ -106,6 +107,19 @@ class QualityTooLowError(EnrollError):
     def __init__(self, qualities: list[float]) -> None:
         self.qualities = qualities
         super().__init__("all captured faces are below the enrollment quality threshold")
+
+
+class SelfEnrollClosedError(EnrollError):
+    """Self-service enrollment is refused by a cap (ADR-0019 §3).
+
+    ``reason`` is a stable code the doorpad renders as a sentence, because "closed"
+    with no explanation is the failure mode that sends someone to knock instead.
+    """
+
+    def __init__(self, reason: str, *, retry_after_s: int | None = None) -> None:
+        self.reason = reason
+        self.retry_after_s = retry_after_s
+        super().__init__(reason)
 
 
 @dataclass(frozen=True)
@@ -603,6 +617,39 @@ class VisiondService:
             self._relay_keyring = RelayKeyring(self._settings.relay_key_path)
         return self._relay_keyring
 
+    #: Label stamped on invites minted by a visitor at the doorpad, so the hourly cap
+    #: can be counted from the invite table and owner-minted invites never consume it.
+    SELF_ENROLL_LABEL = "self-service (doorpad)"
+
+    def create_self_enroll_invite(self) -> dict[str, object]:
+        """Mint an invite for a visitor standing at the door, with no admin credential.
+
+        ADR-0019: presence at the doorpad is the authorization, the same gate the bell
+        and the guestbook already use. What keeps that safe is not authentication but
+        bounds -- an hourly cap and a ceiling on how many people this door will ever
+        know -- plus a Telegram notification the owner cannot miss.
+        """
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        if self._privacy_enabled:
+            raise PrivacyModeActiveError
+        per_hour = self._settings.self_enroll_per_hour
+        if per_hour <= 0:
+            raise SelfEnrollClosedError("disabled")
+        max_enrolled = self._settings.self_enroll_max_enrolled
+        if max_enrolled and self._matcher.enrolled_count >= max_enrolled:
+            raise SelfEnrollClosedError("door_full")
+        window_start = datetime.now(UTC) - timedelta(hours=1)
+        minted = self._store.count_invites_since(window_start, label=self.SELF_ENROLL_LABEL)
+        if minted >= per_hour:
+            raise SelfEnrollClosedError("rate_limited", retry_after_s=3600)
+        invite = self.create_invite(label=self.SELF_ENROLL_LABEL)
+        logger.info(
+            "self_enroll_invite_minted",
+            extra={"minted_last_hour": minted + 1, "enrolled": self._matcher.enrolled_count},
+        )
+        return invite
+
     def create_invite(self, *, label: str | None = None) -> dict[str, object]:
         """Mint a single-use invite and return the URL a phone can open.
 
@@ -770,6 +817,13 @@ class VisiondService:
             return PickupAck(bundle_id=bundle.bundle_id, outcome="rejected", reason=exc.reason)
         except StaleConsentError:
             return PickupAck(bundle_id=bundle.bundle_id, outcome="rejected", reason="stale_consent")
+        except DisplayNameTakenError:
+            # "rejected", not "failed": the bundle will never succeed as-is, so the
+            # relay should stop offering it and the phone should say to pick another
+            # name rather than sit on "Waiting for the door".
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="rejected", reason="display_name_taken"
+            )
         except QualityTooLowError:
             return PickupAck(bundle_id=bundle.bundle_id, outcome="failed", reason="quality_too_low")
         except PrivacyModeActiveError:
@@ -1036,6 +1090,11 @@ class VisiondService:
             "esp32_profile_push_status": "degraded" if esp32_profile_warning else "ok",
             "esp32_profile_warning": esp32_profile_warning,
             "privacy_state_status": "invalid_fail_closed" if self._privacy_state_degraded else "ok",
+            # How many of the enrolled people added themselves at the doorpad
+            # (ADR-0019 §4). The owner cannot be asked to consent to self-service and
+            # then have no way to see it happening; `GET /people` names them, this
+            # counts them, and both are one request away.
+            "self_enrolled": self._store.count_consumed_invites(label=self.SELF_ENROLL_LABEL),
             # Frames door-media re-served unchanged. Climbing steadily means its
             # snapshot reader has stalled and the doorway is being judged on stale
             # pictures -- recognition looks alive and is not seeing anything new.
@@ -1065,6 +1124,9 @@ class VisiondService:
     def metrics_snapshot(self) -> dict[str, float]:
         snap = self._core.metrics_snapshot()
         snap["snapshot_duplicate_frames"] = float(self._backend.status().duplicate_frames)
+        snap["self_enrolled"] = float(
+            self._store.count_consumed_invites(label=self.SELF_ENROLL_LABEL)
+        )
         snap["cache_hit_rate"] = self.cache_hit_rate()
         snap["enrolled"] = float(self._matcher.enrolled_count)
         snap["esp32_profile_updates_acked"] = float(self._esp32_profile_updates_acked)

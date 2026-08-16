@@ -210,8 +210,27 @@ type DoorPadScreen =
   | "poll"
   | "checkin"
   | "privacy"
-  | "remote";
+  | "remote"
+  | "enroll";
 type VideoStep = "offer" | "countdown" | "recording" | "review" | "saved" | "qr";
+type EnrollState = "idle" | "minting" | "ready" | "closed" | "failed";
+interface EnrollInvite {
+  url: string;
+  expires_at: string;
+}
+/**
+ * Why enrollment is refused, in the visitor's words. Keyed by the reason codes
+ * door-visiond returns (ADR-0019 §3) so a new backend reason surfaces as the
+ * generic line rather than a blank screen.
+ */
+const ENROLL_CLOSED_COPY: Record<string, string> = {
+  rate_limited:
+    "A few people have just signed up. Enrollment reopens within the hour — or ask the resident.",
+  door_full: "This door has as many saved faces as it holds. Ask the resident to make room.",
+  disabled: "Self sign-up is switched off at this door. Ask the resident to add you.",
+  privacy_mode: "The camera is off right now, so nobody can be added. Try later.",
+  locked: "The door cannot reach its secure storage, so nobody can be added right now.",
+};
 type PhotoStep = "offer" | "countdown" | "review" | "saved";
 // Lifecycle of the auto-captured post-bell check-in photo:
 // idle -> capturing -> ready -> (saving -> saved | cleared). "cleared" is a
@@ -419,6 +438,12 @@ export function App() {
   const [postRingName, setPostRingName] = useState<string>("");
   const [postRingCheckinPending, setPostRingCheckinPending] = useState<boolean>(false);
   const [visitorQrUrl, setVisitorQrUrl] = useState<string | null>(null);
+  // Self-service enrollment (ADR-0019). "closed" carries the reason door-visiond
+  // gave, because a visitor who is refused deserves a sentence, not a spinner that
+  // stops: they are standing at a door deciding whether to knock.
+  const [enrollInvite, setEnrollInvite] = useState<EnrollInvite | null>(null);
+  const [enrollState, setEnrollState] = useState<EnrollState>("idle");
+  const [enrollClosedReason, setEnrollClosedReason] = useState<string | null>(null);
   const [mediaActionPending, setMediaActionPending] = useState<boolean>(false);
   const [adminRecordings, setAdminRecordings] = useState<VideoRecording[]>([]);
   const [adminInboxState, setAdminInboxState] = useState<"idle" | "loading" | "ready" | "unavailable">(
@@ -2272,6 +2297,35 @@ export function App() {
   const renderVideoPreview = () => <LiveVideoPreview title="Live self-preview" />;
 
   const renderDoorPad = () => {
+    const startEnrollFlow = async () => {
+      setDoorPadScreen("enroll");
+      setEnrollState("minting");
+      setEnrollInvite(null);
+      setEnrollClosedReason(null);
+      try {
+        // No credential: standing here is the authorization (ADR-0019 §1).
+        const response = await fetch(`${API_BASE}/doorpad/enroll-invite`, { method: "POST" });
+        if (response.status === 201) {
+          setEnrollInvite((await response.json()) as EnrollInvite);
+          setEnrollState("ready");
+          return;
+        }
+        let reason = response.status === 503 ? "locked" : "";
+        try {
+          const detail = (await response.json()).detail;
+          if (typeof detail === "object" && detail?.reason) reason = String(detail.reason);
+          else if (typeof detail === "string" && detail.includes("locked")) reason = "locked";
+          else if (detail === "privacy_mode") reason = "privacy_mode";
+        } catch {
+          // A refusal with an unreadable body still gets the generic sentence.
+        }
+        setEnrollClosedReason(reason);
+        setEnrollState("closed");
+      } catch {
+        setEnrollState("failed");
+      }
+    };
+
     const handleActionClick = (actionName: string, targetScreen: DoorPadScreen) => {
       if (targetScreen === "ringing") {
         ringDoorbell();
@@ -2323,6 +2377,10 @@ export function App() {
 
             <BigButton id="btn-checkin" icon={<span aria-hidden="true">C</span>} onClick={() => handleActionClick("Check In", "checkin")}>
               Visitor Check-In
+            </BigButton>
+
+            <BigButton id="btn-enroll" icon={<span aria-hidden="true">+</span>} onClick={startEnrollFlow}>
+              Enroll My Face
             </BigButton>
 
             <BigButton id="btn-remote" icon={<span aria-hidden="true">W</span>} onClick={() => handleActionClick("Wallboard", "remote")}>
@@ -2862,6 +2920,56 @@ export function App() {
                 </p>
               )}
               <div className="action-button-group">
+                <BigButton onClick={returnDoorPadToContext}>Back</BigButton>
+              </div>
+            </div>
+          )}
+
+          {doorPadScreen === "enroll" && (
+            <div className="doorpad-sub-content" data-testid="enroll-screen">
+              <h2>Enroll My Face</h2>
+              {enrollState === "minting" && <p>Making you a code…</p>}
+
+              {enrollState === "ready" && enrollInvite && (
+                <>
+                  <QRPlaceholder
+                    url={enrollInvite.url}
+                    alt="Enrollment invite QR code"
+                    text="Scan with your phone camera"
+                    size={300}
+                    showUrl={false}
+                  />
+                  <p className="placeholder-subtext">
+                    Your phone will show what the door records and ask you to agree, then take a few
+                    photos. The photos are scrambled so only this door can read them, and they are
+                    deleted once your face is learned. This code works once.
+                  </p>
+                </>
+              )}
+
+              {enrollState === "closed" && (
+                <div className="privacy-info-box" data-testid="enroll-closed">
+                  <p>
+                    {(enrollClosedReason && ENROLL_CLOSED_COPY[enrollClosedReason]) ??
+                      "Enrollment is not available at this door right now."}
+                  </p>
+                </div>
+              )}
+
+              {enrollState === "failed" && (
+                <div className="privacy-info-box" data-testid="enroll-failed">
+                  <p>The door could not be reached. Try again in a moment.</p>
+                </div>
+              )}
+
+              <div className="action-button-group">
+                {(enrollState === "ready" ||
+                  enrollState === "failed" ||
+                  enrollState === "closed") && (
+                  <BigButton id="btn-enroll-retry" onClick={startEnrollFlow}>
+                    {enrollState === "ready" ? "New Code" : "Try Again"}
+                  </BigButton>
+                )}
                 <BigButton onClick={returnDoorPadToContext}>Back</BigButton>
               </div>
             </div>
