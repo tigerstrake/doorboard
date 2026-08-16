@@ -1314,6 +1314,53 @@ async def visitor_token() -> dict[str, str | int]:
     return state.visitor_token()
 
 
+@app.post("/doorpad/enroll-invite", status_code=status.HTTP_201_CREATED)
+async def doorpad_enroll_invite() -> dict[str, Any]:
+    """Mint a self-service enrollment invite for whoever is at the doorpad (ADR-0019).
+
+    A forwarder, not a policy: every cap, the locked-volume check and privacy mode all
+    live in door-visiond, which owns the enrollment store. This exists because the
+    kiosks connect to door-api and nothing else (ARCHITECTURE.md §7) — the doorpad
+    cannot call door-visiond itself, and giving the kiosk browser a second base URL and
+    a credential to go with it is exactly what §7 exists to prevent.
+
+    Unauthenticated, like the bell and the guestbook: standing at the door is the
+    authorization (ADR-0019 §1). The response carries the invite URL, which is the only
+    copy of its secret — same as the admin path.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=state.config.visiond_timeout_s) as client:
+            resp = await client.post(
+                f"{state.config.visiond_base_url.rstrip('/')}/self-enroll/invites",
+            )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="door-visiond unavailable",
+        ) from exc
+    if resp.status_code == status.HTTP_201_CREATED:
+        body: dict[str, Any] = resp.json()
+        return body
+    # Refusals are passed through with their status and reason intact, so the doorpad
+    # can say "enrollment is closed for the next hour" rather than "something failed".
+    if resp.status_code in (
+        status.HTTP_409_CONFLICT,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+    ):
+        detail: Any = "enrollment unavailable"
+        with contextlib.suppress(Exception):
+            detail = resp.json().get("detail", detail)
+        headers = (
+            {"Retry-After": resp.headers["Retry-After"]} if "Retry-After" in resp.headers else None
+        )
+        raise HTTPException(status_code=resp.status_code, detail=detail, headers=headers)
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="door-visiond refused the request",
+    )
+
+
 @app.get("/visitor-relay-status")
 async def visitor_relay_status() -> dict[str, Any]:
     """Whether the visitor QR is currently pointing at the relay or the LAN.

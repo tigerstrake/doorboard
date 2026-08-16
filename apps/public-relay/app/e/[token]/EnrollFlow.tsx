@@ -624,6 +624,8 @@ export function outcomeMessage(reason: string): string {
       return "The invitation expired before the door collected your photos. Ask for a fresh QR code.";
     case "stale_consent":
       return "The consent wording changed while you were enrolling. Please reload and start again.";
+    case "display_name_taken":
+      return "Someone at this door already uses that name. Start again with a different one — the door needs to tell you apart.";
     case "privacy_mode":
       return "Recognition is currently switched off at the door, so enrolment was declined.";
     case "enrollment_storage_locked":

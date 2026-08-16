@@ -112,7 +112,7 @@ All events use the shared envelope and catalog in [docs/protocols/events.md](doc
 
 - **UART** (preferred) Pi ↔ ESP32 for immediate profile/action messages ([wire protocol](docs/protocols/esp32-pi-protocol.md)); UDP acceptable; MQTT never the only immediate transport.
 - **WebSockets** between door-api and the kiosk displays (door-api is the hub; the kiosks never connect to another service).
-- **Loopback HTTP** between Pi-local services, for events one service owns and another has to act on — door-visiond's identity events into door-api's session machine, door-visiond's purge requests into door-sync. Token-authenticated and best-effort: a Pi-local hop may drop an event, never block the emitter.
+- **Loopback HTTP** between Pi-local services, for events one service owns and another has to act on — door-visiond's identity events into door-api's session machine, door-visiond's purge requests into door-sync, and the DoorPad's self-enrollment request from door-api into door-visiond (ADR-0019 — the kiosks only ever talk to door-api, so a doorpad action needing another service is forwarded, never dialled direct). Token-authenticated and best-effort: a Pi-local hop may drop an event, never block the emitter.
 - **MQTT (Mosquitto on NUC)** for control-plane fan-out, HA integration, and audit — never in the critical path.
 
 Conventions: UTC internally, local timezone only at the display boundary; monotonic clocks for latency and expiry; opaque `person_id`s (never a name as a key); `trace_id` propagated end to end.

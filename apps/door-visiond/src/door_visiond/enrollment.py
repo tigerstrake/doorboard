@@ -160,6 +160,18 @@ class InviteUnusableError(Exception):
         super().__init__(reason)
 
 
+class DisplayNameTakenError(Exception):
+    """Someone enrolled already answers to this name (ADR-0019 §2).
+
+    Raised inside the enrolling transaction, so it is a uniqueness violation rather
+    than a pre-flight opinion: two enrollments of one name cannot interleave past it.
+    """
+
+    def __init__(self, display_name: str) -> None:
+        self.display_name = display_name
+        super().__init__("that name is already enrolled at this door")
+
+
 @dataclass(frozen=True)
 class InviteConsumption:
     """Proof that a remote enrollee held the invite secret (ADR-0016 §4 step 2)."""
@@ -258,6 +270,13 @@ class EnrollmentStore:
                 self._conn.execute("BEGIN IMMEDIATE" if invite is not None else "BEGIN")
                 if invite is not None:
                     self._claim_invite_locked(invite, person_id=person_id, now=now)
+                # Uniqueness, so it belongs in the transaction that inserts: checking
+                # outside it lets two enrollments of one name interleave and both win.
+                # Ordered AFTER the invite claim on purpose -- a replayed bundle must
+                # be told its invite is spent, not that the name is taken, which would
+                # tell whoever holds a dead invite who lives here (ADR-0019 §2).
+                if self._display_name_taken_locked(display_name):
+                    raise DisplayNameTakenError(display_name)
                 self._conn.execute(
                     "INSERT INTO person "
                     "(person_id, display_name, consent_version, consent_at, created_at) "
@@ -661,6 +680,59 @@ class EnrollmentStore:
                 "SELECT 1 FROM profile WHERE profile_id=?", (profile_id,)
             ).fetchone()
         return row is not None
+
+    @staticmethod
+    def normalize_display_name(name: str) -> str:
+        """Fold a display name for collision comparison (ADR-0019 §2).
+
+        Case-insensitive and whitespace-collapsed, so "mom", "Mom" and "  Mom "
+        are one name. Deliberately not stored -- only compared -- so the name the
+        person chose is the name that appears on the wallboard.
+        """
+        return " ".join(name.split()).casefold()
+
+    def _display_name_taken_locked(self, name: str) -> bool:
+        """True when someone enrolled already answers to *name*. Caller holds ``_lock``.
+
+        Without this a stranger could enrol as a resident's name and be greeted -- and
+        announced to the owner over Telegram -- as them. Recognition grants no authority
+        (ADR-0005 §3), but it does speak in the owner's voice, and that is worth
+        protecting. No public variant: ``_lock`` is not reentrant, so a version that
+        takes the lock would deadlock the one caller that matters, inside ``enroll``.
+        """
+        target = self.normalize_display_name(name)
+        rows = self._conn.execute("SELECT display_name FROM person").fetchall()
+        return any(self.normalize_display_name(r[0]) == target for r in rows)
+
+    def count_consumed_invites(self, *, label: str) -> int:
+        """How many invites carrying *label* actually produced an enrollment.
+
+        With ``label`` set to the self-service marker this is "how many people added
+        themselves", which is the number the owner wants to be able to see (ADR-0019
+        §4). Derived rather than counted into new state: the invite row already
+        records its own outcome.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM relay_invite WHERE label = ? AND consumed_at IS NOT NULL",
+                (label,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def count_invites_since(self, since: datetime, *, label: str) -> int:
+        """How many invites carrying *label* were minted at or after *since*.
+
+        Counted from the table rather than an in-process tally so the self-service
+        rate cap survives a door-visiond restart -- otherwise a restart would hand
+        out a fresh allowance. Closed and consumed invites still count: the cap is
+        on minting, not on outcomes.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM relay_invite WHERE label = ? AND created_at >= ?",
+                (label, since.isoformat()),
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def list_people(self) -> list[dict[str, object]]:
         with self._lock:

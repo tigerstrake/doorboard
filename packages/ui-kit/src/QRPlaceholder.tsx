@@ -9,6 +9,13 @@ export interface QRPlaceholderProps {
   alt?: string;
   /** Pixel width of the generated code. Larger for codes scanned across a room. */
   size?: number;
+  /**
+   * Print the URL as text under the code. On by default, because the visitor QR is
+   * a plain link worth being able to type. Turn it off for an enrollment invite:
+   * the URL carries a single-use secret, it is far too long to read off a 7" panel,
+   * and the code above it is the only part anyone needs.
+   */
+  showUrl?: boolean;
 }
 
 export function QRPlaceholder({
@@ -17,6 +24,7 @@ export function QRPlaceholder({
   className = "",
   alt = "Visitor link QR code",
   size = 320,
+  showUrl = true,
 }: QRPlaceholderProps) {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
 
@@ -46,9 +54,11 @@ export function QRPlaceholder({
         {imageUrl ? <img src={imageUrl} alt={alt} /> : null}
       </div>
       <p className="db-qr-placeholder__text">{text}</p>
-      <span className="db-qr-placeholder__url" data-testid="qr-placeholder-url">
-        {url}
-      </span>
+      {showUrl && (
+        <span className="db-qr-placeholder__url" data-testid="qr-placeholder-url">
+          {url}
+        </span>
+      )}
     </div>
   );
 }

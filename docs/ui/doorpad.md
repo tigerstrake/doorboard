@@ -10,7 +10,13 @@ Public 7" touchscreen (~1024×600), the visitor's control surface. The hardware 
 4. **Poll** — current question, tap to vote.
 5. **Check in** — voluntary "I was here" (optionally as an enrolled person; feeds the playful most-frequent-visitor stat).
 6. **Photo booth** (feature-flagged).
-7. **Privacy** — camera notice, deletion request flow (`social.deletion_requested`).
+7. **Enroll my face** — self-service enrollment (ADR-0019). Mints a single-use invite via
+   `POST /doorpad/enroll-invite` and renders its QR full-panel; the visitor completes consent
+   and photos on their own phone. No admin credential: standing at the door is the
+   authorization, as it already is for the bell and the guestbook. Refusals must render the
+   reason as a sentence (`rate_limited`, `door_full`, `disabled`, privacy, locked volume) —
+   a visitor deciding whether to knock is owed an explanation, not a stalled spinner.
+8. **Privacy** — camera notice, deletion request flow (`social.deletion_requested`).
 
 ## Video message flow
 
