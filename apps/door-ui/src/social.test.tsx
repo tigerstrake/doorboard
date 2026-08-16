@@ -231,7 +231,7 @@ describe("T-405 public kiosk regressions", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
-    fireEvent.click(screen.getByText("Privacy & Info"));
+    fireEvent.click(document.getElementById("btn-privacy") as HTMLElement);
     const deleteButton = screen.getByText("Request Deletion of My Data").closest("button");
     expect(deleteButton?.disabled).toBe(true);
   });
@@ -317,16 +317,22 @@ describe("T-405 public kiosk regressions", () => {
     expect(screen.queryByText("Recording Starts In")).toBeNull();
   });
 
-  it("keeps the camera notice behind Privacy & Info", async () => {
+  it("keeps the camera notice behind the About tile", async () => {
     window.history.pushState(null, "", "/doorpad");
     mockFetchSequence([{ body: { session: { state: "IDLE" }, config: {} } }]);
 
     render(<App />);
 
     await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
-    expect(screen.queryByText("Camera Notice & Deletion Requests")).toBeNull();
-    fireEvent.click(screen.getByText("Privacy & Info"));
-    expect(screen.getByText("Camera Notice & Deletion Requests")).toBeTruthy();
+    // The home screen stays a grid of actions: the notice is one tap away, not inline.
+    expect(screen.queryByTestId("about-doorboard")).toBeNull();
+
+    const aboutTile = document.getElementById("btn-privacy");
+    expect(aboutTile).toBeTruthy();
+    fireEvent.click(aboutTile as HTMLElement);
+
+    expect(screen.getByTestId("about-doorboard")).toBeTruthy();
+    expect(screen.getByText("If you are not enrolled")).toBeTruthy();
   });
 
   it("lets DoorPad choose a mock Wallboard focused channel locally", async () => {

@@ -22,6 +22,7 @@ import type {
   DoorboardEvent,
   PresenceLabel,
 } from "@doorboard/contracts";
+import { AboutDoorboard } from "./AboutDoorboard";
 import { ApproachGreeting } from "./ApproachGreeting";
 import { AttributionNotice } from "./AttributionNotice";
 import { WallboardVisitorMode } from "./wallboard/WallboardVisitorMode";
@@ -283,6 +284,14 @@ interface AmbientAlert {
 
 function doorPadRouteForState(state: SessionState): { screen: DoorPadScreen; video: VideoStep } {
   if (state === "IDLE" || state === "SESSION_END") return { screen: "home", video: "offer" };
+  // Recognition alone must not move the visitor off the home screen. These two states are
+  // reached by walking up, with nothing pressed, and they fell through to the "ringing"
+  // screen — so being recognised showed a bell-ringing UI to somebody who had not rung.
+  // ARCHITECTURE.md §5.4: late recognition may update the display, never re-trigger the
+  // interaction. The greeting overlay and the identity badge carry the recognition.
+  if (state === "APPROACH_DETECTED" || state === "IDENTITY_CACHED") {
+    return { screen: "home", video: "offer" };
+  }
   if (state === "VIDEO_MESSAGE_OFFERED") return { screen: "message", video: "offer" };
   if (state === "VIDEO_MESSAGE_RECORDING") return { screen: "message", video: "recording" };
   if (state === "VIDEO_MESSAGE_REVIEW") return { screen: "message", video: "review" };
@@ -2398,51 +2407,121 @@ export function App() {
             profileId={activeProfile}
           />
           <header className="doorpad-header">
-            <h2>Room {ROOM_LABEL} DoorPad</h2>
-            {RESIDENTS_LABEL && <p className="doorpad-residents">{RESIDENTS_LABEL}</p>}
-            <p>Large-touch visitor controls</p>
+            <div className="doorpad-header__row">
+              <div>
+                <h2>Room {ROOM_LABEL} DoorPad</h2>
+                {RESIDENTS_LABEL && <p className="doorpad-residents">{RESIDENTS_LABEL}</p>}
+              </div>
+              {/* Who the door currently thinks you are, for as long as it thinks so
+                  (ADR-0020). Driven by the same identity the check-in button reads, so
+                  the badge disappearing and named check-in vanishing are always the same
+                  event rather than two surfaces disagreeing. */}
+              {activeDisplayName && (
+                <div className="doorpad-identity" data-testid="doorpad-identity">
+                  <span className="doorpad-identity__dot" aria-hidden="true" />
+                  <span className="doorpad-identity__name">{activeDisplayName}</span>
+                  <span className="doorpad-identity__note">recognised</span>
+                </div>
+              )}
+            </div>
+            <p>{activeDisplayName ? "Tap anything below." : "Large-touch visitor controls"}</p>
           </header>
           
           <div className="doorpad-grid">
-            <BigButton id="btn-ring" variant="primary" icon={<span aria-hidden="true">R</span>} onClick={ringDoorbell}>
+            <BigButton
+              id="btn-ring"
+              variant="primary"
+              icon={<span aria-hidden="true">R</span>}
+              hint="Let them know you're here"
+              onClick={ringDoorbell}
+            >
               Ring Bell
             </BigButton>
-            
-            <BigButton id="btn-video" icon={<span aria-hidden="true">V</span>} onClick={() => {
-              setDoorPadScreen("message");
-              setVideoStep("offer");
-            }}>
+
+            {/* Promoted deliberately: this is how anyone becomes recognised at all, and
+                as one of eight identical tiles nobody found it. */}
+            <BigButton
+              id="btn-enroll"
+              variant="primary"
+              className="doorpad-tile--enroll"
+              icon={<span aria-hidden="true">☺</span>}
+              hint="Scan a code once — the door greets you by name after that"
+              onClick={startEnrollFlow}
+            >
+              Enroll My Face
+            </BigButton>
+
+            <BigButton
+              id="btn-video"
+              icon={<span aria-hidden="true">V</span>}
+              hint="Record a clip if nobody answers"
+              onClick={() => {
+                setDoorPadScreen("message");
+                setVideoStep("offer");
+                reportDoorpadActivity();
+              }}
+            >
               Video Message
             </BigButton>
 
             {FEATURE_PHOTOBOOTH && (
-              <BigButton id="btn-photo-booth" icon={<span aria-hidden="true">P</span>} onClick={startPhotoFlow}>
+              <BigButton
+                id="btn-photo-booth"
+                icon={<span aria-hidden="true">P</span>}
+                hint="Take a photo for the gallery"
+                onClick={startPhotoFlow}
+              >
                 Photo Booth
               </BigButton>
             )}
 
-            <BigButton id="btn-guestbook" icon={<span aria-hidden="true">G</span>} onClick={() => handleActionClick("Guestbook", "guestbook")}>
+            <BigButton
+              id="btn-guestbook"
+              icon={<span aria-hidden="true">G</span>}
+              hint="Leave a note on the big screen"
+              onClick={() => handleActionClick("Guestbook", "guestbook")}
+            >
               Guestbook
             </BigButton>
 
-            <BigButton id="btn-poll" icon={<span aria-hidden="true">Q</span>} onClick={() => handleActionClick("Poll Vote", "poll")}>
+            <BigButton
+              id="btn-poll"
+              icon={<span aria-hidden="true">Q</span>}
+              hint="Answer today's question"
+              onClick={() => handleActionClick("Poll Vote", "poll")}
+            >
               Vote in Poll
             </BigButton>
 
-            <BigButton id="btn-checkin" icon={<span aria-hidden="true">C</span>} onClick={() => handleActionClick("Check In", "checkin")}>
+            <BigButton
+              id="btn-checkin"
+              icon={<span aria-hidden="true">C</span>}
+              hint={
+                activeDisplayName
+                  ? `Sign in as ${activeDisplayName}`
+                  : "Add yourself to today's visitor count"
+              }
+              onClick={() => handleActionClick("Check In", "checkin")}
+            >
               Visitor Check-In
             </BigButton>
 
-            <BigButton id="btn-enroll" icon={<span aria-hidden="true">+</span>} onClick={startEnrollFlow}>
-              Enroll My Face
-            </BigButton>
-
-            <BigButton id="btn-remote" icon={<span aria-hidden="true">W</span>} onClick={() => handleActionClick("Wallboard", "remote")}>
+            <BigButton
+              id="btn-remote"
+              icon={<span aria-hidden="true">W</span>}
+              hint="Change what the big screen shows"
+              onClick={() => handleActionClick("Wallboard", "remote")}
+            >
               Wallboard Control
             </BigButton>
 
-            <BigButton id="btn-privacy" icon={<span aria-hidden="true">I</span>} onClick={() => handleActionClick("Privacy Notice", "privacy")}>
-              Privacy & Info
+            <BigButton
+              id="btn-privacy"
+              icon={<span aria-hidden="true">I</span>}
+              hint="How this door works, what it records, and how to erase it"
+              onClick={() => handleActionClick("Privacy Notice", "privacy")}
+            >
+              About This Doorboard
             </BigButton>
           </div>
         </div>
@@ -3031,10 +3110,11 @@ export function App() {
 
           {doorPadScreen === "privacy" && (
             <div className="doorpad-sub-content">
-              <h2>Camera Notice & Deletion Requests</h2>
+              <h2>About This Doorboard</h2>
+              {/* Shared with the wallboard's About channel so the panel and the hallway
+                  cannot end up describing the same door differently. */}
               <div className="privacy-info-box">
-                <p>This door pad uses local cameras for enrolled-resident recognition only.</p>
-                <p>Unknown visitors are never named, and biometric data stays offline on the device.</p>
+                <AboutDoorboard />
               </div>
               {myContent.length > 0 && (
                 <div className="my-content-list">

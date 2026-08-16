@@ -13,7 +13,8 @@ export type WallboardFocusChannel =
   | "food"
   | "poll"
   | "guestbook"
-  | "moments";
+  | "moments"
+  | "about";
 
 export interface WallboardFocusRequest {
   requestId: string;
@@ -90,6 +91,12 @@ export const WALLBOARD_CHANNELS: WallboardChannelDefinition[] = [
     title: "Moments",
     eyebrow: "Gallery",
     description: "Approved photo-booth highlights.",
+  },
+  {
+    id: "about",
+    title: "About this doorboard",
+    eyebrow: "The door",
+    description: "What it is, what it records, and what it refuses to do.",
   },
 ];
 

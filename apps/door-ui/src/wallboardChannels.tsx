@@ -7,6 +7,7 @@ import type {
   AmbientPrinterStatusPayload,
   AmbientSatellitePassPayload,
 } from "@doorboard/contracts";
+import { AboutDoorboard } from "./AboutDoorboard";
 import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
 import { GuestbookQuote } from "./SocialRenderers";
 import { AircraftFocusPanel } from "./wallboard/AircraftFocusPanel";
@@ -590,5 +591,9 @@ function renderFocusContent(
       ) : (
         <FocusEmpty title="No approved moments yet." hint="Photo-booth highlights land here once approved." />
       );
+    case "about":
+      // The only channel with no data source: it explains the door itself, so it never
+      // has an empty state and is always safe to focus.
+      return <AboutDoorboard className="about-doorboard--focus" />;
   }
 }

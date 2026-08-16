@@ -3018,3 +3018,152 @@ input:focus-visible {
   opacity: 0.75;
   font-size: 0.85em;
 }
+
+/* --- DoorPad identity + tile clarity (T-316) --------------------------------
+   Three complaints, one screen: tiles that named themselves instead of saying
+   what they do, no standing indication of who the door thinks you are, and
+   content clipping on the 1024x600 panel. */
+
+.doorpad-header__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+/* Who the door currently believes it is talking to. Uses the recognised person's own
+   accent (--db-accent, set from their onboarding colour) so the badge, the greeting and
+   the door's LED all agree. Disappears the moment the identity window lapses. */
+.doorpad-identity {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--db-accent);
+  background: color-mix(in srgb, var(--db-accent) 14%, transparent);
+  flex: 0 0 auto;
+}
+
+.doorpad-identity__dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--db-accent);
+  box-shadow: 0 0 8px var(--db-accent);
+}
+
+.doorpad-identity__name {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.doorpad-identity__note {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.7;
+}
+
+/* Enrollment is the entry point to everything personalised, so it reads as an
+   invitation rather than one of eight equal squares. */
+.doorpad-tile--enroll {
+  border-color: var(--db-accent);
+}
+
+/* --- 1024x600 kiosk fit ---
+   The panel is exactly 1024x600. `.doorpad-view` is `height: 100vh` and the home grid
+   carries nine tiles that now each have a second line, so at the default sizes the last
+   row fell below the fold. A touchscreen gives no scrollbar hint, so "off the fold" reads
+   as "the button is cut off". Height-based rather than width-based: the Dell is also
+   under 1100px wide in some layouts but has 1080px of height to spend. */
+@media (max-height: 660px) {
+  .doorpad-view {
+    padding: 0.6rem 0.9rem;
+  }
+
+  .doorpad-header {
+    margin-bottom: 0.5rem;
+  }
+
+  .doorpad-header h2 {
+    font-size: 1.15rem;
+    margin-bottom: 0.1rem;
+  }
+
+  .doorpad-header p,
+  .doorpad-residents {
+    font-size: 0.8rem;
+    margin: 0.1rem 0;
+  }
+
+  .doorpad-identity {
+    padding: 0.25rem 0.6rem;
+  }
+
+  .doorpad-grid {
+    max-width: none;
+    gap: 0.5rem;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .doorpad-grid .db-big-button {
+    min-height: 0;
+    padding: 0.6rem 0.7rem;
+    font-size: 0.92rem;
+  }
+
+  .doorpad-grid .db-big-button__icon {
+    font-size: 1.1rem;
+  }
+
+  .doorpad-grid .db-big-button__hint {
+    font-size: 0.7rem;
+    max-width: none;
+  }
+}
+
+/* --- About this doorboard (T-316) ---
+   Shared by the doorpad screen and the wallboard's About channel. Left-aligned prose:
+   this is meant to be read, not glanced at, unlike the rest of the wallboard. */
+.about-doorboard {
+  display: grid;
+  gap: 0.85rem;
+  text-align: left;
+}
+
+.about-doorboard__heading {
+  margin: 0 0 0.2rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  color: var(--db-accent);
+}
+
+.about-doorboard__body {
+  margin: 0;
+  line-height: 1.5;
+  opacity: 0.9;
+}
+
+/* On the 1080p wallboard there is room to read it across two columns from a distance. */
+.about-doorboard--focus {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.1rem 2rem;
+  font-size: 1.05rem;
+}
+
+.about-doorboard--focus .about-doorboard__heading {
+  font-size: 1.15rem;
+}
+
+@media (max-height: 660px) {
+  .about-doorboard {
+    gap: 0.55rem;
+    font-size: 0.86rem;
+  }
+
+  .about-doorboard__heading {
+    font-size: 0.86rem;
+  }
+}
