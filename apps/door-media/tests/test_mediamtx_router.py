@@ -857,3 +857,53 @@ async def test_a_stale_cached_frame_is_not_served(tmp_path: Path) -> None:
 
     router._latest_frame_at = time.monotonic() - 5.0
     assert router._fresh_frame() is None
+
+
+def test_rotation_reaches_the_camera_when_set(tmp_path: Path) -> None:
+    """An inverted sensor makes recognition look broken, so this has to actually apply.
+
+    ArcFace is not rotation invariant: an upside-down face scores near nothing against
+    upright enrollment photos. Found on the door, where a bell-clip thumbnail came back
+    inverted (T-321).
+    """
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_VIDEO_ROTATION=180,
+    )
+
+    assert "--rotation 180" in _build_run_on_init(cfg)
+
+
+def test_no_orientation_flags_when_the_camera_is_upright(tmp_path: Path) -> None:
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+
+    command = _build_run_on_init(cfg)
+
+    assert "--rotation" not in command
+    assert "--hflip" not in command
+    assert "--vflip" not in command
+
+
+def test_flips_are_independent_of_rotation(tmp_path: Path) -> None:
+    """A mirrored mount is a different fault from an inverted one."""
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_VIDEO_HFLIP=True,
+    )
+
+    command = _build_run_on_init(cfg)
+
+    assert "--hflip" in command
+    assert "--rotation" not in command
+
+
+def test_an_impossible_rotation_fails_at_startup(tmp_path: Path) -> None:
+    """rpicam-vid accepts only 0 or 180; 90 would fail as a dead camera."""
+    with pytest.raises(ValidationError):
+        Settings(
+            SSD_DATA_ROOT=tmp_path,
+            MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+            DOOR_MEDIA_VIDEO_ROTATION=90,
+        )

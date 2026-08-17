@@ -148,6 +148,12 @@ def _build_run_on_init(settings: Settings) -> str:
             # The imx708 has a focus motor and no default AF mode was ever set, so the
             # lens sat wherever it powered up: the live stream was visibly soft.
             f"--autofocus-mode {settings.video_autofocus_mode}",
+            # Orientation. An inverted sensor is not a cosmetic problem: ArcFace is not
+            # rotation invariant, so upside-down faces score near nothing against upright
+            # enrollment photos and recognition simply appears not to work.
+            *([f"--rotation {settings.video_rotation}"] if settings.video_rotation else []),
+            *(["--hflip"] if settings.video_hflip else []),
+            *(["--vflip"] if settings.video_vflip else []),
             *(
                 [f"--tuning-file {settings.camera_tuning_file}"]
                 if settings.camera_tuning_file

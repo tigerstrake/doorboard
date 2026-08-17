@@ -132,8 +132,25 @@ class Settings(BaseSettings):
         alias="DOOR_MEDIA_CAMERA_TUNING_FILE",
     )
 
+    # Sensor orientation. This is not cosmetic: a bell-clip thumbnail pulled off the
+    # door came back upside down, which means every face the recogniser sees is inverted
+    # too. ArcFace embeddings are not rotation invariant, so an inverted face scores near
+    # nothing against upright enrollment photos -- an upside-down camera looks exactly
+    # like "recognition does not work". 0 or 180 only, per rpicam-vid.
+    video_rotation: int = Field(default=0, alias="DOOR_MEDIA_VIDEO_ROTATION")
+    video_hflip: bool = Field(default=False, alias="DOOR_MEDIA_VIDEO_HFLIP")
+    video_vflip: bool = Field(default=False, alias="DOOR_MEDIA_VIDEO_VFLIP")
+
     # rpicam-vid segment length (seconds) for the rolling recording buffer.
     segment_s: int = Field(default=2, alias="DOOR_MEDIA_SEGMENT_S")
+
+    @field_validator("video_rotation")
+    @classmethod
+    def _validate_rotation(cls, v: int) -> int:
+        if v not in {0, 180}:
+            msg = f"DOOR_MEDIA_VIDEO_ROTATION must be 0 or 180, got {v}"
+            raise ValueError(msg)
+        return v
 
     @field_validator("video_h264_profile")
     @classmethod
