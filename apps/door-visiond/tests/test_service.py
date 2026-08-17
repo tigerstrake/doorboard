@@ -369,3 +369,46 @@ async def test_a_permanently_broken_backend_re_degrades(
         assert svc.effective_mode == "disabled"
     finally:
         await svc.stop()
+
+
+def test_single_camera_reads_the_visitor_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VISION_MODE", "single-camera")
+    settings = Settings()
+
+    assert settings.face_snapshot_url == settings.snapshot_url
+
+
+def test_dual_camera_reads_the_recognition_camera(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`dual-camera` used to be indistinguishable from `single-camera` (ADR-0023).
+
+    It was in the allowed-modes set and nothing plumbed a second camera anywhere, so a
+    door configured for two cameras quietly used one, with no signal of any kind.
+    """
+    monkeypatch.setenv("VISION_MODE", "dual-camera")
+    settings = Settings()
+
+    assert settings.face_snapshot_url == settings.recognition_snapshot_url
+    assert settings.face_snapshot_url != settings.snapshot_url
+    assert settings.face_snapshot_url.endswith("/snapshot/recognition")
+
+
+def test_hardware_mode_still_reads_the_visitor_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The mode the door actually runs today must be untouched by ADR-0023."""
+    monkeypatch.setenv("VISION_MODE", "hardware")
+    settings = Settings()
+
+    assert settings.face_snapshot_url == settings.snapshot_url
+
+
+def test_health_states_which_camera_the_face_path_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "Configured for two cameras, using one" was invisible; now it is one field."""
+    monkeypatch.setenv("SSD_DATA_ROOT", str(tmp_path / "ssd"))
+    monkeypatch.setenv("VISION_MODE", "dual-camera")
+    monkeypatch.setenv("VISIOND_MODEL_DIM", str(TEST_DIM))
+    settings = Settings()
+
+    svc = VisiondService(settings, backend=_FlakyBackend(fail_times=0))  # type: ignore[arg-type]
+
+    assert str(svc.health()["face_frame_source"]).endswith("/snapshot/recognition")

@@ -284,7 +284,8 @@ class VisiondService:
             return HardwareBackend(
                 mode=self._effective_mode,
                 embedder=self._embedder,
-                snapshot_url=self._settings.snapshot_url,
+                # Per-mode (ADR-0023): dual-camera reads the recognition camera.
+                snapshot_url=self._settings.face_snapshot_url,
                 snapshot_timeout_s=self._settings.snapshot_timeout_s,
                 pipeline=self._get_hailo_pipeline(),
                 interval_ms=self._settings.frame_interval_ms,
@@ -1159,6 +1160,10 @@ class VisiondService:
             "enrolled": self._matcher.enrolled_count,
             "enrollment_locked": enrollment_locked,
             "compat": self._compat.detail,
+            # Which camera the face path is actually reading (ADR-0023). Stated rather
+            # than implied by the mode, because "configured for two cameras, using one"
+            # was invisible before and is the thing most worth being able to check.
+            "face_frame_source": self._settings.face_snapshot_url,
             "runtime_warning": self._runtime_degraded_detail,
             "door_id": self._settings.door_id,
             "esp32_connected": esp32_status.connected if esp32_status is not None else None,

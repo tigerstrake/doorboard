@@ -421,6 +421,40 @@ async def recording_file(
     return FileResponse(path, media_type="video/mp4")
 
 
+@app.get("/snapshot/recognition")
+async def recognition_snapshot(request: Request) -> Response:
+    """A frame from the dedicated recognition camera (ADR-0023).
+
+    Separate from ``GET /snapshot``, which serves the visitor camera, and it **404s**
+    when this door has no recognition camera instead of falling back to the visitor
+    frame. That distinction is the whole point: door-visiond has to be able to tell "no
+    second camera" from "nobody at the door", and a silent substitution would hand the
+    face path a wide-angle view of the doorway while reporting success.
+
+    Unauthenticated, matching ``/snapshot`` — door-visiond polls it on an interval and
+    both bind to loopback only.
+    """
+    router: MediaRouter = request.app.state.router
+    try:
+        frame = await router.recognition_snapshot()
+    except Exception:
+        logger.warning("recognition_snapshot_failed", exc_info=True)
+        frame = None
+
+    if frame is None:
+        # No placeholder here, unlike /snapshot: a placeholder is a valid-looking image
+        # of nothing, and the face path would treat it as a frame with no face in it.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no recognition camera frame available",
+        )
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers={"X-Snapshot-Source": "recognition"},
+    )
+
+
 @app.get("/recordings/{recording_id}/thumbnail")
 async def recording_thumbnail(
     recording_id: str,

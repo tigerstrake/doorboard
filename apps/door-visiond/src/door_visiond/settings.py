@@ -184,6 +184,15 @@ class Settings(BaseSettings):
         alias="VISIOND_SNAPSHOT_TIMEOUT_S",
         gt=0,
     )
+    # The dedicated recognition camera's frames (ADR-0023), used only in
+    # `VISION_MODE=dual-camera`. door-media 404s this when the door has no second camera,
+    # which is what makes the mode fail loudly instead of silently reading the visitor
+    # camera — before ADR-0023 `dual-camera` was accepted and behaved exactly like
+    # `single-camera`, so a door could be configured for two cameras and use one.
+    recognition_snapshot_url: str = Field(
+        default="http://127.0.0.1:8082/snapshot/recognition",
+        alias="VISIOND_RECOGNITION_SNAPSHOT_URL",
+    )
 
     @field_validator("vision_mode")
     @classmethod
@@ -192,6 +201,18 @@ class Settings(BaseSettings):
             msg = f"VISION_MODE must be one of {sorted(_ALLOWED_MODES)}, got {v!r}"
             raise ValueError(msg)
         return v
+
+    @property
+    def face_snapshot_url(self) -> str:
+        """Where face frames come from, per mode.
+
+        `dual-camera` reads the recognition camera; every other hardware mode reads the
+        visitor stream. One property so the backend, the health surface and the startup
+        check cannot disagree about which camera is in use.
+        """
+        if self.vision_mode == "dual-camera":
+            return self.recognition_snapshot_url
+        return self.snapshot_url
 
     @property
     def visiond_root(self) -> Path:

@@ -44,6 +44,7 @@ from door_media.adapters import (
     RecordingKind,
     StreamInfo,
 )
+from door_media.frame_reader import MjpegFrameReader
 
 if TYPE_CHECKING:
     from door_media.settings import Settings
@@ -206,16 +207,108 @@ class MediaMTXRouter:
         self._supervisor_task: asyncio.Task[None] | None = None
         self._segment_cleanup_task: asyncio.Task[None] | None = None
 
-        # Latest frame from the continuous reader, and when it arrived. Read by
-        # /snapshot so the recognition path never waits on an ffmpeg spawn.
-        self._latest_frame: bytes | None = None
-        self._latest_frame_at: float = 0.0
-        self._last_snapshot_request_at: float = 0.0
-        self._reader_task: asyncio.Task[None] | None = None
-        self.reader_frames = 0
-        self.reader_restarts = 0
+        # One long-lived MJPEG reader per camera, newest frame kept in memory, so
+        # /snapshot never waits on a process spawn (T-310). The recognition reader only
+        # exists on a door that has a second camera.
+        self._visitor_reader = MjpegFrameReader(
+            name="visitor",
+            argv_factory=self._visitor_reader_argv,
+            max_age_s=settings.snapshot_max_age_s,
+            idle_stop_s=settings.snapshot_reader_idle_stop_s,
+        )
+        self._recognition_reader: MjpegFrameReader | None = (
+            MjpegFrameReader(
+                name="recognition",
+                argv_factory=self._recognition_reader_argv,
+                max_age_s=settings.snapshot_max_age_s,
+                idle_stop_s=settings.snapshot_reader_idle_stop_s,
+            )
+            if settings.recognition_cam_present
+            else None
+        )
         self.snapshot_cache_hits = 0
         self.snapshot_cache_misses = 0
+
+    @property
+    def reader_frames(self) -> int:
+        return self._visitor_reader.frames
+
+    @property
+    def reader_restarts(self) -> int:
+        return self._visitor_reader.restarts
+
+    @property
+    def reader_repeats(self) -> int:
+        return self._visitor_reader.repeats
+
+    @property
+    def recognition_reader_frames(self) -> int:
+        return self._recognition_reader.frames if self._recognition_reader else 0
+
+    @property
+    def recognition_reader_restarts(self) -> int:
+        return self._recognition_reader.restarts if self._recognition_reader else 0
+
+    def _visitor_reader_argv(self) -> list[str]:
+        """ffmpeg decoding the existing RTSP stream to MJPEG.
+
+        A read-only consumer, so the rpicam-vid publisher and MediaMTX's recording are
+        untouched — the visitor camera is already encoding H.264 for the live view and
+        recordings, and re-opening it directly would contend for the sensor.
+        """
+        return [
+            "ffmpeg",
+            "-nostdin",
+            "-nostats",
+            "-loglevel",
+            "error",
+            "-rtsp_transport",
+            "tcp",
+            "-i",
+            self._settings.mediamtx_rtsp_url(self._settings.visitor_cam_stream),
+            "-r",
+            str(self._settings.snapshot_reader_fps),
+            "-q:v",
+            str(self._settings.snapshot_jpeg_quality),
+            "-f",
+            "mjpeg",
+            "pipe:1",
+        ]
+
+    def _recognition_reader_argv(self) -> list[str]:
+        """rpicam-vid straight off the recognition camera, in MJPEG (ADR-0023).
+
+        No RTSP and no H.264: nothing consumes a recognition *stream*, so an encode
+        would cost ~90% of a core to produce something only a JPEG decoder reads.
+        """
+        cfg = self._settings
+        argv = [
+            "rpicam-vid",
+            "--camera",
+            str(cfg.recognition_cam_index),
+            "--width",
+            str(cfg.recognition_width),
+            "--height",
+            str(cfg.recognition_height),
+            "--framerate",
+            str(cfg.recognition_framerate),
+            "--codec",
+            "mjpeg",
+            "--quality",
+            str(max(1, 100 - cfg.snapshot_jpeg_quality * 3)),
+            "--autofocus-mode",
+            cfg.video_autofocus_mode,
+        ]
+        if cfg.recognition_rotation:
+            argv += ["--rotation", str(cfg.recognition_rotation)]
+        if cfg.recognition_hflip:
+            argv.append("--hflip")
+        if cfg.recognition_vflip:
+            argv.append("--vflip")
+        if cfg.recognition_tuning_file:
+            argv += ["--tuning-file", cfg.recognition_tuning_file]
+        argv += ["--timeout", "0", "--nopreview", "--flush", "1", "--output", "-"]
+        return argv
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -233,7 +326,10 @@ class MediaMTXRouter:
 
     async def stop(self) -> None:
         """Shut down MediaMTX and cancel the supervisor."""
-        for task in (self._supervisor_task, self._segment_cleanup_task, self._reader_task):
+        await self._visitor_reader.stop()
+        if self._recognition_reader is not None:
+            await self._recognition_reader.stop()
+        for task in (self._supervisor_task, self._segment_cleanup_task):
             if task:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -740,116 +836,25 @@ class MediaMTXRouter:
         to a one-shot grab when the reader has nothing recent — a cold start, a
         restart, or a stream that is not live yet.
         """
-        self._last_snapshot_request_at = time.monotonic()
         if self._settings.snapshot_reader_enabled:
-            self._ensure_reader_running()
-            frame = self._fresh_frame()
+            frame = self._visitor_reader.request()
             if frame is not None:
                 self.snapshot_cache_hits += 1
                 return frame
         self.snapshot_cache_misses += 1
         return await self._grab_one_frame()
 
-    def _fresh_frame(self) -> bytes | None:
-        """The cached frame, if it is recent enough to still describe the doorway."""
-        if self._latest_frame is None:
-            return None
-        age_s = time.monotonic() - self._latest_frame_at
-        if age_s > self._settings.snapshot_max_age_s:
-            return None
-        return self._latest_frame
+    async def recognition_snapshot(self) -> bytes | None:
+        """A frame from the dedicated recognition camera, or None if there is not one.
 
-    def _ensure_reader_running(self) -> None:
-        if self._reader_task is None or self._reader_task.done():
-            self._reader_task = asyncio.create_task(
-                self._reader_loop(), name="mediamtx-frame-reader"
-            )
-
-    async def _reader_loop(self) -> None:
-        """Hold one ffmpeg open, decoding RTSP to MJPEG, keeping the newest frame.
-
-        Exits once nobody has asked for a snapshot within ``idle_stop_s`` so an empty
-        doorway and privacy mode cost nothing; the next request restarts it. Any
-        failure is logged and retried with capped backoff — this must never take
-        door-media down, since recordings matter more than the face path.
+        No one-shot fallback, deliberately. `_grab_one_frame` reads the *visitor* RTSP
+        stream, so falling back to it would silently hand the face path the wrong
+        camera — the exact confusion `VISION_MODE=dual-camera` existed to create before
+        ADR-0023, and impossible to spot from the outside.
         """
-        backoff = 1.0
-        while True:
-            idle_s = time.monotonic() - self._last_snapshot_request_at
-            if idle_s > self._settings.snapshot_reader_idle_stop_s:
-                logger.info("snapshot_reader_idle_stop", extra={"idle_s": round(idle_s, 1)})
-                self._latest_frame = None
-                return
-            try:
-                await self._read_frames_once()
-                backoff = 1.0
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                self.reader_restarts += 1
-                logger.warning(
-                    "snapshot_reader_failed", extra={"retry_in_s": backoff}, exc_info=True
-                )
-                await asyncio.sleep(backoff)
-                backoff = min(15.0, backoff * 2)
-
-    async def _read_frames_once(self) -> None:
-        """Run one ffmpeg until it exits, publishing each JPEG it emits."""
-        rtsp_url = self._settings.mediamtx_rtsp_url(self._settings.visitor_cam_stream)
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-nostdin",
-            "-nostats",
-            "-loglevel",
-            "error",
-            "-rtsp_transport",
-            "tcp",
-            "-i",
-            rtsp_url,
-            "-r",
-            str(self._settings.snapshot_reader_fps),
-            "-q:v",
-            str(self._settings.snapshot_jpeg_quality),
-            "-f",
-            "mjpeg",
-            "pipe:1",
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        logger.info("snapshot_reader_started", extra={"fps": self._settings.snapshot_reader_fps})
-        try:
-            assert proc.stdout is not None
-            buffer = bytearray()
-            while True:
-                chunk = await proc.stdout.read(65536)
-                if not chunk:
-                    break
-                buffer.extend(chunk)
-                # MJPEG is JPEGs back to back: SOI ff d8 ... EOI ff d9. Publish each
-                # complete frame and keep any partial tail for the next read.
-                while True:
-                    start = buffer.find(b"\xff\xd8")
-                    if start < 0:
-                        buffer.clear()
-                        break
-                    end = buffer.find(b"\xff\xd9", start + 2)
-                    if end < 0:
-                        del buffer[:start]
-                        break
-                    self._latest_frame = bytes(buffer[start : end + 2])
-                    self._latest_frame_at = time.monotonic()
-                    self.reader_frames += 1
-                    del buffer[: end + 2]
-                if time.monotonic() - self._last_snapshot_request_at > (
-                    self._settings.snapshot_reader_idle_stop_s
-                ):
-                    break
-        finally:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+        if self._recognition_reader is None:
+            return None
+        return self._recognition_reader.request()
 
     async def _grab_one_frame(self) -> bytes | None:
         """One-shot grab: spawn ffmpeg for a single frame.
