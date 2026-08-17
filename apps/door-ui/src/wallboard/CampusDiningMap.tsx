@@ -45,12 +45,23 @@ export function CampusDiningMap({
   hall,
   title,
   backupHall,
+  compact = false,
 }: {
   /** The structured hall from the payload (ADR-0026); may be absent on older events. */
   hall: string | null | undefined;
   /** Prose fallback of the form "{hall} — {meal}", for events predating `hall`. */
   title?: string | null;
   backupHall?: string | null;
+  /**
+   * Tile-sized rather than focus-sized.
+   *
+   * The same SVG at a third of the width would render its 10 px labels at about 7 px — the
+   * grid tile needs *fewer* things on the map, not smaller ones. So the legend, the Hoover
+   * reference and the "you are here" caption drop out; the streets, the water, every hall
+   * dot and the pick's own label stay, because those are what make it a map of somewhere.
+   * The attribution stays regardless: ODbL requires it wherever the data is shown.
+   */
+  compact?: boolean;
 }) {
   const resolved = useMemo(
     () => resolveDiningHall(hall) ?? resolveDiningHall(hallFromTitle(title)),
@@ -81,7 +92,10 @@ export function CampusDiningMap({
   const pickAt = resolved ? project(resolved.at) : null;
 
   return (
-    <div className="campus-map" data-testid="campus-dining-map">
+    <div
+      className={compact ? "campus-map campus-map--compact" : "campus-map"}
+      data-testid="campus-dining-map"
+    >
       <svg
         className="campus-map__svg"
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
@@ -145,11 +159,14 @@ export function CampusDiningMap({
 
         <g className="campus-map__here">
           <circle className="campus-map__here-dot" cx={doorboard.x} cy={doorboard.y} r={3.5} />
-          <text className="campus-map__here-label" x={doorboard.x} y={doorboard.y - 9}>
-            you are here
-          </text>
+          {compact ? null : (
+            <text className="campus-map__here-label" x={doorboard.x} y={doorboard.y - 9}>
+              you are here
+            </text>
+          )}
         </g>
 
+        {compact ? null : (
         <g className="campus-map__tower">
           <circle className="campus-map__tower-dot" cx={hoover.x} cy={hoover.y} r={2} />
           <text
@@ -160,7 +177,9 @@ export function CampusDiningMap({
             Hoover
           </text>
         </g>
+        )}
 
+        {compact ? null : (
         <g className="campus-map__legend">
           <circle className="campus-map__dot" cx={11} cy={HEIGHT - 11} r={3} />
           <text
@@ -171,6 +190,7 @@ export function CampusDiningMap({
             other dining halls
           </text>
         </g>
+        )}
 
         {/* ODbL requires the attribution wherever the data is shown. */}
         <text
@@ -183,7 +203,7 @@ export function CampusDiningMap({
         </text>
       </svg>
 
-      {resolved ? (
+      {compact ? null : resolved ? (
         <p className="campus-map__note">
           {resolved.name}
           {resolved.approximate ? " — the dining room is inside this building" : ""}

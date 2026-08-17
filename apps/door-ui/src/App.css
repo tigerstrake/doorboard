@@ -3631,3 +3631,41 @@ input:focus-visible {
 .poll-option-row--leader .poll-option-row__bar > span {
   background: linear-gradient(90deg, var(--db-accent), var(--db-gold));
 }
+
+/*
+ * The map inside the ambient grid tile, under the text.
+ *
+ * Not the focus map shrunk: at a third of the width its 10px labels would render around 7px.
+ * The compact variant drops the legend, the Hoover reference and the "you are here" caption
+ * and keeps what still reads at this size — streets, water, every hall, and the pick.
+ */
+.campus-map--compact {
+  max-width: none;
+  gap: 0;
+  margin-top: auto;
+}
+
+.campus-map--compact .campus-map__svg {
+  border-radius: var(--db-radius-sm);
+}
+
+/* Bigger in viewBox units so it survives the downscale to tile width. */
+.campus-map--compact .campus-map__hall-label {
+  font-size: 20px;
+  stroke-width: 4px;
+}
+
+.campus-map--compact .campus-map__attribution {
+  font-size: 11px;
+}
+
+.campus-map--compact .campus-map__street--path {
+  /* The hairline layer becomes noise once the whole frame is a third of the size. */
+  display: none;
+}
+
+.food-tile-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}

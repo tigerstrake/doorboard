@@ -25,6 +25,7 @@ import type {
 } from "@doorboard/contracts";
 import { AboutDoorboard } from "./AboutDoorboard";
 import { pollShares } from "./PollResultBars";
+import { CampusDiningMap } from "./wallboard/CampusDiningMap";
 import { ApproachGreeting } from "./ApproachGreeting";
 import { AttributionNotice } from "./AttributionNotice";
 import { WallboardVisitorMode } from "./wallboard/WallboardVisitorMode";
@@ -1751,6 +1752,14 @@ export function App() {
                 <>
                   <h4>{foodRecommendation.payload.title}</h4>
                   <p>{foodRecommendation.payload.detail}</p>
+                  {/* The map under the text, at tile density — the hall's name answers
+                      "where" only if you already know campus. */}
+                  <CampusDiningMap
+                    compact
+                    hall={foodRecommendation.payload.hall}
+                    title={foodRecommendation.payload.title}
+                    backupHall={foodRecommendation.payload.backup_hall}
+                  />
                 </>
               ) : <p>Food recommendation unavailable.</p>}
             </div>

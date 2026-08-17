@@ -62,3 +62,27 @@ describe("CampusDiningMap", () => {
     expect(screen.getByText(/dining room is inside this building/i)).toBeTruthy();
   });
 });
+
+describe("the compact variant", () => {
+  it("keeps the map and the pick, drops the captions that would be unreadable", () => {
+    // At tile width the focus map's 10px labels render around 7px, so the compact variant
+    // shows *fewer* things rather than smaller ones.
+    render(<CampusDiningMap compact hall="Ricker Dining" title="Ricker Dining — Dinner" />);
+
+    expect(screen.getByTestId("campus-map-pick")).toBeTruthy();
+    expect(mapLabels()).toContain("Ricker");
+    expect(screen.queryByText("you are here")).toBeNull();
+    expect(screen.queryByText("other dining halls")).toBeNull();
+    expect(screen.queryByText("Hoover")).toBeNull();
+  });
+
+  it("keeps the OpenStreetMap attribution, which the licence requires", () => {
+    render(<CampusDiningMap compact hall="Ricker Dining" />);
+    expect(screen.getByText(/OpenStreetMap/i)).toBeTruthy();
+  });
+
+  it("drops the prose note, since the tile already shows the text above it", () => {
+    render(<CampusDiningMap compact hall="Branner" />);
+    expect(screen.queryByText(/dining room is inside this building/i)).toBeNull();
+  });
+});
