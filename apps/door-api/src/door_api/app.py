@@ -48,6 +48,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from door_api.ambient_cache import AmbientCache
 from door_api.broadcast import DisplayBroadcast
 from door_api.config import SessionConfig
 from door_api.esp32_link import Esp32LinkSettings, Esp32LinkSupervisor
@@ -106,8 +107,12 @@ class DoorApiState:
     """State container for the FastAPI app."""
 
     def __init__(self, *, visitor_relay_transport: VisitorRelayTransport | None = None) -> None:
-        self.broadcast = DisplayBroadcast()
         self.config = SessionConfig.from_env()
+        # The last ambient event per type, replayed to each new /ws client. Without it a
+        # wallboard reload loses the once-a-day dining recommendation for up to a day
+        # (ADR-0027).
+        self.ambient_cache = AmbientCache(max_age_s=self.config.ambient_cache_max_age_s)
+        self.broadcast = DisplayBroadcast(replay_source=self.ambient_cache.replay)
         self.store = SessionStore(
             self.config.db_path,
             media_outbox_max_rows=self.config.media_outbox_max_rows,
@@ -264,6 +269,7 @@ class DoorApiState:
         self.mqtt_bridge = MqttBridge(
             url=self.config.mqtt_url,
             broadcast=self.broadcast,
+            remember=self.ambient_cache.remember,
             topics=self.config.mqtt_topics,
             username=self.config.mqtt_username,
             password=self.config.mqtt_password,
