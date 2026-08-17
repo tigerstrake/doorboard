@@ -1801,11 +1801,13 @@ export function App() {
               {currentPoll && (
                 <>
                   <p className="poll-q"><strong>{currentPoll.question}</strong></p>
-                  {currentPoll.options.map((opt) => (
+                  {pollShares(currentPoll, pollResults).map((share) => (
                     <PollOptionRow
-                      key={opt.id}
-                      text={opt.text}
-                      votes={pollResults?.find((r) => r.option_id === opt.id)?.votes ?? 0}
+                      key={share.optionId}
+                      text={share.text}
+                      votes={share.votes}
+                      pct={share.pct}
+                      isLeader={share.isLeader}
                     />
                   ))}
                 </>

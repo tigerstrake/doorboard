@@ -3516,3 +3516,55 @@ input:focus-visible {
 .campus-map__tower-dot {
   fill: rgba(160, 200, 255, 0.55);
 }
+
+/*
+ * The wallboard's poll *tile* (the always-visible grid one, not the focus panel).
+ *
+ * It had no base rule at all — only a `.wallboard-focus-panel .poll-option-row` variant — so
+ * in the grid the label and the count were two bare inline spans butted together and rendered
+ * as "marnarmena0 votes". Now it lays out, and carries the same bar as the other two surfaces.
+ */
+.poll-option-row {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.poll-option-row__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--db-spacing-sm);
+}
+
+.poll-option-row__count {
+  white-space: nowrap;
+  color: var(--db-text-secondary);
+  font-family: var(--db-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85em;
+}
+
+.poll-option-row--leader .poll-option-row__count strong {
+  color: var(--db-accent);
+}
+
+.poll-option-row__bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.poll-option-row__bar > span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(53, 214, 255, 0.55), rgba(53, 214, 255, 0.85));
+  transition: width 480ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.poll-option-row--leader .poll-option-row__bar > span {
+  background: linear-gradient(90deg, var(--db-accent), var(--db-gold));
+}
