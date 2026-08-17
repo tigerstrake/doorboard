@@ -10,7 +10,7 @@ from door_visiond.clock import FakeClock
 from door_visiond.embedder import MockEmbedder
 from door_visiond.embedding import Embedding
 from door_visiond.enrollment import ProfileSpec
-from door_visiond.pipeline import BackendStatus, FrameCapture
+from door_visiond.pipeline import BackendStatus, DisabledBackend, FrameCapture
 from door_visiond.service import (
     EnrollmentLockedError,
     PrivacyModeActiveError,
@@ -443,11 +443,9 @@ async def test_recovery_rebuilds_the_shared_hailo_pipeline(
         built.append(pipeline)
         return pipeline
 
-    svc = VisiondService(
-        settings,
-        backend=_FailingBackend(),
-        backend_factory=lambda: _FlakyBackend(fail_times=0),  # type: ignore[arg-type]
-    )
+    # NO backend_factory: the default path is `_build_backend`, which is where the bug
+    # lived. A fake Hailo pipeline is all that is needed to run it without the hardware.
+    svc = VisiondService(settings, backend=_FailingBackend())
     monkeypatch.setattr(svc, "_get_hailo_pipeline", _fake_pipeline)
     svc._hailo_pipeline = _fake_pipeline()  # type: ignore[assignment]
     first = built[0]
@@ -462,5 +460,10 @@ async def test_recovery_rebuilds_the_shared_hailo_pipeline(
         # The cached pipeline was dropped, so the next build makes a new device rather
         # than reusing the one the degradation closed.
         assert svc._hailo_pipeline is not first
+        # And the rebuilt backend is a REAL one. Building while `_effective_mode` still
+        # read "disabled" produced another DisabledBackend relabelled "hardware": mode
+        # restored, function not, and nothing in /health saying so.
+        assert not isinstance(svc._backend, DisabledBackend)
+        assert svc._backend.status().hailo_ok is True
     finally:
         await svc.stop()

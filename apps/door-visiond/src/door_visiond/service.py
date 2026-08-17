@@ -244,6 +244,10 @@ class VisiondService:
         # How to rebuild the backend after a degradation. Injectable so the recovery
         # path is testable without a Hailo: the default builds the real thing.
         self._backend_factory: Callable[[], VisionBackend] = backend_factory or self._build_backend
+        # Whether the caller owns backend construction. If they do, recovery must not
+        # touch the shared Hailo device — building one is exactly what an injected
+        # factory exists to avoid.
+        self._owns_backend_construction = backend_factory is None
         self._backend: VisionBackend = backend or self._backend_factory()
         self._privacy_enabled = False
         self._run_task: asyncio.Task[None] | None = None
@@ -541,20 +545,25 @@ class VisiondService:
             return
         if self._privacy_enabled or self._enrollment_locked:
             return
+        # Restore the mode FIRST: `_build_backend` branches on `_effective_mode`, so
+        # building while it still reads "disabled" hands back another DisabledBackend and
+        # then relabels it "hardware" — mode restored, function not, zero frames, and
+        # `runtime_warning` cleared so nothing looks wrong. Measured on the door.
+        self._effective_mode = self._settings.vision_mode
         try:
             # The embedder holds a pipeline reference too, so it has to be rebuilt on the
             # fresh device before the backend that shares it.
-            if self._settings.vision_mode in _HARDWARE_MODES:
+            if self._owns_backend_construction and self._settings.vision_mode in _HARDWARE_MODES:
                 self._embedder = self._build_embedder()
             restored = self._backend_factory()
         except Exception as exc:
+            self._effective_mode = "disabled"
             logger.warning(
                 "vision_backend_recovery_failed", extra={"error_class": type(exc).__name__}
             )
             return
         previous = self._backend
         self._backend = restored
-        self._effective_mode = self._settings.vision_mode
         self._runtime_degraded_detail = None
         self._pipeline_consecutive_errors = 0
         self._backend_recoveries += 1
