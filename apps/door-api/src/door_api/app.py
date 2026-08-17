@@ -888,8 +888,21 @@ class DoorApiState:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={"error": {"code": "invalid_visitor_token", "message": str(exc)}},
             ) from exc
+        # A token is live if it names either the current session or the interaction the
+        # door is still holding (ADR-0020). Minting had to learn the second case; so does
+        # verification, or a recognised person gets a token that is refused on use —
+        # which is what the reported check-in failure became after only half the fix.
         snapshot = self.machine.snapshot()
-        if snapshot.session_id is None or claims.session_id != snapshot.session_id:
+        held = self.identity.current()
+        valid_keys = {
+            key
+            for key in (
+                snapshot.session_id,
+                held.interaction_id if held is not None else None,
+            )
+            if key is not None
+        }
+        if claims.session_id not in valid_keys:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={
