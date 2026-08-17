@@ -265,6 +265,19 @@ class Settings(BaseSettings):
         gt=0,
     )
 
+    # How long GET /snapshot/recognition may wait for the reader's *first* frame.
+    #
+    # rpicam-vid needs ~1-2 s to open the sensor, and `request()` starts the reader then
+    # returns immediately. door-visiond polls every 100 ms and gives up after three
+    # failures, so without a wait here it kills its own backend 300 ms into a cold start
+    # it caused. Comfortably longer than the observed spin-up, and only the cold path
+    # pays it.
+    recognition_first_frame_wait_s: float = Field(
+        default=4.0,
+        alias="DOOR_MEDIA_RECOGNITION_FIRST_FRAME_WAIT_S",
+        gt=0,
+    )
+
     # ── audio ─────────────────────────────────────────────────────────────────
     # Opt-in USB-microphone capture. When disabled (default) recordings stay
     # video-only, matching historical behaviour. When enabled, mic audio is

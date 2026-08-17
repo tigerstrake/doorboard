@@ -227,6 +227,8 @@ class MediaMTXRouter:
             else None
         )
         self.snapshot_cache_hits = 0
+        # Times the recognition reader needed its bounded warm-up wait to answer.
+        self.recognition_cold_starts = 0
         self.snapshot_cache_misses = 0
 
     @property
@@ -851,10 +853,31 @@ class MediaMTXRouter:
         stream, so falling back to it would silently hand the face path the wrong
         camera — the exact confusion `VISION_MODE=dual-camera` existed to create before
         ADR-0023, and impossible to spot from the outside.
+
+        Waits, bounded, for the reader's *first* frame. `request()` starts the reader and
+        returns immediately, so a cold camera answers None for the ~1-2 s `rpicam-vid`
+        needs to open the sensor. door-visiond polls every 100 ms and degrades after three
+        consecutive failures — 300 ms — so without this wait it could kill the backend
+        before the camera it just started had any chance to produce anything, then retry
+        30 s later into an idle-stopped reader and do it again. Measured on the door: 12
+        degradations and 10 recoveries in 20 minutes, flapping indefinitely.
+
+        Only the cold path pays: once frames are flowing the first `request()` returns one.
         """
         if self._recognition_reader is None:
             return None
-        return self._recognition_reader.request()
+        frame = self._recognition_reader.request()
+        if frame is not None:
+            return frame
+
+        deadline = time.monotonic() + self._settings.recognition_first_frame_wait_s
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+            frame = self._recognition_reader.request()
+            if frame is not None:
+                self.recognition_cold_starts += 1
+                return frame
+        return None
 
     async def _grab_one_frame(self) -> bytes | None:
         """One-shot grab: spawn ffmpeg for a single frame.

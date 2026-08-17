@@ -482,6 +482,8 @@ class HardwareBackend:
         # face hash differently), so it is outside ADR-0009's embedding rules.
         self._last_frame_digest: bytes | None = None
         self._duplicate_frames = 0
+        # Polls the source answered with 503 (camera warming up), which are not errors.
+        self._source_warming_up = 0
 
     def set_capturing(self, enabled: bool) -> None:
         self._capturing = enabled
@@ -496,19 +498,41 @@ class HardwareBackend:
             self._pipeline = self._embedder.pipeline
         return self._pipeline
 
-    def _fetch_snapshot(self) -> bytes:
+    def _fetch_snapshot(self) -> bytes | None:
+        """The current frame, or None when the source says "not yet".
+
+        A 503 from door-media means the camera is configured and warming up (ADR-0023's
+        recognition route). That is a normal condition, not a broken backend, and it must
+        not count toward the three-strike degrade — three polls at 100 ms is 300 ms, far
+        less than the ~1-2 s a cold rpicam-vid needs, so treating it as failure let
+        door-visiond disable the very camera it had just asked door-media to start, then
+        flap on the recovery timer indefinitely.
+
+        A 404 still raises. That one means the door has no recognition camera at all: a
+        real misconfiguration, which has to stay loudly visible rather than presenting as
+        a door that simply never recognises anyone.
+        """
+        import urllib.error
         import urllib.request
 
         request = urllib.request.Request(self._snapshot_url, method="GET")  # noqa: S310
-        with urllib.request.urlopen(  # noqa: S310
-            request, timeout=self._snapshot_timeout_s
-        ) as response:
-            return response.read()
+        try:
+            with urllib.request.urlopen(  # noqa: S310
+                request, timeout=self._snapshot_timeout_s
+            ) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 503:
+                self._source_warming_up += 1
+                return None
+            raise
 
     def _capture_blocking(self) -> FrameCapture | None:
         if not self._capturing:
             return None
         image_bytes = self._fetch_snapshot()
+        if image_bytes is None:
+            return None
         # door-media's /snapshot answers from its in-memory reader frame and keeps
         # serving it until a newer one arrives (up to DOOR_MEDIA_SNAPSHOT_MAX_AGE_S,
         # 1 s by default), so polling faster than the reader publishes -- or polling
