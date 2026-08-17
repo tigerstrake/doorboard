@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { CampusDiningMap } from "./CampusDiningMap";
+import { CampusDiningMap, MAP_HEIGHT, MAP_WIDTH } from "./CampusDiningMap";
 import { DINING_HALLS, projectToCampus } from "./campusMap";
 
 /**
@@ -32,10 +32,9 @@ describe("CampusDiningMap", () => {
     render(<CampusDiningMap hall="Wilbur" />);
     const dot = screen.getByTestId("campus-map-pick").querySelector(".campus-map__dot")!;
     const wilbur = DINING_HALLS.find((hall) => hall.name === "Wilbur")!;
-    // 460 wide, matching the component; a regression in either would move the dot.
-    const expected = projectToCampus(wilbur.at, 460, Math.round(460 / (462.6 / 250)));
-    // Compare only x, which depends on width alone — the height is the component's business.
-    expect(Number(dot.getAttribute("cx"))).toBeCloseTo(expected.x, 0);
+    const expected = projectToCampus(wilbur.at, MAP_WIDTH, MAP_HEIGHT);
+    expect(Number(dot.getAttribute("cx"))).toBeCloseTo(expected.x, 4);
+    expect(Number(dot.getAttribute("cy"))).toBeCloseTo(expected.y, 4);
   });
 
   it("falls back to the prose title when the event has no hall field", () => {

@@ -147,6 +147,8 @@ export function hallFromTitle(title: string | null | undefined): string | null {
 
 export interface CampusLandmark {
   label: string;
+  /** Where to put the label relative to the shape, so it does not sit on a marker. */
+  labelAt?: "inside" | "below";
   /** An ellipse for water and open ground, a rect for a building block. */
   shape: "ellipse" | "rect";
   /** Real bounding box, south/north/west/east. */
@@ -164,16 +166,20 @@ export const CAMPUS_LANDMARKS: readonly CampusLandmark[] = [
   {
     label: "Lake Lagunita",
     shape: "ellipse",
+    labelAt: "inside",
     bounds: { south: 37.42044, north: 37.42444, west: -122.17854, east: -122.17389 },
   },
   {
+    // The doorboard's own marker sits in here, so the label goes underneath it.
     label: "Main Quad",
     shape: "rect",
+    labelAt: "below",
     bounds: { south: 37.4264, north: 37.4278, west: -122.1712, east: -122.1688 },
   },
   {
     label: "White Plaza",
     shape: "rect",
+    labelAt: "inside",
     bounds: { south: 37.42425, north: 37.42558, west: -122.1704, east: -122.16904 },
   },
 ];

@@ -2491,32 +2491,52 @@ input:focus-visible {
 }
 
 /*
- * The same bars on the doorpad. The wallboard sizes are set in vw for a 27" screen; on the
- * 1024×600 touchscreen those clamp to their minimum and still eat the vote buttons, so this
- * variant fixes small type and a thin bar. The graph is supporting information there — the
- * buttons must stay reachable without scrolling.
+ * A doorpad vote button that is also its own bar.
+ *
+ * The fill sits behind the label rather than below it, so showing the standing costs no
+ * vertical space — the constraint that killed a separate chart on a 600px screen.
  */
-.poll-focus__options--doorpad {
-  gap: 6px;
-  margin-top: 10px;
+.poll-choice {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  margin: 4px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--db-spacing-md);
 }
 
-.poll-focus__options--doorpad .poll-focus__row {
-  gap: 4px;
-  padding: 6px 10px;
-  border-radius: var(--db-radius-sm);
+.poll-choice__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 0;
+  background: linear-gradient(90deg, rgba(53, 214, 255, 0.28), rgba(53, 214, 255, 0.1));
+  transition: width 480ms cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
 }
 
-.poll-focus__options--doorpad .poll-focus__option {
-  font-size: 0.9rem;
+.poll-choice--leader .poll-choice__fill {
+  background: linear-gradient(90deg, rgba(53, 214, 255, 0.42), rgba(255, 196, 84, 0.22));
 }
 
-.poll-focus__options--doorpad .poll-focus__count {
-  font-size: 0.78rem;
+/* Above the fill, or the label sits behind its own bar. */
+.poll-choice__text,
+.poll-choice__count {
+  position: relative;
+  z-index: 1;
 }
 
-.poll-focus__options--doorpad .poll-focus__bar {
-  height: 8px;
+.poll-choice__count {
+  font-family: var(--db-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8em;
+  color: var(--db-text-secondary);
+  white-space: nowrap;
+}
+
+.poll-choice--leader .poll-choice__count {
+  color: var(--db-accent);
 }
 
 .poll-focus__row--mine {
@@ -3378,7 +3398,7 @@ input:focus-visible {
   gap: var(--db-spacing-sm);
   justify-items: center;
   width: 100%;
-  max-width: 520px;
+  max-width: 760px;
 }
 
 .campus-map__svg {
@@ -3473,4 +3493,17 @@ input:focus-visible {
   .campus-map__pick-glow {
     animation: none;
   }
+}
+
+.campus-map__landmark-label {
+  text-anchor: middle;
+}
+
+/* After the base rule, not before it — same specificity, so source order decides. */
+.campus-map__landmark-label--start {
+  text-anchor: start;
+}
+
+.campus-map__tower-dot {
+  fill: rgba(160, 200, 255, 0.55);
 }

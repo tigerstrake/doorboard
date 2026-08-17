@@ -23,8 +23,11 @@ import type { DiningHall } from "./campusMap";
  * immediately different pictures.
  */
 
-const WIDTH = 460;
-const HEIGHT = Math.round(WIDTH / CAMPUS_ASPECT);
+/** Exported so a test can check where a marker landed without restating the numbers. */
+export const MAP_WIDTH = 520;
+export const MAP_HEIGHT = Math.round(MAP_WIDTH / CAMPUS_ASPECT);
+const WIDTH = MAP_WIDTH;
+const HEIGHT = MAP_HEIGHT;
 
 export function CampusDiningMap({
   hall,
@@ -67,25 +70,33 @@ export function CampusDiningMap({
           });
           const w = bottomRight.x - topLeft.x;
           const h = bottomRight.y - topLeft.y;
-          return landmark.shape === "ellipse" ? (
-            <ellipse
-              key={landmark.label}
-              className="campus-map__water"
-              cx={topLeft.x + w / 2}
-              cy={topLeft.y + h / 2}
-              rx={w / 2}
-              ry={h / 2}
-            />
-          ) : (
-            <rect
-              key={landmark.label}
-              className="campus-map__block"
-              x={topLeft.x}
-              y={topLeft.y}
-              width={w}
-              height={h}
-              rx={2}
-            />
+          // Named, because an unlabelled rectangle on a map is noise, not a landmark.
+          const labelY =
+            landmark.labelAt === "below" ? topLeft.y + h + 11 : topLeft.y + h / 2 + 3;
+          return (
+            <g key={landmark.label}>
+              {landmark.shape === "ellipse" ? (
+                <ellipse
+                  className="campus-map__water"
+                  cx={topLeft.x + w / 2}
+                  cy={topLeft.y + h / 2}
+                  rx={w / 2}
+                  ry={h / 2}
+                />
+              ) : (
+                <rect
+                  className="campus-map__block"
+                  x={topLeft.x}
+                  y={topLeft.y}
+                  width={w}
+                  height={h}
+                  rx={2}
+                />
+              )}
+              <text className="campus-map__landmark-label" x={topLeft.x + w / 2} y={labelY}>
+                {landmark.label}
+              </text>
+            </g>
           );
         })}
 
@@ -129,14 +140,39 @@ export function CampusDiningMap({
 
         <g className="campus-map__here">
           <circle className="campus-map__here-dot" cx={doorboard.x} cy={doorboard.y} r={3.5} />
-          <text className="campus-map__here-label" x={doorboard.x} y={doorboard.y + 15}>
+          {/* Above the dot: the doorboard sits inside the Main Quad block, whose own label
+              is below it. */}
+          <text className="campus-map__here-label" x={doorboard.x} y={doorboard.y - 9}>
             you are here
           </text>
         </g>
 
-        <text className="campus-map__landmark-label" x={hoover.x + 7} y={hoover.y + 3}>
-          Hoover
-        </text>
+        <g className="campus-map__tower">
+          <circle className="campus-map__tower-dot" cx={hoover.x} cy={hoover.y} r={2} />
+          <text
+            className="campus-map__landmark-label campus-map__landmark-label--start"
+            x={hoover.x + 6}
+            y={hoover.y + 3}
+          >
+            Hoover
+          </text>
+        </g>
+
+        {/*
+          A legend for the dim dots. Without it they are unexplained specks — and labelling
+          all eight halls instead would collide in the east cluster, where Arrillaga and
+          Branner are 40 m apart.
+        */}
+        <g className="campus-map__legend">
+          <circle className="campus-map__dot" cx={11} cy={HEIGHT - 11} r={3} />
+          <text
+            className="campus-map__landmark-label campus-map__landmark-label--start"
+            x={20}
+            y={HEIGHT - 8}
+          >
+            other dining halls
+          </text>
+        </g>
       </svg>
 
       {resolved ? (

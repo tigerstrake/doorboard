@@ -220,13 +220,12 @@ describe("T-405 public kiosk regressions", () => {
     await waitFor(() => expect(screen.getByText("Pick one")).toBeTruthy());
     const submit = screen.getByText("Submit Vote").closest("button");
     expect(submit?.disabled).toBe(true);
-    // By role, because the option text now appears twice: once on the vote button and once
-    // as the label of its bar in the results graph.
-    fireEvent.click(screen.getByRole("button", { name: "A" }));
+    // The button's accessible name now includes its tally, so match on the label text.
+    fireEvent.click(screen.getByText("A").closest("button")!);
     expect(submit?.disabled).toBe(false);
   });
 
-  it("shows the poll standing as bars on the DoorPad", async () => {
+  it("draws each DoorPad vote button as its own bar", async () => {
     // The doorpad used to be the one surface with no graph — it printed "— N votes" only
     // after you had voted, while the wallboard a metre away showed the live tally.
     window.history.pushState(null, "", "/doorpad");
@@ -260,14 +259,18 @@ describe("T-405 public kiosk regressions", () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
     fireEvent.click(screen.getByText("Vote in Poll"));
-    await waitFor(() => expect(screen.getByTestId("poll-result-bars")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Alpha")).toBeTruthy());
 
-    // Shares of the total cast, not of the leader: 3 of 4 is 75%, not 100%.
+    // Each vote button carries its own bar, so the graph costs no vertical space on a
+    // 600px screen. Shares are of the total cast: 3 of 4 is 75%, not 100%.
     const alpha = screen.getByRole("progressbar", { name: "Alpha" });
     expect(alpha.getAttribute("aria-valuenow")).toBe("75");
     expect(screen.getByRole("progressbar", { name: "Beta" }).getAttribute("aria-valuenow")).toBe(
       "25"
     );
+    // The leader is marked, and the fill is a share of the width rather than of the leader.
+    const fill = alpha.closest("button")!.querySelector(".poll-choice__fill") as HTMLElement;
+    expect(fill.style.width).toBe("75%");
   });
 
   it("does not offer a fake privacy deletion success when no local content exists", async () => {

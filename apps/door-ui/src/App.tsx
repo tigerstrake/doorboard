@@ -24,7 +24,7 @@ import type {
   PresenceLabel,
 } from "@doorboard/contracts";
 import { AboutDoorboard } from "./AboutDoorboard";
-import { PollResultBars } from "./PollResultBars";
+import { pollShares } from "./PollResultBars";
 import { ApproachGreeting } from "./ApproachGreeting";
 import { AttributionNotice } from "./AttributionNotice";
 import { WallboardVisitorMode } from "./wallboard/WallboardVisitorMode";
@@ -3060,40 +3060,52 @@ export function App() {
                   <AttributionNotice attributedTo={attributedTo} verb="vote on" />
                   <p className="poll-q"><strong>{currentPoll.question}</strong></p>
                   {pollVoteError && <p className="poll-error">{pollVoteError}</p>}
-                  <div className="poll-choices">
-                    {currentPoll.options.map((opt) => {
-                      const result = pollResults?.find((r) => r.option_id === opt.id);
-                      return (
-                        <button
-                          key={opt.id}
-                          className="phrase-btn"
-                          style={{ width: "100%", margin: "4px 0" }}
-                          disabled={doorPadVotedOptionId !== null}
-                          aria-pressed={
-                            doorPadVotedOptionId === opt.id || selectedPollOptionId === opt.id
-                          }
-                          onClick={() => setSelectedPollOptionId(opt.id)}
-                        >
-                          {opt.text}
-                          {doorPadVotedOptionId && result !== undefined && (
-                            <span className="poll-vote-count"> — {result.votes} votes</span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
                   {/*
-                    The standing, as bars. The wallboard beside this screen already publishes
-                    the same tallies live, so withholding them here protects nothing — it
-                    just meant the doorpad was the one surface where you could not see how
-                    the vote was going.
+                    Each option is its own bar: the button's fill *is* the graph. A separate
+                    chart below the buttons was the obvious way to do this and measured 741px
+                    of a 600px screen on a six-option poll, pushing "Submit Vote" off the
+                    touchscreen — the cut-off-controls complaint this was not allowed to
+                    reintroduce. This costs no extra height at all.
+
+                    Shown before voting too. The wallboard a metre away already publishes the
+                    same tallies live, so withholding them here protected nothing.
                   */}
-                  <PollResultBars
-                    poll={currentPoll}
-                    pollResults={pollResults}
-                    votedOptionId={doorPadVotedOptionId}
-                    className="poll-focus__options--doorpad"
-                  />
+                  <div className="poll-choices">
+                    {pollShares(currentPoll, pollResults).map((share) => (
+                      <button
+                        key={share.optionId}
+                        className={`phrase-btn poll-choice${share.isLeader ? " poll-choice--leader" : ""}`}
+                        disabled={doorPadVotedOptionId !== null}
+                        aria-pressed={
+                          doorPadVotedOptionId === share.optionId ||
+                          selectedPollOptionId === share.optionId
+                        }
+                        onClick={() => setSelectedPollOptionId(share.optionId)}
+                      >
+                        <span
+                          className="poll-choice__fill"
+                          style={{ width: `${share.pct}%` }}
+                          aria-hidden="true"
+                        />
+                        <span className="poll-choice__text">
+                          {share.text}
+                          {doorPadVotedOptionId === share.optionId && (
+                            <span className="poll-focus__mine-tag"> your vote</span>
+                          )}
+                        </span>
+                        <span
+                          className="poll-choice__count"
+                          role="progressbar"
+                          aria-valuenow={Math.round(share.pct)}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-label={share.text}
+                        >
+                          {share.votes} · {share.pct.toFixed(0)}%
+                        </span>
+                      </button>
+                    ))}
+                  </div>
                 </>
               )}
               {doorPadVotedOptionId && <p className="visitor-note-status">Vote submitted.</p>}
