@@ -421,6 +421,47 @@ async def recording_file(
     return FileResponse(path, media_type="video/mp4")
 
 
+@app.get("/recordings/{recording_id}/thumbnail")
+async def recording_thumbnail(
+    recording_id: str,
+    _auth: AdminAuth,
+    request: Request,
+) -> FileResponse:
+    """Serve a recording's thumbnail still.
+
+    Thumbnails were generated on finalize, recorded in the DB and announced as
+    ``media.thumbnail_ready`` — and then had no way out of this service. The owner's
+    ring notification wants the visitor's picture, and the still already sitting on the
+    SSD is the cheapest source: no second camera access, no new capture path, and the
+    frame is from a clip whose retention policy already covers it.
+
+    Admin-authenticated and any ``kind``, unlike ``/file`` which is scoped to
+    ``video_message`` for the DoorPad's own review screen. A thumbnail is a frame of
+    whoever was at the door, so it is not a public route.
+    """
+    try:
+        rid = UUID(recording_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid recording_id UUID",
+        ) from None
+
+    db: RecordingDB = request.app.state.db
+    cfg: Settings = request.app.state.cfg
+    row = db.get(rid)
+    if row is None or row.thumbnail_path is None or row.sync_status == "deleted":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thumbnail not found")
+
+    # The stored path is relative to the SSD root; resolve and confirm it stays inside it
+    # so a malformed DB row cannot read an arbitrary file.
+    root = cfg.ssd_data_root.resolve()
+    path = (root / row.thumbnail_path).resolve()
+    if not path.is_relative_to(root) or not path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thumbnail file missing")
+    return FileResponse(path, media_type="image/jpeg")
+
+
 # ---------------------------------------------------------------------------
 # Internal session event endpoint
 # ---------------------------------------------------------------------------

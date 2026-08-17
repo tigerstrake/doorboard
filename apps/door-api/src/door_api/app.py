@@ -1478,6 +1478,45 @@ async def admin_media_inbox_file(recording_id: str) -> Response:
     )
 
 
+@app.get(
+    "/admin/media-inbox/{recording_id}/thumbnail",
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_media_inbox_thumbnail(recording_id: str) -> Response:
+    """Proxy a recording's thumbnail still, for the owner's ring notification.
+
+    Unlike the ``/file`` route beside it this accepts any ``kind``: that one exists for
+    the DoorPad's video-message review and is deliberately scoped to ``video_message``,
+    whereas the picture the owner wants on a bell press comes from a ``bell_clip``.
+
+    Still admin-authenticated. A thumbnail is a frame of whoever was at the door, so it
+    is exactly the kind of thing ARCHITECTURE.md §2 keeps off low-trust surfaces.
+    """
+    row = await _media_recording(recording_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="recording not found")
+    try:
+        async with httpx.AsyncClient(timeout=state.config.media_timeout_s) as client:
+            response = await client.get(
+                f"{state.config.media_base_url.rstrip('/')}/recordings/{recording_id}/thumbnail",
+                headers=_media_auth_headers(),
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="door-media unavailable") from exc
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="thumbnail not found")
+    if response.status_code >= 400:
+        raise HTTPException(status_code=503, detail="door-media unavailable")
+    return Response(
+        content=response.content,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @app.get("/admin/recordings", dependencies=[Depends(_require_admin)])
 async def admin_recordings(
     kind: str | None = None,
