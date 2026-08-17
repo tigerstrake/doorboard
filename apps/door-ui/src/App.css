@@ -3450,6 +3450,15 @@ input:focus-visible {
   fill: var(--db-text-primary);
   font-size: 13px;
   text-anchor: middle;
+  /*
+   * A halo in the map's own background colour, so the label stays legible wherever the pick
+   * lands. Which labels collide depends on which hall is recommended — Florence Moore sits
+   * on the lake's caption — so this is a general fix rather than eight special cases.
+   */
+  paint-order: stroke;
+  stroke: rgba(12, 24, 44, 0.9);
+  stroke-width: 3px;
+  stroke-linejoin: round;
 }
 
 .campus-map__hall--backup .campus-map__hall-label {

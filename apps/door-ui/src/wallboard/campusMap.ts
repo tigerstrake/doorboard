@@ -32,7 +32,10 @@ export const CAMPUS_VIEW = {
   south: 37.4196,
   north: 37.4288,
   west: -122.1818,
-  east: -122.1618,
+  // Far enough east for EVGR, which is well past the Escondido cluster. Checking the menu
+  // site's own location dropdown is what turned this up: EVGR Dining is one of the nine
+  // halls the recommender can pick, and it sat outside the original frame.
+  east: -122.1572,
 } as const;
 
 /** Longitude degrees are shorter than latitude ones; at 37.4°N by this much. */
@@ -112,6 +115,14 @@ export const DINING_HALLS: readonly DiningHall[] = [
     name: "Gerhard Casper",
     at: { lat: 37.4243, lng: -122.17825 },
     aliases: ["casper", "gerhard", "governor"],
+    approximate: true,
+  },
+  {
+    // EVGR Building A. The graduate residences sprawl, so this is the building rather than
+    // the servery door.
+    name: "EVGR",
+    at: { lat: 37.42488, lng: -122.15879 },
+    aliases: ["evgr", "escondido village"],
     approximate: true,
   },
 ];

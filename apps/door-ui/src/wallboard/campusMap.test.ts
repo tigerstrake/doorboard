@@ -91,7 +91,41 @@ describe("the hall catalogue", () => {
   });
 });
 
+/**
+ * The nine hall names in Stanford's own menu-site location dropdown, read from
+ * rdeapps.stanford.edu on 2026-08-17. These are the exact strings the provider publishes,
+ * so this list — not our guesses at them — is what the catalogue has to cover.
+ *
+ * If the site renames a hall this test keeps passing while the map silently stops finding
+ * it, so it is a floor, not a guarantee. It still catches the failure that actually
+ * happened: a hall we never thought of at all (EVGR).
+ */
+const LIVE_HALL_NAMES = [
+  "Arrillaga Family Dining Commons",
+  "Branner Dining",
+  "EVGR Dining",
+  "Florence Moore Dining",
+  "Gerhard Casper Dining",
+  "Lakeside Dining",
+  "Ricker Dining",
+  "Stern Dining",
+  "Wilbur Dining",
+] as const;
+
 describe("resolveDiningHall", () => {
+  it("resolves every hall the menu site actually offers", () => {
+    for (const name of LIVE_HALL_NAMES) {
+      expect(resolveDiningHall(name), `${name} is not in the catalogue`).not.toBeNull();
+    }
+  });
+
+  it("maps each live name to a distinct hall", () => {
+    // Two site names collapsing onto one catalogue entry would put both halls' dots in one
+    // place, which looks like success.
+    const resolvedNames = LIVE_HALL_NAMES.map((name) => resolveDiningHall(name)!.name);
+    expect(new Set(resolvedNames).size).toBe(LIVE_HALL_NAMES.length);
+  });
+
   it("matches the provider's own wording", () => {
     expect(resolveDiningHall("Wilbur")?.name).toBe("Wilbur");
     expect(resolveDiningHall("Wilbur Dining")?.name).toBe("Wilbur");
