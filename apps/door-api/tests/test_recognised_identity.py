@@ -155,3 +155,35 @@ def test_the_holder_does_not_itself_gate_consent(consent: str | None) -> None:
     held = holder.current()
     assert held is not None
     assert held.consent_version == consent
+
+
+def test_seconds_remaining_reports_the_live_window() -> None:
+    """The UI shows this as a countdown, so it has to track the interaction window."""
+    clock = _Clock()
+    holder = _holder(clock, idle=12.0, interaction=120.0)
+    _remember(holder)
+    assert holder.seconds_remaining() == pytest.approx(12.0)
+
+    holder.touch()
+    assert holder.seconds_remaining() == pytest.approx(120.0)
+
+    clock.advance(30.0)
+    assert holder.seconds_remaining() == pytest.approx(90.0)
+
+
+def test_expiry_is_observable_without_an_event() -> None:
+    """door-api sweeps for this edge: nothing emits an event when the window runs out.
+
+    Without a sweep the kiosks kept showing a name the server had already stopped
+    honouring, until some unrelated broadcast happened to refresh them.
+    """
+    clock = _Clock()
+    holder = _holder(clock)
+    _remember(holder)
+    assert holder.current() is not None
+
+    clock.advance(13.0)
+
+    # Purely time-driven: no call, no event, no transition.
+    assert holder.current() is None
+    assert holder.seconds_remaining() == 0.0

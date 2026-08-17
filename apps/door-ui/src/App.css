@@ -3024,18 +3024,22 @@ input:focus-visible {
    what they do, no standing indication of who the door thinks you are, and
    content clipping on the 1024x600 panel. */
 
+/* The title block stays exactly where it is whether or not somebody is recognised.
+   This was a flex row with `justify-content: space-between`, which looks right with a
+   badge in it and silently re-aligns the centred title to the left the moment the badge
+   disappears — so the header never went back to normal after the name expired. The badge
+   is taken out of flow instead: it can come and go without moving anything. */
 .doorpad-header__row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  flex-wrap: wrap;
+  position: relative;
 }
 
 /* Who the door currently believes it is talking to. Uses the recognised person's own
    accent (--db-accent, set from their onboarding colour) so the badge, the greeting and
    the door's LED all agree. Disappears the moment the identity window lapses. */
 .doorpad-identity {
+  position: absolute;
+  top: 0;
+  right: 0;
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
@@ -3043,7 +3047,6 @@ input:focus-visible {
   border-radius: 999px;
   border: 1px solid var(--db-accent);
   background: color-mix(in srgb, var(--db-accent) 14%, transparent);
-  flex: 0 0 auto;
 }
 
 .doorpad-identity__dot {

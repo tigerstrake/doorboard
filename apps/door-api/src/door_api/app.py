@@ -122,6 +122,7 @@ class DoorApiState:
         self._esp32_event_task: asyncio.Task[None] | None = None
         self._media_forward_task: asyncio.Task[None] | None = None
         self._sync_forward_task: asyncio.Task[None] | None = None
+        self._identity_sweep_task: asyncio.Task[None] | None = None
         self.mqtt_bridge: MqttBridge | None = None
         self._mqtt_bridge_task: asyncio.Task[None] | None = None
         self.esp32_link: Esp32LinkSupervisor | None = None
@@ -208,6 +209,7 @@ class DoorApiState:
         self.start_esp32_link()
         self.start_media_forwarder()
         self.start_sync_forwarder()
+        self.start_identity_sweeper()
         self.start_mqtt_bridge()
         self.start_visitor_relay()
 
@@ -221,6 +223,9 @@ class DoorApiState:
             self._media_forward_task.cancel()
         if self._sync_forward_task is not None:
             self._sync_forward_task.cancel()
+        if self._identity_sweep_task is not None:
+            self._identity_sweep_task.cancel()
+            self._identity_sweep_task = None
         if self._mqtt_bridge_task is not None:
             self._mqtt_bridge_task.cancel()
         if self._visitor_relay_task is not None:
@@ -390,6 +395,37 @@ class DoorApiState:
                 "feature_photobooth": self.config.feature_photobooth,
             },
         }
+
+    def start_identity_sweeper(self) -> None:
+        """Push one snapshot when a recognised identity lapses.
+
+        Expiry is lazy — ``RecognisedIdentity.current()`` only notices on read — and
+        nothing else emits an event when the window runs out. So the badge and the named
+        check-in button stayed on screen until some unrelated event happened to trigger a
+        broadcast, which on a quiet door can be minutes. The visitor sees a name that the
+        server has already stopped honouring.
+
+        Cheap by construction: it broadcasts on the *edge*, when a held identity becomes
+        absent, never on a tick where nothing changed.
+        """
+        if self._identity_sweep_task is not None:
+            return
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+            self._identity_sweep_task = loop.create_task(
+                self._identity_sweep_loop(),
+                name="door-api-identity-sweep",
+            )
+
+    async def _identity_sweep_loop(self) -> None:
+        held = self.identity.current() is not None
+        while True:
+            await asyncio.sleep(self.config.identity_sweep_interval_s)
+            now_held = self.identity.current() is not None
+            if held and not now_held:
+                self.broadcast.update_snapshot(self.session_snapshot_dict())
+                logger.info("recognised_identity_expired")
+            held = now_held
 
     def start_media_forwarder(self) -> None:
         if self._media_forward_task is not None:
@@ -929,6 +965,7 @@ WALLBOARD_FOCUS_CHANNELS = frozenset(
         "poll",
         "guestbook",
         "moments",
+        "about",
     }
 )
 # Matches WALLBOARD_FOCUS_TIMEOUT_MS in wallboardChannelModel.ts: a focus auto-

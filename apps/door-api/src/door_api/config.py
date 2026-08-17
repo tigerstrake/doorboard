@@ -177,6 +177,10 @@ class SessionConfig:
     # the name vanished ten seconds after the greeting and Check In refused to offer it.
     recognised_identity_idle_ttl_s: float = 12.0
     recognised_identity_interaction_ttl_s: float = 120.0
+    # How often to notice that the window above has run out. Expiry is lazy, so without
+    # this the kiosks keep showing a name the server has already stopped honouring until
+    # some unrelated event triggers a broadcast.
+    identity_sweep_interval_s: float = 2.0
 
     # Feature gate for the explicit photo-booth + private gallery flow.
     feature_photobooth: bool = False
@@ -299,6 +303,7 @@ class SessionConfig:
             recognised_identity_interaction_ttl_s=_env_float(
                 "DOOR_API_IDENTITY_INTERACTION_TTL_S", 120.0
             ),
+            identity_sweep_interval_s=_env_float("DOOR_API_IDENTITY_SWEEP_INTERVAL_S", 2.0),
             feature_photobooth=_env_bool("FEATURE_PHOTOBOOTH", False),
             visitor_token_secret=os.environ.get(
                 "DOOR_API_VISITOR_TOKEN_SECRET",
