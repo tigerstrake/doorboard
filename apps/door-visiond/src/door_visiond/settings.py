@@ -154,8 +154,12 @@ class Settings(BaseSettings):
     # door-media over HTTP, so the usual cause is that service restarting — which used
     # to stop recognition permanently on an otherwise healthy door. A permanent fault
     # simply re-degrades on the next frame, so retrying costs one attempt.
+    # 30 s rather than 15: measured on the door, door-media takes ~20 s from restart to a
+    # live stream, so a 15 s retry always fired too early, failed, and cost an extra
+    # degrade/recover cycle before converging. It still converged — the flapping is
+    # bounded and honest — but one wasted attempt per restart is avoidable.
     backend_recovery_delay_s: float = Field(
-        default=15.0, alias="VISIOND_BACKEND_RECOVERY_DELAY_S", gt=0
+        default=30.0, alias="VISIOND_BACKEND_RECOVERY_DELAY_S", gt=0
     )
 
     # ── capture cadence (mock/hardware frame pacing) ──────────────────────
