@@ -311,6 +311,59 @@ interface VideoRecording {
   playback_url?: string;
 }
 
+function AdminThumbnail({
+  recordingId,
+  token,
+  alt,
+}: {
+  recordingId: string;
+  token: string;
+  alt: string;
+}) {
+  /**
+   * A recording's still, fetched with the admin token and shown from a blob URL.
+   *
+   * `<img src>` cannot carry an Authorization header, so a thumbnail behind an
+   * admin-authenticated route has to be fetched and turned into an object URL — the same
+   * shape AdminVideoMessagePlayer already uses for playback.
+   *
+   * The previous URL was `${MEDIA_API_BASE}/${thumbnail_path}` with MEDIA_API_BASE
+   * hardcoded to http://127.0.0.1:8082 whenever the page came from the dev server. On the
+   * Pi's own browser that is door-media; from a laptop it is the laptop, so every
+   * thumbnail was a broken image (ADR-0024).
+   */
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    fetch(`${API_BASE}/admin/media-inbox/${recordingId}/thumbnail`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("thumbnail unavailable");
+        return response.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setSrc(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [recordingId, token]);
+
+  if (failed) return <span className="placeholder-subtext">no still</span>;
+  if (!src) return <span className="placeholder-subtext">…</span>;
+  return <img src={src} alt={alt} className="recording-thumb" />;
+}
+
 function AdminVideoMessagePlayer({
   recordingId,
   token,
@@ -1112,7 +1165,6 @@ export function App() {
     setWallboardChannel("ambient");
   };
 
-  const MEDIA_API_BASE = window.location.port === "5173" ? "http://127.0.0.1:8082" : "";
 
   const fetchRecordings = useCallback(async (cursorVal = currentCursor) => {
     setLoading(true);
@@ -3499,19 +3551,16 @@ export function App() {
                   </thead>
                   <tbody>
                     {recordings.map((rec) => {
-                      const thumbSrc = rec.thumbnail_path
-                        ? `${MEDIA_API_BASE}/${rec.thumbnail_path}`
-                        : null;
                       const sizeKb = rec.size_bytes ? (rec.size_bytes / 1024).toFixed(1) : "0";
                       
                       return (
                         <tr key={rec.recording_id}>
                           <td>
-                            {thumbSrc ? (
-                              <img
-                                src={thumbSrc}
+                            {rec.thumbnail_path ? (
+                              <AdminThumbnail
+                                recordingId={rec.recording_id}
+                                token={adminToken}
                                 alt="Clip thumbnail"
-                                className="recording-thumb-preview"
                               />
                             ) : (
                               <div className="no-thumb-badge">No Thumb</div>
