@@ -118,7 +118,12 @@ describe("doorpad tile hints", () => {
 
     const enroll = document.getElementById("btn-enroll");
     expect(enroll).toBeTruthy();
-    expect(enroll?.className).toContain("db-big-button--primary");
+    // Emphasis comes from its own accent class, not a second `primary` variant: two
+    // bright tiles left nothing reading as *the* action, so Ring Bell keeps that role.
+    expect(enroll?.className).toContain("doorpad-tile--enroll");
+    expect(enroll?.className).not.toContain("db-big-button--primary");
+    const ring = document.getElementById("btn-ring");
+    expect(ring?.className).toContain("db-big-button--primary");
     expect(screen.getByText(/greets you by name/)).toBeTruthy();
   });
 });

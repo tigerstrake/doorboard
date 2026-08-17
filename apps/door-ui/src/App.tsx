@@ -2459,7 +2459,6 @@ export function App() {
                 as one of eight identical tiles nobody found it. */}
             <BigButton
               id="btn-enroll"
-              variant="primary"
               className="doorpad-tile--enroll"
               icon={<span aria-hidden="true">☺</span>}
               hint="Scan a code once — the door greets you by name after that"
@@ -2505,7 +2504,7 @@ export function App() {
               id="btn-poll"
               icon={<span aria-hidden="true">Q</span>}
               hint="Answer today's question"
-              onClick={() => handleActionClick("Poll Vote", "poll")}
+              onClick={() => handleActionClick("Vote in Poll", "poll")}
             >
               Vote in Poll
             </BigButton>
@@ -2536,7 +2535,7 @@ export function App() {
               id="btn-privacy"
               icon={<span aria-hidden="true">I</span>}
               hint="How this door works, what it records, and how to erase it"
-              onClick={() => handleActionClick("Privacy Notice", "privacy")}
+              onClick={() => handleActionClick("About", "privacy")}
             >
               About This Doorboard
             </BigButton>

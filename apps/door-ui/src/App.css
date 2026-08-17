@@ -3071,8 +3071,17 @@ input:focus-visible {
 
 /* Enrollment is the entry point to everything personalised, so it reads as an
    invitation rather than one of eight equal squares. */
+/* The one non-primary tile that still needs to draw the eye: it is how anyone becomes
+   recognised at all. Emphasis comes from its accent rather than a second primary, so
+   "Ring Bell" stays the single obvious action on the screen. */
 .doorpad-tile--enroll {
   border-color: var(--db-accent);
+  background: color-mix(in srgb, var(--db-accent) 12%, var(--db-bg-card));
+  box-shadow: 0 0 12px color-mix(in srgb, var(--db-accent) 22%, transparent);
+}
+
+.doorpad-tile--enroll .db-big-button__icon {
+  color: var(--db-accent);
 }
 
 /* --- 1024x600 kiosk fit ---
@@ -3105,14 +3114,32 @@ input:focus-visible {
     padding: 0.25rem 0.6rem;
   }
 
+  /* Fill the panel rather than floating in it. Centring left ~300px of dead space
+     above and below the grid on a 600px screen: on a 7" touchscreen that space should
+     be touch target, not padding. The grid takes the remaining height and its rows
+     stretch, so the tiles get as large as the screen allows. */
+  .doorpad-view {
+    justify-content: flex-start;
+  }
+
   .doorpad-grid {
     max-width: none;
     gap: 0.5rem;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    /* Four, not five: the eight default tiles then fill two complete rows instead of
+       leaving a three-wide hole in the second. Wider tiles also give the hint lines room
+       to sit on two lines rather than three. With the photo-booth flag on there are nine
+       and the last row is short — acceptable, and the flag is off by default. */
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    /* Equal rows keep a tile whose hint wraps further from making its whole row taller
+       than the other. */
+    grid-auto-rows: 1fr;
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
   .doorpad-grid .db-big-button {
     min-height: 0;
+    height: 100%;
     padding: 0.6rem 0.7rem;
     font-size: 0.92rem;
   }
@@ -3161,12 +3188,38 @@ input:focus-visible {
 }
 
 @media (max-height: 660px) {
+  /* Six sections of prose are 660px tall in a 580px content area on the 7" panel, so
+     they needed internal scrolling that a touchscreen gives no hint of. The panel is
+     1024px WIDE, though, which is ample for two columns — halving the height is the fix
+     that keeps the text readable, rather than shrinking it until it fits. */
   .about-doorboard {
-    gap: 0.55rem;
-    font-size: 0.86rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem 1.2rem;
+    font-size: 0.8rem;
   }
 
   .about-doorboard__heading {
-    font-size: 0.86rem;
+    font-size: 0.82rem;
+    margin-bottom: 0.1rem;
+  }
+
+  .about-doorboard__body {
+    line-height: 1.35;
+  }
+
+  /* Sub-screens centre their content and then grow past the fold. Let them start at the
+     top and use the height they have; the grid above is what needed centring. */
+  .doorpad-sub-content {
+    justify-content: flex-start;
+    gap: 0.4rem;
+  }
+
+  .doorpad-sub-content h2 {
+    font-size: 1.1rem;
+    margin: 0.2rem 0;
+  }
+
+  .doorpad-sub-content .phrase-grid {
+    gap: 0.4rem;
   }
 }
