@@ -412,3 +412,55 @@ def test_health_states_which_camera_the_face_path_reads(
     svc = VisiondService(settings, backend=_FlakyBackend(fail_times=0))  # type: ignore[arg-type]
 
     assert str(svc.health()["face_frame_source"]).endswith("/snapshot/recognition")
+
+
+@pytest.mark.anyio
+async def test_recovery_rebuilds_the_shared_hailo_pipeline(
+    ssd_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Degrading closes the SHARED pipeline, so recovery must not hand the closed one back.
+
+    `HardwareBackend.close()` closes the Hailo pipeline, and that object is cached by
+    `_get_hailo_pipeline` and also held by the embedder. Reusing it after a degradation
+    produced the worst possible outcome on the door: `vision_backend_recovered` logged,
+    `mode: hardware` reported, and zero frames forever — a failure that hides itself.
+    """
+    monkeypatch.setenv("VISION_MODE", "hardware")
+    monkeypatch.setenv("VISIOND_BACKEND_RECOVERY_DELAY_S", "0.01")
+    settings = Settings()
+
+    built: list[object] = []
+
+    class _Pipeline:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    def _fake_pipeline() -> object:
+        pipeline = _Pipeline()
+        built.append(pipeline)
+        return pipeline
+
+    svc = VisiondService(
+        settings,
+        backend=_FailingBackend(),
+        backend_factory=lambda: _FlakyBackend(fail_times=0),  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(svc, "_get_hailo_pipeline", _fake_pipeline)
+    svc._hailo_pipeline = _fake_pipeline()  # type: ignore[assignment]
+    first = built[0]
+
+    await svc.start()
+    try:
+        for _ in range(400):
+            if svc.effective_mode == "hardware" and svc.metrics_snapshot()["backend_recoveries"]:
+                break
+            await asyncio.sleep(0.01)
+        assert svc.metrics_snapshot()["backend_recoveries"] == 1
+        # The cached pipeline was dropped, so the next build makes a new device rather
+        # than reusing the one the degradation closed.
+        assert svc._hailo_pipeline is not first
+    finally:
+        await svc.stop()

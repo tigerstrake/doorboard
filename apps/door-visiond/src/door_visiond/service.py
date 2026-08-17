@@ -494,6 +494,14 @@ class VisiondService:
         self._backend_degradations += 1
         with contextlib.suppress(Exception):
             await failed_backend.close()
+        # `HardwareBackend.close()` closes the Hailo pipeline — and that pipeline is
+        # SHARED: `_get_hailo_pipeline` caches it and the embedder holds the same object.
+        # Forget it here so recovery constructs a fresh device instead of handing back a
+        # closed one. Measured on the door: without this the recovery logged
+        # `vision_backend_recovered`, reported `mode: hardware`, and then sat at zero
+        # frames forever — a failure that actively hides itself, which is worse than
+        # staying visibly degraded.
+        self._hailo_pipeline = None
         self._emit_pipeline_status()
         logger.error(
             "vision_backend_degraded_to_disabled",
@@ -534,6 +542,10 @@ class VisiondService:
         if self._privacy_enabled or self._enrollment_locked:
             return
         try:
+            # The embedder holds a pipeline reference too, so it has to be rebuilt on the
+            # fresh device before the backend that shares it.
+            if self._settings.vision_mode in _HARDWARE_MODES:
+                self._embedder = self._build_embedder()
             restored = self._backend_factory()
         except Exception as exc:
             logger.warning(
