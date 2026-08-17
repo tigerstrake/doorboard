@@ -43,6 +43,7 @@ PAYLOADS: dict[str, dict[str, Any]] = {
     "vision.identity_stable": {
         "person_id": "prs_8f3k2j",
         "display_name": "Alex",
+        "accent_color": "#ffb300",
         "confidence": 0.93,
         "expires_at": EXPIRES_AT,
         "expires_at_monotonic_ms": 123459280,

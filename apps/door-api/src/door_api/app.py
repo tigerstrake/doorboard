@@ -152,11 +152,14 @@ class DoorApiState:
 
         self.machine = SessionMachine(config=self.config, store=self.store, on_event=on_event)
         self.machine.set_identity_observer(
-            lambda person_id, display_name, consent_version, profile_id: self.identity.remember(
-                person_id=person_id,
-                display_name=display_name,
-                consent_version=consent_version,
-                profile_id=profile_id,
+            lambda person_id, display_name, consent_version, profile_id, accent_color: (
+                self.identity.remember(
+                    person_id=person_id,
+                    display_name=display_name,
+                    consent_version=consent_version,
+                    profile_id=profile_id,
+                    accent_color=accent_color,
+                )
             )
         )
 
@@ -193,6 +196,9 @@ class DoorApiState:
             snapshot["display_name"] = held.display_name
             snapshot["profile_id"] = held.profile_id
             snapshot["consent_version"] = held.consent_version
+            # The chosen colour (ADR-0021), so the kiosks accent by person rather than by
+            # whichever LED effect they happened to be allocated.
+            snapshot["accent_color"] = held.accent_color
         return {
             **snapshot,
             "attributed_to": self.attributed_display_name(),
@@ -358,6 +364,7 @@ class DoorApiState:
                 profile_id=payload.profile_id,
                 trace_id=event.trace_id,
                 consent_version=payload.consent_version,
+                accent_color=payload.accent_color,
             )
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "vision.identity_expired":

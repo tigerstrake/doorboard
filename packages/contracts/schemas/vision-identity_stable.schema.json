@@ -11,6 +11,18 @@
     "VisionIdentityStablePayload": {
       "additionalProperties": false,
       "properties": {
+        "accent_color": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accent Color"
+        },
         "confidence": {
           "title": "Confidence",
           "type": "number"

@@ -231,6 +231,12 @@ class VisionFaceVisiblePayload(StrictModel):
 class VisionIdentityStablePayload(StrictModel):
     person_id: str
     display_name: str
+    # The colour this person chose at enrollment (ADR-0021), as `#rgb`/`#rrggbb`. The
+    # kiosks accent the greeting, the identity badge and the doorpad frame with it. Not
+    # unique across people and NOT the same thing as `profile_id`, which names an ESP32
+    # LED effect and must stay unique. None means "fall back to the profile's catalogue
+    # colour" — an older door, or a row enrolled before this field existed.
+    accent_color: str | None = None
     # Which consent statement this person enrolled under (ADR-0018). door-api needs
     # it to decide whether attribution is permitted for them; the greeting is
     # covered by every version, so this gates only the extended behaviours.

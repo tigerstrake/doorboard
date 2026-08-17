@@ -44,7 +44,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from door_visiond.consent import ConsentStatementUnavailable, load_consent_statement
-from door_visiond.enrollment import ProfileSpec
+from door_visiond.enrollment import (
+    InvalidAccentColorError,
+    ProfileSpec,
+    normalize_accent_color,
+)
 from door_visiond.logging_setup import get_logger
 from door_visiond.service import (
     DisplayNameTakenError,
@@ -166,16 +170,27 @@ async def enroll(
     color: Annotated[str, Form()],
     images: Annotated[list[UploadFile], File()],
     sound: Annotated[str | None, Form()] = None,
+    accent_color: Annotated[str | None, Form()] = None,
 ) -> dict[str, object]:
     svc = _svc(request)
     image_bytes = [await f.read() for f in images]
+    try:
+        # Validated before anything else touches it: it reaches a CSS custom property on
+        # the kiosks (ADR-0021).
+        chosen_accent = normalize_accent_color(accent_color)
+    except InvalidAccentColorError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
     try:
         result = svc.enroll(
             display_name=display_name,
             consent_version=consent_version,
             consent_confirmed=consent_confirmed,
             images=image_bytes,
-            profile=ProfileSpec(profile_id=profile_id, color=color, sound=sound),
+            profile=ProfileSpec(
+                profile_id=profile_id, color=color, sound=sound, accent_color=chosen_accent
+            ),
         )
     except EnrollmentLockedError:
         raise HTTPException(

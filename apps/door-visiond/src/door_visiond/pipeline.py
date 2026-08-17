@@ -322,6 +322,7 @@ class PipelineCore:
                 person_id=person_id,
                 display_name=result.display_name,
                 consent_version=result.consent_version,
+                accent_color=result.accent_color,
                 confidence=result.score,
                 expires_at=expires_utc,
                 expires_at_monotonic_ms=expires_mono,

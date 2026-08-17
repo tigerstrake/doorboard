@@ -95,12 +95,14 @@ def make_identity_stable(
     expires_at_monotonic_ms: int,
     profile_id: str,
     consent_version: str | None = None,
+    accent_color: str | None = None,
 ) -> VisionIdentityStableEvent:
     return VisionIdentityStableEvent(
         type="vision.identity_stable",
         payload=VisionIdentityStablePayload(
             person_id=person_id,
             display_name=display_name,
+            accent_color=accent_color,
             consent_version=consent_version,
             confidence=confidence,
             expires_at=expires_at,

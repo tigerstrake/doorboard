@@ -11,6 +11,7 @@
     {
       "monotonic_ms": 100,
       "payload": {
+        "accent_color": null,
         "confidence": 0.93,
         "consent_version": null,
         "display_name": "Alex",

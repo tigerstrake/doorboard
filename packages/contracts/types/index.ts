@@ -67,6 +67,7 @@ export interface VisionFaceVisiblePayload {
 export interface VisionIdentityStablePayload {
   person_id: string;
   display_name: string;
+  accent_color?: string | null;
   consent_version?: string | null;
   confidence: number;
   expires_at: string;
@@ -293,6 +294,7 @@ export interface SealedProfile {
   profile_id: string;
   color: string;
   sound?: string | null;
+  accent_color?: string | null;
 }
 
 export interface SealedManifest {

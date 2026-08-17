@@ -43,6 +43,9 @@ class RecognisedPerson:
     display_name: str
     consent_version: str | None
     profile_id: str | None
+    # The colour this person chose at enrollment (ADR-0021). None means the kiosks fall
+    # back to the catalogue colour for `profile_id`.
+    accent_color: str | None = None
 
 
 class RecognisedIdentity:
@@ -68,6 +71,7 @@ class RecognisedIdentity:
         display_name: str,
         consent_version: str | None,
         profile_id: str | None,
+        accent_color: str | None = None,
     ) -> None:
         """Record a freshly recognised person, or refresh the one already held.
 
@@ -81,6 +85,7 @@ class RecognisedIdentity:
             display_name=display_name,
             consent_version=consent_version,
             profile_id=profile_id,
+            accent_color=accent_color,
         )
         # Someone mid-interaction keeps their longer window when re-recognised; a new
         # arrival starts on the short one until they actually touch something.

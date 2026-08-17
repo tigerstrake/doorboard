@@ -25,6 +25,14 @@ export interface SealedProfile {
   profile_id: string;
   color: string;
   sound?: string | null;
+  /**
+   * The colour the enrollee chose for the screens (ADR-0021).
+   *
+   * Separate from `color`, which is the catalogue colour of the LED effect and follows
+   * that effect if the door has to reassign it. Optional so a phone running older relay
+   * code still enrolls successfully.
+   */
+  accent_color?: string | null;
 }
 
 /**

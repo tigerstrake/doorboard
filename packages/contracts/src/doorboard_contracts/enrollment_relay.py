@@ -77,6 +77,10 @@ class SealedProfile(StrictModel):
     profile_id: str = Field(min_length=1, max_length=64)
     color: str = Field(min_length=1, max_length=32)
     sound: str | None = Field(default=None, max_length=64)
+    # The colour the enrollee chose for the screens (ADR-0021), separate from `color`,
+    # which is the catalogue colour of the LED effect and moves if that effect is
+    # reassigned. Optional so a phone running older relay code still enrolls.
+    accent_color: str | None = Field(default=None, max_length=32)
 
 
 class SealedManifest(StrictModel):

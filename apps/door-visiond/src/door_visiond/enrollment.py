@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 import secrets
 import sqlite3
 import string
@@ -49,6 +50,33 @@ class NoProfileAvailableError(Exception):
     """Every entry in the effects catalogue is already assigned."""
 
 
+class InvalidAccentColorError(Exception):
+    """The requested accent colour is not a hex literal (ADR-0021)."""
+
+
+_HEX_COLOR = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def normalize_accent_color(value: str | None) -> str | None:
+    """Validate an enrollee-chosen colour, or raise.
+
+    Colour is now attacker-chosen input that ends up in a CSS custom property, so it is
+    constrained to a strict hex literal here at the boundary rather than trusted and
+    escaped later. "The enrollee picks their colour" and "the enrollee picks arbitrary
+    CSS" are one missing check apart (ADR-0021 §Consequences).
+
+    Returns lower-case ``#rrggbb``/``#rgb``, or None for "no preference".
+    """
+    if value is None:
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    if not _HEX_COLOR.match(candidate):
+        raise InvalidAccentColorError(f"not a hex colour: {candidate!r}")
+    return candidate.lower()
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS person (
     person_id        TEXT PRIMARY KEY,
@@ -71,7 +99,12 @@ CREATE TABLE IF NOT EXISTS profile (
     person_id        TEXT PRIMARY KEY REFERENCES person(person_id) ON DELETE CASCADE,
     profile_id       TEXT NOT NULL UNIQUE,
     color            TEXT NOT NULL,
-    sound            TEXT
+    sound            TEXT,
+    -- The colour the enrollee actually chose (ADR-0021). Deliberately NOT unique and
+    -- never reassigned: `profile_id` names an ESP32 LED effect and must stay unique, but
+    -- two people are welcome to the same colour on screen. `color` above remains the
+    -- catalogue colour of the assigned effect and is the fallback when this is NULL.
+    accent_color     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS revocation_tombstone (
@@ -185,6 +218,9 @@ class ProfileSpec:
     profile_id: str
     color: str
     sound: str | None = None
+    # What the enrollee picked, when they picked one (ADR-0021). None means "use the
+    # catalogue colour of whichever effect gets assigned", which is the old behaviour.
+    accent_color: str | None = None
 
 
 @dataclass(frozen=True)
@@ -198,6 +234,9 @@ class EnrolledPerson:
     # Which statement they enrolled under. Carried all the way to the identity
     # event so door-api can gate attribution on it (ADR-0018).
     consent_version: str = ""
+    # The chosen colour (ADR-0021), or None for a row enrolled before it existed whose
+    # colour was only ever the catalogue's. Consumers fall back to `color`.
+    accent_color: str | None = None
 
 
 @dataclass(frozen=True)
@@ -218,11 +257,31 @@ class EnrollmentStore:
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._configure(self._conn)
         self._conn.executescript(_SCHEMA)
+        self._migrate(self._conn)
         self._conn.commit()
         # Set by enroll() so callers can tell the enrollee their colour changed.
         self.last_assigned_profile: str = ""
         self.last_profile_was_reassigned: bool = False
         logger.info("enrollment_db_opened", extra={"path": str(db_path)})
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Bring an existing database up to the current schema.
+
+        ``CREATE TABLE IF NOT EXISTS`` silently does nothing to a table that already
+        exists, so a new column needs an explicit ``ALTER``. Guarded by the current
+        column list rather than a version counter: the schema has never carried one, and
+        inventing one now would need a migration of its own to backfill.
+
+        The only migration so far (ADR-0021) adds ``accent_color`` and backfills it from
+        the catalogue colour already stored on the row — so the day it runs, every
+        enrolled person's screens look exactly as they did before.
+        """
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(profile)").fetchall()}
+        if "accent_color" not in columns:
+            conn.execute("ALTER TABLE profile ADD COLUMN accent_color TEXT")
+            conn.execute("UPDATE profile SET accent_color = color WHERE accent_color IS NULL")
+            logger.info("enrollment_db_migrated", extra={"added": "profile.accent_color"})
 
     @staticmethod
     def _configure(conn: sqlite3.Connection) -> None:
@@ -299,8 +358,15 @@ class EnrollmentStore:
                     )
                 assigned = self._allocate_profile_locked(profile)
                 self._conn.execute(
-                    "INSERT INTO profile (person_id, profile_id, color, sound) VALUES (?, ?, ?, ?)",
-                    (person_id, assigned.profile_id, assigned.color, assigned.sound),
+                    "INSERT INTO profile "
+                    "(person_id, profile_id, color, sound, accent_color) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        person_id,
+                        assigned.profile_id,
+                        assigned.color,
+                        assigned.sound,
+                        assigned.accent_color or assigned.color,
+                    ),
                 )
                 reassigned = assigned.profile_id != profile.profile_id
                 self._conn.commit()
@@ -334,7 +400,15 @@ class EnrollmentStore:
             return preferred
         for profile_id, color in PROFILE_CATALOG:
             if profile_id not in taken:
-                return ProfileSpec(profile_id=profile_id, color=color, sound=preferred.sound)
+                # Reassigning the LED effect must NOT move the enrollee's colour with it
+                # (ADR-0021). Previously it did, so asking for amber second got you
+                # violet on every screen without being told.
+                return ProfileSpec(
+                    profile_id=profile_id,
+                    color=color,
+                    sound=preferred.sound,
+                    accent_color=preferred.accent_color or preferred.color,
+                )
         raise NoProfileAvailableError(f"all {len(PROFILE_CATALOG)} catalogue profiles are assigned")
 
     # ------------------------------------------------------------------
@@ -633,11 +707,19 @@ class EnrollmentStore:
         with self._lock:
             people = self._conn.execute(
                 "SELECT p.person_id, p.display_name, pr.profile_id, pr.color, pr.sound, "
-                "       p.consent_version "
+                "       p.consent_version, pr.accent_color "
                 "FROM person p JOIN profile pr ON pr.person_id = p.person_id"
             ).fetchall()
             result: list[EnrolledPerson] = []
-            for person_id, display_name, profile_id, color, sound, consent_version in people:
+            for (
+                person_id,
+                display_name,
+                profile_id,
+                color,
+                sound,
+                consent_version,
+                accent_color,
+            ) in people:
                 vectors = [
                     Embedding.from_le_float32_bytes(blob)
                     for (blob,) in self._conn.execute(
@@ -651,6 +733,7 @@ class EnrollmentStore:
                         profile_id=profile_id,
                         color=color,
                         sound=sound,
+                        accent_color=accent_color,
                         vectors=tuple(vectors),
                         consent_version=consent_version,
                     )
@@ -738,7 +821,7 @@ class EnrollmentStore:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT p.person_id, p.display_name, p.consent_version, p.consent_at, "
-                "       p.created_at, pr.profile_id, pr.color, pr.sound "
+                "       p.created_at, pr.profile_id, pr.color, pr.sound, pr.accent_color "
                 "FROM person p LEFT JOIN profile pr ON pr.person_id = p.person_id"
             ).fetchall()
             return [
@@ -751,6 +834,7 @@ class EnrollmentStore:
                     "profile_id": r[5],
                     "color": r[6],
                     "sound": r[7],
+                    "accent_color": r[8] or r[6],
                 }
                 for r in rows
             ]

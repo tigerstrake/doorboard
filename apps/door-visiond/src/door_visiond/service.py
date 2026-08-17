@@ -36,11 +36,13 @@ from door_visiond.embedding import Embedding
 from door_visiond.enrollment import (
     DisplayNameTakenError,
     EnrollmentStore,
+    InvalidAccentColorError,
     InviteConsumption,
     InviteUnusableError,
     NoProfileAvailableError,
     ProfileSpec,
     hash_invite_secret,
+    normalize_accent_color,
 )
 from door_visiond.event_forwarder import EventForwarder, HttpEventTransport
 from door_visiond.events import (
@@ -806,8 +808,15 @@ class VisiondService:
                     profile_id=manifest.profile.profile_id,
                     color=manifest.profile.color,
                     sound=manifest.profile.sound,
+                    # Validated here rather than trusted: it arrives from a phone and ends
+                    # up in a CSS custom property (ADR-0021).
+                    accent_color=normalize_accent_color(manifest.profile.accent_color),
                 ),
                 invite=invite,
+            )
+        except InvalidAccentColorError:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="rejected", reason="invalid_accent_color"
             )
         except NoProfileAvailableError:
             return PickupAck(

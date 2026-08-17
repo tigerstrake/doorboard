@@ -414,6 +414,9 @@ export function App() {
   const [sessionState, setSessionState] = useState<SessionState>("IDLE");
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
   const [activeDisplayName, setActiveDisplayName] = useState<string | null>(null);
+  // The colour the recognised person chose (ADR-0021). Distinct from activeProfile,
+  // which names an LED effect and may be reassigned without their colour changing.
+  const [activeAccent, setActiveAccent] = useState<string | null>(null);
   // Whose name the door will attach to a note or vote made here. Derived by
   // door-api's consent gate, never by this UI (ADR-0018 E-23).
   const [attributedTo, setAttributedTo] = useState<string | null>(null);
@@ -629,6 +632,7 @@ export function App() {
       if (snapshot?.display_name !== undefined) setActiveDisplayName(snapshot.display_name);
       if (snapshot?.attributed_to !== undefined) setAttributedTo(snapshot.attributed_to);
       if (snapshot?.profile_id !== undefined) setActiveProfile(snapshot.profile_id);
+      if (snapshot?.accent_color !== undefined) setActiveAccent(snapshot.accent_color);
       const target = doorPadRouteForState(nextState);
       setDoorPadScreen(target.screen);
       setVideoStep(target.video);
@@ -639,6 +643,7 @@ export function App() {
         // greeting vanish and "Check in as <name>" disappear mid-interaction.
         if (!snapshot?.display_name) setActiveDisplayName(null);
         if (!snapshot?.profile_id) setActiveProfile(null);
+        if (!snapshot?.accent_color) setActiveAccent(null);
         setRingRequestState("idle");
         // Fresh session: clear any post-bell check-in photo state.
         setPostRingPhoto(null);
@@ -809,6 +814,7 @@ export function App() {
       if (event && event.type === "vision.identity_stable" && event.payload) {
         setActiveProfile(event.payload.profile_id);
         setActiveDisplayName(event.payload.display_name);
+        setActiveAccent(event.payload.accent_color ?? null);
       }
     });
 
@@ -2352,9 +2358,12 @@ export function App() {
   // The colour the recognised person picked during onboarding, applied as CSS custom
   // properties so any styled surface can opt in without threading a prop. Falls back to
   // the default accent when nobody is recognised, so the door has one look for guests.
+  // The person's own colour wins; the cataloged profile colour is the fallback for a
+  // door or a row predating ADR-0021.
+  const accentColor = activeAccent ?? profileAccent(activeProfile);
   const accentStyle = {
-    "--db-accent": profileAccent(activeProfile),
-    "--db-accent-ink": accentInk(profileAccent(activeProfile)),
+    "--db-accent": accentColor,
+    "--db-accent-ink": accentInk(accentColor),
   } as React.CSSProperties;
 
   const renderDoorPad = () => {
