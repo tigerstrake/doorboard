@@ -3410,9 +3410,12 @@ input:focus-visible {
 }
 
 .campus-map__water {
-  fill: rgba(53, 214, 255, 0.1);
-  stroke: rgba(140, 190, 255, 0.45);
-  stroke-width: 1;
+  fill: rgba(40, 120, 190, 0.22);
+  stroke: rgba(120, 200, 255, 0.5);
+  stroke-width: 0.8px;
+  vector-effect: non-scaling-stroke;
+  /* Several rings in one path (the lake plus two ponds) — evenodd keeps them distinct. */
+  fill-rule: evenodd;
 }
 
 .campus-map__block {
@@ -3515,6 +3518,49 @@ input:focus-visible {
 
 .campus-map__tower-dot {
   fill: rgba(160, 200, 255, 0.55);
+}
+
+/*
+ * Real streets, weighted by road class.
+ *
+ * The trick that makes a few thousand lines read as a map rather than a mesh: footpaths as
+ * near-invisible hairlines that only register as texture, then service roads, then the
+ * through-roads brightest and thickest. Uniform strokes look like a circuit board.
+ *
+ * vector-effect keeps the weights honest — the SVG scales to its container, and without it a
+ * hairline layer would fatten on the 27" wallboard and vanish on the 7" touchscreen.
+ */
+.campus-map__street {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.campus-map__street--path {
+  stroke: rgba(120, 170, 235, 0.22);
+  stroke-width: 0.4px;
+}
+
+.campus-map__street--service {
+  stroke: rgba(130, 185, 245, 0.4);
+  stroke-width: 0.6px;
+}
+
+.campus-map__street--minor {
+  stroke: rgba(150, 205, 255, 0.62);
+  stroke-width: 1px;
+}
+
+.campus-map__street--major {
+  stroke: rgba(90, 220, 255, 0.9);
+  stroke-width: 1.7px;
+}
+
+.campus-map__attribution {
+  fill: rgba(160, 200, 255, 0.35);
+  font-family: var(--db-font-mono);
+  font-size: 8px;
 }
 
 /*

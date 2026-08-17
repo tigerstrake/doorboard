@@ -156,6 +156,35 @@ export function hallFromTitle(title: string | null | undefined): string | null {
   return trimmed ? trimmed : null;
 }
 
+/**
+ * Decode one delta-encoded way (see campusStreets.ts) into an SVG path fragment.
+ *
+ * The whole layer is concatenated into a *single* `<path>` rather than one element per way:
+ * 2031 ways is 2031 DOM nodes for a screen that runs for weeks, and the browser has no
+ * reason to lay them out separately when they are all the same colour and weight.
+ */
+export function streetPath(
+  ways: readonly (readonly number[])[],
+  scale: number,
+  width: number,
+  height: number
+): string {
+  const parts: string[] = [];
+  for (const way of ways) {
+    let lat = 0;
+    let lng = 0;
+    for (let index = 0; index < way.length; index += 2) {
+      // First pair is absolute, the rest are deltas.
+      lat = index === 0 ? way[0]! : lat + way[index]!;
+      lng = index === 0 ? way[1]! : lng + way[index + 1]!;
+      const at = projectToCampus({ lat: lat / scale, lng: lng / scale }, width, height);
+      // One decimal is ~0.05 px at these sizes; more just inflates the string.
+      parts.push(`${index === 0 ? "M" : "L"}${at.x.toFixed(1)} ${at.y.toFixed(1)}`);
+    }
+  }
+  return parts.join("");
+}
+
 export interface CampusLandmark {
   label: string;
   /** Where to put the label relative to the shape, so it does not sit on a marker. */

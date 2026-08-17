@@ -1,26 +1,38 @@
 import { useMemo } from "react";
 import {
   CAMPUS_ASPECT,
-  CAMPUS_LANDMARKS,
   DINING_HALLS,
   DOORBOARD_AT,
   HOOVER_TOWER,
   hallFromTitle,
   projectToCampus,
   resolveDiningHall,
+  streetPath,
 } from "./campusMap";
 import type { DiningHall } from "./campusMap";
+import {
+  CAMPUS_STREETS,
+  CAMPUS_WATER,
+  OSM_ATTRIBUTION,
+  STREET_COORD_SCALE,
+  STREET_LAYER_ORDER,
+} from "./campusStreets";
 
 /**
- * The recommended dining hall, placed on a stylised map of campus.
+ * The recommended dining hall, on a street map of campus.
  *
  * "Wilbur — dinner" tells you nothing about whether that is a two-minute walk or a fifteen.
- * The map answers the question the text cannot, using the doorboard's own palette: dark
- * field, blue outlines, the accent reserved for the one thing being recommended.
  *
- * Every other hall is drawn too, dimmed. A single dot on an empty map has no scale — the
- * point of showing the rest is that "the near cluster" and "all the way past the lake" are
- * immediately different pictures.
+ * The streets are real OpenStreetMap geometry, baked into the bundle at build time
+ * (`scripts/build-campus-streets`) rather than fetched — the doorboard has to work with the
+ * internet down (E-19), and a wallboard is not where you want to discover that a tile server
+ * is unreachable. The first version of this panel drew three rectangles and a blob, which
+ * read as an abstract diagram of nowhere in particular.
+ *
+ * Drawn in the doorboard's own language: dark field, blue lines, the accent spent only on
+ * the thing being pointed at. Road classes carry different weights, which is what makes a
+ * tangle of lines resolve into a map — footpaths as hairlines for texture, then service
+ * roads, then the through-roads brightest.
  */
 
 /** Exported so a test can check where a marker landed without restating the numbers. */
@@ -46,9 +58,27 @@ export function CampusDiningMap({
   );
   const backup = useMemo(() => resolveDiningHall(backupHall), [backupHall]);
 
+  // One concatenated path per road class instead of one element per way: 2000+ ways would be
+  // 2000+ DOM nodes on a screen that stays up for weeks, and they all share a colour and a
+  // weight. Constant geometry, so this runs once for the life of the page.
+  const streets = useMemo(
+    () =>
+      STREET_LAYER_ORDER.map((layer) => ({
+        layer,
+        d: streetPath(CAMPUS_STREETS[layer], STREET_COORD_SCALE, WIDTH, HEIGHT),
+      })).filter((entry) => entry.d.length > 0),
+    []
+  );
+
+  const water = useMemo(
+    () => streetPath(CAMPUS_WATER, STREET_COORD_SCALE, WIDTH, HEIGHT),
+    []
+  );
+
   const project = (at: { lat: number; lng: number }) => projectToCampus(at, WIDTH, HEIGHT);
   const doorboard = project(DOORBOARD_AT);
   const hoover = project(HOOVER_TOWER);
+  const pickAt = resolved ? project(resolved.at) : null;
 
   return (
     <div className="campus-map" data-testid="campus-dining-map">
@@ -58,56 +88,29 @@ export function CampusDiningMap({
         role="img"
         aria-label={
           resolved
-            ? `Map of campus showing ${resolved.name} dining hall`
-            : "Map of campus; the recommended dining hall could not be located"
+            ? `Street map of campus showing ${resolved.name} dining hall`
+            : "Street map of campus; the recommended dining hall could not be located"
         }
       >
-        {CAMPUS_LANDMARKS.map((landmark) => {
-          const topLeft = project({ lat: landmark.bounds.north, lng: landmark.bounds.west });
-          const bottomRight = project({
-            lat: landmark.bounds.south,
-            lng: landmark.bounds.east,
-          });
-          const w = bottomRight.x - topLeft.x;
-          const h = bottomRight.y - topLeft.y;
-          // Named, because an unlabelled rectangle on a map is noise, not a landmark.
-          const labelY =
-            landmark.labelAt === "below" ? topLeft.y + h + 11 : topLeft.y + h / 2 + 3;
-          return (
-            <g key={landmark.label}>
-              {landmark.shape === "ellipse" ? (
-                <ellipse
-                  className="campus-map__water"
-                  cx={topLeft.x + w / 2}
-                  cy={topLeft.y + h / 2}
-                  rx={w / 2}
-                  ry={h / 2}
-                />
-              ) : (
-                <rect
-                  className="campus-map__block"
-                  x={topLeft.x}
-                  y={topLeft.y}
-                  width={w}
-                  height={h}
-                  rx={2}
-                />
-              )}
-              <text className="campus-map__landmark-label" x={topLeft.x + w / 2} y={labelY}>
-                {landmark.label}
-              </text>
-            </g>
-          );
-        })}
+        {/*
+          Water first: paths cross it (the dam) and should draw over the top. Real outlines —
+          the previous version inscribed an ellipse in Lake Lagunita's bounding box, which
+          next to real streets read as a blob dropped onto the map.
+        */}
+        {water ? <path className="campus-map__water" d={water} /> : null}
+
+        {streets.map(({ layer, d }) => (
+          <path key={layer} className={`campus-map__street campus-map__street--${layer}`} d={d} />
+        ))}
 
         {/* The walk, as the crow flies. Not a route — nothing here knows the paths. */}
-        {resolved ? (
+        {pickAt ? (
           <line
             className="campus-map__walk"
             x1={doorboard.x}
             y1={doorboard.y}
-            x2={project(resolved.at).x}
-            y2={project(resolved.at).y}
+            x2={pickAt.x}
+            y2={pickAt.y}
           />
         ) : null}
 
@@ -127,7 +130,9 @@ export function CampusDiningMap({
                 .join(" ")}
               data-testid={isPick ? "campus-map-pick" : undefined}
             >
-              {isPick ? <circle className="campus-map__pick-glow" cx={at.x} cy={at.y} r={13} /> : null}
+              {isPick ? (
+                <circle className="campus-map__pick-glow" cx={at.x} cy={at.y} r={13} />
+              ) : null}
               <circle className="campus-map__dot" cx={at.x} cy={at.y} r={isPick ? 5 : 3} />
               {isPick || isBackup ? (
                 <text className="campus-map__hall-label" x={at.x} y={at.y - 11}>
@@ -140,8 +145,6 @@ export function CampusDiningMap({
 
         <g className="campus-map__here">
           <circle className="campus-map__here-dot" cx={doorboard.x} cy={doorboard.y} r={3.5} />
-          {/* Above the dot: the doorboard sits inside the Main Quad block, whose own label
-              is below it. */}
           <text className="campus-map__here-label" x={doorboard.x} y={doorboard.y - 9}>
             you are here
           </text>
@@ -158,11 +161,6 @@ export function CampusDiningMap({
           </text>
         </g>
 
-        {/*
-          A legend for the dim dots. Without it they are unexplained specks — and labelling
-          all eight halls instead would collide in the east cluster, where Arrillaga and
-          Branner are 40 m apart.
-        */}
         <g className="campus-map__legend">
           <circle className="campus-map__dot" cx={11} cy={HEIGHT - 11} r={3} />
           <text
@@ -173,6 +171,16 @@ export function CampusDiningMap({
             other dining halls
           </text>
         </g>
+
+        {/* ODbL requires the attribution wherever the data is shown. */}
+        <text
+          className="campus-map__attribution"
+          x={WIDTH - 6}
+          y={HEIGHT - 8}
+          textAnchor="end"
+        >
+          {OSM_ATTRIBUTION}
+        </text>
       </svg>
 
       {resolved ? (

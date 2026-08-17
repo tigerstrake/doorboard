@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""Bake OpenStreetMap street geometry for the campus view into a TS data module.
+
+The dining map's first version drew three rectangles and a blob, which read as an abstract
+diagram rather than a map of anywhere. The owner asked for real streets, blue lines on dark —
+the street-lines-poster look crossed with a game minimap. Real streets means real data.
+
+Baked at build time, not fetched at runtime: the doorboard has to work with the internet down
+(E-19), and a wallboard is not a place to discover that a tile server is unreachable.
+
+Usage:
+    scripts/build-campus-streets [--from-cache PATH] [--out PATH]
+
+Data © OpenStreetMap contributors, ODbL 1.0 — the attribution is emitted into the generated
+module and rendered on the panel, which the licence requires.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import pathlib
+import subprocess
+import sys
+
+# Must match CAMPUS_VIEW in apps/door-ui/src/wallboard/campusMap.ts. A margin is included so
+# lines run off the edge of the frame rather than stopping short inside it.
+VIEW = {"south": 37.4196, "north": 37.4288, "west": -122.1818, "east": -122.1572}
+MARGIN = 0.0012
+
+# Road class -> the layer it is drawn in. Ordered coarse to fine; the renderer gives each
+# layer its own weight and opacity, which is what makes the picture read as a map rather
+# than as a mesh of identical lines.
+LAYERS = {
+    "motorway": "major",
+    "trunk": "major",
+    "primary": "major",
+    "secondary": "major",
+    # Campus Drive, Serra, Galvez are all tertiary. They are the through-roads *here*, and
+    # classing them as minor left the map with no visible skeleton — 7 major ways in the
+    # whole frame, so the picture had no hierarchy to read.
+    "tertiary": "major",
+    "residential": "minor",
+    "unclassified": "minor",
+    "living_street": "minor",
+    "service": "service",
+    "pedestrian": "path",
+    "footway": "path",
+    "path": "path",
+    "cycleway": "path",
+}
+LAYER_ORDER = ("path", "service", "minor", "major")
+
+WATER_QUERY = f"""[out:json][timeout:90];
+(
+  way["natural"="water"]({VIEW["south"] - MARGIN},{VIEW["west"] - MARGIN},{VIEW["north"] + MARGIN},{VIEW["east"] + MARGIN});
+  way["landuse"="reservoir"]({VIEW["south"] - MARGIN},{VIEW["west"] - MARGIN},{VIEW["north"] + MARGIN},{VIEW["east"] + MARGIN});
+);
+out geom;
+"""
+
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+QUERY = f"""[out:json][timeout:90];
+(
+  way["highway"~"^({"|".join(LAYERS)})$"]
+     ({VIEW["south"] - MARGIN},{VIEW["west"] - MARGIN},{VIEW["north"] + MARGIN},{VIEW["east"] + MARGIN});
+);
+out geom;
+"""
+
+# Coordinates are stored as integers in millionths of a degree, delta-encoded along each
+# way. Campus is ~2 km across, so absolute values stay small and successive deltas are
+# tiny — this is what keeps a few thousand ways to a sane bundle size.
+SCALE = 1_000_000
+
+
+def fetch(query: str = QUERY) -> dict:
+    """Query Overpass with curl (no third-party HTTP dep for a build script)."""
+    result = subprocess.run(
+        ["curl", "-s", "--max-time", "120", "-X", "POST", "--data-binary", query, OVERPASS_URL],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(result.stdout)
+
+
+def clip_to_view(points: list[tuple[float, float]]) -> list[list[tuple[float, float]]]:
+    """Split a way into the runs of it that fall inside the view (plus margin).
+
+    Keeps one point either side of each crossing so a road that leaves and re-enters is not
+    joined by a straight line through the middle of somewhere it never went.
+    """
+    south, north = VIEW["south"] - MARGIN, VIEW["north"] + MARGIN
+    west, east = VIEW["west"] - MARGIN, VIEW["east"] + MARGIN
+
+    def inside(p: tuple[float, float]) -> bool:
+        return south <= p[0] <= north and west <= p[1] <= east
+
+    runs: list[list[tuple[float, float]]] = []
+    current: list[tuple[float, float]] = []
+    for index, point in enumerate(points):
+        if inside(point):
+            if not current and index > 0:
+                current.append(points[index - 1])  # lead-in, so the line reaches the edge
+            current.append(point)
+        elif current:
+            current.append(point)  # lead-out
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    return [run for run in runs if len(run) >= 2]
+
+
+def simplify(points: list[tuple[float, float]], tolerance: float) -> list[tuple[float, float]]:
+    """Douglas-Peucker. Tolerance is in degrees; 2e-5 is roughly 2 m."""
+    if len(points) <= 2:
+        return points
+    start, end = points[0], points[-1]
+    dy, dx = end[0] - start[0], end[1] - start[1]
+    span = math.hypot(dy, dx)
+
+    worst_index, worst = 0, -1.0
+    for index in range(1, len(points) - 1):
+        point = points[index]
+        if span == 0:
+            distance = math.hypot(point[0] - start[0], point[1] - start[1])
+        else:
+            distance = (
+                abs(dx * (start[0] - point[0]) - dy * (start[1] - point[1])) / span
+            )
+        if distance > worst:
+            worst_index, worst = index, distance
+
+    if worst <= tolerance:
+        return [start, end]
+    left = simplify(points[: worst_index + 1], tolerance)
+    right = simplify(points[worst_index:], tolerance)
+    return left[:-1] + right
+
+
+def encode(points: list[tuple[float, float]]) -> list[int]:
+    """Flat delta-encoded integers: lat0, lng0, dlat1, dlng1, dlat2, dlng2, …"""
+    out: list[int] = []
+    previous_lat = previous_lng = 0
+    for index, (lat, lng) in enumerate(points):
+        lat_i, lng_i = round(lat * SCALE), round(lng * SCALE)
+        if index == 0:
+            out.extend([lat_i, lng_i])
+        else:
+            out.extend([lat_i - previous_lat, lng_i - previous_lng])
+        previous_lat, previous_lng = lat_i, lng_i
+    return out
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--from-cache", type=pathlib.Path, default=None)
+    parser.add_argument("--water-cache", type=pathlib.Path, default=None)
+    parser.add_argument(
+        "--out",
+        type=pathlib.Path,
+        default=pathlib.Path("apps/door-ui/src/wallboard/campusStreets.ts"),
+    )
+    parser.add_argument("--tolerance", type=float, default=2e-5)
+    args = parser.parse_args()
+
+    data = json.loads(args.from_cache.read_text()) if args.from_cache else fetch()
+    elements = data.get("elements", [])
+
+    layers: dict[str, list[list[int]]] = {name: [] for name in LAYER_ORDER}
+    kept = dropped = 0
+    for element in elements:
+        geometry = element.get("geometry")
+        highway = (element.get("tags") or {}).get("highway")
+        layer = LAYERS.get(highway or "")
+        if not geometry or layer is None:
+            dropped += 1
+            continue
+        points = [(node["lat"], node["lon"]) for node in geometry if "lat" in node]
+        for run in clip_to_view(points):
+            simplified = simplify(run, args.tolerance)
+            if len(simplified) >= 2:
+                layers[layer].append(encode(simplified))
+                kept += 1
+
+    # Water: real outlines. The previous version inscribed an ellipse in Lake Lagunita's
+    # bounding box, which alongside real streets read as a blob dropped onto the map.
+    water_raw = json.loads(args.water_cache.read_text()) if args.water_cache else fetch(WATER_QUERY)
+    water: list[list[int]] = []
+    for element in water_raw.get("elements", []):
+        geometry = element.get("geometry")
+        if not geometry:
+            continue
+        ring = [(node["lat"], node["lon"]) for node in geometry if "lat" in node]
+        simplified = simplify(ring, args.tolerance)
+        if len(simplified) >= 4:
+            water.append(encode(simplified))
+
+    water_body = ",\n".join("  [" + ",".join(str(v) for v in ring) + "]" for ring in water)
+
+    body = ",\n".join(
+        f"  {name}: [\n"
+        + ",\n".join("    [" + ",".join(str(v) for v in way) + "]" for way in layers[name])
+        + "\n  ]"
+        for name in LAYER_ORDER
+    )
+    module = f'''/**
+ * Campus street geometry, baked from OpenStreetMap. GENERATED — do not edit by hand.
+ *
+ * Regenerate with `scripts/build-campus-streets`. Baked rather than fetched because the
+ * doorboard must work with the internet down (E-19), and because a wallboard is not where
+ * you want to find out a tile server is unreachable.
+ *
+ * Coordinates are integers in millionths of a degree, delta-encoded along each way
+ * (lat0, lng0, dlat, dlng, …). Campus is ~2 km across so the deltas are tiny, which is
+ * what keeps {kept} ways to a reasonable bundle.
+ *
+ * Data © OpenStreetMap contributors, ODbL 1.0 (https://www.openstreetmap.org/copyright).
+ * The panel renders this attribution; the licence requires it.
+ */
+
+export const STREET_COORD_SCALE = {SCALE};
+
+/** Road classes, coarse to fine. The renderer weights each layer differently. */
+export type StreetLayer = {" | ".join(f'"{name}"' for name in LAYER_ORDER)};
+
+export const STREET_LAYER_ORDER: readonly StreetLayer[] = [
+{chr(10).join(f'  "{name}",' for name in LAYER_ORDER)}
+];
+
+export const CAMPUS_STREETS: Record<StreetLayer, readonly (readonly number[])[]> = {{
+{body}
+}};
+
+/** Water outlines (closed rings), same encoding as the streets. */
+export const CAMPUS_WATER: readonly (readonly number[])[] = [
+{water_body}
+];
+
+export const OSM_ATTRIBUTION = "© OpenStreetMap contributors";
+'''
+    args.out.write_text(module)
+    total_points = sum(len(w) // 2 for ways in layers.values() for w in ways)
+    print(f"wrote {args.out}  ({args.out.stat().st_size // 1024} KB)")
+    print(f"  ways kept: {kept}   dropped (no geometry/class): {dropped}")
+    print(f"  points after simplify: {total_points}")
+    for name in LAYER_ORDER:
+        print(f"    {name:8} {len(layers[name]):5} ways")
+    print(f"  water rings: {len(water)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
