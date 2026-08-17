@@ -4,7 +4,9 @@ import {
   DINING_HALLS,
   DOORBOARD_AT,
   HOOVER_TOWER,
+  SAME_BUILDING_M,
   hallFromTitle,
+  metresBetween,
   projectToCampus,
   resolveDiningHall,
   streetPath,
@@ -90,6 +92,10 @@ export function CampusDiningMap({
   const doorboard = project(DOORBOARD_AT);
   const hoover = project(HOOVER_TOWER);
   const pickAt = resolved ? project(resolved.at) : null;
+  // FloMo has its own dining hall, so the recommendation is sometimes the building the door
+  // is in. A dashed line from you to yourself reads as a bug, so it is dropped.
+  const alreadyHere =
+    resolved !== null && metresBetween(DOORBOARD_AT, resolved.at) < SAME_BUILDING_M;
 
   return (
     <div
@@ -118,7 +124,7 @@ export function CampusDiningMap({
         ))}
 
         {/* The walk, as the crow flies. Not a route — nothing here knows the paths. */}
-        {pickAt ? (
+        {pickAt && !alreadyHere ? (
           <line
             className="campus-map__walk"
             x1={doorboard.x}
@@ -206,7 +212,11 @@ export function CampusDiningMap({
       {compact ? null : resolved ? (
         <p className="campus-map__note">
           {resolved.name}
-          {resolved.approximate ? " — the dining room is inside this building" : ""}
+          {alreadyHere
+            ? " — in this building"
+            : resolved.approximate
+              ? " — the dining room is inside this building"
+              : ""}
         </p>
       ) : (
         <p className="campus-map__note placeholder-subtext">

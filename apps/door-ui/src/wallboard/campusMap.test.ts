@@ -4,6 +4,8 @@ import {
   CAMPUS_VIEW,
   DINING_HALLS,
   DOORBOARD_AT,
+  SAME_BUILDING_M,
+  metresBetween,
   hallFromTitle,
   projectToCampus,
   resolveDiningHall,
@@ -71,6 +73,18 @@ describe("the hall catalogue", () => {
 
   it("frames the doorboard itself", () => {
     expect(withinCampusView(DOORBOARD_AT)).toBe(true);
+  });
+
+  it("puts the doorboard at Florence Moore, where the door actually is", () => {
+    // It was the Main Quad — the campus centroid — which drew every walk line from a
+    // kilometre away from the door. FloMo has its own dining hall, so the nearest hall to
+    // the door is FloMo's, and that has to come out as "the same building".
+    const flomo = DINING_HALLS.find((hall) => hall.name === "Florence Moore")!;
+    expect(metresBetween(DOORBOARD_AT, flomo.at)).toBeLessThan(SAME_BUILDING_M);
+
+    // And somewhere genuinely across campus is not.
+    const wilbur = DINING_HALLS.find((hall) => hall.name === "Wilbur")!;
+    expect(metresBetween(DOORBOARD_AT, wilbur.at)).toBeGreaterThan(600);
   });
 
   it("has no duplicate names or aliases", () => {

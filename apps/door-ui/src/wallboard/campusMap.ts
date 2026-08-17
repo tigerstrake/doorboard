@@ -227,5 +227,31 @@ export const CAMPUS_LANDMARKS: readonly CampusLandmark[] = [
 /** Hoover Tower, the one landmark everyone orients from. Real OSM position. */
 export const HOOVER_TOWER: LatLng = { lat: 37.42762, lng: -122.16699 };
 
-/** Where the doorboard is — the same observer the flights map centres on. */
-export const DOORBOARD_AT: LatLng = { lat: 37.4275, lng: -122.1697 };
+/**
+ * Where the doorboard actually is: Florence Moore Hall.
+ *
+ * This was the Main Quad — the campus centroid the flights map uses as a view centre — which
+ * put "you are here" about a kilometre north-east of the door and drew every walk line from
+ * the wrong place. The owner corrected it: the door is in FloMo.
+ *
+ * The same fact is configured separately for the ambient jobs on the NUC
+ * (`OBSERVER_LAT`/`OBSERVER_LON`, which drive aircraft distance and satellite az/el) and
+ * those still say Main Quad. Worth reconciling; it is not this module's to set.
+ */
+export const DOORBOARD_AT: LatLng = { lat: 37.422, lng: -122.17213 };
+
+/**
+ * Metres between two nearby points. Equirectangular, which is ample over a campus.
+ *
+ * Used to notice that the recommendation is the building you are standing in: FloMo has its
+ * own dining hall, so "walk here" is sometimes "you are already here", and a zero-length
+ * dashed line pointing at your own feet reads as a rendering bug.
+ */
+export function metresBetween(a: LatLng, b: LatLng): number {
+  const dLat = (b.lat - a.lat) * 111_320;
+  const dLng = (b.lng - a.lng) * 111_320 * LNG_SCALE;
+  return Math.hypot(dLat, dLng);
+}
+
+/** Below this, the pick and the door are the same building for display purposes. */
+export const SAME_BUILDING_M = 60;
