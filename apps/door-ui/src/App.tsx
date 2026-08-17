@@ -261,6 +261,8 @@ interface DoorApiSnapshot {
     /** Recognised person whose name writes will carry (ADR-0018 E-23). */
     attributed_to?: string | null;
     profile_id?: string | null;
+    /** The colour this person chose at enrollment (ADR-0021), not the profile default. */
+    accent_color?: string | null;
   };
   config?: { max_recording_s?: number };
 }
@@ -618,6 +620,11 @@ export function App() {
               max_elevation_deg: satelliteFixture.max_elevation_deg,
               direction: satelliteFixture.direction,
               visible: satelliteFixture.visible,
+              set_at: satelliteFixture.set_at,
+              rise_azimuth_deg: satelliteFixture.rise_azimuth_deg,
+              culmination_azimuth_deg: satelliteFixture.culmination_azimuth_deg,
+              set_azimuth_deg: satelliteFixture.set_azimuth_deg,
+              track: satelliteFixture.track,
             },
           }
         : null

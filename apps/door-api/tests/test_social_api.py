@@ -165,6 +165,56 @@ def test_checkin_create_and_stats(client: TestClient, monkeypatch: pytest.Monkey
     assert stats["count"] == 1
 
 
+def test_recognised_person_can_check_in_with_no_active_session(client: TestClient) -> None:
+    """The reported bug, end to end: "I tapped check in as Tiger and nothing happened".
+
+    ADR-0020 lets the recognised name outlive the approach session, so "Check in as
+    <name>" is reachable while the session is IDLE. Both halves of the token path have to
+    accept that state — minting *and* verification. Fixing only the mint turned a 422 into
+    a 401 and the button still did nothing, so this drives the whole HTTP path rather than
+    the two endpoints separately.
+    """
+    state.machine.handle_identity_stable(
+        person_id="prs_alex",
+        display_name="Alex",
+        profile_id="blue_wave",
+        consent_version="v3",
+    )
+    # The face leaves the frame — someone standing at the doorpad looking down at it. The
+    # approach session drops to IDLE; the held name deliberately survives (ADR-0020). This
+    # is the state the doorpad was in when the button did nothing.
+    state.machine.handle_identity_expired(person_id="prs_alex")
+    assert state.machine.snapshot().session_id is None
+    assert state.identity.current() is not None, "the name must outlive the session"
+
+    minted = client.get("/visitor-token")
+    assert minted.status_code == 200, "a held identity must be enough to mint a token"
+    token = minted.json()["token"]
+    assert token
+
+    resp = client.post("/checkins", json={"label": "Alex", "session_token": token})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["person_id"] == "prs_alex", "the check-in must be attributed"
+
+
+def test_visitor_token_is_refused_once_the_identity_is_forgotten(client: TestClient) -> None:
+    # The flip side: widening verification must not make tokens immortal. Once the door
+    # has forgotten the person, their token is worth nothing.
+    state.machine.handle_identity_stable(
+        person_id="prs_alex",
+        display_name="Alex",
+        profile_id="blue_wave",
+        consent_version="v3",
+    )
+    state.machine.handle_identity_expired(person_id="prs_alex")
+    token = client.get("/visitor-token").json()["token"]  # keyed on the interaction
+    state.identity.forget()
+
+    resp = client.post("/checkins", json={"label": "Alex", "session_token": token})
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"]["code"] == "inactive_visitor_session"
+
+
 def test_checkin_ignores_client_supplied_person_id(client: TestClient) -> None:
     # No identity cached server-side — a client-claimed person_id must be
     # ignored, not trusted. Otherwise any visitor could attribute a

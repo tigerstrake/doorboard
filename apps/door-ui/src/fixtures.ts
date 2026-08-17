@@ -96,13 +96,39 @@ export const aircraftFixture = {
   ],
 };
 
+const SATELLITE_PASS_DURATION_S = 540; // ~9 minutes, typical for a high ISS pass
+const SATELLITE_MAX_ELEVATION_DEG = 64.5;
+
+/**
+ * A sampled arc for the mock pass: NW horizon → 64.5° near NE → SE horizon.
+ *
+ * The sky panel draws whatever track it is given and honestly says "high point only" when
+ * given none — so a fixture without one leaves mock mode unable to show the panel's whole
+ * point. Elevation follows a sine and azimuth sweeps the 180° from rise to set, which is
+ * the shape of a real overhead pass rather than an arbitrary squiggle.
+ */
+const satelliteTrack = Array.from({ length: 19 }, (_, index) => {
+  const fraction = index / 18;
+  return {
+    t_offset_s: Math.round(fraction * SATELLITE_PASS_DURATION_S),
+    // 315° → 495°, i.e. NW up over NE (45°) and down to SE (135°).
+    azimuth_deg: Number(((315 + fraction * 180) % 360).toFixed(1)),
+    elevation_deg: Number((Math.sin(Math.PI * fraction) * SATELLITE_MAX_ELEVATION_DEG).toFixed(1)),
+  };
+});
+
 export const satelliteFixture = {
   occurred_at: "2026-07-04T12:34:56.123Z",
   satellite: "ISS",
   visible: true,
   rise_at: new Date(Date.now() + 600000).toISOString(), // 10 minutes in future
+  set_at: new Date(Date.now() + 600000 + SATELLITE_PASS_DURATION_S * 1000).toISOString(),
   direction: "NW",
-  max_elevation_deg: 64.5,
+  max_elevation_deg: SATELLITE_MAX_ELEVATION_DEG,
+  rise_azimuth_deg: 315,
+  culmination_azimuth_deg: 45,
+  set_azimuth_deg: 135,
+  track: satelliteTrack,
 };
 
 export const printerFixture = {
