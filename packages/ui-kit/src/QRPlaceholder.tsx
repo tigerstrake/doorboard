@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import QRCode from "qrcode";
+import { cachedQr, encodeQr } from "./qrCache";
 
 export interface QRPlaceholderProps {
   url: string;
@@ -26,17 +26,21 @@ export function QRPlaceholder({
   size = 320,
   showUrl = true,
 }: QRPlaceholderProps) {
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  // Seeded from the cache so an already-encoded code paints on the first frame instead
+  // of after a round through the encoder.
+  const [imageUrl, setImageUrl] = useState<string | null>(() => cachedQr(url, { size }));
 
   useEffect(() => {
     let cancelled = false;
-    setImageUrl(null);
-    QRCode.toDataURL(url, {
-      width: size,
-      margin: 1,
-      errorCorrectionLevel: "M",
-      color: { dark: "#111111", light: "#ffffff" },
-    })
+    const ready = cachedQr(url, { size });
+    if (ready) {
+      setImageUrl(ready);
+      return;
+    }
+    // Deliberately NOT clearing the current image first. Blanking it made every
+    // re-render flash an empty square, which is what "the code takes ages to prepare"
+    // looked like even when the encode itself was fast.
+    encodeQr(url, { size })
       .then((generated) => {
         if (!cancelled) setImageUrl(generated);
       })

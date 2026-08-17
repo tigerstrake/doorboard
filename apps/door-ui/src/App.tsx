@@ -11,6 +11,7 @@ import {
   Gauge,
   profileAccent,
   accentInk,
+  warmQrEncoder,
 } from "@doorboard/ui-kit";
 import { DoorboardEventClient, uuidv7 } from "@doorboard/event-client";
 import type {
@@ -759,6 +760,13 @@ export function App() {
     const timeout = window.setTimeout(() => setWallboardFocusRequest(null), remainingMs);
     return () => window.clearTimeout(timeout);
   }, [wallboardFocusRequest]);
+
+  // Load and exercise the QR encoder while nobody is waiting on it. On the door the
+  // first code paid for fetching the library (the UI is served unbundled by the Vite dev
+  // server), which read as the panel hanging after a tap.
+  useEffect(() => {
+    void warmQrEncoder();
+  }, []);
 
   // Initialize event client
   useEffect(() => {
