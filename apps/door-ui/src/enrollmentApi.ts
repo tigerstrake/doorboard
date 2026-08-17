@@ -145,8 +145,19 @@ export const enrollmentApi = {
     return request<EnrolledPerson[]>(VISIOND_BASE_URL, "/people", { adminToken: token });
   },
 
-  async getConsent(): Promise<{ text: string; version: string }> {
-    return request<{ text: string; version: string }>(VISIOND_BASE_URL, "/consent");
+  /**
+   * The consent statement and its version.
+   *
+   * Takes the admin token even though door-visiond serves `/consent` unauthenticated:
+   * it is reached through door-api's admin proxy now (ADR-0024), and that proxy
+   * authenticates uniformly. Called without one it 401'd, which rejected the panel's
+   * whole `Promise.all` and drew "Enrolled Members (0)" for a door with two enrolled —
+   * the same class of silent-empty failure the proxy was added to end.
+   */
+  async getConsent(adminToken?: string): Promise<{ text: string; version: string }> {
+    return request<{ text: string; version: string }>(VISIOND_BASE_URL, "/consent", {
+      adminToken,
+    });
   },
 
   /** door-visiond's health, for the enrollment panel's privacy toggle. */
