@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import shutil
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -149,6 +150,7 @@ class VisiondService:
         esp32_transport: Esp32Transport | None = None,
         relay_transport: RelayTransport | None = None,
         event_forwarder: EventForwarder | None = None,
+        backend_factory: Callable[[], VisionBackend] | None = None,
     ) -> None:
         self._settings = settings
         self._clock: Clock = clock or SystemClock()
@@ -182,6 +184,11 @@ class VisiondService:
         self._pipeline_errors = 0
         self._pipeline_consecutive_errors = 0
         self._runtime_degraded_detail: str | None = None
+        # When to try the real backend again after a degradation, and counters so a
+        # door that is flapping between the two is visible in /metrics.
+        self._backend_recovery_due_ms: int | None = None
+        self._backend_degradations = 0
+        self._backend_recoveries = 0
 
         # Remote enrollment (ADR-0016). All optional: with no relay configured
         # none of this starts and the at-door flow is untouched. The keyring is
@@ -234,7 +241,10 @@ class VisiondService:
             cache_clear_sink=self._on_cache_clear,
         )
 
-        self._backend: VisionBackend = backend or self._build_backend()
+        # How to rebuild the backend after a degradation. Injectable so the recovery
+        # path is testable without a Hailo: the default builds the real thing.
+        self._backend_factory: Callable[[], VisionBackend] = backend_factory or self._build_backend
+        self._backend: VisionBackend = backend or self._backend_factory()
         self._privacy_enabled = False
         self._run_task: asyncio.Task[None] | None = None
         self._running = False
@@ -449,6 +459,7 @@ class VisiondService:
         while self._running:
             try:
                 capture = await self._backend.next_capture()
+                await self._maybe_recover_backend()
                 self._core.tick()
                 if capture is not None:
                     self._core.process_capture(capture)
@@ -476,13 +487,68 @@ class VisiondService:
         self._effective_mode = "disabled"
         self._runtime_degraded_detail = f"vision backend failed: {type(exc).__name__}"
         self._pipeline_consecutive_errors = 0
+        self._backend_recovery_due_ms = self._clock.monotonic_ms() + int(
+            self._settings.backend_recovery_delay_s * 1000
+        )
+        self._backend_degradations += 1
         with contextlib.suppress(Exception):
             await failed_backend.close()
         self._emit_pipeline_status()
         logger.error(
             "vision_backend_degraded_to_disabled",
-            extra={"error_class": type(exc).__name__},
+            extra={
+                "error_class": type(exc).__name__,
+                "retry_in_s": self._settings.backend_recovery_delay_s,
+            },
         )
+
+    async def _maybe_recover_backend(self) -> None:
+        """Rebuild the real backend after a degradation, once, on a delay.
+
+        Degradation used to be terminal: three consecutive frame errors dropped the
+        service to ``DisabledBackend`` for the rest of its life. The frames come from
+        door-media over HTTP, so *restarting door-media* — for a camera setting, a deploy,
+        anything — reliably produced three ``URLError``s and permanently stopped
+        recognition on a door that otherwise looked healthy. The only symptom was
+        ``mode: disabled`` in ``/health``, and the only cure was noticing.
+
+        Recovery is the right default because the common causes are transient by nature
+        (a sibling service restarting) while the permanent ones re-degrade immediately and
+        harmlessly: a missing Hailo fails the next frame too, and we are back here having
+        spent one attempt.
+        """
+        if self._backend_recovery_due_ms is None:
+            return
+        if self._clock.monotonic_ms() < self._backend_recovery_due_ms:
+            return
+        self._backend_recovery_due_ms = None
+        # No compat re-check: a compat failure means a DisabledBackend was built at
+        # startup, and that backend cannot raise, so no degradation — and therefore no
+        # recovery — is ever scheduled from it. Re-checking here would only be a way to
+        # get this wrong.
+        if self._settings.vision_mode not in _HARDWARE_MODES:
+            # Mock/disabled have no HTTP frame source, so there is no transient failure
+            # to recover from — a scripted backend that fails is failing on purpose.
+            return
+        if self._privacy_enabled or self._enrollment_locked:
+            return
+        try:
+            restored = self._backend_factory()
+        except Exception as exc:
+            logger.warning(
+                "vision_backend_recovery_failed", extra={"error_class": type(exc).__name__}
+            )
+            return
+        previous = self._backend
+        self._backend = restored
+        self._effective_mode = self._settings.vision_mode
+        self._runtime_degraded_detail = None
+        self._pipeline_consecutive_errors = 0
+        self._backend_recoveries += 1
+        with contextlib.suppress(Exception):
+            await previous.close()
+        self._emit_pipeline_status()
+        logger.info("vision_backend_recovered", extra={"mode": self._effective_mode})
 
     def _wipe_enroll_tmp(self) -> None:
         root = self._settings.enroll_tmp_root
@@ -1145,6 +1211,8 @@ class VisiondService:
         snap["archive_purges_delivered"] = float(self._purges_delivered)
         snap["archive_purges_failed"] = float(self._purges_failed)
         snap["pipeline_errors"] = float(self._pipeline_errors)
+        snap["backend_degradations"] = float(self._backend_degradations)
+        snap["backend_recoveries"] = float(self._backend_recoveries)
         forwarder = self._event_forwarder
         snap["events_forwarded"] = float(forwarder.forwarded if forwarder else 0)
         snap["events_forward_dropped"] = float(forwarder.dropped if forwarder else 0)

@@ -10,7 +10,7 @@ from door_visiond.clock import FakeClock
 from door_visiond.embedder import MockEmbedder
 from door_visiond.embedding import Embedding
 from door_visiond.enrollment import ProfileSpec
-from door_visiond.pipeline import BackendStatus
+from door_visiond.pipeline import BackendStatus, FrameCapture
 from door_visiond.service import (
     EnrollmentLockedError,
     PrivacyModeActiveError,
@@ -272,5 +272,100 @@ async def test_unenroll_outbox_delivers_and_clears_after_success(
         assert delivered == ["prs_remote_purge"]
         assert svc.health()["archive_purge_queue_depth"] == 0
         assert svc.metrics_snapshot()["archive_purges_delivered"] == 1
+    finally:
+        await svc.stop()
+
+
+class _FlakyBackend:
+    """Fails its first `fail_times` frames, then behaves.
+
+    Stands in for door-media restarting underneath us: the frames arrive over HTTP, so a
+    sibling service bouncing raises URLError for a few seconds and then stops.
+    """
+
+    def __init__(self, *, fail_times: int) -> None:
+        self.remaining_failures = fail_times
+        self.closed = False
+        self.captures = 0
+
+    def set_capturing(self, enabled: bool) -> None:
+        return
+
+    async def next_capture(self):
+        await asyncio.sleep(0)
+        if self.remaining_failures > 0:
+            self.remaining_failures -= 1
+            raise OSError("door-media is restarting")
+        self.captures += 1
+        return FrameCapture(faces=(), inference_ms=1.0)
+
+    def status(self) -> BackendStatus:
+        return BackendStatus(mode="hardware", hailo_ok=True, fps=10.0, inference_ms_p50=1.0)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.anyio
+async def test_a_degraded_backend_recovers_on_its_own(
+    ssd_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Degradation used to be terminal, so restarting door-media stopped recognition
+    permanently on an otherwise healthy door — visible only as `mode: disabled` in
+    /health, and curable only by noticing. Found on the door (T-321)."""
+    monkeypatch.setenv("VISION_MODE", "hardware")
+    monkeypatch.setenv("VISIOND_BACKEND_RECOVERY_DELAY_S", "0.01")
+    settings = Settings()
+
+    failing = _FailingBackend()
+    healthy = _FlakyBackend(fail_times=0)
+    svc = VisiondService(
+        settings,
+        backend=failing,
+        backend_factory=lambda: healthy,  # type: ignore[arg-type]
+    )
+    await svc.start()
+    try:
+        for _ in range(200):
+            if svc.effective_mode == "disabled":
+                break
+            await asyncio.sleep(0.01)
+        assert svc.effective_mode == "disabled"
+
+        # ...and then comes back without anybody restarting the service.
+        for _ in range(400):
+            if svc.effective_mode == "hardware":
+                break
+            await asyncio.sleep(0.01)
+        assert svc.effective_mode == "hardware"
+        assert svc.health()["runtime_warning"] is None
+        assert svc.metrics_snapshot()["backend_recoveries"] == 1
+    finally:
+        await svc.stop()
+
+
+@pytest.mark.anyio
+async def test_a_permanently_broken_backend_re_degrades(
+    ssd_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retrying is safe because a real fault simply fails the next frame too."""
+    monkeypatch.setenv("VISION_MODE", "hardware")
+    monkeypatch.setenv("VISIOND_BACKEND_RECOVERY_DELAY_S", "0.01")
+    settings = Settings()
+
+    svc = VisiondService(
+        settings,
+        backend=_FailingBackend(),
+        backend_factory=_FailingBackend,  # type: ignore[arg-type]
+    )
+    await svc.start()
+    try:
+        for _ in range(400):
+            if svc.metrics_snapshot()["backend_degradations"] >= 2:
+                break
+            await asyncio.sleep(0.01)
+        # It flaps rather than wedging, and the flapping is countable in /metrics.
+        assert svc.metrics_snapshot()["backend_degradations"] >= 2
+        assert svc.effective_mode == "disabled"
     finally:
         await svc.stop()

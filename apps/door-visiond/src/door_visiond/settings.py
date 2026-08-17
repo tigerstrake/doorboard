@@ -149,6 +149,15 @@ class Settings(BaseSettings):
         default=50, alias="VISIOND_SELF_ENROLL_MAX_ENROLLED", ge=0
     )
 
+    # How long to wait before retrying the real vision backend after three
+    # consecutive frame failures dropped it to `disabled`. The frames come from
+    # door-media over HTTP, so the usual cause is that service restarting — which used
+    # to stop recognition permanently on an otherwise healthy door. A permanent fault
+    # simply re-degrades on the next frame, so retrying costs one attempt.
+    backend_recovery_delay_s: float = Field(
+        default=15.0, alias="VISIOND_BACKEND_RECOVERY_DELAY_S", gt=0
+    )
+
     # ── capture cadence (mock/hardware frame pacing) ──────────────────────
     frame_interval_ms: int = Field(default=100, alias="VISIOND_FRAME_INTERVAL_MS")
 
