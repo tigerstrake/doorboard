@@ -580,7 +580,19 @@ class DoorApiState:
 
     def visitor_token(self) -> dict[str, str | int]:
         snapshot = self.machine.snapshot()
-        if snapshot.session_id is None:
+        # An active session is the usual key. Failing that, a recognised person who is
+        # still mid-interaction gets one keyed on their interaction id (ADR-0020): the
+        # identity deliberately outlives the approach session, so "the door knows who you
+        # are" and "the door will let you check in" must not disagree.
+        #
+        # This is what broke: with the session IDLE this returned 409, the doorpad sent an
+        # empty session_token, and POST /checkins 422'd — a visitor tapped
+        # "Check in as <name>" and nothing happened at all.
+        session_key = snapshot.session_id
+        if session_key is None:
+            held = self.identity.current()
+            session_key = held.interaction_id if held is not None else None
+        if session_key is None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="No active visitor session",
@@ -588,7 +600,7 @@ class DoorApiState:
         expires_at = int(time.time() + self.config.visitor_token_ttl_s)
         token = encode_visitor_token(
             secret=self.config.visitor_token_secret,
-            session_id=snapshot.session_id,
+            session_id=session_key,
             expires_at=expires_at,
         )
 
@@ -913,7 +925,18 @@ app = FastAPI(lifespan=lifespan)
 # recognised identity should outlive the approach timer (ADR-0020). A middleware rather
 # than a `touch()` in each handler because there are a dozen of these and more coming:
 # one forgotten call would look like the intermittent version of the bug this fixes.
-_INTERACTION_PATH_PREFIXES = ("/doorpad", "/social", "/visitor")
+# The social write routes sit at the top level, not under /social — checking in POSTs to
+# /checkins, the guestbook to /guestbook, a vote to /polls/{id}/vote. Listing only
+# ("/doorpad", "/social", "/visitor") meant the actual writes never re-armed the identity
+# window, so somebody who took their time on the check-in screen was forgotten mid-flow.
+_INTERACTION_PATH_PREFIXES = (
+    "/doorpad",
+    "/social",
+    "/visitor",
+    "/checkins",
+    "/guestbook",
+    "/polls",
+)
 
 
 @app.middleware("http")

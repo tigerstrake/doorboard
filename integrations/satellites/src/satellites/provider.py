@@ -42,6 +42,40 @@ class SkyfieldSatelliteProvider(SatelliteProvider):
         self.config = config
         self._eph = None
 
+    # How many points describe one pass. A pass is a few minutes long and the arc is
+    # smooth, so ~24 samples draw it cleanly without bloating an event that crosses MQTT
+    # and lands in the NUC archive. Consumers are told not to rely on the count.
+    TRACK_SAMPLES = 24
+
+    def _sample_track(
+        self, satellite: Any, observer: Any, rise_time: Any, set_time: Any
+    ) -> list[dict[str, float]]:
+        """Sample alt/az evenly between rise and set.
+
+        Elevation is clamped at 0: rounding at the endpoints can put the satellite a
+        hair below the horizon, and a negative elevation would draw outside the sky dome.
+        """
+        rise_tt = rise_time.tt
+        set_tt = set_time.tt
+        if set_tt <= rise_tt:
+            return []
+        span_days = set_tt - rise_tt
+        span_seconds = span_days * 86400.0
+        ts = rise_time.ts
+        samples: list[dict[str, float]] = []
+        for index in range(self.TRACK_SAMPLES + 1):
+            fraction = index / self.TRACK_SAMPLES
+            moment = ts.tt_jd(rise_tt + span_days * fraction)
+            alt, az, _ = (satellite - observer).at(moment).altaz()
+            samples.append(
+                {
+                    "t_offset_s": round(span_seconds * fraction, 1),
+                    "azimuth_deg": round(az.degrees % 360, 1),
+                    "elevation_deg": round(max(0.0, alt.degrees), 1),
+                }
+            )
+        return samples
+
     def _get_ephemeris(self) -> Any:
         if self._eph is None:
             # Lazy load ephemeris via an explicit Loader pointed at a writable
@@ -219,6 +253,14 @@ class SkyfieldSatelliteProvider(SatelliteProvider):
                         else:
                             direction = "NW"
 
+                        # Sample the arc from rise to set. The events above already
+                        # bound the pass, so this is the shape of it: what the wallboard
+                        # needs to draw where to look and for how long. Previously
+                        # computed and thrown away in favour of one compass point.
+                        rise_alt, rise_az, _ = (satellite - observer).at(rise_time).altaz()
+                        set_alt, set_az, _ = (satellite - observer).at(set_time).altaz()
+                        track = self._sample_track(satellite, observer, rise_time, set_time)
+
                         visible_passes.append(
                             {
                                 "satellite": sat_name,
@@ -226,6 +268,11 @@ class SkyfieldSatelliteProvider(SatelliteProvider):
                                 "max_elevation_deg": round(sat_alt.degrees, 1),
                                 "direction": direction,
                                 "visible": True,
+                                "set_at": set_time.utc_datetime(),
+                                "rise_azimuth_deg": round(rise_az.degrees % 360, 1),
+                                "set_azimuth_deg": round(set_az.degrees % 360, 1),
+                                "culmination_azimuth_deg": round(az, 1),
+                                "track": track,
                             }
                         )
                     i = j + 1

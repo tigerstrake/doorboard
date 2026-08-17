@@ -134,12 +134,14 @@ describe("WallboardFocusSplit (focused-tile split layout)", () => {
     expect(within(panel).getByText(/NW · 72° max/)).toBeTruthy();
   });
 
-  it("renders the sky-compass aimed at the satellite rise direction", () => {
+  it("plots the satellite pass on a sky dome, with the direction and max elevation", () => {
     renderSplit({ channel: "satellite", ambient: { ...EMPTY_AMBIENT, satellite: SATELLITE } });
     const panel = screen.getByTestId("wallboard-focus-panel");
-    const compass = within(panel).getByTestId("sky-compass");
-    expect(compass.getAttribute("aria-label")).toMatch(/NW/);
-    // Max-elevation readout is present as its own large stat.
+    // A pass is a direction to look, so it is an az/el dome rather than a ground map
+    // or a bare compass rose (T-325).
+    const dome = within(panel).getByTestId("sky-dome");
+    expect(dome.getAttribute("aria-label")).toMatch(/NW/);
+    // The text the panel always carried is still there.
     expect(within(panel).getByText("72°")).toBeTruthy();
   });
 

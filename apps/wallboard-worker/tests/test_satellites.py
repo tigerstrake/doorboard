@@ -78,10 +78,18 @@ def test_skyfield_satellite_provider_success(
     mock_az_sat = MagicMock()
     mock_az_sat.degrees = 315.0  # NW
 
-    mock_altaz.side_effect = [
-        (mock_alt_sun, mock_az_sun, None),  # Sun check
-        (mock_alt_sat, mock_az_sat, None),  # Sat check
-    ]
+    # A callable, not a fixed list: the first altaz call is the sun-darkness check and
+    # every later one is the satellite. A list breaks the moment the implementation samples
+    # the arc at a different resolution, which is not what this test is about.
+    calls = {"n": 0}
+
+    def _altaz(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return (mock_alt_sun, mock_az_sun, None)
+        return (mock_alt_sat, mock_az_sat, None)
+
+    mock_altaz.side_effect = _altaz
 
     # 4. Mock EarthSatellite find_events
     # We patch EarthSatellite find_events to return a single pass (rise, culm, set)
@@ -103,6 +111,78 @@ def test_skyfield_satellite_provider_success(
     assert res["max_elevation_deg"] == 45.0
     assert res["direction"] == "NW"
     assert res["visible"] is True
+    # Pass geometry (ADR-0025): the provider already had these events and discarded them.
+    assert res["culmination_azimuth_deg"] == 315.0
+    assert res["rise_azimuth_deg"] == 315.0
+    assert res["set_azimuth_deg"] == 315.0
+    assert res["set_at"] is not None
+    # rise == set in this fixture, so there is no arc to sample and the track is empty
+    # rather than a single degenerate point.
+    assert res["track"] == []
+
+
+@patch("httpx.get")
+@patch("skyfield.api.load")
+@patch("skyfield.positionlib.Geocentric.is_sunlit")
+@patch("skyfield.positionlib.ICRF.altaz")
+def test_a_real_pass_carries_a_sampled_arc(
+    mock_altaz, mock_sunlit, mock_load_bsp, mock_httpx_get
+) -> None:
+    """The wallboard draws where to look from this; an empty track means no arc."""
+    config = SatelliteConfig(
+        watchlist=["ISS (ZARYA)"],
+        observer_lat=37.7749,
+        observer_lon=-122.4194,
+        observer_elevation=100.0,
+        tle_cache_path="/tmp/test_tle_cache_arc.txt",
+        ephemeris_dir=str(REPO_ROOT),
+    )
+    provider = SkyfieldSatelliteProvider(config)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = ISS_TLE
+    mock_resp.raise_for_status = MagicMock()
+    mock_httpx_get.return_value = mock_resp
+    mock_load_bsp.return_value = MagicMock()
+    mock_sunlit.return_value = True
+
+    alt = MagicMock()
+    alt.degrees = 30.0
+    az = MagicMock()
+    az.degrees = 90.0
+    dark = MagicMock()
+    dark.degrees = -10.0
+
+    calls = {"n": 0}
+
+    def _altaz(*_args, **_kwargs):
+        calls["n"] += 1
+        return (dark, az, None) if calls["n"] == 1 else (alt, az, None)
+
+    mock_altaz.side_effect = _altaz
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=UTC)
+    with patch("skyfield.api.EarthSatellite.find_events") as mock_find:
+        ts = load.timescale(builtin=True)
+        t_rise = ts.from_datetime(now)
+        t_culm = ts.from_datetime(now + timedelta(minutes=3))
+        t_set = ts.from_datetime(now + timedelta(minutes=6))
+        mock_find.return_value = ([t_rise, t_culm, t_set], [0, 1, 2])
+
+        res = provider.get_next_pass(now)
+
+    assert res is not None
+    track = res["track"]
+    assert len(track) == provider.TRACK_SAMPLES + 1
+    # Monotonic in time, starting at rise and ending at set.
+    offsets = [point["t_offset_s"] for point in track]
+    assert offsets == sorted(offsets)
+    assert offsets[0] == 0.0
+    assert offsets[-1] == pytest.approx(360.0, abs=1.0)
+    # Never below the horizon: a negative elevation would draw outside the sky dome.
+    assert all(point["elevation_deg"] >= 0.0 for point in track)
+    assert all(0.0 <= point["azimuth_deg"] < 360.0 for point in track)
 
 
 def test_ephemeris_uses_loader_pointed_at_configured_writable_dir(tmp_path) -> None:

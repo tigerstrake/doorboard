@@ -215,12 +215,23 @@ export interface AmbientBirdSummaryPayload {
   total_detections: number;
 }
 
+export interface SatelliteTrackSample {
+  t_offset_s: number;
+  azimuth_deg: number;
+  elevation_deg: number;
+}
+
 export interface AmbientSatellitePassPayload {
   satellite: string;
   rise_at: string;
   max_elevation_deg: number;
   direction: string;
   visible: boolean;
+  set_at?: string | null;
+  rise_azimuth_deg?: number | null;
+  set_azimuth_deg?: number | null;
+  culmination_azimuth_deg?: number | null;
+  track: Array<SatelliteTrackSample>;
 }
 
 export interface AmbientAircraftNearby {

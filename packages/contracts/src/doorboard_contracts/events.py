@@ -409,12 +409,32 @@ class AmbientBirdSummaryPayload(StrictModel):
     total_detections: int
 
 
+class SatelliteTrackSample(StrictModel):
+    """One point on a pass's sky track: seconds after rise, azimuth, elevation."""
+
+    t_offset_s: float
+    azimuth_deg: float
+    elevation_deg: float
+
+
 class AmbientSatellitePassPayload(StrictModel):
     satellite: str
     rise_at: UTCDateTime
     max_elevation_deg: float
     direction: str
     visible: bool
+    # Additive pass geometry (ADR-0025). The provider already finds rise, culmination and
+    # set events and then kept only the culmination compass point, so the shape of the pass
+    # — the thing that tells you where to look and for how long — was computed and
+    # discarded. All optional: older producers and the offline mock omit them, so consumers
+    # must treat every field below as "may be absent" and fall back to the text above.
+    set_at: UTCDateTime | None = None
+    rise_azimuth_deg: float | None = None
+    set_azimuth_deg: float | None = None
+    culmination_azimuth_deg: float | None = None
+    # Sampled arc from rise to set, for drawing the path across the sky. Bounded by the
+    # producer; a consumer must not assume a fixed count or even spacing.
+    track: list[SatelliteTrackSample] = []
 
 
 class AmbientAircraftNearby(StrictModel):

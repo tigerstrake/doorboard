@@ -3223,3 +3223,98 @@ input:focus-visible {
     gap: 0.4rem;
   }
 }
+
+/* --- Satellite sky dome (T-325) ---
+   A pass is a direction to look, not a place on the ground, so this is the conventional
+   az/el polar plot: horizon at the rim, zenith at the centre, north up. */
+.satellite-sky__body {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.sky-dome {
+  width: min(320px, 42vw);
+  height: auto;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.sky-dome__horizon,
+.sky-dome__ring {
+  fill: none;
+  stroke: rgba(140, 190, 255, 0.28);
+  stroke-width: 1;
+}
+
+.sky-dome__horizon {
+  fill: rgba(20, 40, 70, 0.35);
+  stroke: rgba(140, 190, 255, 0.5);
+  stroke-width: 1.5;
+}
+
+.sky-dome__ring {
+  stroke-dasharray: 3 5;
+}
+
+.sky-dome__compass {
+  fill: var(--db-text-secondary);
+  font-size: 13px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  letter-spacing: 0.05em;
+}
+
+/* The whole arc, drawn faintly; the travelled part is overlaid brighter during a pass. */
+.sky-dome__arc {
+  fill: none;
+  stroke: rgba(140, 190, 255, 0.45);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 4 4;
+}
+
+.sky-dome__arc-done {
+  fill: none;
+  stroke: var(--db-accent, #6ea8ff);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+
+.sky-dome__endpoint {
+  fill: rgba(140, 190, 255, 0.85);
+}
+
+.sky-dome__endpoint--set {
+  fill: rgba(255, 150, 120, 0.85);
+}
+
+.sky-dome__marker-dot {
+  fill: #fff;
+}
+
+.sky-dome__marker-glow {
+  fill: var(--db-accent, #6ea8ff);
+  opacity: 0.28;
+  animation: sky-dome-pulse 2s ease-in-out infinite;
+}
+
+@keyframes sky-dome-pulse {
+  0%, 100% { opacity: 0.18; transform: scale(0.85); transform-origin: center; }
+  50% { opacity: 0.4; }
+}
+
+/* A 24/7 wallboard should respect this: the pulse is decoration, the position is not. */
+@media (prefers-reduced-motion: reduce) {
+  .sky-dome__marker-glow {
+    animation: none;
+  }
+}
+
+.satellite-sky__note {
+  margin-top: 0.5rem;
+  text-align: center;
+}

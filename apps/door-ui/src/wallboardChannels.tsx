@@ -11,6 +11,7 @@ import { AboutDoorboard } from "./AboutDoorboard";
 import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
 import { GuestbookQuote } from "./SocialRenderers";
 import { AircraftFocusPanel } from "./wallboard/AircraftFocusPanel";
+import { SatelliteSkyPanel } from "./wallboard/SatelliteSkyPanel";
 import { WALLBOARD_CHANNELS } from "./wallboardChannelModel";
 import type { WallboardFocusChannel } from "./wallboardChannelModel";
 
@@ -478,7 +479,7 @@ function renderFocusContent(
       );
     case "satellite":
       return ambient.satellite ? (
-        <SatelliteFocusPanel payload={ambient.satellite} />
+        <SatelliteSkyPanel payload={ambient.satellite} />
       ) : (
         <FocusEmpty
           title="Satellite pass data is unavailable."
