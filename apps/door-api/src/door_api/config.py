@@ -153,6 +153,10 @@ class SessionConfig:
     # through here. Nothing about recognition or identity flows this way.
     visiond_base_url: str = "http://127.0.0.1:8081"
     visiond_timeout_s: float = 3.0
+    # door-visiond's own admin token, held here so the owner's browser never receives it
+    # (ADR-0024). Empty means the admin page's enrollment panels return 503 rather than
+    # reaching an unauthenticated service.
+    visiond_admin_token: str = ""
 
     # door-sync local base URL for non-critical admin/gallery operations.
     sync_base_url: str = "http://127.0.0.1:8083"
@@ -291,6 +295,7 @@ class SessionConfig:
             media_retry_max_s=_env_float("DOOR_API_MEDIA_RETRY_MAX_S", 30.0),
             visiond_base_url=os.environ.get("DOOR_API_VISIOND_BASE_URL", "http://127.0.0.1:8081"),
             visiond_timeout_s=_env_float("DOOR_API_VISIOND_TIMEOUT_S", 3.0),
+            visiond_admin_token=os.environ.get("DOOR_VISIOND_ADMIN_TOKEN", ""),
             sync_base_url=os.environ.get("DOOR_API_SYNC_BASE_URL", "http://127.0.0.1:8083"),
             sync_admin_token=os.environ.get("DOOR_SYNC_ADMIN_TOKEN", ""),
             sync_timeout_s=_env_float("DOOR_API_SYNC_TIMEOUT_S", 1.0),

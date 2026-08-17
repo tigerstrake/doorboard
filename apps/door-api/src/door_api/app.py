@@ -54,6 +54,14 @@ from door_api.esp32_link import Esp32LinkSettings, Esp32LinkSupervisor
 from door_api.mqtt_bridge import MqttBridge
 from door_api.persistence import SessionStore
 from door_api.recognised_identity import RecognisedIdentity
+from door_api.service_proxy import (
+    MEDIA_ROUTES,
+    VISIOND_ROUTES,
+    ProxyDenied,
+    ProxyRoute,
+    forward,
+    resolve,
+)
 from door_api.session import SessionMachine
 from door_api.social.config import SocialConfig
 from door_api.social.routes import build_social_router
@@ -1514,6 +1522,92 @@ async def admin_media_inbox_thumbnail(recording_id: str) -> Response:
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
         },
+    )
+
+
+@app.api_route(
+    "/admin/visiond/{path:path}",
+    methods=["GET", "POST"],
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_visiond_proxy(path: str, request: Request) -> Response:
+    """Reach door-visiond's admin surface from the owner's browser (ADR-0024).
+
+    door-visiond binds loopback, so the admin page could not talk to it from anything but
+    the Pi's own browser — and it rendered those failures as facts: "Enrolled Members (0)"
+    for a door with two people enrolled, "Relay not configured" for a configured relay.
+
+    Allow-listed per method+path in `service_proxy`, not open forwarding: door-api's admin
+    token must not become a skeleton key for every route door-visiond ever grows.
+    """
+    return await _proxy_to_service(
+        request=request,
+        path=f"/{path}",
+        routes=VISIOND_ROUTES,
+        base_url=state.config.visiond_base_url,
+        token=state.config.visiond_admin_token,
+        timeout_s=state.config.visiond_timeout_s,
+        service="door-visiond",
+    )
+
+
+@app.api_route(
+    "/admin/door-media/{path:path}",
+    methods=["GET"],
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_media_proxy(path: str, request: Request) -> Response:
+    """The one door-media route the admin page needs that is not already first-class."""
+    return await _proxy_to_service(
+        request=request,
+        path=f"/{path}",
+        routes=MEDIA_ROUTES,
+        base_url=state.config.media_base_url,
+        token=state.config.media_admin_token,
+        timeout_s=state.config.media_timeout_s,
+        service="door-media",
+    )
+
+
+async def _proxy_to_service(
+    *,
+    request: Request,
+    path: str,
+    routes: tuple[ProxyRoute, ...],
+    base_url: str,
+    token: str,
+    timeout_s: float,
+    service: str,
+) -> Response:
+    try:
+        resolve(routes, request.method, path)
+    except ProxyDenied as exc:
+        # 403 rather than 404: the caller authenticated fine, this route is simply not
+        # something the admin surface may reach.
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    body = await request.body()
+    try:
+        response = await forward(
+            base_url=base_url,
+            token=token,
+            method=request.method,
+            path=path,
+            query=str(request.url.query),
+            timeout_s=timeout_s,
+            body=body or None,
+            content_type=request.headers.get("content-type"),
+        )
+    except Exception as exc:
+        # An explicit 503 with the service named, so the page can say "could not reach
+        # door-visiond" instead of drawing an empty list.
+        raise HTTPException(status_code=503, detail=f"{service} unavailable") from exc
+
+    return Response(
+        content=response.content,
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type", "application/json"),
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
     )
 
 

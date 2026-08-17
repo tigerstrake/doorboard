@@ -3235,7 +3235,18 @@ export function App() {
           <form className="admin-auth-card" onSubmit={submitAdminToken}>
             <p className="surface-eyebrow">Owner access</p>
             <h1>Admin sign in</h1>
-            <p>Enter the Pi-local admin token. Admin tools are never linked from visitor screens.</p>
+            {/* Naming the variable is the whole point: the door has three 48-character
+                admin tokens (door-api, door-visiond, door-media) and this page needs one
+                specific one. Entering another authenticates nothing and used to render as
+                empty panels rather than as a rejection. */}
+            <p>
+              Paste <code>DOOR_API_SOCIAL_ADMIN_TOKEN</code> from the door&apos;s{" "}
+              <code>.env</code> — not the visiond or media token. Admin tools are never
+              linked from visitor screens.
+            </p>
+            <p className="placeholder-subtext">
+              <code>ssh door-pi.local &apos;grep ^DOOR_API_SOCIAL_ADMIN_TOKEN ~/doorboard/.env&apos;</code>
+            </p>
             <label htmlFor="admin-token">Admin token</label>
             <input
               id="admin-token"
