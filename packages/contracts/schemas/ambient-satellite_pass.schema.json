@@ -3,6 +3,18 @@
     "AmbientSatellitePassPayload": {
       "additionalProperties": false,
       "properties": {
+        "culmination_azimuth_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Culmination Azimuth Deg"
+        },
         "direction": {
           "title": "Direction",
           "type": "string"
@@ -14,9 +26,52 @@
         "rise_at": {
           "$ref": "#/$defs/UTCDateTime"
         },
+        "rise_azimuth_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rise Azimuth Deg"
+        },
         "satellite": {
           "title": "Satellite",
           "type": "string"
+        },
+        "set_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UTCDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "set_azimuth_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Set Azimuth Deg"
+        },
+        "track": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SatelliteTrackSample"
+          },
+          "title": "Track",
+          "type": "array"
         },
         "visible": {
           "title": "Visible",
@@ -31,6 +86,31 @@
         "visible"
       ],
       "title": "AmbientSatellitePassPayload",
+      "type": "object"
+    },
+    "SatelliteTrackSample": {
+      "additionalProperties": false,
+      "description": "One point on a pass's sky track: seconds after rise, azimuth, elevation.",
+      "properties": {
+        "azimuth_deg": {
+          "title": "Azimuth Deg",
+          "type": "number"
+        },
+        "elevation_deg": {
+          "title": "Elevation Deg",
+          "type": "number"
+        },
+        "t_offset_s": {
+          "title": "T Offset S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "t_offset_s",
+        "azimuth_deg",
+        "elevation_deg"
+      ],
+      "title": "SatelliteTrackSample",
       "type": "object"
     },
     "UTCDateTime": {
