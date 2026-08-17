@@ -3199,20 +3199,37 @@ input:focus-visible {
     min-height: 0;
   }
 
+  /*
+   * Type scaled to the box the tiles became.
+   *
+   * The rules above grow each tile to fill the panel, which is right — on a touchscreen
+   * that space should be touch target. But the type was left at the old small sizes, so a
+   * 242x259 px tile held three short lines of 15 px text adrift in the middle of it: the
+   * box was increased and the layout inside it was not. Content now spans the tile, with
+   * the label dominant and the hint clearly subordinate.
+   */
   .doorpad-grid .db-big-button {
     min-height: 0;
     height: 100%;
-    padding: 0.6rem 0.7rem;
-    font-size: 0.92rem;
+    padding: 1rem 0.9rem;
+    font-size: 1.5rem;
+    gap: 0.45rem;
+    /* Content pushed apart rather than clustered: icon at the top, label and hint at the
+       bottom, so the tile reads as a designed block instead of a small thing in a big box. */
+    justify-content: space-between;
+    align-items: flex-start;
+    text-align: left;
   }
 
   .doorpad-grid .db-big-button__icon {
-    font-size: 1.1rem;
+    font-size: 2.6rem;
+    line-height: 1;
   }
 
   .doorpad-grid .db-big-button__hint {
-    font-size: 0.7rem;
+    font-size: 0.58em;
     max-width: none;
+    opacity: 0.72;
   }
 }
 
