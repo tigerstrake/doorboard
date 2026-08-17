@@ -19,6 +19,10 @@ class Recommendation(BaseModel):
     title: str
     detail: str | None = None
     provider: str
+    # The venue, structured, alongside the prose in `title` (ADR-0026). Optional so a
+    # provider with no named venue simply omits it.
+    hall: str | None = None
+    backup_hall: str | None = None
 
 
 class FoodRecommendationProvider(abc.ABC):

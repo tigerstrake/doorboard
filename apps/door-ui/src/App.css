@@ -2490,6 +2490,48 @@ input:focus-visible {
   font-size: clamp(1.05rem, 1.8vw, 1.5rem);
 }
 
+/*
+ * The same bars on the doorpad. The wallboard sizes are set in vw for a 27" screen; on the
+ * 1024×600 touchscreen those clamp to their minimum and still eat the vote buttons, so this
+ * variant fixes small type and a thin bar. The graph is supporting information there — the
+ * buttons must stay reachable without scrolling.
+ */
+.poll-focus__options--doorpad {
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.poll-focus__options--doorpad .poll-focus__row {
+  gap: 4px;
+  padding: 6px 10px;
+  border-radius: var(--db-radius-sm);
+}
+
+.poll-focus__options--doorpad .poll-focus__option {
+  font-size: 0.9rem;
+}
+
+.poll-focus__options--doorpad .poll-focus__count {
+  font-size: 0.78rem;
+}
+
+.poll-focus__options--doorpad .poll-focus__bar {
+  height: 8px;
+}
+
+.poll-focus__row--mine {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.poll-focus__mine-tag {
+  margin-left: 6px;
+  font-family: var(--db-font-mono);
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--db-accent);
+}
+
 /* ── Guestbook focus: readable single-column stack of approved notes ──────── */
 .guestbook-focus {
   max-width: 1100px;
@@ -3317,4 +3359,118 @@ input:focus-visible {
 .satellite-sky__note {
   margin-top: 0.5rem;
   text-align: center;
+}
+
+/* ── Campus dining map: the recommended hall, placed ──────────────────────── */
+/*
+ * Same visual language as the sky dome: dark field, cool blue outlines, the accent spent
+ * only on the one thing being pointed at. Everything else is deliberately low-contrast —
+ * the other halls exist to give the pick a sense of distance, not to compete with it.
+ */
+.focus-food {
+  display: grid;
+  gap: var(--db-spacing-lg);
+  justify-items: center;
+}
+
+.campus-map {
+  display: grid;
+  gap: var(--db-spacing-sm);
+  justify-items: center;
+  width: 100%;
+  max-width: 520px;
+}
+
+.campus-map__svg {
+  width: 100%;
+  height: auto;
+  background: rgba(12, 24, 44, 0.55);
+  border: 1px solid rgba(140, 190, 255, 0.22);
+  border-radius: var(--db-radius-md);
+}
+
+.campus-map__water {
+  fill: rgba(53, 214, 255, 0.1);
+  stroke: rgba(140, 190, 255, 0.45);
+  stroke-width: 1;
+}
+
+.campus-map__block {
+  fill: rgba(140, 190, 255, 0.06);
+  stroke: rgba(140, 190, 255, 0.35);
+  stroke-width: 1;
+}
+
+.campus-map__walk {
+  stroke: rgba(140, 190, 255, 0.4);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+
+.campus-map__dot {
+  fill: rgba(160, 200, 255, 0.45);
+}
+
+.campus-map__hall--pick .campus-map__dot {
+  fill: var(--db-accent);
+}
+
+.campus-map__hall--backup .campus-map__dot {
+  fill: rgba(255, 200, 120, 0.8);
+}
+
+.campus-map__pick-glow {
+  fill: var(--db-accent);
+  opacity: 0.22;
+  animation: campus-map-pulse 2.4s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.campus-map__hall-label {
+  fill: var(--db-text-primary);
+  font-size: 13px;
+  text-anchor: middle;
+}
+
+.campus-map__hall--backup .campus-map__hall-label {
+  fill: var(--db-text-secondary);
+  font-size: 11px;
+}
+
+.campus-map__here-dot {
+  fill: none;
+  stroke: var(--db-text-primary);
+  stroke-width: 1.5;
+}
+
+.campus-map__here-label,
+.campus-map__landmark-label {
+  fill: var(--db-text-secondary);
+  font-family: var(--db-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.campus-map__here-label {
+  text-anchor: middle;
+}
+
+.campus-map__note {
+  margin: 0;
+  color: var(--db-text-secondary);
+  font-size: clamp(0.95rem, 1.5vw, 1.2rem);
+  text-align: center;
+}
+
+@keyframes campus-map-pulse {
+  0%, 100% { opacity: 0.14; }
+  50% { opacity: 0.34; }
+}
+
+/* The pulse is decoration; the position is the information. */
+@media (prefers-reduced-motion: reduce) {
+  .campus-map__pick-glow {
+    animation: none;
+  }
 }

@@ -406,6 +406,8 @@ def run_food_recommendation(
         title=recommendation.title,
         detail=recommendation.detail,
         provider=recommendation.provider,
+        hall=recommendation.hall,
+        backup_hall=recommendation.backup_hall,
     )
 
     event = AmbientFoodRecommendationEvent(

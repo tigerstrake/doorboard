@@ -8,9 +8,11 @@ import type {
   AmbientSatellitePassPayload,
 } from "@doorboard/contracts";
 import { AboutDoorboard } from "./AboutDoorboard";
+import { PollResultBars, pollTotalVotes } from "./PollResultBars";
 import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
 import { GuestbookQuote } from "./SocialRenderers";
 import { AircraftFocusPanel } from "./wallboard/AircraftFocusPanel";
+import { CampusDiningMap } from "./wallboard/CampusDiningMap";
 import { SatelliteSkyPanel } from "./wallboard/SatelliteSkyPanel";
 import { WALLBOARD_CHANNELS } from "./wallboardChannelModel";
 import type { WallboardFocusChannel } from "./wallboardChannelModel";
@@ -299,45 +301,12 @@ function PollFocusPanel({
   poll: Poll;
   pollResults: PollResultRow[] | null;
 }) {
-  const votesFor = (optionId: string) =>
-    pollResults?.find((row) => row.option_id === optionId)?.votes ?? 0;
-  const tallies = poll.options.map((option) => votesFor(option.id));
-  const totalVotes = tallies.reduce((sum, votes) => sum + votes, 0);
-  const maxVotes = tallies.length > 0 ? Math.max(...tallies) : 0;
+  const totalVotes = pollTotalVotes(poll, pollResults);
 
   return (
     <div className="poll-focus" data-testid="poll-focus">
       <h2 className="poll-focus__question">{poll.question}</h2>
-      <div className="poll-focus__options">
-        {poll.options.map((option) => {
-          const votes = votesFor(option.id);
-          const pct = totalVotes > 0 ? (votes / totalVotes) * 100 : 0;
-          const isLeader = totalVotes > 0 && votes === maxVotes;
-          return (
-            <div
-              className={`poll-focus__row${isLeader ? " poll-focus__row--leader" : ""}`}
-              key={option.id}
-            >
-              <div className="poll-focus__row-head">
-                <span className="poll-focus__option">{option.text}</span>
-                <span className="poll-focus__count">
-                  <strong>{votes}</strong> {votes === 1 ? "vote" : "votes"} · {pct.toFixed(0)}%
-                </span>
-              </div>
-              <div
-                className="poll-focus__bar"
-                role="progressbar"
-                aria-valuenow={Math.round(pct)}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-label={option.text}
-              >
-                <span style={{ width: `${pct}%` }} />
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      <PollResultBars poll={poll} pollResults={pollResults} />
       <p className="poll-focus__total">
         {totalVotes} total {totalVotes === 1 ? "vote" : "votes"}
       </p>
@@ -438,10 +407,18 @@ function renderFocusContent(
       );
     case "food":
       return ambient.food ? (
-        <div className="focus-hero-stat">
-          <p className="surface-eyebrow">{focusSafeText(ambient.food.provider, 40)}</p>
-          <strong>{focusSafeText(ambient.food.title)}</strong>
-          <span>{focusSafeText(ambient.food.detail, 160)}</span>
+        <div className="focus-food">
+          <div className="focus-hero-stat">
+            <p className="surface-eyebrow">{focusSafeText(ambient.food.provider, 40)}</p>
+            <strong>{focusSafeText(ambient.food.title)}</strong>
+            <span>{focusSafeText(ambient.food.detail, 160)}</span>
+          </div>
+          {/* Where it is. The text names a hall; the map answers "how far is that". */}
+          <CampusDiningMap
+            hall={ambient.food.hall}
+            title={ambient.food.title}
+            backupHall={ambient.food.backup_hall}
+          />
         </div>
       ) : (
         <FocusEmpty title="No food recommendation yet." hint="Today's pick will appear here." />

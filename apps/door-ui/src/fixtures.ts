@@ -150,9 +150,13 @@ export const scoreboardFixture = {
 
 export const foodFixture = {
   occurred_at: "2026-07-04T12:34:56.123Z",
-  title: "Noodle soup",
-  detail: "Good between classes.",
+  // Shaped like the real provider's output ("{hall} — {meal}"), so mock mode exercises the
+  // campus map rather than only its "hall not in the catalogue" fallback.
+  title: "Lakeside — dinner",
+  detail: "Try: noodle soup, tofu bowl · high confidence · backup: Stern",
   provider: "manual",
+  hall: "Lakeside",
+  backup_hall: "Stern",
 };
 
 export const pollFixture = {

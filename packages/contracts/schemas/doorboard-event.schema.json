@@ -447,6 +447,18 @@
     "AmbientFoodRecommendationPayload": {
       "additionalProperties": false,
       "properties": {
+        "backup_hall": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backup Hall"
+        },
         "date": {
           "format": "date",
           "title": "Date",
@@ -462,6 +474,18 @@
             }
           ],
           "title": "Detail"
+        },
+        "hall": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hall"
         },
         "provider": {
           "title": "Provider",

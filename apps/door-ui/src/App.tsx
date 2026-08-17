@@ -24,6 +24,7 @@ import type {
   PresenceLabel,
 } from "@doorboard/contracts";
 import { AboutDoorboard } from "./AboutDoorboard";
+import { PollResultBars } from "./PollResultBars";
 import { ApproachGreeting } from "./ApproachGreeting";
 import { AttributionNotice } from "./AttributionNotice";
 import { WallboardVisitorMode } from "./wallboard/WallboardVisitorMode";
@@ -654,6 +655,8 @@ export function App() {
             title: foodFixture.title,
             detail: foodFixture.detail,
             provider: foodFixture.provider,
+            hall: foodFixture.hall,
+            backup_hall: foodFixture.backup_hall,
           },
         }
         : null
@@ -3079,6 +3082,18 @@ export function App() {
                       );
                     })}
                   </div>
+                  {/*
+                    The standing, as bars. The wallboard beside this screen already publishes
+                    the same tallies live, so withholding them here protects nothing — it
+                    just meant the doorpad was the one surface where you could not see how
+                    the vote was going.
+                  */}
+                  <PollResultBars
+                    poll={currentPoll}
+                    pollResults={pollResults}
+                    votedOptionId={doorPadVotedOptionId}
+                    className="poll-focus__options--doorpad"
+                  />
                 </>
               )}
               {doorPadVotedOptionId && <p className="visitor-note-status">Vote submitted.</p>}

@@ -278,6 +278,8 @@ export interface AmbientFoodRecommendationPayload {
   title: string;
   detail: string | null;
   provider: string;
+  hall?: string | null;
+  backup_hall?: string | null;
 }
 
 export interface SystemServiceHealthPayload {

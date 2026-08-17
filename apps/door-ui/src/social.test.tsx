@@ -220,8 +220,54 @@ describe("T-405 public kiosk regressions", () => {
     await waitFor(() => expect(screen.getByText("Pick one")).toBeTruthy());
     const submit = screen.getByText("Submit Vote").closest("button");
     expect(submit?.disabled).toBe(true);
-    fireEvent.click(screen.getByText("A"));
+    // By role, because the option text now appears twice: once on the vote button and once
+    // as the label of its bar in the results graph.
+    fireEvent.click(screen.getByRole("button", { name: "A" }));
     expect(submit?.disabled).toBe(false);
+  });
+
+  it("shows the poll standing as bars on the DoorPad", async () => {
+    // The doorpad used to be the one surface with no graph — it printed "— N votes" only
+    // after you had voted, while the wallboard a metre away showed the live tally.
+    window.history.pushState(null, "", "/doorpad");
+    mockFetchSequence([
+      { body: { session: { state: "IDLE" }, config: {} } },
+      {
+        body: {
+          poll: {
+            id: "poll-1",
+            question: "Pick one",
+            status: "open",
+            created_at: "2026-07-08T00:00:00Z",
+            closed_at: null,
+            options: [
+              { id: "a", text: "Alpha" },
+              { id: "b", text: "Beta" },
+            ],
+          },
+        },
+      },
+      {
+        body: {
+          results: [
+            { option_id: "a", text: "Alpha", votes: 3 },
+            { option_id: "b", text: "Beta", votes: 1 },
+          ],
+        },
+      },
+    ]);
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
+    fireEvent.click(screen.getByText("Vote in Poll"));
+    await waitFor(() => expect(screen.getByTestId("poll-result-bars")).toBeTruthy());
+
+    // Shares of the total cast, not of the leader: 3 of 4 is 75%, not 100%.
+    const alpha = screen.getByRole("progressbar", { name: "Alpha" });
+    expect(alpha.getAttribute("aria-valuenow")).toBe("75");
+    expect(screen.getByRole("progressbar", { name: "Beta" }).getAttribute("aria-valuenow")).toBe(
+      "25"
+    );
   });
 
   it("does not offer a fake privacy deletion success when no local content exists", async () => {
