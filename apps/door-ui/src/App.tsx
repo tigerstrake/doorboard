@@ -1879,7 +1879,10 @@ export function App() {
         displayName={activeDisplayName}
         profileId={activeProfile}
       />
-      <CrossfadeSwitch activeKey={isVisitorMode ? "visitor" : focusedChannel ?? "ambient"}>
+      <CrossfadeSwitch
+        activeKey={isVisitorMode ? "visitor" : focusedChannel ?? "ambient"}
+        variant="zoom"
+      >
         {isVisitorMode ? (
           <WallboardVisitorMode
             sessionState={sessionState}
@@ -2482,7 +2485,7 @@ export function App() {
     if (doorPadScreen === "home") {
       return (
         <div
-          className="doorpad-view db-app-theme"
+          className="doorpad-view db-app-theme doorpad-enter doorpad-enter--back"
           ref={doorPadFocusRef}
           tabIndex={-1}
           aria-label="DoorPad home"
@@ -2636,7 +2639,12 @@ export function App() {
         }
       >
         <div
-          className="doorpad-view db-app-theme fade-in"
+          className="doorpad-view db-app-theme doorpad-enter"
+          // Keyed on the screen so moving between sub-screens replays the transition. The
+          // wrapper stays mounted across them, so a mount-only animation covered just the
+          // first step in. Photo/video sub-steps keep the same key, which matters: those
+          // hold a live preview element that a remount would restart.
+          key={doorPadScreen}
           ref={doorPadFocusRef}
           tabIndex={-1}
           aria-label="DoorPad visitor workflow"

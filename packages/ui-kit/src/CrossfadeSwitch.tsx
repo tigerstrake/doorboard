@@ -6,6 +6,16 @@ export interface CrossfadeSwitchProps {
   children: React.ReactNode;
   durationMs?: number;
   className?: string;
+  /**
+   * How the swap looks.
+   *
+   * `fade` is the original opacity-only crossfade. `zoom` adds a scale on both layers so
+   * opening a channel reads as moving *into* it — the grid recedes as the larger view comes
+   * forward — which is what "from the ambient grid to the larger views" asks for. Both are
+   * transform/opacity only: those are the two things a compositor can animate without
+   * touching layout, which matters on a Pi driving a 27" panel.
+   */
+  variant?: "fade" | "zoom";
 }
 
 interface Layer {
@@ -23,6 +33,7 @@ export function CrossfadeSwitch({
   children,
   durationMs = 400,
   className = "",
+  variant = "fade",
 }: CrossfadeSwitchProps) {
   const [layers, setLayers] = useState<Layer[]>([{ key: activeKey, node: children, fadingOut: false }]);
   const timeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -55,12 +66,23 @@ export function CrossfadeSwitch({
   }, [layers, durationMs]);
 
   return (
-    <div className={`db-crossfade ${className}`} data-testid="crossfade-switch">
+    <div
+      className={`db-crossfade db-crossfade--${variant} ${className}`}
+      data-testid="crossfade-switch"
+      data-variant={variant}
+    >
       {layers.map((layer) => (
         <div
           key={layer.key}
           className={`db-crossfade__layer ${layer.fadingOut ? "db-crossfade__layer--out" : "db-crossfade__layer--in"}`}
-          style={{ transitionDuration: `${durationMs}ms` }}
+          // Both the transition (fade-out) and the keyframe (zoom-in) read the duration,
+          // so it is set once here rather than duplicated in CSS and drifting.
+          style={
+            {
+              transitionDuration: `${durationMs}ms`,
+              "--db-crossfade-duration": `${durationMs}ms`,
+            } as React.CSSProperties
+          }
         >
           {layer.node}
         </div>

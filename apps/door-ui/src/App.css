@@ -3669,3 +3669,97 @@ input:focus-visible {
   flex-direction: column;
   height: 100%;
 }
+
+/*
+ * No scrollbar chrome on the kiosk surfaces.
+ *
+ * Chrome on the Pi paints classic (space-taking) scrollbars, so any container that can
+ * scroll shows a grey gutter down the side of the map or the tile grid. Nobody drags a
+ * scrollbar on a 7" touchscreen or a wall-mounted 27" panel — the doorpad is touched
+ * (swipe still works with the chrome hidden) and the wallboard is not touched at all.
+ *
+ * Deliberately scoped to the kiosk views rather than applied globally: /admin is a real
+ * page used from a laptop, where a scrollbar is information about how much more there is.
+ */
+.doorpad-view,
+.ambient-grid,
+.wallboard-focus-panel,
+.campus-map,
+.poll-focus__options--doorpad,
+.doorpad-sub-content {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* old Edge */
+}
+
+.doorpad-view::-webkit-scrollbar,
+.ambient-grid::-webkit-scrollbar,
+.wallboard-focus-panel::-webkit-scrollbar,
+.campus-map::-webkit-scrollbar,
+.poll-focus__options--doorpad::-webkit-scrollbar,
+.doorpad-sub-content::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* The map is a fixed-aspect SVG; it should never have been able to scroll at all. */
+.campus-map,
+.campus-map__svg {
+  overflow: hidden;
+}
+
+/*
+ * Doorpad screen transitions — drilling in and backing out.
+ *
+ * Replaces a generic 8px `fade-in` that only ever played on the first step away from home,
+ * because the sub-screen wrapper stays mounted between sub-screens. The wrapper is keyed on
+ * the screen name now, so every move animates.
+ *
+ * Forward (home -> a tile's screen) comes toward you; back (-> home) recedes. Opposite
+ * directions on the same axis is what makes the two feel like a hierarchy rather than two
+ * unrelated fades.
+ *
+ * transform and opacity only. This runs on a Pi that is also decoding H.264 and running face
+ * recognition, and those are the two properties a compositor animates without touching
+ * layout.
+ */
+.doorpad-enter {
+  animation: doorpad-drill-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.doorpad-enter--back {
+  animation-name: doorpad-drill-out;
+}
+
+@keyframes doorpad-drill-in {
+  from {
+    opacity: 0;
+    transform: scale(0.965) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes doorpad-drill-out {
+  from {
+    opacity: 0;
+    transform: scale(1.035);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/*
+ * The door has to stay usable for someone who has asked the system to stop moving things.
+ * The animation is decoration; which screen you are on is the information.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .doorpad-enter,
+  .doorpad-enter--back {
+    animation: none;
+  }
+}
