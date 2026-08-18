@@ -1,16 +1,16 @@
 {
   "generated_at": "2026-08-18",
-  "lines_of_code": 82308,
+  "lines_of_code": 82438,
   "tracked_files": 882,
   "languages": [
     {
       "name": "Python",
-      "lines": 56729,
+      "lines": 56725,
       "files": 280
     },
     {
       "name": "TypeScript",
-      "lines": 22809,
+      "lines": 22943,
       "files": 125
     },
     {

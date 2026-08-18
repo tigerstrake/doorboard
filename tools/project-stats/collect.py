@@ -88,11 +88,7 @@ def _count_glob(
     # node_modules and .venv directories that would otherwise dwarf the real counts.
     skip_parts = {"node_modules", ".venv", "dist", "build", "__pycache__", ".claude"}
     found = d.rglob(pattern) if recursive else d.glob(pattern)
-    return sum(
-        1
-        for p in found
-        if p.name not in exclude and not (skip_parts & set(p.parts))
-    )
+    return sum(1 for p in found if p.name not in exclude and not (skip_parts & set(p.parts)))
 
 
 def collect() -> dict[str, object]:
