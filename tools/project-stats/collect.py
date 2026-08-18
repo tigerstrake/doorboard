@@ -73,12 +73,26 @@ def _count_dir_children(rel: str) -> int:
     return sum(1 for child in d.iterdir() if child.is_dir()) if d.is_dir() else 0
 
 
-def _count_glob(rel_dir: str, pattern: str, *, exclude: set[str] | None = None) -> int:
+def _count_glob(
+    rel_dir: str,
+    pattern: str,
+    *,
+    exclude: set[str] | None = None,
+    recursive: bool = False,
+) -> int:
     d = REPO_ROOT / rel_dir
     if not d.is_dir():
         return 0
     exclude = exclude or set()
-    return sum(1 for p in d.glob(pattern) if p.name not in exclude)
+    # rglob skips nothing, so keep build/vendor trees out by name — the repo has
+    # node_modules and .venv directories that would otherwise dwarf the real counts.
+    skip_parts = {"node_modules", ".venv", "dist", "build", "__pycache__", ".claude"}
+    found = d.rglob(pattern) if recursive else d.glob(pattern)
+    return sum(
+        1
+        for p in found
+        if p.name not in exclude and not (skip_parts & set(p.parts))
+    )
 
 
 def collect() -> dict[str, object]:
@@ -117,6 +131,19 @@ def collect() -> dict[str, object]:
         exclude={"doorboard-event.schema.json"},
     )
 
+    # A few counts that are actually interesting to a visitor rather than to a maintainer.
+    # All derived the same way as the rest — from what is in the tree, so they cannot drift
+    # into being aspirational.
+    test_files = (
+        _count_glob("apps", "test_*.py", recursive=True)
+        + _count_glob("packages", "test_*.py", recursive=True)
+        + _count_glob("integrations", "test_*.py", recursive=True)
+        + _count_glob("apps", "*.test.ts", recursive=True)
+        + _count_glob("apps", "*.test.tsx", recursive=True)
+        + _count_glob("packages", "*.test.ts", recursive=True)
+        + _count_glob("packages", "*.test.tsx", recursive=True)
+    )
+
     return {
         "generated_at": datetime.now(UTC).date().isoformat(),
         "lines_of_code": sum(lang_lines.values()),
@@ -130,6 +157,8 @@ def collect() -> dict[str, object]:
             "task_briefs": task_briefs,
             "contract_event_types": event_types,
             "milestones": 8,
+            "test_files": test_files,
+            "runbooks": _count_glob("docs/runbooks", "*.md"),
         },
     }
 

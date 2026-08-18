@@ -3763,3 +3763,64 @@ input:focus-visible {
     animation: none;
   }
 }
+
+/*
+ * The numbers, in the focused About channel.
+ *
+ * The grid tile carried five stat chips and the focused view — the one you get by choosing
+ * to open About and read it — carried none, so looking closer showed less. These are laid
+ * out big because the wallboard is read from across a hallway.
+ */
+.about-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--db-spacing-md);
+  margin: var(--db-spacing-md) 0 0;
+}
+
+.about-facts__item {
+  padding: var(--db-spacing-md);
+  border-radius: var(--db-radius-md);
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(140, 190, 255, 0.18);
+}
+
+.about-facts__value {
+  margin: 0;
+  font-family: var(--db-font-display);
+  font-size: clamp(1.7rem, 3vw, 2.9rem);
+  line-height: 1;
+  color: var(--db-accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.about-facts__label {
+  margin: 0.35rem 0 0;
+  color: var(--db-text-secondary);
+  font-size: clamp(0.9rem, 1.2vw, 1.15rem);
+  line-height: 1.25;
+}
+
+.about-facts__asof {
+  margin: var(--db-spacing-md) 0 0;
+  color: var(--db-text-secondary);
+  font-family: var(--db-font-mono);
+  font-size: clamp(0.75rem, 1vw, 0.95rem);
+}
+
+.about-tech-facts {
+  margin: var(--db-spacing-sm) 0 0;
+  padding-left: 1.1em;
+  display: grid;
+  gap: var(--db-spacing-sm);
+}
+
+.about-tech-facts__item {
+  color: var(--db-text-primary);
+  font-size: clamp(1rem, 1.4vw, 1.35rem);
+  line-height: 1.5;
+}
+
+.about-tech-facts__item::marker {
+  color: var(--db-accent);
+}

@@ -455,6 +455,6 @@ function renderFocusContent(
     case "about":
       // The only channel with no data source: it explains the door itself, so it never
       // has an empty state and is always safe to focus.
-      return <AboutDoorboard className="about-doorboard--focus" />;
+      return <AboutDoorboard className="about-doorboard--focus" showFacts />;
   }
 }
