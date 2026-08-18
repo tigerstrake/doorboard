@@ -89,8 +89,10 @@ def test_it_maps_a_real_response_onto_the_summary_shape(monkeypatch: pytest.Monk
     assert nearest["altitude_ft"] == 11300
     assert nearest["icao24"] == "a0ec20"
     assert nearest["heading"] == 138
-    # Knots on the wire, km/h in the contract.
-    assert nearest["ground_speed_kmh"] == pytest.approx(345.1 * 1.852, rel=1e-3)
+    # Knots on the wire, km/h in the contract — and an int, not a float. A float raised
+    # int_from_float inside AmbientAircraftNearby and took the whole summary job down.
+    assert nearest["ground_speed_kmh"] == round(345.1 * 1.852)
+    assert isinstance(nearest["ground_speed_kmh"], int)
     assert nearest["vertical_rate_fpm"] == 832
     # Registration and type arrive inline, where OpenSky needs two more services.
     assert nearest["registration"] == "N159FE"
@@ -196,3 +198,50 @@ def test_auto_prefers_opensky_only_when_it_has_credentials(
     monkeypatch.setenv("AIRCRAFT_PROVIDER", "nonsense")
     with pytest.raises(ValueError):
         build_aircraft_provider(Settings())
+
+
+@pytest.mark.parametrize("ground_speed_kt", [345.1, 248.3, 0.5, None])
+def test_the_mapped_shape_actually_validates_as_a_payload(
+    monkeypatch: pytest.MonkeyPatch, ground_speed_kt: float | None
+) -> None:
+    """The mapper's output has to survive AmbientAircraftNearby, not just look right.
+
+    It did not: `ground_speed_kmh` is `int` in the contract and the mapper produced a float, so
+    every poll raised int_from_float and the whole aircraft summary job died — with real
+    aircraft in hand and enrichment already fetched. The provider's own tests passed the entire
+    time, because they stopped at the dict.
+    """
+    from doorboard_contracts.events import AmbientAircraftNearby
+
+    entry = dict(REAL_RESPONSE["aircraft"][0])  # type: ignore[index]
+    if ground_speed_kt is None:
+        entry.pop("gs", None)
+    else:
+        entry["gs"] = ground_speed_kt
+
+    monkeypatch.setattr(
+        "httpx.get",
+        lambda *a, **k: httpx.Response(200, json={"resultCount": 1, "aircraft": [entry]}),
+    )
+    provider = AdsbFiAircraftProvider(
+        AircraftConfig(observer_lat=37.422, observer_lon=-122.172)
+    )
+    mapped = provider.get_nearby_aircraft(NOW)
+    assert len(mapped) == 1
+
+    # Construct it exactly as run_aircraft_summary does.
+    model = AmbientAircraftNearby(
+        callsign=mapped[0]["callsign"],
+        altitude_ft=mapped[0]["altitude_ft"],
+        distance_km=mapped[0]["distance_km"],
+        heading=mapped[0]["heading"],
+        icao24=mapped[0].get("icao24"),
+        latitude=mapped[0].get("latitude"),
+        longitude=mapped[0].get("longitude"),
+        ground_speed_kmh=mapped[0].get("ground_speed_kmh"),
+        vertical_rate_fpm=mapped[0].get("vertical_rate_fpm"),
+        on_ground=mapped[0].get("on_ground"),
+        registration=mapped[0].get("registration"),
+        aircraft_type=mapped[0].get("aircraft_type"),
+    )
+    assert model.callsign == "FDX1865"

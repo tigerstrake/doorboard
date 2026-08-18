@@ -368,9 +368,10 @@ class AdsbFiAircraftProvider(AircraftProvider):
             "icao24": entry.get("hex"),
             "latitude": lat,
             "longitude": lon,
-            # adsb.fi reports knots; the contract is km/h.
+            # adsb.fi reports knots; the contract is km/h, and it is an *int* — a float here
+            # raised int_from_float and took the whole summary job down with it.
             "ground_speed_kmh": (
-                round(float(ground_speed_kt) * 1.852, 1) if ground_speed_kt is not None else None
+                round(float(ground_speed_kt) * 1.852) if ground_speed_kt is not None else None
             ),
             "vertical_rate_fpm": entry.get("baro_rate"),
             "on_ground": False,
