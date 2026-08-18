@@ -293,8 +293,6 @@ def test_run_satellite_passes_coordinates_never_leaked(
     assert str(lon) not in serialized_payload
 
 
-
-
 def _ingested_payload(mock_post) -> dict:
     """The payload from the ingest POST, whichever call that turned out to be.
 
@@ -333,12 +331,27 @@ def test_the_job_forwards_the_pass_geometry_it_is_given(mock_post) -> None:
         "set_azimuth_deg": 135.0,
         "culmination_azimuth_deg": 45.0,
         "track": [
-            {"t_offset_s": 0.0, "azimuth_deg": 315.0, "elevation_deg": 0.0,
-             "lat": 30.0, "lng": -128.0},
-            {"t_offset_s": 270.0, "azimuth_deg": 45.0, "elevation_deg": 64.5,
-             "lat": 37.6, "lng": -122.0},
-            {"t_offset_s": 540.0, "azimuth_deg": 135.0, "elevation_deg": 0.0,
-             "lat": 45.0, "lng": -114.0},
+            {
+                "t_offset_s": 0.0,
+                "azimuth_deg": 315.0,
+                "elevation_deg": 0.0,
+                "lat": 30.0,
+                "lng": -128.0,
+            },
+            {
+                "t_offset_s": 270.0,
+                "azimuth_deg": 45.0,
+                "elevation_deg": 64.5,
+                "lat": 37.6,
+                "lng": -122.0,
+            },
+            {
+                "t_offset_s": 540.0,
+                "azimuth_deg": 135.0,
+                "elevation_deg": 0.0,
+                "lat": 45.0,
+                "lng": -114.0,
+            },
         ],
     }
 
