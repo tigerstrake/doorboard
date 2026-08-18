@@ -174,3 +174,51 @@ def test_the_worker_starts_with_every_compose_default_applied() -> None:
         "wallboard-worker cannot load the settings the compose stack gives it:\n"
         + result.stderr[-1500:]
     )
+
+
+def test_every_compose_default_matches_the_setting_it_stands_in_for() -> None:
+    """A compose default must mean what the code's default means.
+
+    T-331 wired 22 settings through by generating the compose block from the Settings module —
+    and the extractor's regex quietly failed on any default that was not a simple scalar. So
+    `WALLBOARD_WORKER_HEARTBEAT_PATH` shipped as an empty string instead of
+    `/tmp/wallboard-worker-heartbeat`, `Path("")` resolved to `.`, and the heartbeat write hit
+    `IsADirectoryError` on every tick — an unhealthy container, minutes after deploy.
+
+    Two settings are exempt: their validators treat an empty string as "use the default"
+    deliberately, so a human can leave the line blank in .env.
+    """
+    import re as _re
+
+    from wallboard_worker.settings import Settings
+
+    # `list[str]` fields whose validators map "" to the documented default on purpose.
+    EMPTY_MEANS_DEFAULT = {"BIRDNET_SPECIES_FILTER", "SATELLITES_WATCHLIST"}
+
+    compose = (REPO_ROOT / "infra/compose/docker-compose.yml").read_text()
+    alias_to_field = {f.alias: name for name, f in Settings.model_fields.items() if f.alias}
+
+    mismatched: list[str] = []
+    for _key, var, composed in _re.findall(
+        r"^\s{6}([A-Z0-9_]+):\s*\$\{([A-Z0-9_]+):-([^}]*)\}", compose, _re.M
+    ):
+        name = alias_to_field.get(var)
+        if name is None or var in EMPTY_MEANS_DEFAULT:
+            continue
+        field = Settings.model_fields[name]
+        if field.default_factory is not None:
+            real = str(field.default_factory())  # type: ignore[call-arg]
+        elif repr(field.default) != "PydanticUndefined":
+            real = str(field.default)
+        else:
+            continue
+        if composed.strip().lower() == real.strip().lower():
+            continue
+        try:
+            if float(composed) == float(real):
+                continue
+        except ValueError:
+            pass
+        mismatched.append(f"  {var}: compose says {composed!r}, the code says {real!r}")
+
+    assert not mismatched, "compose defaults disagree with the code's:\n" + "\n".join(mismatched)
