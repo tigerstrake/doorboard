@@ -278,6 +278,11 @@ class MockAircraftProvider(AircraftProvider):
         ]
 
 
+# Below this, an aircraft is taxiing or parked rather than overhead. Nothing meaningfully
+# "nearby and in the sky" is under a couple of hundred feet.
+GROUND_ALTITUDE_GATE_FT = 200.0
+
+
 class AdsbFiAircraftProvider(AircraftProvider):
     """Nearby aircraft from adsb.fi's open ADS-B feed.
 
@@ -354,6 +359,13 @@ class AdsbFiAircraftProvider(AircraftProvider):
             return None
         altitude = entry.get("alt_baro")
         if altitude == "ground" or altitude is None:
+            return None
+        # Some feeds report a *numeric* barometric altitude for an aircraft that is on the
+        # ground — near sea level it can even read negative. Seen live: an Asiana 747 at
+        # "-75 ft", 28 km away, sitting at SFO and listed among the overhead aircraft. The
+        # string check above does not catch those, so anything below the gate is on the
+        # ground as far as this tile is concerned.
+        if float(altitude) < GROUND_ALTITUDE_GATE_FT:
             return None
 
         callsign = (entry.get("flight") or "").strip()

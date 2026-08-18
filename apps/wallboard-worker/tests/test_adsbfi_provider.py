@@ -25,7 +25,7 @@ NOW = datetime(2026, 8, 18, 10, 0, 0, tzinfo=UTC)
 
 # Straight from opendata.adsb.fi, trimmed to the fields the mapper reads.
 REAL_RESPONSE = {
-    "resultCount": 4,
+    "resultCount": 5,
     "aircraft": [
         {
             "hex": "a0ec20",
@@ -52,6 +52,10 @@ REAL_RESPONSE = {
         },
         # No position: unplaceable, so unusable.
         {"hex": "bbb222", "flight": "NOPOS  ", "alt_baro": 30000, "track": 90},
+        # On the ground but reporting a *numeric* altitude — near sea level it can read
+        # negative. Seen live: an Asiana 747 at "-75 ft" listed among the overhead aircraft.
+        {"hex": "ccc333", "flight": "AIH283 ", "lat": 37.6188, "lon": -122.3750,
+         "alt_baro": -75, "track": 297, "gs": 12.0},
         {
             "hex": "a24a82",
             "flight": "FDX1885 ",
@@ -82,7 +86,8 @@ def test_it_maps_a_real_response_onto_the_summary_shape(monkeypatch: pytest.Monk
     provider = AdsbFiAircraftProvider(AircraftConfig(observer_lat=37.422, observer_lon=-122.172))
     result = provider.get_nearby_aircraft(NOW)
 
-    # Two of the four are usable: one is on the ground, one has no position.
+    # Two of the five are usable: one is flagged on the ground, one has no position, and one
+    # reports a negative barometric altitude while parked.
     assert len(result) == 2
     nearest = result[0]
     assert nearest["callsign"] == "FDX1865", "the trailing pad must be stripped"
@@ -108,6 +113,7 @@ def test_grounded_and_unplaceable_aircraft_are_dropped(monkeypatch: pytest.Monke
     callsigns = {a["callsign"] for a in provider.get_nearby_aircraft(NOW)}
     assert "PARKED1" not in callsigns
     assert "NOPOS" not in callsigns
+    assert "AIH283" not in callsigns, "a negative barometric altitude is not overhead"
 
 
 def test_an_empty_sky_is_an_empty_list_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
