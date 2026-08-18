@@ -129,3 +129,48 @@ def test_every_worker_setting_reaches_the_container() -> None:
         "wallboard-worker reads these, and the compose stack never passes them — so setting "
         "them in .env does nothing:\n  " + "\n  ".join(missing)
     )
+
+
+def test_the_worker_starts_with_every_compose_default_applied() -> None:
+    """Reachable is not the same as loadable.
+
+    The previous test only proved each setting *arrives*. Wiring 20 of them through then
+    crash-looped the worker on startup: `BIRDNET_SPECIES_FILTER` and `SATELLITES_WATCHLIST` are
+    `list[str]`, pydantic-settings JSON-decodes complex types at the source *before* any
+    validator runs, and the compose default is an empty string — which is not valid JSON.
+
+    So this constructs Settings() with exactly the environment compose produces, defaults and
+    all. An unloadable default is a crash loop, and a crash loop is worse than a wrong value.
+    """
+    import re as _re
+    import subprocess
+    import sys
+
+    compose = (REPO_ROOT / "infra/compose/docker-compose.yml").read_text()
+    env: dict[str, str] = {}
+    # KEY: ${VAR:-default} — take the default, i.e. an operator who set nothing at all.
+    for key, _var, default in _re.findall(
+        r"^\s{6}([A-Z0-9_]+):\s*\$\{([A-Z0-9_]+):-([^}]*)\}", compose, _re.M
+    ):
+        env[key] = default
+    assert len(env) > 30, "no compose defaults found — has the file layout changed?"
+
+    # A token is required when any job is enabled; supply one so this tests the *parsing*.
+    env.setdefault("WALLBOARD_WORKER_INGEST_TOKEN", "tok_for_settings_parse")
+
+    script = (
+        "from wallboard_worker.settings import Settings; "
+        "s = Settings(); "
+        "print(s.satellites_watchlist, s.birdnet_species_filter)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", **env},
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, (
+        "wallboard-worker cannot load the settings the compose stack gives it:\n"
+        + result.stderr[-1500:]
+    )

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -34,10 +35,19 @@ class Settings(BaseSettings):
     feature_birdnet: bool = Field(default=False, alias="FEATURE_BIRDNET")
     birdnet_url: str = Field(default="http://127.0.0.1:8080", alias="BIRDNET_URL")
     birdnet_confidence_threshold: float = Field(default=0.70, alias="BIRDNET_CONFIDENCE_THRESHOLD")
-    birdnet_species_filter: list[str] = Field(default_factory=list, alias="BIRDNET_SPECIES_FILTER")
+    # NoDecode: see the note on satellites_watchlist — an empty env value is not valid JSON,
+    # and pydantic-settings decodes complex types before validators get a look in.
+    birdnet_species_filter: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="BIRDNET_SPECIES_FILTER"
+    )
 
     feature_satellites: bool = Field(default=False, alias="FEATURE_SATELLITES")
-    satellites_watchlist: list[str] = Field(
+    # NoDecode because pydantic-settings JSON-decodes list-typed settings at the source,
+    # before any validator runs. An empty string is not valid JSON, so once the compose stack
+    # started passing every setting through, `SATELLITES_WATCHLIST=` crashed the worker on
+    # startup — a crash loop, not a bad default. The validators below accept the
+    # comma-separated form a human would actually write in .env.
+    satellites_watchlist: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["ISS (ZARYA)"], alias="SATELLITES_WATCHLIST"
     )
     satellites_observer_lat: float = Field(default=0.0, alias="SATELLITES_OBSERVER_LAT")
