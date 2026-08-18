@@ -141,7 +141,20 @@ class PahoMqttPublisher:
                 # surface it (throttled) but still hand it over — best-effort,
                 # never raise.
                 self._warn_disconnected(event)
-            self._client.publish(topic_for(event.type), event.model_dump_json())
+            # Retain ambient/status topics, so the broker holds the last value per topic and
+            # a subscriber that connects later is told it immediately.
+            #
+            # ADR-0027 gave door-api its own in-memory last-value cache, which covers a
+            # wallboard *reload*. It cannot cover a door-api *restart* — the cache dies with
+            # the process, and the dining recommendation republishes only once a day, so
+            # restarting door-api blanks that tile for up to 24 hours. Retention closes that:
+            # the bridge resubscribes on reconnect and the broker replays.
+            #
+            # Deliberately not retained for session/vision/social events: those are
+            # transitions, not state. A retained "the bell is ringing" would be delivered to
+            # every future subscriber as though it had just happened.
+            retain = event.type.startswith(("ambient.", "status."))
+            self._client.publish(topic_for(event.type), event.model_dump_json(), retain=retain)
         except Exception:
             logger.warning("mqtt_publish_failed", extra={"type": event.type}, exc_info=True)
 

@@ -298,3 +298,41 @@ def test_build_publisher_falls_back_to_null_on_fatal_construction_error(
 
     assert isinstance(publisher, NullMqttPublisher)
     assert any("falling_back_to_null" in r.getMessage() for r in caplog.records)
+
+
+def test_ambient_and_status_topics_are_retained_but_transitions_are_not() -> None:
+    """State is retained; transitions are not.
+
+    ADR-0027 gave door-api an in-memory last-value cache so a wallboard *reload* is not blank.
+    That cache dies with the process, and the dining recommendation republishes only once a
+    day — so restarting door-api emptied that tile for up to 24 hours. Retention at the broker
+    covers the restart: the bridge resubscribes and the broker replays the last value.
+
+    Session and vision events must stay unretained. A retained "the bell is ringing" would be
+    delivered to every future subscriber as though it had just happened.
+    """
+    published: list[tuple[str, bool]] = []
+
+    class _Client:
+        def publish(self, topic: str, payload: str, retain: bool = False) -> None:
+            published.append((topic, retain))
+
+    publisher = PahoMqttPublisher.__new__(PahoMqttPublisher)
+    publisher._client = _Client()  # type: ignore[attr-defined]
+    publisher._is_connected = lambda: True  # type: ignore[attr-defined]
+
+    for event_type in (
+        "ambient.food_recommendation",
+        "ambient.satellite_pass",
+        "status.presence_changed",
+        "session.state_changed",
+        "vision.identity_stable",
+    ):
+        publisher.publish_event(parse_event(build_event(event_type)))
+
+    retained = {topic: retain for topic, retain in published}
+    assert retained["doorboard/ambient/food_recommendation"] is True
+    assert retained["doorboard/ambient/satellite_pass"] is True
+    assert retained["doorboard/status/presence_changed"] is True
+    assert retained["doorboard/session/state_changed"] is False
+    assert retained["doorboard/vision/identity_stable"] is False
