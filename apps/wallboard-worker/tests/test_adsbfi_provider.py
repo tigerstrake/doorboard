@@ -223,9 +223,7 @@ def test_the_mapped_shape_actually_validates_as_a_payload(
         "httpx.get",
         lambda *a, **k: httpx.Response(200, json={"resultCount": 1, "aircraft": [entry]}),
     )
-    provider = AdsbFiAircraftProvider(
-        AircraftConfig(observer_lat=37.422, observer_lon=-122.172)
-    )
+    provider = AdsbFiAircraftProvider(AircraftConfig(observer_lat=37.422, observer_lon=-122.172))
     mapped = provider.get_nearby_aircraft(NOW)
     assert len(mapped) == 1
 
