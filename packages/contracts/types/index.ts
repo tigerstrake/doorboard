@@ -220,6 +220,8 @@ export interface SatelliteTrackSample {
   t_offset_s: number;
   azimuth_deg: number;
   elevation_deg: number;
+  lat?: number | null;
+  lng?: number | null;
 }
 
 export interface AmbientSatellitePassPayload {

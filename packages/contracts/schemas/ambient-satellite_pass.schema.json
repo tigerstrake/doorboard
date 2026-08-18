@@ -90,7 +90,7 @@
     },
     "SatelliteTrackSample": {
       "additionalProperties": false,
-      "description": "One point on a pass's sky track: seconds after rise, azimuth, elevation.",
+      "description": "One point on a pass: seconds after rise, where to look, and where it is (ADR-0030).\n\n``azimuth_deg``/``elevation_deg`` answer \"where do I look from here\" and drive the sky\ndome. ``lat``/``lng`` are the sub-satellite point \u2014 the spot on Earth it is directly\nover \u2014 which is what a globe needs and what the az/el pair cannot be converted into\nwithout the orbit. The provider computes both from the same moment, so they cannot\ndisagree about where the satellite was.\n\nThe ground position is optional: a producer from before this existed omits it, and the\nglobe then has nothing to plot and says so rather than guessing a position from a bearing.",
       "properties": {
         "azimuth_deg": {
           "title": "Azimuth Deg",
@@ -99,6 +99,30 @@
         "elevation_deg": {
           "title": "Elevation Deg",
           "type": "number"
+        },
+        "lat": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lat"
+        },
+        "lng": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lng"
         },
         "t_offset_s": {
           "title": "T Offset S",

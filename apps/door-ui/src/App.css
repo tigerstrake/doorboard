@@ -3824,3 +3824,103 @@ input:focus-visible {
 .about-tech-facts__item::marker {
   color: var(--db-accent);
 }
+
+/* ── Satellite globe: where it is, not just which way to look ─────────────── */
+/*
+ * Orthographic Earth centred on the door. Ocean disc, graticule, real Natural Earth
+ * coastline, the ground track, and a pinging marker at the sub-satellite point. Everything is
+ * culled at the limb in globe.ts — half the sphere is behind this circle.
+ */
+.satellite-globe {
+  display: grid;
+  gap: var(--db-spacing-md);
+  justify-items: center;
+}
+
+.satellite-globe__body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--db-spacing-lg);
+  align-items: center;
+  justify-content: center;
+}
+
+.globe {
+  width: min(340px, 42vw);
+  height: auto;
+  flex: 0 0 auto;
+}
+
+.globe__ocean {
+  fill: rgba(18, 46, 80, 0.55);
+  stroke: rgba(120, 200, 255, 0.45);
+  stroke-width: 1;
+}
+
+.globe__graticule {
+  fill: none;
+  stroke: rgba(140, 190, 255, 0.14);
+  stroke-width: 0.5px;
+  vector-effect: non-scaling-stroke;
+}
+
+.globe__coast {
+  fill: none;
+  stroke: rgba(150, 210, 255, 0.75);
+  stroke-width: 0.8px;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.globe__track {
+  fill: none;
+  stroke: var(--db-gold, #ffc454);
+  stroke-width: 1.6px;
+  stroke-dasharray: 5 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.globe__here-ring {
+  fill: none;
+  stroke: var(--db-text-primary);
+  stroke-width: 1;
+  opacity: 0.75;
+}
+
+.globe__here-dot {
+  fill: var(--db-text-primary);
+}
+
+.globe__sat-dot {
+  fill: #fff;
+}
+
+/* The ping the owner asked for: a pulse at the sub-satellite point. */
+.globe__sat-ping {
+  fill: var(--db-accent);
+  opacity: 0.3;
+  transform-origin: center;
+  animation: globe-ping 1.8s ease-out infinite;
+}
+
+@keyframes globe-ping {
+  0% { opacity: 0.45; transform: scale(0.45); }
+  70% { opacity: 0.06; transform: scale(1.25); }
+  100% { opacity: 0; transform: scale(1.35); }
+}
+
+.satellite-globe__credit,
+.satellite-globe__note {
+  margin: 0;
+  color: var(--db-text-secondary);
+  font-family: var(--db-font-mono);
+  font-size: 0.72rem;
+}
+
+/* Decoration, not information: the position is the point. */
+@media (prefers-reduced-motion: reduce) {
+  .globe__sat-ping {
+    animation: none;
+    opacity: 0.28;
+  }
+}

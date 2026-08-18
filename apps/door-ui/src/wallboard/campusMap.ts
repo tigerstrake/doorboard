@@ -1,7 +1,7 @@
 /**
  * A stylised campus map for the dining recommendation: where the recommended hall is.
  *
- * Geometry only, no DOM — same reason as `skyDome.ts`. A projection error here puts a
+ * Geometry only, no DOM — same reason as `globe.ts`. A projection error here puts a
  * confident dot on the wrong side of campus, which reads as fact and cannot be caught by
  * rendering the component with a mocked map.
  *

@@ -65,7 +65,8 @@
     {
       "monotonic_ms": 2700,
       "payload": {
-        "person_id": "prs_8f3k2j"
+        "person_id": "prs_8f3k2j",
+        "reason": "expired"
       },
       "type": "vision.identity_expired"
     },

@@ -62,8 +62,14 @@ class FakeVisionPipeline:
         await self._queue.put(event)
         return event
 
-    async def identity_expired(self, person_id: str) -> DoorboardEvent:
-        event = self._events.make("vision.identity_expired", {"person_id": person_id})
+    async def identity_expired(self, person_id: str, reason: str = "expired") -> DoorboardEvent:
+        # "expired" is the routine case the scenarios model: the vision cache lapsed because
+        # a face left the frame. A real door always states a reason now (ADR-0029), and the
+        # simulator has to emit what a real door emits or the golden logs stop documenting
+        # the wire format.
+        event = self._events.make(
+            "vision.identity_expired", {"person_id": person_id, "reason": reason}
+        )
         await self._queue.put(event)
         return event
 

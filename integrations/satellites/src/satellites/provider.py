@@ -67,11 +67,17 @@ class SkyfieldSatelliteProvider(SatelliteProvider):
             fraction = index / self.TRACK_SAMPLES
             moment = ts.tt_jd(rise_tt + span_days * fraction)
             alt, az, _ = (satellite - observer).at(moment).altaz()
+            # The sub-satellite point, from the same moment as the alt/az above: the spot on
+            # Earth it is directly over. A globe needs this and cannot derive it from a
+            # bearing and an elevation without knowing the orbit (ADR-0030).
+            subpoint = wgs84.subpoint(satellite.at(moment))
             samples.append(
                 {
                     "t_offset_s": round(span_seconds * fraction, 1),
                     "azimuth_deg": round(az.degrees % 360, 1),
                     "elevation_deg": round(max(0.0, alt.degrees), 1),
+                    "lat": round(subpoint.latitude.degrees, 3),
+                    "lng": round(subpoint.longitude.degrees, 3),
                 }
             )
         return samples

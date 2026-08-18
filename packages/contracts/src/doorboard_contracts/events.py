@@ -424,11 +424,23 @@ class AmbientBirdSummaryPayload(StrictModel):
 
 
 class SatelliteTrackSample(StrictModel):
-    """One point on a pass's sky track: seconds after rise, azimuth, elevation."""
+    """One point on a pass: seconds after rise, where to look, and where it is (ADR-0030).
+
+    ``azimuth_deg``/``elevation_deg`` answer "where do I look from here" and drive the sky
+    dome. ``lat``/``lng`` are the sub-satellite point — the spot on Earth it is directly
+    over — which is what a globe needs and what the az/el pair cannot be converted into
+    without the orbit. The provider computes both from the same moment, so they cannot
+    disagree about where the satellite was.
+
+    The ground position is optional: a producer from before this existed omits it, and the
+    globe then has nothing to plot and says so rather than guessing a position from a bearing.
+    """
 
     t_offset_s: float
     azimuth_deg: float
     elevation_deg: float
+    lat: float | None = None
+    lng: float | None = None
 
 
 class AmbientSatellitePassPayload(StrictModel):

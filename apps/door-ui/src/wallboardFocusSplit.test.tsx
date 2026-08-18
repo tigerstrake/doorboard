@@ -51,9 +51,9 @@ const SATELLITE: AmbientSatellitePassPayload = {
   visible: true,
   set_at: "2026-07-20T21:22:00Z",
   track: [
-    { t_offset_s: 0, azimuth_deg: 315, elevation_deg: 0 },
-    { t_offset_s: 240, azimuth_deg: 45, elevation_deg: 72 },
-    { t_offset_s: 480, azimuth_deg: 135, elevation_deg: 0 },
+    { t_offset_s: 0, azimuth_deg: 315, elevation_deg: 0, lat: 30.1, lng: -128.4 },
+    { t_offset_s: 240, azimuth_deg: 45, elevation_deg: 72, lat: 37.6, lng: -122.0 },
+    { t_offset_s: 480, azimuth_deg: 135, elevation_deg: 0, lat: 44.9, lng: -114.8 },
   ],
 };
 
@@ -140,15 +140,33 @@ describe("WallboardFocusSplit (focused-tile split layout)", () => {
     expect(within(panel).getByText(/NW · 72° max/)).toBeTruthy();
   });
 
-  it("plots the satellite pass on a sky dome, with the direction and max elevation", () => {
+  it("plots the satellite on a globe, with its ground track and the text it always had", () => {
     renderSplit({ channel: "satellite", ambient: { ...EMPTY_AMBIENT, satellite: SATELLITE } });
     const panel = screen.getByTestId("wallboard-focus-panel");
-    // A pass is a direction to look, so it is an az/el dome rather than a ground map
-    // or a bare compass rose (T-325).
-    const dome = within(panel).getByTestId("sky-dome");
-    expect(dome.getAttribute("aria-label")).toMatch(/NW/);
+    // The az/el dome answered "which way do I look" (T-325); the owner asked for "where is
+    // it", which needs the sub-satellite points the payload now carries (ADR-0030).
+    const globe = within(panel).getByTestId("globe");
+    expect(globe.getAttribute("aria-label")).toMatch(/ISS/);
     // The text the panel always carried is still there.
     expect(within(panel).getByText("72°")).toBeTruthy();
+  });
+
+  it("says so rather than guessing when a pass carries no ground track", () => {
+    // A bearing cannot be turned into a position without the orbit, so an older pass gets
+    // an honest empty globe instead of an invented dot.
+    const noGround = {
+      ...SATELLITE,
+      // Strip the ground positions, the way a producer from before ADR-0030 would.
+      track: SATELLITE.track.map((sample) => ({
+        t_offset_s: sample.t_offset_s,
+        azimuth_deg: sample.azimuth_deg,
+        elevation_deg: sample.elevation_deg,
+      })),
+    };
+    renderSplit({ channel: "satellite", ambient: { ...EMPTY_AMBIENT, satellite: noGround } });
+    const panel = screen.getByTestId("wallboard-focus-panel");
+    expect(within(panel).queryByTestId("globe-sat")).toBeNull();
+    expect(within(panel).getByText(/cannot show where it is/i)).toBeTruthy();
   });
 
   it("lays out the poll question with per-option vote bars and a highlighted leader", () => {
