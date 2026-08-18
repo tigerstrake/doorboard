@@ -8,7 +8,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from aircraft.enrichment import AircraftEnricher, EnrichmentConfig
-from aircraft.provider import AircraftConfig, MockAircraftProvider, OpenSkyAircraftProvider
+from aircraft.provider import (
+    AdsbFiAircraftProvider,
+    AircraftConfig,
+    AircraftProvider,
+    MockAircraftProvider,
+    OpenSkyAircraftProvider,
+)
 from birdnet.provider import BirdnetConfig, BirdnetGoProvider, MockBirdProvider
 from food_recommendation.provider import FoodRecommendationProvider, MockFoodRecommendationProvider
 from food_recommendation.stanford.provider import StanfordDiningConfig, StanfordDiningProvider
@@ -154,22 +160,7 @@ def build_jobs(settings: Settings, *, force_mock: bool = False) -> list[Schedule
         )
 
     if settings.feature_aircraft:
-        aircraft = (
-            MockAircraftProvider()
-            if force_mock
-            else OpenSkyAircraftProvider(
-                AircraftConfig(
-                    observer_lat=settings.aircraft_observer_lat,
-                    observer_lon=settings.aircraft_observer_lon,
-                    bbox_half_size_lat=settings.aircraft_bbox_half_size_lat,
-                    bbox_half_size_lon=settings.aircraft_bbox_half_size_lon,
-                    opensky_client_id=settings.opensky_client_id,
-                    opensky_client_secret=settings.opensky_client_secret,
-                    opensky_url="https://opensky-network.org/api/states/all",
-                    poll_cooldown_seconds=settings.aircraft_poll_cooldown_seconds,
-                )
-            )
-        )
+        aircraft = build_aircraft_provider(settings, force_mock=force_mock)
         # One long-lived enricher per process so its TTL caches persist across
         # polls. force_mock keeps CI/dev fully offline (mock planes carry no
         # icao24, so the enricher would no-op anyway).
@@ -221,6 +212,46 @@ def build_jobs(settings: Settings, *, force_mock: bool = False) -> list[Schedule
             )
         )
     return jobs
+
+
+def build_aircraft_provider(settings: Settings, *, force_mock: bool = False) -> AircraftProvider:
+    """Pick the aircraft feed.
+
+    `auto` (the default) chooses OpenSky when credentials are configured and adsb.fi
+    otherwise. That is not a preference, it is a capability check: anonymous OpenSky allows a
+    few hundred requests per IP per day and answered HTTP 429 to every poll on the owner's
+    door — the API itself reporting a retry-after of nearly five hours. No polling cadence
+    fixes that, so an unconfigured door needs a feed that will answer.
+
+    OpenSky stays preferred once credentials exist: it is global and community-run rather than
+    dependent on a single aggregator.
+    """
+    if force_mock:
+        return MockAircraftProvider()
+
+    config = AircraftConfig(
+        observer_lat=settings.aircraft_observer_lat,
+        observer_lon=settings.aircraft_observer_lon,
+        bbox_half_size_lat=settings.aircraft_bbox_half_size_lat,
+        bbox_half_size_lon=settings.aircraft_bbox_half_size_lon,
+        opensky_client_id=settings.opensky_client_id,
+        opensky_client_secret=settings.opensky_client_secret,
+        opensky_url="https://opensky-network.org/api/states/all",
+        poll_cooldown_seconds=settings.aircraft_poll_cooldown_seconds,
+        radius_nm=settings.aircraft_radius_nm,
+    )
+
+    choice = (settings.aircraft_provider or "auto").strip().lower()
+    if choice == "auto":
+        choice = "opensky" if settings.opensky_client_id else "adsbfi"
+    if choice == "opensky":
+        logger.info("Using OpenSkyAircraftProvider")
+        return OpenSkyAircraftProvider(config)
+    if choice == "adsbfi":
+        logger.info("Using AdsbFiAircraftProvider (no OpenSky credentials configured)")
+        return AdsbFiAircraftProvider(config)
+    msg = f"unknown AIRCRAFT_PROVIDER {settings.aircraft_provider!r}"
+    raise ValueError(msg)
 
 
 def build_food_provider(

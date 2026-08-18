@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     aircraft_bbox_half_size_lat: float = Field(default=0.25, alias="AIRCRAFT_BBOX_HALF_SIZE_LAT")
     aircraft_bbox_half_size_lon: float = Field(default=0.25, alias="AIRCRAFT_BBOX_HALF_SIZE_LON")
     aircraft_poll_cooldown_seconds: int = Field(default=30, alias="AIRCRAFT_POLL_COOLDOWN_SECONDS")
+    # Which feed to ask. "auto" is OpenSky when credentials are configured and adsb.fi
+    # otherwise, because anonymous OpenSky answers 429 to every poll and no cadence fixes that.
+    aircraft_provider: str = Field(default="auto", alias="AIRCRAFT_PROVIDER")
+    aircraft_radius_nm: int = Field(default=50, alias="AIRCRAFT_RADIUS_NM", gt=0)
     # Best-effort external enrichment (adsbdb/planespotters) of the nearest few
     # planes. Default on; a total outage still emits the basic OpenSky summary.
     aircraft_enrichment_enabled: bool = Field(default=True, alias="AIRCRAFT_ENRICHMENT_ENABLED")
