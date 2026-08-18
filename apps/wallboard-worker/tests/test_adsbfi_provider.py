@@ -54,8 +54,15 @@ REAL_RESPONSE = {
         {"hex": "bbb222", "flight": "NOPOS  ", "alt_baro": 30000, "track": 90},
         # On the ground but reporting a *numeric* altitude — near sea level it can read
         # negative. Seen live: an Asiana 747 at "-75 ft" listed among the overhead aircraft.
-        {"hex": "ccc333", "flight": "AIH283 ", "lat": 37.6188, "lon": -122.3750,
-         "alt_baro": -75, "track": 297, "gs": 12.0},
+        {
+            "hex": "ccc333",
+            "flight": "AIH283 ",
+            "lat": 37.6188,
+            "lon": -122.3750,
+            "alt_baro": -75,
+            "track": 297,
+            "gs": 12.0,
+        },
         {
             "hex": "a24a82",
             "flight": "FDX1885 ",
