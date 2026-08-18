@@ -145,3 +145,69 @@ def test_malformed_envelope_is_rejected_not_crashed() -> None:
 
     assert response.status_code == 422
     assert state.machine.state == SessionState.IDLE
+
+
+# ---------------------------------------------------------------------------
+# Why an identity expired decides whether the name comes off the screen (ADR-0029)
+# ---------------------------------------------------------------------------
+
+
+def _expired_event(reason: str | None) -> dict[str, Any]:
+    event = _event("vision.identity_expired")
+    event["payload"]["person_id"] = "prs_alex"
+    if reason is None:
+        event["payload"].pop("reason", None)
+    else:
+        event["payload"]["reason"] = reason
+    return event
+
+
+def _recognise_alex() -> None:
+    state.machine.handle_identity_stable(
+        person_id="prs_alex",
+        display_name="Alex",
+        profile_id="blue_wave",
+        consent_version="v3",
+    )
+    assert state.identity.current() is not None
+
+
+def test_a_face_leaving_the_frame_does_not_drop_the_held_name() -> None:
+    # Faces leave frame constantly while someone stands at the doorpad looking down at it;
+    # ADR-0020 exists because clearing on that made the greeting flicker off mid-visit.
+    client = TestClient(app)
+    _recognise_alex()
+
+    response = client.post("/internal/events", json=_expired_event("expired"), headers=_auth())
+    assert response.status_code == 202
+
+    held = state.identity.current()
+    assert held is not None
+    assert held.display_name == "Alex"
+
+
+def test_an_event_with_no_reason_is_treated_as_the_routine_case() -> None:
+    # An older door omits the field. Failing toward "keep the name" is correct: the deletion
+    # paths clear explicitly, so the default must be the harmless one.
+    client = TestClient(app)
+    _recognise_alex()
+
+    response = client.post("/internal/events", json=_expired_event(None), headers=_auth())
+    assert response.status_code == 202
+    assert state.identity.current() is not None
+
+
+@pytest.mark.parametrize("reason", ["admin", "privacy_mode"])
+def test_unenrollment_or_privacy_mode_clears_the_name_over_the_wire(reason: str) -> None:
+    """The deletion promise, end to end through the real endpoint.
+
+    Before this, unenrolling someone left their name on the door until an unrelated timer
+    lapsed — up to 33 s idle, or two minutes mid-interaction — while the door tells visitors
+    in as many words that removal is immediate.
+    """
+    client = TestClient(app)
+    _recognise_alex()
+
+    response = client.post("/internal/events", json=_expired_event(reason), headers=_auth())
+    assert response.status_code == 202
+    assert state.identity.current() is None, f"{reason} left the name held"

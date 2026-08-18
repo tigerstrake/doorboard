@@ -383,10 +383,20 @@ class DoorApiState:
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "vision.identity_expired":
             payload = event.payload
-            # Deliberately does NOT drop the held identity (ADR-0020). This fires when
-            # door-visiond's 2.5 s cache lapses — i.e. a face left the frame, which
-            # happens constantly while someone stands at the doorpad looking down at it.
-            # Clearing here would reinstate the bug this holder exists to fix.
+            # Whether to drop the held identity depends on *why* it expired (ADR-0029).
+            #
+            # "expired" (or an older producer sending no reason at all) means door-visiond's
+            # 2.5 s cache lapsed — a face left the frame, which happens constantly while
+            # someone stands at the doorpad looking down at it. Clearing on that would
+            # reinstate the bug this holder exists to fix (ADR-0020).
+            #
+            # "admin" and "privacy_mode" are the opposite: the person was unenrolled or
+            # recognition was switched off. Their face data is already gone, and leaving
+            # their name on the screen until an unrelated timer lapses — up to 33 s idle, or
+            # two minutes mid-interaction — contradicts the deletion promise this door makes
+            # to visitors in as many words (ARCHITECTURE.md §9, ADR-0009).
+            if payload.reason in ("admin", "privacy_mode"):
+                self.identity.forget_person(payload.person_id)
             changed = self.machine.handle_identity_expired(person_id=payload.person_id)
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "vision.privacy_mode_changed":

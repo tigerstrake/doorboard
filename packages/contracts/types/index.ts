@@ -77,6 +77,7 @@ export interface VisionIdentityStablePayload {
 
 export interface VisionIdentityExpiredPayload {
   person_id: string;
+  reason?: "expired" | "admin" | "privacy_mode" | null;
 }
 
 export interface VisionPrivacyModeChangedPayload {

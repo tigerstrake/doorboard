@@ -249,6 +249,20 @@ class VisionIdentityStablePayload(StrictModel):
 
 class VisionIdentityExpiredPayload(StrictModel):
     person_id: str
+    # Why the identity went away (ADR-0029). door-visiond has always known this and dropped
+    # it here, which left the consumer unable to tell two very different facts apart:
+    #
+    #   "expired"      — the 2.5 s cache lapsed because the face left frame. Routine: it
+    #                    happens constantly while someone stands at the doorpad looking down
+    #                    at it, and ADR-0020 requires the held name to survive it.
+    #   "admin"        — the person was unenrolled. Their face data is gone and their name
+    #                    must come off the screen now, not when a timer happens to lapse.
+    #   "privacy_mode" — recognition was switched off (ADR-0009 §4).
+    #
+    # Optional, so an older producer still validates; a consumer that sees None must assume
+    # the routine case, which is the safe default — it keeps the name up rather than
+    # flickering it off, and the deletion paths below are the ones that explicitly clear.
+    reason: Literal["expired", "admin", "privacy_mode"] | None = None
 
 
 class VisionPrivacyModeChangedPayload(StrictModel):
