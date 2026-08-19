@@ -8,6 +8,7 @@ machine, and the route cannot be used to assert anything else about the door.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Generator
 from typing import Any
@@ -211,3 +212,61 @@ def test_unenrollment_or_privacy_mode_clears_the_name_over_the_wire(reason: str)
     response = client.post("/internal/events", json=_expired_event(reason), headers=_auth())
     assert response.status_code == 202
     assert state.identity.current() is None, f"{reason} left the name held"
+
+
+# ---------------------------------------------------------------------------
+# media.storage_status: emitted for months, delivered nowhere (T-337)
+# ---------------------------------------------------------------------------
+
+
+def test_storage_status_is_accepted_and_broadcast() -> None:
+    """door-ui subscribes to this and had no transport carrying it.
+
+    door-api forwards session events *to* door-media and nothing came back, so the wallboard's
+    capacity card read "Waiting for a media.storage_status update; no capacity is being
+    guessed." indefinitely — honest, and permanently uninformative.
+    """
+    client = TestClient(app)
+    before = state.broadcast.client_count
+    queue = state.broadcast.make_client_queue()
+    try:
+        event = _event("media.storage_status")
+        response = client.post("/internal/events", json=event, headers=_auth())
+        assert response.status_code == 202
+
+        # Drain the snapshot, then look for the delta.
+        seen: list[dict[str, Any]] = []
+        while not queue.empty():
+            seen.append(json.loads(queue.get_nowait()))
+        deltas = [m for m in seen if m.get("type") == "delta"]
+        types = [m["event"]["type"] for m in deltas]
+        assert "media.storage_status" in types, "it was accepted but never reached /ws"
+    finally:
+        state.broadcast.remove_client(queue)
+        assert state.broadcast.client_count == before
+
+
+def test_the_session_machine_has_no_opinion_about_disk_space() -> None:
+    # Pure pass-through: capacity telemetry must not move the door's state machine.
+    client = TestClient(app)
+    before = state.machine.state
+    response = client.post("/internal/events", json=_event("media.storage_status"), headers=_auth())
+    assert response.status_code == 202
+    assert response.json()["changed"] is False
+    assert state.machine.state == before
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    ["media.recording_finalized", "media.retention_deleted", "door.button_pressed"],
+)
+def test_the_route_stays_narrow(event_type: str) -> None:
+    """Widened by one named type, not by prefix.
+
+    The other media events assert that a recording exists or was deleted — a claim about
+    durable state. And the door's own inputs stay on the ESP32 link, which is the trust
+    boundary that gives them meaning.
+    """
+    client = TestClient(app)
+    response = client.post("/internal/events", json=_event(event_type), headers=_auth())
+    assert response.status_code == 403

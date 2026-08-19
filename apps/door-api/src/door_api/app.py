@@ -411,6 +411,12 @@ class DoorApiState:
         elif event.type == "door.contact_changed":
             payload = event.payload
             changed = self.machine.handle_contact_changed(state=payload.state)
+        elif event.type == "media.storage_status":
+            # Pure pass-through to /ws. The session machine has no opinion about disk space,
+            # but door-ui subscribes to this and had no way to receive it — the capacity card
+            # read "Waiting for a media.storage_status update" indefinitely because door-media
+            # emitted it into a queue nothing outside that process drained.
+            self.broadcast.send_delta(event.model_dump(mode="json"))
         if changed or event.type.startswith("vision."):
             self.broadcast.update_snapshot(self.session_snapshot_dict())
         return changed
@@ -1018,6 +1024,20 @@ class WallboardFocusBody(BaseModel):
     channel: str
 
 
+# Non-``vision.*`` events this route also accepts, named one at a time.
+#
+# ``media.storage_status`` is here because door-media emits it every 30 s, door-ui *subscribes*
+# to it, and nothing carried it between the two: door-api forwards session events *to*
+# door-media and nothing comes back, so the capacity card sat on "Waiting for a
+# media.storage_status update; no capacity is being guessed." permanently. Same shape as the
+# greeting bug this route was created to fix.
+#
+# Listed rather than allowing ``media.*`` wholesale: the other media events assert that a
+# recording exists or was deleted, which is a claim about durable state. Read-only capacity
+# telemetry is not.
+_INTERNAL_EVENT_TYPES = frozenset({"media.storage_status"})
+
+
 # Focusable wallboard tiles — kept in lockstep with the ``WallboardFocusChannel``
 # ids in apps/door-ui/src/wallboardChannelModel.ts. ``"ambient"`` (return to the
 # default grid) is accepted by the endpoint but is not itself a focus channel.
@@ -1176,9 +1196,11 @@ async def internal_events(payload: dict[str, Any]) -> dict[str, Any]:
 
     Narrow on purpose:
 
-    - **``vision.*`` only.** The route can never be used to fake a button press, a
-      contact change, or a session transition — the door's own inputs stay on the
-      ESP32 link, which is the trust boundary that gives them meaning.
+    - **``vision.*``, plus the named exceptions in ``_INTERNAL_EVENT_TYPES``.** The route
+      can never be used to fake a button press, a contact change, or a session transition —
+      the door's own inputs stay on the ESP32 link, which is the trust boundary that gives
+      them meaning. Additions are listed one type at a time rather than by prefix, so
+      widening this is always a deliberate act.
     - **Token required, 503 when unset.** An open identity ingest would let anything
       that can reach door-api assert who is standing at the door, and identity is
       what personalisation reads. Loopback binding is not the control here: the
@@ -1192,7 +1214,7 @@ async def internal_events(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid event envelope"
         ) from exc
-    if not event.type.startswith("vision."):
+    if event.type not in _INTERNAL_EVENT_TYPES and not event.type.startswith("vision."):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"event type {event.type} is not accepted on this route",

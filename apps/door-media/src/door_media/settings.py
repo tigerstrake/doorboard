@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     # ── bind ──────────────────────────────────────────────────────────────────
     bind: str = Field(default="127.0.0.1:8082", alias="DOOR_MEDIA_BIND")
 
+    # Where to send media.storage_status so door-ui's capacity card can read it. Same two
+    # settings door-visiond uses for its identity forwarder — one loopback hop, one shared
+    # token, no second convention. Empty token disables forwarding rather than failing:
+    # capacity telemetry on a screen is not worth refusing to start over.
+    door_api_base_url: str = Field(default="http://127.0.0.1:8080", alias="DOOR_API_BASE_URL")
+    door_api_internal_token: str = Field(default="", alias="DOOR_API_INTERNAL_EVENT_TOKEN")
+
     # ── media mode ────────────────────────────────────────────────────────────
     # "mock" is the CI/dev-laptop path; "mediamtx" is the production Pi path.
     media_mode: str = Field(default="mock", alias="MEDIA_MODE")

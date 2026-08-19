@@ -50,6 +50,7 @@ from door_media.emitter import (
     emit_storage_status,
     emit_thumbnail_ready,
 )
+from door_media.event_forwarder import EventForwarder, HttpEventTransport
 from door_media.settings import Settings
 
 logger = logging.getLogger("door_media.service")
@@ -87,6 +88,7 @@ class RecordingService:
         self._review_photos: dict[UUID, CapturedPhoto] = {}
         self._retention_task: asyncio.Task[None] | None = None
         self._storage_task: asyncio.Task[None] | None = None
+        self._event_forwarder: EventForwarder | None = None
         self._trace_id = uuid7()  # service-level trace; per-session traces override
 
     # ------------------------------------------------------------------
@@ -105,10 +107,28 @@ class RecordingService:
         self._storage_task = asyncio.create_task(
             self._storage_status_loop(), name="storage-status-loop"
         )
+
+        # Ship storage telemetry to door-api so door-ui's capacity card has something to read.
+        # Emitting it was never the missing part: nothing carried it out of this process, so
+        # the card said "Waiting for a media.storage_status update" indefinitely.
+        if self._settings.door_api_internal_token:
+            self._event_forwarder = EventForwarder(
+                HttpEventTransport(
+                    base_url=self._settings.door_api_base_url,
+                    token=self._settings.door_api_internal_token,
+                )
+            )
+            await self._event_forwarder.start()
+        else:
+            logger.info("storage_status_forwarding_disabled_no_token")
+
         logger.info("recording_service_started")
 
     async def stop(self) -> None:
         """Cancel background tasks gracefully."""
+        if self._event_forwarder is not None:
+            await self._event_forwarder.stop()
+            self._event_forwarder = None
         for task in [self._retention_task, self._storage_task]:
             if task:
                 task.cancel()
