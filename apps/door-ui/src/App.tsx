@@ -2485,7 +2485,7 @@ export function App() {
     if (doorPadScreen === "home") {
       return (
         <div
-          className="doorpad-view db-app-theme doorpad-enter doorpad-enter--back"
+          className="doorpad-view doorpad-view--home db-app-theme doorpad-enter doorpad-enter--back"
           ref={doorPadFocusRef}
           tabIndex={-1}
           aria-label="DoorPad home"

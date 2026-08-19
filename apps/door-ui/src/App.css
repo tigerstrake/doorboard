@@ -3179,8 +3179,14 @@ input:focus-visible {
   /* Fill the panel rather than floating in it. Centring left ~300px of dead space
      above and below the grid on a 600px screen: on a 7" touchscreen that space should
      be touch target, not padding. The grid takes the remaining height and its rows
-     stretch, so the tiles get as large as the screen allows. */
-  .doorpad-view {
+     stretch, so the tiles get as large as the screen allows.
+
+     Scoped to the *home* screen. `.doorpad-view` is the shared wrapper for home and for
+     every sub-screen, so an unscoped flex-start also overrode the `safe center` the
+     2026-07-18 kiosk fix put there specifically so sub-screens "never clip off the top" —
+     which pinned the live preview to the top edge of the ringing screen with a 170 px void
+     underneath it. Caught by the e2e snapshot, a month after the baseline was last taken. */
+  .doorpad-view--home {
     justify-content: flex-start;
   }
 
