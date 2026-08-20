@@ -412,11 +412,25 @@ class DoorApiState:
             payload = event.payload
             changed = self.machine.handle_contact_changed(state=payload.state)
         elif event.type == "media.storage_status":
-            # Pure pass-through to /ws. The session machine has no opinion about disk space,
-            # but door-ui subscribes to this and had no way to receive it — the capacity card
-            # read "Waiting for a media.storage_status update" indefinitely because door-media
-            # emitted it into a queue nothing outside that process drained.
-            self.broadcast.send_delta(event.model_dump(mode="json"))
+            # Pure pass-through, to two places. The session machine has no opinion about disk
+            # space, but two surfaces are waiting on this and neither could receive it:
+            #
+            #  - door-ui subscribes over /ws, and the capacity card read "Waiting for a
+            #    media.storage_status update" indefinitely.
+            #  - Home Assistant's "Doorboard Sync Status" entity reads
+            #    `doorboard/media/storage_status`, which control-plane-api only publishes for
+            #    events it has actually ingested — so the entity sat at unknown.
+            #
+            # The sync outbox is the route off the door (door-sync -> control plane -> MQTT
+            # fan-out), and it is durable and retrying, which suits telemetry that is dull but
+            # should not silently stop. Safe to leave the door: free bytes, queue depth, oldest
+            # unsynced age and a recording-allowed flag carry nothing personal, so none of
+            # ARCHITECTURE.md §9's constraints apply.
+            as_dict = event.model_dump(mode="json")
+            self.broadcast.send_delta(as_dict)
+            dropped = self.store.enqueue_sync_event(as_dict)
+            if dropped:
+                self.sync_forward_errors += dropped
         if changed or event.type.startswith("vision."):
             self.broadcast.update_snapshot(self.session_snapshot_dict())
         return changed

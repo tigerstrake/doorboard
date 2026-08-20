@@ -9,6 +9,7 @@ machine, and the route cannot be used to assert anything else about the door.
 from __future__ import annotations
 
 import json
+import time
 import os
 from collections.abc import Generator
 from typing import Any
@@ -270,3 +271,40 @@ def test_the_route_stays_narrow(event_type: str) -> None:
     client = TestClient(app)
     response = client.post("/internal/events", json=_event(event_type), headers=_auth())
     assert response.status_code == 403
+
+
+def test_storage_status_also_leaves_the_door_for_home_assistant() -> None:
+    """Two surfaces wait on this event, and it has to reach both.
+
+    door-ui reads it over /ws. Home Assistant's "Doorboard Sync Status" entity reads
+    `doorboard/media/storage_status`, which control-plane-api publishes only for events it has
+    ingested — so the entity sat at unknown until this was queued for the sync outbox
+    (door-sync -> control plane -> MQTT fan-out).
+    """
+    client = TestClient(app)
+    drained_before = 0
+    while state.store.next_sync_event(time.time()) is not None:
+        drained_before += 1
+
+    response = client.post("/internal/events", json=_event("media.storage_status"), headers=_auth())
+    assert response.status_code == 202
+
+    queued = state.store.next_sync_event(time.time())
+    assert queued is not None, "nothing was queued for the control plane"
+    assert queued.event["type"] == "media.storage_status"
+    assert "free_bytes" in queued.event["payload"]
+
+
+def test_it_carries_nothing_personal_off_the_door() -> None:
+    # ARCHITECTURE.md §9: what leaves the door matters. Capacity telemetry is dull by design,
+    # and this pins that it stays that way if the payload ever grows.
+    client = TestClient(app)
+    while state.store.next_sync_event(time.time()) is not None:
+        pass
+    client.post("/internal/events", json=_event("media.storage_status"), headers=_auth())
+
+    queued = state.store.next_sync_event(time.time())
+    assert queued is not None
+    allowed = {"free_bytes", "queue_depth", "oldest_unsynced_s", "recording_allowed"}
+    unexpected = set(queued.event["payload"]) - allowed
+    assert not unexpected, f"new fields left the door unreviewed: {sorted(unexpected)}"
