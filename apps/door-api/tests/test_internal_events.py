@@ -9,8 +9,8 @@ machine, and the route cannot be used to assert anything else about the door.
 from __future__ import annotations
 
 import json
-import time
 import os
+import time
 from collections.abc import Generator
 from typing import Any
 
