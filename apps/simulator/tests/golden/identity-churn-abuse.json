@@ -11,7 +11,9 @@
     {
       "monotonic_ms": 100,
       "payload": {
+        "accent_color": null,
         "confidence": 0.93,
+        "consent_version": null,
         "display_name": "Alice",
         "expires_at": "2026-07-04T12:00:02.600000Z",
         "expires_at_monotonic_ms": 2600,
@@ -32,7 +34,8 @@
     {
       "monotonic_ms": 200,
       "payload": {
-        "person_id": "prs_1"
+        "person_id": "prs_1",
+        "reason": "expired"
       },
       "type": "vision.identity_expired"
     },
@@ -54,7 +57,9 @@
     {
       "monotonic_ms": 300,
       "payload": {
+        "accent_color": null,
         "confidence": 0.93,
+        "consent_version": null,
         "display_name": "Bob",
         "expires_at": "2026-07-04T12:00:02.800000Z",
         "expires_at_monotonic_ms": 2800,
@@ -75,7 +80,8 @@
     {
       "monotonic_ms": 400,
       "payload": {
-        "person_id": "prs_2"
+        "person_id": "prs_2",
+        "reason": "expired"
       },
       "type": "vision.identity_expired"
     },

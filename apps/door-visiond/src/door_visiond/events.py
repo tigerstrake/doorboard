@@ -52,6 +52,16 @@ def get_broadcast_queue() -> asyncio.Queue[DoorboardEvent]:
     return _broadcast_queue
 
 
+def reset_broadcast_queue() -> None:
+    """Drop the queue so the next call rebuilds it — for tests only.
+
+    An ``asyncio.Queue`` binds to the loop that first awaits it, so a module-global
+    one leaks across per-test event loops.
+    """
+    global _broadcast_queue  # noqa: PLW0603
+    _broadcast_queue = None
+
+
 def _base_fields(clock: Clock, door_id: str, trace_id: UUID) -> dict[str, Any]:
     return {
         "event_id": uuid7(),
@@ -84,12 +94,16 @@ def make_identity_stable(
     expires_at: datetime,
     expires_at_monotonic_ms: int,
     profile_id: str,
+    consent_version: str | None = None,
+    accent_color: str | None = None,
 ) -> VisionIdentityStableEvent:
     return VisionIdentityStableEvent(
         type="vision.identity_stable",
         payload=VisionIdentityStablePayload(
             person_id=person_id,
             display_name=display_name,
+            accent_color=accent_color,
+            consent_version=consent_version,
             confidence=confidence,
             expires_at=expires_at,
             expires_at_monotonic_ms=expires_at_monotonic_ms,
@@ -100,11 +114,16 @@ def make_identity_stable(
 
 
 def make_identity_expired(
-    *, clock: Clock, door_id: str, trace_id: UUID, person_id: str
+    *,
+    clock: Clock,
+    door_id: str,
+    trace_id: UUID,
+    person_id: str,
+    reason: str | None = None,
 ) -> VisionIdentityExpiredEvent:
     return VisionIdentityExpiredEvent(
         type="vision.identity_expired",
-        payload=VisionIdentityExpiredPayload(person_id=person_id),
+        payload=VisionIdentityExpiredPayload(person_id=person_id, reason=reason),
         **_base_fields(clock, door_id, trace_id),
     )
 

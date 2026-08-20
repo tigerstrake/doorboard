@@ -1,0 +1,22 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "option_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Option Id",
+      "type": "string"
+    },
+    "votes": {
+      "minimum": 0,
+      "title": "Votes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "option_id",
+    "votes"
+  ],
+  "title": "VisitorPollResult",
+  "type": "object"
+}

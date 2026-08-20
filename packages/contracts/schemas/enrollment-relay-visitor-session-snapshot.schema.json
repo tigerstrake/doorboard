@@ -1,0 +1,233 @@
+{
+  "$defs": {
+    "Base64Url": {
+      "maxLength": 1400000,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "OpaqueId": {
+      "pattern": "^[a-z]{3,6}_[A-Za-z0-9]{16,32}$",
+      "type": "string"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "VisitorActionOutcome": {
+      "additionalProperties": false,
+      "description": "Echoes back what became of one queued action, so the phone can confirm.",
+      "properties": {
+        "action_id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "entry_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entry Id"
+        },
+        "kind": {
+          "enum": [
+            "note",
+            "vote",
+            "deletion_request"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "status": {
+          "enum": [
+            "applied",
+            "rejected"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action_id",
+        "kind",
+        "status"
+      ],
+      "title": "VisitorActionOutcome",
+      "type": "object"
+    },
+    "VisitorPoll": {
+      "additionalProperties": false,
+      "properties": {
+        "options": {
+          "items": {
+            "$ref": "#/$defs/VisitorPollOption"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Options",
+          "type": "array"
+        },
+        "poll_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Poll Id",
+          "type": "string"
+        },
+        "question": {
+          "maxLength": 280,
+          "minLength": 1,
+          "title": "Question",
+          "type": "string"
+        }
+      },
+      "required": [
+        "poll_id",
+        "question",
+        "options"
+      ],
+      "title": "VisitorPoll",
+      "type": "object"
+    },
+    "VisitorPollOption": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "option_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Option Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "option_id",
+        "label"
+      ],
+      "title": "VisitorPollOption",
+      "type": "object"
+    },
+    "VisitorPollResult": {
+      "additionalProperties": false,
+      "properties": {
+        "option_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Option Id",
+          "type": "string"
+        },
+        "votes": {
+          "minimum": 0,
+          "title": "Votes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "option_id",
+        "votes"
+      ],
+      "title": "VisitorPollResult",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "What door-api pushes and a phone may read (ADR-0017 \u00a72 \u2014 binding allow-list).\n\nDeliberately *not* derived from the session machine's own object: every field\nis named here, so adding one is a visible, reviewable act rather than a\nside effect of a refactor upstream.",
+  "properties": {
+    "attributed_to": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Attributed To"
+    },
+    "expires_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "outcomes": {
+      "items": {
+        "$ref": "#/$defs/VisitorActionOutcome"
+      },
+      "maxItems": 16,
+      "title": "Outcomes",
+      "type": "array"
+    },
+    "poll": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VisitorPoll"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "poll_results": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/VisitorPollResult"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Poll Results"
+    },
+    "pushed_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "session_id": {
+      "$ref": "#/$defs/OpaqueId"
+    },
+    "session_token_sha256": {
+      "$ref": "#/$defs/Base64Url"
+    },
+    "state": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "State",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_token_sha256",
+    "session_id",
+    "state",
+    "expires_at",
+    "pushed_at"
+  ],
+  "title": "VisitorSessionSnapshot",
+  "type": "object"
+}

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -34,10 +35,19 @@ class Settings(BaseSettings):
     feature_birdnet: bool = Field(default=False, alias="FEATURE_BIRDNET")
     birdnet_url: str = Field(default="http://127.0.0.1:8080", alias="BIRDNET_URL")
     birdnet_confidence_threshold: float = Field(default=0.70, alias="BIRDNET_CONFIDENCE_THRESHOLD")
-    birdnet_species_filter: list[str] = Field(default_factory=list, alias="BIRDNET_SPECIES_FILTER")
+    # NoDecode: see the note on satellites_watchlist — an empty env value is not valid JSON,
+    # and pydantic-settings decodes complex types before validators get a look in.
+    birdnet_species_filter: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="BIRDNET_SPECIES_FILTER"
+    )
 
     feature_satellites: bool = Field(default=False, alias="FEATURE_SATELLITES")
-    satellites_watchlist: list[str] = Field(
+    # NoDecode because pydantic-settings JSON-decodes list-typed settings at the source,
+    # before any validator runs. An empty string is not valid JSON, so once the compose stack
+    # started passing every setting through, `SATELLITES_WATCHLIST=` crashed the worker on
+    # startup — a crash loop, not a bad default. The validators below accept the
+    # comma-separated form a human would actually write in .env.
+    satellites_watchlist: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["ISS (ZARYA)"], alias="SATELLITES_WATCHLIST"
     )
     satellites_observer_lat: float = Field(default=0.0, alias="SATELLITES_OBSERVER_LAT")
@@ -70,6 +80,10 @@ class Settings(BaseSettings):
     aircraft_bbox_half_size_lat: float = Field(default=0.25, alias="AIRCRAFT_BBOX_HALF_SIZE_LAT")
     aircraft_bbox_half_size_lon: float = Field(default=0.25, alias="AIRCRAFT_BBOX_HALF_SIZE_LON")
     aircraft_poll_cooldown_seconds: int = Field(default=30, alias="AIRCRAFT_POLL_COOLDOWN_SECONDS")
+    # Which feed to ask. "auto" is OpenSky when credentials are configured and adsb.fi
+    # otherwise, because anonymous OpenSky answers 429 to every poll and no cadence fixes that.
+    aircraft_provider: str = Field(default="auto", alias="AIRCRAFT_PROVIDER")
+    aircraft_radius_nm: int = Field(default=50, alias="AIRCRAFT_RADIUS_NM", gt=0)
     # Best-effort external enrichment (adsbdb/planespotters) of the nearest few
     # planes. Default on; a total outage still emits the basic OpenSky summary.
     aircraft_enrichment_enabled: bool = Field(default=True, alias="AIRCRAFT_ENRICHMENT_ENABLED")

@@ -28,12 +28,20 @@ class RecordingSender:
     def __init__(self) -> None:
         self.videos: list[dict[str, Any]] = []
         self.messages: list[dict[str, Any]] = []
+        self.photos: list[dict[str, Any]] = []
 
     def send_video(
         self, *, video: bytes, filename: str, caption: str, chat_ids: list[str] | None = None
     ) -> None:
         self.videos.append(
             {"video": video, "filename": filename, "caption": caption, "chat_ids": chat_ids}
+        )
+
+    def send_photo(
+        self, *, photo: bytes, filename: str, caption: str, chat_ids: list[str] | None = None
+    ) -> None:
+        self.photos.append(
+            {"photo": photo, "filename": filename, "caption": caption, "chat_ids": chat_ids}
         )
 
     def send_message(self, *, text: str, chat_ids: list[str] | None = None) -> None:

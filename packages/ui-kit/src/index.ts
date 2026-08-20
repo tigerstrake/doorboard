@@ -38,3 +38,6 @@ export { CrossfadeSwitch } from "./CrossfadeSwitch";
 export type { CrossfadeSwitchProps } from "./CrossfadeSwitch";
 
 export type { DoorboardEvent, HealthPayload, SessionState, PresenceLabel } from "@doorboard/contracts";
+
+export { PROFILE_COLORS, DEFAULT_ACCENT, profileAccent, accentInk } from "./profiles";
+export { warmQrEncoder, encodeQr, cachedQr } from "./qrCache";

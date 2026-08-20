@@ -195,8 +195,11 @@ services:
       FEATURE_PRINTER: ${FEATURE_PRINTER:-false}
       FEATURE_FOOD: ${FEATURE_FOOD:-false}
       BIRDNET_URL: ${BIRDNET_GO_URL:-http://bird-pi.local:8080}
-      OPENSKY_USERNAME: ${OPENSKY_CLIENT_ID:-}
-      OPENSKY_PASSWORD: ${OPENSKY_CLIENT_SECRET:-}
+      # OAuth2 client credentials. These were mapped onto OPENSKY_USERNAME/PASSWORD — the
+      # pre-OAuth2 basic-auth names the provider no longer reads — so filling them in had no
+      # effect and every poll stayed anonymous and rate-limited (HTTP 429).
+      OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID:-}
+      OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET:-}
       SATELLITES_OBSERVER_LAT: ${OBSERVER_LAT:-0}
       SATELLITES_OBSERVER_LON: ${OBSERVER_LON:-0}
       SATELLITES_OBSERVER_ELEVATION: ${OBSERVER_ALT_M:-0}
@@ -221,6 +224,33 @@ services:
       FOOD_USE_AI: ${FOOD_USE_AI:-false}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      # Job cadences and per-provider knobs. These are all settings wallboard-worker reads,
+      # and none of them were passed through: they sat in .env doing nothing. The aircraft
+      # cadence is the one that bit — stuck at its 30 s default, it burns OpenSky's anonymous
+      # daily quota in minutes and then every poll answers 429, which the wallboard showed as
+      # "No nearby aircraft" over a full sky. Defaults here mirror Settings' own.
+      WALLBOARD_AIRCRAFT_INTERVAL_S: ${WALLBOARD_AIRCRAFT_INTERVAL_S:-30.0}
+      AIRCRAFT_POLL_COOLDOWN_SECONDS: ${AIRCRAFT_POLL_COOLDOWN_SECONDS:-30}
+      AIRCRAFT_PROVIDER: ${AIRCRAFT_PROVIDER:-auto}
+      AIRCRAFT_RADIUS_NM: ${AIRCRAFT_RADIUS_NM:-50}
+      AIRCRAFT_BBOX_HALF_SIZE_LAT: ${AIRCRAFT_BBOX_HALF_SIZE_LAT:-0.25}
+      AIRCRAFT_BBOX_HALF_SIZE_LON: ${AIRCRAFT_BBOX_HALF_SIZE_LON:-0.25}
+      WALLBOARD_SATELLITE_INTERVAL_S: ${WALLBOARD_SATELLITE_INTERVAL_S:-3600.0}
+      SATELLITES_WATCHLIST: ${SATELLITES_WATCHLIST:-}
+      SATELLITES_MIN_ELEVATION: ${SATELLITES_MIN_ELEVATION:-10.0}
+      SATELLITES_TLE_URL: ${SATELLITES_TLE_URL:-https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle}
+      SATELLITES_TLE_CACHE_PATH: ${SATELLITES_TLE_CACHE_PATH:-/tmp/satellite_tle_cache.txt}
+      WALLBOARD_BIRD_INTERVAL_S: ${WALLBOARD_BIRD_INTERVAL_S:-300.0}
+      BIRDNET_CONFIDENCE_THRESHOLD: ${BIRDNET_CONFIDENCE_THRESHOLD:-0.70}
+      BIRDNET_SPECIES_FILTER: ${BIRDNET_SPECIES_FILTER:-}
+      WALLBOARD_PRINTER_INTERVAL_S: ${WALLBOARD_PRINTER_INTERVAL_S:-30.0}
+      OCTOPRINT_API_KEY: ${OCTOPRINT_API_KEY:-}
+      PRINTER_CAMERA_STREAM_URL: ${PRINTER_CAMERA_STREAM_URL:-}
+      WALLBOARD_FOOD_INTERVAL_S: ${WALLBOARD_FOOD_INTERVAL_S:-86400.0}
+      WALLBOARD_COLLAGE_INTERVAL_S: ${WALLBOARD_COLLAGE_INTERVAL_S:-86400.0}
+      FOOD_PREFERENCES_PATH: ${FOOD_PREFERENCES_PATH:-}
+      FOOD_RECOMMENDATION_CACHE_PATH: ${FOOD_RECOMMENDATION_CACHE_PATH:-/tmp/doorboard_food_recommendation_cache.json}
+      WALLBOARD_WORKER_HEARTBEAT_PATH: ${WALLBOARD_WORKER_HEARTBEAT_PATH:-/tmp/wallboard-worker-heartbeat}
 
   caddy:
     image: caddy:2-alpine

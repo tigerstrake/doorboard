@@ -15,7 +15,7 @@ from doorboard_simulator.clock import SimClock
 from doorboard_simulator.esp32 import FakeEsp32Transport
 from doorboard_simulator.events import EventFactory
 
-from .conftest import TEST_DIM, face
+from .conftest import CONSENT_VERSION, TEST_DIM, face
 
 
 class _CollectingEmitter(EventEmitter):
@@ -66,7 +66,7 @@ def _enroll_and_stabilize(
     svc.startup()
     result = svc.enroll(
         display_name="Alex",
-        consent_version="v1",
+        consent_version=CONSENT_VERSION,
         consent_confirmed=True,
         images=[seed],
         profile=_profile(),

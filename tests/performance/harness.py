@@ -139,20 +139,19 @@ async def _run_simulator_loop(
 
         # ----------------------------------------------------------------
         # 3. face_to_stable_identity
-        #    face_visible → identity_stable event creation.
+        #    Requires a camera, the snapshot reader's frame cadence and SCRFD +
+        #    ArcFace on the Hailo — not simulatable.
+        #    Sentinel 0.0 → "simulator N/A" in the report.
+        #
+        # This used to time `await face_visible()` then `await identity_stable()`,
+        # i.e. the construction of two event objects, and reported a p95 of 0.017 ms
+        # against a 600 ms budget. Every term the budget exists to bound — frame
+        # rate, detection, embedding, the stability window — lives outside the
+        # simulator, so the number could only ever read "pass". A budget that cannot
+        # fail is worse than one marked unmeasured: this path is verified on the
+        # door via door-visiond's own `face_to_identity_ms_p95`, and nowhere else.
         # ----------------------------------------------------------------
-        clock3 = SimClock(monotonic_ms=(i + 200) * 10_000)
-        events3 = EventFactory(clock3)
-        vision3 = FakeVisionPipeline(clock3, events3, outages)
-        person3 = PersonScript(
-            person_id=f"prs_face_{i}",
-            display_name="FaceUser",
-            profile_id=f"profile_face_{i}",
-        )
-        t0 = time.monotonic()
-        _ = await vision3.face_visible()
-        _ = await vision3.identity_stable(person3)
-        samples["face_to_stable_identity"].append((time.monotonic() - t0) * 1000.0)
+        samples["face_to_stable_identity"].append(0.0)
 
         # ----------------------------------------------------------------
         # 4. bell_to_recording_event

@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     # ── bind ──────────────────────────────────────────────────────────────────
     bind: str = Field(default="127.0.0.1:8082", alias="DOOR_MEDIA_BIND")
 
+    # Where to send media.storage_status so door-ui's capacity card can read it. Same two
+    # settings door-visiond uses for its identity forwarder — one loopback hop, one shared
+    # token, no second convention. Empty token disables forwarding rather than failing:
+    # capacity telemetry on a screen is not worth refusing to start over.
+    door_api_base_url: str = Field(default="http://127.0.0.1:8080", alias="DOOR_API_BASE_URL")
+    door_api_internal_token: str = Field(default="", alias="DOOR_API_INTERNAL_EVENT_TOKEN")
+
     # ── media mode ────────────────────────────────────────────────────────────
     # "mock" is the CI/dev-laptop path; "mediamtx" is the production Pi path.
     media_mode: str = Field(default="mock", alias="MEDIA_MODE")
@@ -99,8 +106,113 @@ class Settings(BaseSettings):
         default="visitor",
         alias="VISITOR_CAM_STREAM",
     )
+    # Which physical camera publishes the visitor stream. With two connected (ADR
+    # pending / T-314), the wide sensor frames the doorway and the narrow one is left
+    # to the face path, which wants pixels-on-face rather than coverage.
+    visitor_cam_index: int = Field(default=0, alias="VISITOR_CAM_INDEX", ge=0, le=7)
+
+    # Encode parameters. Defaults raised from 1280x720/2Mbps/baseline after measuring
+    # the door: see `_build_run_on_init` for why each one mattered.
+    video_width: int = Field(default=1920, alias="DOOR_MEDIA_VIDEO_WIDTH", ge=320)
+    video_height: int = Field(default=1080, alias="DOOR_MEDIA_VIDEO_HEIGHT", ge=240)
+    video_framerate: int = Field(default=25, alias="DOOR_MEDIA_VIDEO_FRAMERATE", ge=1, le=60)
+    video_bitrate_bps: int = Field(
+        default=6_000_000, alias="DOOR_MEDIA_VIDEO_BITRATE_BPS", ge=250_000
+    )
+    # Stays `baseline`, and not for a decoder's sake: `main`/`high` enable B-frames,
+    # and this pipeline copies rpicam-vid's elementary stream into RTSP with a synthetic
+    # framerate (`-f h264 -r N -c:v copy`), which has no real timestamps to reorder them
+    # against. Verified on the door: at `high` the path went `ready` with a publisher and
+    # every /snapshot still came back a placeholder, because the reader could not decode
+    # what was being published. The picture wins here are resolution, bitrate, the NoIR
+    # tuning file and autofocus — not the profile. Changing this needs the publish
+    # pipeline to carry real PTS first.
+    video_h264_profile: str = Field(default="baseline", alias="DOOR_MEDIA_VIDEO_H264_PROFILE")
+    video_h264_level: str = Field(default="4.2", alias="DOOR_MEDIA_VIDEO_H264_LEVEL")
+    # `continuous` keeps a visitor sharp as they approach. `manual` plus a fixed lens
+    # position is the alternative if hunting ever becomes visible on the stream.
+    video_autofocus_mode: str = Field(default="continuous", alias="DOOR_MEDIA_VIDEO_AUTOFOCUS_MODE")
+    # Empty means "libcamera default", which is wrong for a NoIR sensor: it applies the
+    # IR-cut-filter tuning and the picture comes out washed out. Set per sensor.
+    camera_tuning_file: str = Field(
+        default="/usr/share/libcamera/ipa/rpi/pisp/imx708_noir.json",
+        alias="DOOR_MEDIA_CAMERA_TUNING_FILE",
+    )
+
+    # Sensor orientation. This is not cosmetic: a bell-clip thumbnail pulled off the
+    # door came back upside down, which means every face the recogniser sees is inverted
+    # too. ArcFace embeddings are not rotation invariant, so an inverted face scores near
+    # nothing against upright enrollment photos -- an upside-down camera looks exactly
+    # like "recognition does not work". 0 or 180 only, per rpicam-vid.
+    video_rotation: int = Field(default=0, alias="DOOR_MEDIA_VIDEO_ROTATION")
+    video_hflip: bool = Field(default=False, alias="DOOR_MEDIA_VIDEO_HFLIP")
+    video_vflip: bool = Field(default=False, alias="DOOR_MEDIA_VIDEO_VFLIP")
+
+    # ── recognition camera (ADR-0023) ─────────────────────────────────────────
+    # The second CSI camera, used for faces only. -1 means "not present", which is the
+    # single-camera door: /snapshot/recognition then 404s rather than quietly serving the
+    # visitor camera, so door-visiond can tell a missing camera from an empty doorway.
+    #
+    # Read directly with `rpicam-vid --codec mjpeg` rather than through RTSP: the face
+    # path wants stills, so an H.264 encode (~90% of a core at 1080p) and a MediaMTX hop
+    # would buy it nothing. Smaller frames too — the detector downscales anyway, and the
+    # budget that matters is frames per second reaching it.
+    recognition_cam_index: int = Field(default=-1, alias="RECOGNITION_CAM_INDEX", ge=-1, le=7)
+    recognition_width: int = Field(default=1280, alias="DOOR_MEDIA_RECOGNITION_WIDTH", ge=320)
+    recognition_height: int = Field(default=720, alias="DOOR_MEDIA_RECOGNITION_HEIGHT", ge=240)
+    recognition_framerate: int = Field(
+        default=10, alias="DOOR_MEDIA_RECOGNITION_FRAMERATE", ge=1, le=30
+    )
+    recognition_rotation: int = Field(default=0, alias="DOOR_MEDIA_RECOGNITION_ROTATION")
+    recognition_hflip: bool = Field(default=False, alias="DOOR_MEDIA_RECOGNITION_HFLIP")
+    recognition_vflip: bool = Field(default=False, alias="DOOR_MEDIA_RECOGNITION_VFLIP")
+    # Its own tuning file: the two sensors are different variants (imx708_noir vs
+    # imx708_wide_noir) and the wrong one washes the picture out.
+    recognition_tuning_file: str = Field(
+        default="/usr/share/libcamera/ipa/rpi/pisp/imx708_noir.json",
+        alias="DOOR_MEDIA_RECOGNITION_TUNING_FILE",
+    )
+
     # rpicam-vid segment length (seconds) for the rolling recording buffer.
     segment_s: int = Field(default=2, alias="DOOR_MEDIA_SEGMENT_S")
+
+    @property
+    def recognition_cam_present(self) -> bool:
+        return self.recognition_cam_index >= 0
+
+    @field_validator("recognition_rotation")
+    @classmethod
+    def _validate_recognition_rotation(cls, v: int) -> int:
+        if v not in {0, 180}:
+            msg = f"DOOR_MEDIA_RECOGNITION_ROTATION must be 0 or 180, got {v}"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("video_rotation")
+    @classmethod
+    def _validate_rotation(cls, v: int) -> int:
+        if v not in {0, 180}:
+            msg = f"DOOR_MEDIA_VIDEO_ROTATION must be 0 or 180, got {v}"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("video_h264_profile")
+    @classmethod
+    def _validate_profile(cls, v: str) -> str:
+        allowed = {"baseline", "main", "high"}
+        if v not in allowed:
+            msg = f"DOOR_MEDIA_VIDEO_H264_PROFILE must be one of {sorted(allowed)}, got {v!r}"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("video_autofocus_mode")
+    @classmethod
+    def _validate_autofocus(cls, v: str) -> str:
+        allowed = {"default", "manual", "auto", "continuous"}
+        if v not in allowed:
+            msg = f"DOOR_MEDIA_VIDEO_AUTOFOCUS_MODE must be one of {sorted(allowed)}, got {v!r}"
+            raise ValueError(msg)
+        return v
 
     # ── snapshot (GET /snapshot) ──────────────────────────────────────────────
     # A single current JPEG frame grabbed read-only from the live RTSP stream,
@@ -119,6 +231,58 @@ class Settings(BaseSettings):
         alias="DOOR_MEDIA_SNAPSHOT_JPEG_QUALITY",
         ge=2,
         le=31,
+    )
+
+    # Continuous frame reader for the recognition path.
+    #
+    # Spawning one ffmpeg per snapshot costs a process start, an RTSP handshake and
+    # a wait for the next keyframe: measured at ~2.0s per frame on the door Pi. That
+    # made door-visiond run at 0.5 fps against an 11ms inference budget, so a person
+    # walking up contributed a couple of frames and recognition never stabilised —
+    # the face path was spending 99.5% of its time waiting for ffmpeg to start.
+    #
+    # Instead one long-lived ffmpeg decodes the same RTSP stream to MJPEG and the
+    # newest frame is kept in memory, so /snapshot answers from RAM. Still a
+    # read-only consumer: the publisher and MediaMTX recording are untouched.
+    #
+    # ``reader_fps`` bounds the decode cost; there is no point producing frames
+    # faster than visiond's frame_interval_ms consumes them. ``max_age_s`` is how
+    # stale a cached frame may be before /snapshot falls back to a one-shot grab —
+    # generous enough to cover a reader restart, short enough that recognition never
+    # sees a face that has already walked away. ``idle_stop_s`` stops the reader when
+    # nothing is asking, so privacy mode and an empty doorway cost no CPU.
+    snapshot_reader_enabled: bool = Field(
+        default=True,
+        alias="DOOR_MEDIA_SNAPSHOT_READER_ENABLED",
+    )
+    snapshot_reader_fps: float = Field(
+        default=10.0,
+        alias="DOOR_MEDIA_SNAPSHOT_READER_FPS",
+        gt=0,
+        le=30,
+    )
+    snapshot_max_age_s: float = Field(
+        default=1.0,
+        alias="DOOR_MEDIA_SNAPSHOT_MAX_AGE_S",
+        gt=0,
+    )
+    snapshot_reader_idle_stop_s: float = Field(
+        default=30.0,
+        alias="DOOR_MEDIA_SNAPSHOT_READER_IDLE_STOP_S",
+        gt=0,
+    )
+
+    # How long GET /snapshot/recognition may wait for the reader's *first* frame.
+    #
+    # rpicam-vid needs ~1-2 s to open the sensor, and `request()` starts the reader then
+    # returns immediately. door-visiond polls every 100 ms and gives up after three
+    # failures, so without a wait here it kills its own backend 300 ms into a cold start
+    # it caused. Comfortably longer than the observed spin-up, and only the cold path
+    # pays it.
+    recognition_first_frame_wait_s: float = Field(
+        default=4.0,
+        alias="DOOR_MEDIA_RECOGNITION_FIRST_FRAME_WAIT_S",
+        gt=0,
     )
 
     # ── audio ─────────────────────────────────────────────────────────────────

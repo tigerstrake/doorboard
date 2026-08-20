@@ -130,11 +130,15 @@ def test_run_food_recommendation_falls_back_to_yesterday_cache(
 
     ingest_call = mock_post.mock_calls[1]
     payload = ingest_call.kwargs["json"]["events"][0]["payload"]
+    # A cache entry written before ADR-0026 has no structured hall, and the fields are
+    # emitted as null rather than omitted — the consumer's title fallback covers it.
     assert payload == {
         "date": "2026-07-07",
         "title": "Yesterday's noodles",
         "detail": "Cached fallback",
         "provider": "mock",
+        "hall": None,
+        "backup_hall": None,
     }
 
 

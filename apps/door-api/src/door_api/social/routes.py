@@ -18,6 +18,7 @@ referenced in the PR description.
 
 from __future__ import annotations
 
+import os
 import secrets
 from collections.abc import Callable
 from uuid import UUID, uuid4
@@ -108,13 +109,23 @@ class AdminPollCreateRequest(BaseModel):
     options: list[str]
 
 
-def _guestbook_to_public_dict(entry: GuestbookEntry) -> dict:
-    return {
+def _guestbook_to_public_dict(entry: GuestbookEntry, *, display_name: str | None = None) -> dict:
+    """Public shape of a guestbook entry.
+
+    ``person_id`` is deliberately NOT included: it is an internal opaque id
+    (ADR-0005 §8) and a public route has no use for it. The recognised author's
+    *name* appears only when the household has left public attribution on, since
+    the wallboard faces a shared hallway (ADR-0018 §3, E-24).
+    """
+    payload = {
         "id": entry.id,
         "text": entry.text,
         "author_label": entry.author_label,
         "created_at": entry.created_at,
     }
+    if display_name is not None and _attribution_is_public():
+        payload["attributed_to"] = display_name
+    return payload
 
 
 def _guestbook_to_admin_dict(entry: GuestbookEntry) -> dict:
@@ -143,6 +154,33 @@ def _checkin_to_dict(checkin: Checkin) -> dict:
         "label": checkin.label,
         "photo_recording_id": checkin.photo_recording_id,
         "created_at": checkin.created_at,
+    }
+
+
+def _attribution_is_public() -> bool:
+    """Whether public surfaces may show an attributed real name (ADR-0018 §3).
+
+    A flag rather than hardcoded behaviour because the wallboard faces a shared
+    hallway and this is a matter of household taste that will change. Default on,
+    per the owner's request for names wherever they make sense.
+    """
+    return os.environ.get("DOOR_UI_PUBLIC_ATTRIBUTION", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+
+def _frequency_stat_is_enabled() -> bool:
+    """Whether the "who was here most" ranking is exposed at all.
+
+    Default OFF at the owner's explicit request ("don't say who was there the
+    most for now"). Flagged rather than deleted so it can come back.
+    """
+    return os.environ.get("SOCIAL_FREQUENCY_STAT_ENABLED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
     }
 
 
@@ -211,6 +249,9 @@ def build_social_router(
                 ip=_client_ip(request),
                 session_token=session_key,
                 trace_id=trace_id,
+                # Derived from the door's own recognition, never from client
+                # input, and only when consent covers it (ADR-0018 §2).
+                person_id=get_current_person_id(),
             )
         except (RateLimitedError, SanitizationError) as exc:
             _raise_for_domain_error(exc, trace_id)
@@ -260,6 +301,10 @@ def build_social_router(
                 ip=_client_ip(request),
                 session_token=session_key,
                 trace_id=trace_id,
+                # An attributed vote is not a secret ballot. The owner accepted
+                # that knowingly (ADR-0018 §2) and the surfaces disclose who they
+                # are voting as before the write (E-23).
+                person_id=get_current_person_id(),
             )
         except (RateLimitedError, NotFoundError, AlreadyVotedError, PollClosedError) as exc:
             _raise_for_domain_error(exc, trace_id)
@@ -298,6 +343,10 @@ def build_social_router(
 
     @router.get("/checkins/stats/most-frequent")
     def most_frequent_visitor() -> dict:
+        # Off by default at the owner's request; the route stays so enabling it is
+        # a config change rather than a redeploy (ADR-0018 §3).
+        if not _frequency_stat_is_enabled():
+            return {"stat": None}
         return {"stat": get_service().most_frequent_visitor_stat()}
 
     # ------------------------------------------------------------------

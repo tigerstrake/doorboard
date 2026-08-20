@@ -7,6 +7,7 @@ import logging.config
 import os
 
 import uvicorn
+from doorboard_observability.logging_json import json_logging_config
 
 
 def _bind() -> tuple[str, int]:
@@ -18,30 +19,7 @@ def _bind() -> tuple[str, int]:
 
 
 def _configure_logging() -> None:
-    logging.config.dictConfig(
-        {
-            "version": 1,
-            "disable_existing_loggers": False,
-            "formatters": {
-                "json": {
-                    "()": "logging.Formatter",
-                    "fmt": (
-                        '{"time":"%(asctime)s","level":"%(levelname)s",'
-                        '"service":"door-api","logger":"%(name)s",'
-                        '"message":"%(message)s"}'
-                    ),
-                }
-            },
-            "handlers": {
-                "stdout": {
-                    "class": "logging.StreamHandler",
-                    "stream": "ext://sys.stdout",
-                    "formatter": "json",
-                }
-            },
-            "root": {"level": "INFO", "handlers": ["stdout"]},
-        }
-    )
+    logging.config.dictConfig(json_logging_config("door-api"))
 
 
 def main() -> None:

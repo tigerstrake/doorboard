@@ -5,6 +5,7 @@ placeholder gate.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Generator
 
@@ -141,20 +142,77 @@ def test_vote_flow_end_to_end(client: TestClient, monkeypatch: pytest.MonkeyPatc
 # ---------------------------------------------------------------------------
 
 
-def test_checkin_create_and_stats(client: TestClient) -> None:
+def test_checkin_create_and_stats(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     # Simulate a real, server-side cached identity — the only legitimate
     # source of check-in attribution (vision.identity_stable equivalent).
+    # consent_version matters now: attribution is gated on it (ADR-0018 §2).
     state.machine.handle_identity_stable(
-        person_id="prs_alex", display_name="Alex", profile_id="blue_wave"
+        person_id="prs_alex",
+        display_name="Alex",
+        profile_id="blue_wave",
+        consent_version="v3",
     )
 
     resp = client.post("/checkins", json={"label": "Alex", "session_token": _visitor_token(client)})
     assert resp.status_code == 201
     assert resp.json()["person_id"] == "prs_alex"
 
+    # The frequency ranking is off by default at the owner's request, so this
+    # test opts in explicitly to exercise the stat itself.
+    monkeypatch.setenv("SOCIAL_FREQUENCY_STAT_ENABLED", "true")
     stats = client.get("/checkins/stats/most-frequent").json()["stat"]
     assert stats["person_id"] == "prs_alex"
     assert stats["count"] == 1
+
+
+def test_recognised_person_can_check_in_with_no_active_session(client: TestClient) -> None:
+    """The reported bug, end to end: "I tapped check in as Tiger and nothing happened".
+
+    ADR-0020 lets the recognised name outlive the approach session, so "Check in as
+    <name>" is reachable while the session is IDLE. Both halves of the token path have to
+    accept that state — minting *and* verification. Fixing only the mint turned a 422 into
+    a 401 and the button still did nothing, so this drives the whole HTTP path rather than
+    the two endpoints separately.
+    """
+    state.machine.handle_identity_stable(
+        person_id="prs_alex",
+        display_name="Alex",
+        profile_id="blue_wave",
+        consent_version="v3",
+    )
+    # The face leaves the frame — someone standing at the doorpad looking down at it. The
+    # approach session drops to IDLE; the held name deliberately survives (ADR-0020). This
+    # is the state the doorpad was in when the button did nothing.
+    state.machine.handle_identity_expired(person_id="prs_alex")
+    assert state.machine.snapshot().session_id is None
+    assert state.identity.current() is not None, "the name must outlive the session"
+
+    minted = client.get("/visitor-token")
+    assert minted.status_code == 200, "a held identity must be enough to mint a token"
+    token = minted.json()["token"]
+    assert token
+
+    resp = client.post("/checkins", json={"label": "Alex", "session_token": token})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["person_id"] == "prs_alex", "the check-in must be attributed"
+
+
+def test_visitor_token_is_refused_once_the_identity_is_forgotten(client: TestClient) -> None:
+    # The flip side: widening verification must not make tokens immortal. Once the door
+    # has forgotten the person, their token is worth nothing.
+    state.machine.handle_identity_stable(
+        person_id="prs_alex",
+        display_name="Alex",
+        profile_id="blue_wave",
+        consent_version="v3",
+    )
+    state.machine.handle_identity_expired(person_id="prs_alex")
+    token = client.get("/visitor-token").json()["token"]  # keyed on the interaction
+    state.identity.forget()
+
+    resp = client.post("/checkins", json={"label": "Alex", "session_token": token})
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"]["code"] == "inactive_visitor_session"
 
 
 def test_checkin_ignores_client_supplied_person_id(client: TestClient) -> None:
@@ -369,3 +427,129 @@ def test_hostile_guestbook_text_round_trips_safely(
     client.post(f"/admin/guestbook/{entry_id}/approve", headers=auth)
     listed = client.get("/guestbook").json()["entries"]
     assert listed[0]["text"] == hostile
+
+
+# ---------------------------------------------------------------------------
+# Attribution (ADR-0018 P-29, P-31, P-32)
+# ---------------------------------------------------------------------------
+
+
+def _recognise(consent_version: str | None) -> None:
+    """Put a recognised person in the session, as vision.identity_stable would."""
+    state.machine.handle_identity_stable(
+        person_id="prs_tiger",
+        display_name="Tiger",
+        profile_id="warm_amber",
+        consent_version=consent_version,
+    )
+
+
+def test_attribution_binds_the_recognised_person(client: TestClient) -> None:
+    """P-29: a write during a recognised session carries that person."""
+    _recognise("v3")
+    token = _visitor_token(client)
+
+    entry = client.post("/guestbook", json={"text": "Left a note", "session_token": token}).json()
+    stored = state.social_service.store.get_guestbook_entry(entry["id"])
+    assert stored is not None
+    assert stored.person_id == "prs_tiger"
+
+
+def test_an_unrecognised_visitor_is_not_attributed(client: TestClient) -> None:
+    """P-29 / E-25: recognition adds attribution; its absence changes nothing."""
+    token = _visitor_token(client)
+    entry = client.post(
+        "/guestbook", json={"text": "Anonymous note", "session_token": token}
+    ).json()
+
+    stored = state.social_service.store.get_guestbook_entry(entry["id"])
+    assert stored is not None
+    assert stored.person_id is None
+    # And the write itself succeeded — attribution is never a gate on writing.
+    assert entry["text"] == "Anonymous note"
+
+
+@pytest.mark.parametrize("version", ["v1", "v2", None, "", "banana"])
+def test_older_consent_is_not_attributed(client: TestClient, version: str | None) -> None:
+    """Someone enrolled before v3 agreed to a greeting, not to attribution.
+
+    Fails closed on unparseable versions rather than opting them in.
+    """
+    _recognise(version)
+    token = _visitor_token(client)
+
+    entry = client.post(
+        "/guestbook", json={"text": f"note under {version}", "session_token": token}
+    ).json()
+    stored = state.social_service.store.get_guestbook_entry(entry["id"])
+    assert stored is not None
+    assert stored.person_id is None, f"consent {version!r} must not be attributed"
+
+
+def test_votes_are_attributed_to_the_recognised_voter(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attributed votes are not secret ballots — the owner's informed choice."""
+    monkeypatch.setenv("DOOR_API_SOCIAL_ADMIN_TOKEN", "test-admin-token")
+    # Rebuild so the frozen SocialConfig picks the token up, as the existing
+    # admin-route tests do.
+    state.__init__()
+    state.startup()
+    poll = client.post(
+        "/admin/polls",
+        json={"question": "Best sound?", "options": ["Chime", "Buzz"]},
+        headers={"Authorization": "Bearer test-admin-token"},
+    ).json()
+    _recognise("v3")
+
+    resp = client.post(
+        f"/polls/{poll['id']}/vote",
+        json={"option_id": poll["options"][0]["id"], "session_token": _visitor_token(client)},
+    )
+    assert resp.status_code == 201
+
+    rows = state.social_service.store._conn.execute(
+        "SELECT person_id FROM poll_votes WHERE poll_id = ?", (poll["id"],)
+    ).fetchall()
+    assert [r[0] for r in rows] == ["prs_tiger"]
+
+
+def test_client_supplied_identity_is_never_trusted_for_a_note(client: TestClient) -> None:
+    """Attribution comes from the door's own recognition, never from the body."""
+    token = _visitor_token(client)
+    entry = client.post(
+        "/guestbook",
+        json={"text": "not mine", "person_id": "prs_someone_else", "session_token": token},
+    ).json()
+    stored = state.social_service.store.get_guestbook_entry(entry["id"])
+    assert stored is not None
+    assert stored.person_id is None
+
+
+def test_public_guestbook_never_exposes_the_internal_person_id(client: TestClient) -> None:
+    """P-31: person_id is an internal opaque id and has no place on a public route."""
+    _recognise("v3")
+    token = _visitor_token(client)
+    created = client.post("/guestbook", json={"text": "public note", "session_token": token}).json()
+    assert "person_id" not in created
+
+    listed = client.get("/guestbook").json()
+    assert "person_id" not in json.dumps(listed)
+
+
+def test_public_routes_never_expose_arrival_history(client: TestClient) -> None:
+    """P-31: the visit log is door-visiond's, admin-only, and has no door-api route."""
+    for path in ("/guestbook", "/polls/current", "/checkins", "/checkins/stats/most-frequent"):
+        body = json.dumps(client.get(path).json())
+        for leaked in ("arrived_at", "last_seen_at", "visit_id", "visits"):
+            assert leaked not in body, f"{path} exposed {leaked}"
+
+
+def test_frequency_ranking_is_off_by_default(client: TestClient) -> None:
+    """P-32: "who was here most" stays absent unless explicitly enabled."""
+    state.machine.handle_identity_stable(
+        person_id="prs_tiger", display_name="Tiger", profile_id="warm_amber", consent_version="v3"
+    )
+    client.post("/checkins", json={"label": "Tiger", "session_token": _visitor_token(client)})
+
+    assert client.get("/checkins/stats/most-frequent").json()["stat"] is None

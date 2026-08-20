@@ -93,9 +93,24 @@ class SessionConfig:
     # How long VIDEO_MESSAGE_SAVED shows confirmation before SESSION_END (seconds).
     saved_linger_s: float = 5.0
 
-    # Inactivity timeout: if no transition occurs within this many seconds,
-    # the session auto-expires to IDLE regardless of current state (seconds).
-    inactivity_timeout_s: float = 120.0
+    # Inactivity timeout: if no transition occurs within this many seconds, the
+    # session auto-expires (seconds). In practice this only schedules a timer for
+    # VIDEO_MESSAGE_OFFERED — every other non-IDLE state has a timer of its own —
+    # so it is really "how long the door waits while a visitor decides what to do".
+    #
+    # Ten minutes because that state is where a visitor sits while writing a note on
+    # their phone. It is a cap rather than a completion signal: a submitted note is a
+    # social write and causes no transition, so the session runs the full window even
+    # after the visitor has finished. The DoorPad allows the same budget
+    # (VISITOR_WRITING_TIMEOUT_MS in door-ui/src/doorpadTimeouts.ts). The two must
+    # agree: whichever is shorter is the real limit, and when this was 120s the
+    # server cut a visitor off two and a half minutes into a message the doorboard
+    # had promised them ten for.
+    #
+    # It also bounds how long a persisted session survives a door-api restart
+    # (see restore_from_persistence), which the same reasoning favours: a restart
+    # mid-message should not silently discard the visitor's session.
+    inactivity_timeout_s: float = 600.0
 
     # APPROACH_DETECTED / IDENTITY_CACHED expire back to IDLE after this long
     # with no button press (seconds).
@@ -132,6 +147,17 @@ class SessionConfig:
     media_retry_base_s: float = 0.5
     media_retry_max_s: float = 30.0
 
+    # door-visiond local base URL. Used only to forward the doorpad's self-service
+    # enrollment request (ADR-0019): the kiosks connect to door-api and nothing else
+    # (ARCHITECTURE.md §7), so a doorpad action that needs visiond has to come
+    # through here. Nothing about recognition or identity flows this way.
+    visiond_base_url: str = "http://127.0.0.1:8081"
+    visiond_timeout_s: float = 3.0
+    # door-visiond's own admin token, held here so the owner's browser never receives it
+    # (ADR-0024). Empty means the admin page's enrollment panels return 503 rather than
+    # reaching an unauthenticated service.
+    visiond_admin_token: str = ""
+
     # door-sync local base URL for non-critical admin/gallery operations.
     sync_base_url: str = "http://127.0.0.1:8083"
     sync_admin_token: str = ""
@@ -141,13 +167,68 @@ class SessionConfig:
     sync_retry_base_s: float = 0.5
     sync_retry_max_s: float = 30.0
 
+    # Shared secret door-visiond presents on POST /internal/events, the hop that
+    # carries recognised identities into the session machine and onto the kiosk
+    # WebSocket (ADR-0018 §3). Empty closes the route with 503 — an unauthenticated
+    # identity ingest would let anything that can reach door-api assert who is at
+    # the door, which is the one claim personalisation reads.
+    internal_event_token: str = ""
+
+    # How long door-api keeps treating a recognised person as present (ADR-0020).
+    # `idle` is the window with nobody touching anything — a passer-by's name must not
+    # sit in memory. `interaction` is re-armed by every doorpad action, so the identity
+    # lasts as long as the interaction and no longer. Bound to session state instead,
+    # the name vanished ten seconds after the greeting and Check In refused to offer it.
+    # How long a remembered ambient event stays worth replaying to a reconnecting kiosk.
+    # Just over the daily food job's interval, so a normal cadence survives a reload but a
+    # dead producer stops being quoted as current (ADR-0027).
+    ambient_cache_max_age_s: float = 26 * 3600.0
+    # Must stay >= door-visiond's greeting cooldown (VISIOND_GREETING_COOLDOWN_MS, 30 s).
+    #
+    # Measured on the door: while someone stands there continuously, vision.identity_stable
+    # arrives at exactly the cooldown floor — 20:21:36, 20:22:06, 20:22:36. At 12 s this
+    # holder therefore expired 18 seconds before the next announcement could arrive, so for
+    # 18 of every 30 seconds the door had forgotten a person standing in front of it, and
+    # nothing they could do brought the name back. That is the "I looked at the camera again
+    # and nothing happened" report.
+    #
+    # The cooldown exists so the door does not say "Hi Tiger" every two seconds (P-10). It
+    # was never meant to mean "door-api may forget you", but with no separate liveness signal
+    # it does, so this window has to cover it. See ADR-0028.
+    recognised_identity_idle_ttl_s: float = 33.0
+    recognised_identity_interaction_ttl_s: float = 120.0
+    # How often to notice that the window above has run out. Expiry is lazy, so without
+    # this the kiosks keep showing a name the server has already stopped honouring until
+    # some unrelated event triggers a broadcast.
+    identity_sweep_interval_s: float = 2.0
+
     # Feature gate for the explicit photo-booth + private gallery flow.
     feature_photobooth: bool = False
 
     # Short-lived visitor QR tokens.  If unset, a per-process boot secret is used.
     visitor_token_secret: str = ""
-    visitor_token_ttl_s: float = 300.0
+    # Matches inactivity_timeout_s: with the DoorPad allowing ten minutes to write
+    # a message, a five-minute token made the token the thing that cut the visitor
+    # off instead. The exposure is one session's scoped capability (read snapshot,
+    # leave a note, vote, request deletion), rate-limited, for five extra minutes.
+    visitor_token_ttl_s: float = 600.0
     visitor_public_base_url: str = "http://door.local"
+
+    # Public visitor relay (ADR-0017).  The LAN base URL above cannot load on a
+    # phone that is on cellular — which is every stranger at the door — so the QR
+    # points at the relay when it is reachable and falls back to the LAN URL when
+    # it is not (E-19).  Empty base URL => relay DISABLED: no worker, no egress,
+    # QR behaves exactly as it did before.
+    visitor_relay_base_url: str = ""
+    visitor_relay_device_token: str = ""
+    # Origin used to build the QR link, when it differs from the API base.
+    visitor_relay_public_url: str = ""
+    visitor_relay_poll_interval_s: float = 2.0
+    visitor_relay_timeout_s: float = 4.0
+    visitor_relay_backoff_max_s: float = 60.0
+    # How long a successful exchange keeps the relay considered reachable for QR
+    # selection. Short, so a dead relay stops being advertised quickly.
+    visitor_relay_freshness_s: float = 30.0
 
     # ESP32 feedback effect requested for DoorPad touch actions.
     doorpad_effect_id: str = "generic_chime"
@@ -164,6 +245,24 @@ class SessionConfig:
     mqtt_username: str = ""
     mqtt_password: str = ""
     mqtt_topics: tuple[str, ...] = ("doorboard/ambient/#", "doorboard/status/#")
+
+    # ESP32 door-controller link (see esp32_link.py).
+    #
+    # Defaults to "mock", meaning no link is opened and `esp32_transport` stays
+    # None — which is exactly how every test, CI run and dev machine behaved
+    # before this knob was read at all, so nothing changes for them. Real
+    # hardware sets ESP32_TRANSPORT=uart in the Pi's .env.
+    #
+    # The device default is what an ESP32-S3-DevKitC's onboard bridge enumerates
+    # as, because that bridge is wired to GPIO 43/44 — the pins the firmware gives
+    # UART1. It is NOT the Pi's own GPIO UART: the AI HAT+ occupies that header.
+    esp32_transport: str = "mock"
+    esp32_uart_device: str = "/dev/ttyACM1"
+    esp32_uart_baud: int = 115_200
+    esp32_udp_local_addr: str = ""
+    esp32_udp_remote_addr: str = ""
+    esp32_reconnect_base_s: float = 1.0
+    esp32_reconnect_max_s: float = 30.0
 
     @staticmethod
     def from_env() -> SessionConfig:
@@ -193,7 +292,7 @@ class SessionConfig:
             max_recording_s=max_recording_s,
             review_timeout_s=review_timeout_s,
             saved_linger_s=_env_float("DOOR_API_SAVED_LINGER_S", 5.0),
-            inactivity_timeout_s=_env_float("DOOR_API_INACTIVITY_TIMEOUT_S", 120.0),
+            inactivity_timeout_s=_env_float("DOOR_API_INACTIVITY_TIMEOUT_S", 600.0),
             approach_timeout_s=_env_float("DOOR_API_APPROACH_TIMEOUT_S", 10.0),
             session_end_linger_s=_env_float("DOOR_API_SESSION_END_LINGER_S", 3.0),
             db_path=db_path,
@@ -210,6 +309,9 @@ class SessionConfig:
             media_forward_poll_s=_env_float("DOOR_API_MEDIA_FORWARD_POLL_S", 0.25),
             media_retry_base_s=_env_float("DOOR_API_MEDIA_RETRY_BASE_S", 0.5),
             media_retry_max_s=_env_float("DOOR_API_MEDIA_RETRY_MAX_S", 30.0),
+            visiond_base_url=os.environ.get("DOOR_API_VISIOND_BASE_URL", "http://127.0.0.1:8081"),
+            visiond_timeout_s=_env_float("DOOR_API_VISIOND_TIMEOUT_S", 3.0),
+            visiond_admin_token=os.environ.get("DOOR_VISIOND_ADMIN_TOKEN", ""),
             sync_base_url=os.environ.get("DOOR_API_SYNC_BASE_URL", "http://127.0.0.1:8083"),
             sync_admin_token=os.environ.get("DOOR_SYNC_ADMIN_TOKEN", ""),
             sync_timeout_s=_env_float("DOOR_API_SYNC_TIMEOUT_S", 1.0),
@@ -217,16 +319,30 @@ class SessionConfig:
             sync_forward_poll_s=_env_float("DOOR_API_SYNC_FORWARD_POLL_S", 0.25),
             sync_retry_base_s=_env_float("DOOR_API_SYNC_RETRY_BASE_S", 0.5),
             sync_retry_max_s=_env_float("DOOR_API_SYNC_RETRY_MAX_S", 30.0),
+            internal_event_token=os.environ.get("DOOR_API_INTERNAL_EVENT_TOKEN", ""),
+            ambient_cache_max_age_s=_env_float("DOOR_API_AMBIENT_CACHE_MAX_AGE_S", 26 * 3600.0),
+            recognised_identity_idle_ttl_s=_env_float("DOOR_API_IDENTITY_IDLE_TTL_S", 33.0),
+            recognised_identity_interaction_ttl_s=_env_float(
+                "DOOR_API_IDENTITY_INTERACTION_TTL_S", 120.0
+            ),
+            identity_sweep_interval_s=_env_float("DOOR_API_IDENTITY_SWEEP_INTERVAL_S", 2.0),
             feature_photobooth=_env_bool("FEATURE_PHOTOBOOTH", False),
             visitor_token_secret=os.environ.get(
                 "DOOR_API_VISITOR_TOKEN_SECRET",
                 secrets.token_urlsafe(32),
             ),
-            visitor_token_ttl_s=_env_float("DOOR_API_VISITOR_TOKEN_TTL_S", 300.0),
+            visitor_token_ttl_s=_env_float("DOOR_API_VISITOR_TOKEN_TTL_S", 600.0),
             visitor_public_base_url=os.environ.get(
                 "DOOR_API_VISITOR_PUBLIC_BASE_URL",
                 "http://door.local",
             ),
+            visitor_relay_base_url=os.environ.get("DOOR_API_VISITOR_RELAY_BASE_URL", ""),
+            visitor_relay_device_token=os.environ.get("DOOR_API_VISITOR_RELAY_DEVICE_TOKEN", ""),
+            visitor_relay_public_url=os.environ.get("DOOR_API_VISITOR_RELAY_PUBLIC_URL", ""),
+            visitor_relay_poll_interval_s=_env_float("DOOR_API_VISITOR_RELAY_POLL_S", 2.0),
+            visitor_relay_timeout_s=_env_float("DOOR_API_VISITOR_RELAY_TIMEOUT_S", 4.0),
+            visitor_relay_backoff_max_s=_env_float("DOOR_API_VISITOR_RELAY_BACKOFF_MAX_S", 60.0),
+            visitor_relay_freshness_s=_env_float("DOOR_API_VISITOR_RELAY_FRESHNESS_S", 30.0),
             doorpad_effect_id=os.environ.get("DOOR_API_DOORPAD_EFFECT_ID", "generic_chime"),
             doorpad_effect_duration_ms=int(
                 _env_float("DOOR_API_DOORPAD_EFFECT_DURATION_MS", 900.0)
@@ -238,4 +354,13 @@ class SessionConfig:
                 "DOOR_API_MQTT_TOPICS",
                 ("doorboard/ambient/#", "doorboard/status/#"),
             ),
+            # Unprefixed, because the door plane shares these with the firmware's
+            # view of the same cable rather than owning them.
+            esp32_transport=os.environ.get("ESP32_TRANSPORT", "mock").strip().lower(),
+            esp32_uart_device=os.environ.get("ESP32_UART_DEVICE", "/dev/ttyACM1"),
+            esp32_uart_baud=int(_env_float("ESP32_UART_BAUD", 115_200.0)),
+            esp32_udp_local_addr=os.environ.get("ESP32_UDP_LOCAL_ADDR", ""),
+            esp32_udp_remote_addr=os.environ.get("ESP32_UDP_REMOTE_ADDR", ""),
+            esp32_reconnect_base_s=_env_float("ESP32_RECONNECT_BASE_S", 1.0),
+            esp32_reconnect_max_s=_env_float("ESP32_RECONNECT_MAX_S", 30.0),
         )

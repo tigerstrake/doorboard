@@ -447,6 +447,18 @@
     "AmbientFoodRecommendationPayload": {
       "additionalProperties": false,
       "properties": {
+        "backup_hall": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backup Hall"
+        },
         "date": {
           "format": "date",
           "title": "Date",
@@ -462,6 +474,18 @@
             }
           ],
           "title": "Detail"
+        },
+        "hall": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hall"
         },
         "provider": {
           "title": "Provider",
@@ -636,6 +660,18 @@
     "AmbientSatellitePassPayload": {
       "additionalProperties": false,
       "properties": {
+        "culmination_azimuth_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Culmination Azimuth Deg"
+        },
         "direction": {
           "title": "Direction",
           "type": "string"
@@ -647,9 +683,52 @@
         "rise_at": {
           "$ref": "#/$defs/UTCDateTime"
         },
+        "rise_azimuth_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rise Azimuth Deg"
+        },
         "satellite": {
           "title": "Satellite",
           "type": "string"
+        },
+        "set_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UTCDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "set_azimuth_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Set Azimuth Deg"
+        },
+        "track": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SatelliteTrackSample"
+          },
+          "title": "Track",
+          "type": "array"
         },
         "visible": {
           "title": "Visible",
@@ -1591,6 +1670,55 @@
       "title": "PresenceLabel",
       "type": "string"
     },
+    "SatelliteTrackSample": {
+      "additionalProperties": false,
+      "description": "One point on a pass: seconds after rise, where to look, and where it is (ADR-0030).\n\n``azimuth_deg``/``elevation_deg`` answer \"where do I look from here\" and drive the sky\ndome. ``lat``/``lng`` are the sub-satellite point \u2014 the spot on Earth it is directly\nover \u2014 which is what a globe needs and what the az/el pair cannot be converted into\nwithout the orbit. The provider computes both from the same moment, so they cannot\ndisagree about where the satellite was.\n\nThe ground position is optional: a producer from before this existed omits it, and the\nglobe then has nothing to plot and says so rather than guessing a position from a bearing.",
+      "properties": {
+        "azimuth_deg": {
+          "title": "Azimuth Deg",
+          "type": "number"
+        },
+        "elevation_deg": {
+          "title": "Elevation Deg",
+          "type": "number"
+        },
+        "lat": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lat"
+        },
+        "lng": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lng"
+        },
+        "t_offset_s": {
+          "title": "T Offset S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "t_offset_s",
+        "azimuth_deg",
+        "elevation_deg"
+      ],
+      "title": "SatelliteTrackSample",
+      "type": "object"
+    },
     "SessionEndedEvent": {
       "additionalProperties": false,
       "properties": {
@@ -1809,6 +1937,18 @@
     "SessionStateChangedPayload": {
       "additionalProperties": false,
       "properties": {
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        },
         "from_state": {
           "$ref": "#/$defs/SessionState"
         },
@@ -2996,6 +3136,23 @@
         "person_id": {
           "title": "Person Id",
           "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "expired",
+                "admin",
+                "privacy_mode"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
         }
       },
       "required": [
@@ -3055,9 +3212,33 @@
     "VisionIdentityStablePayload": {
       "additionalProperties": false,
       "properties": {
+        "accent_color": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accent Color"
+        },
         "confidence": {
           "title": "Confidence",
           "type": "number"
+        },
+        "consent_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Version"
         },
         "display_name": {
           "title": "Display Name",

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, cast
 
-from door_visiond.settings import Settings
+import pytest
+from door_visiond.app import app
+from door_visiond.settings import Settings, override_settings, reset_settings
 from fastapi.testclient import TestClient
+
+from .conftest import CONSENT_VERSION
 
 
 def test_health(client: TestClient) -> None:
@@ -26,7 +31,7 @@ def test_consent_endpoint_returns_canonical_statement_verbatim(
     path = ssd_settings.consent_statement_path
     assert path is not None
     expected = path.read_text(encoding="utf-8")
-    assert response.json() == {"text": expected, "version": "v1"}
+    assert response.json() == {"text": expected, "version": CONSENT_VERSION}
 
 
 def test_metrics(client: TestClient) -> None:
@@ -52,7 +57,7 @@ def _enroll(client: TestClient) -> str:
     files = [("images", ("a.bin", b"alex-photo-bytes", "application/octet-stream"))]
     data = {
         "display_name": "Alex",
-        "consent_version": "v1",
+        "consent_version": CONSENT_VERSION,
         "consent_confirmed": "true",
         "profile_id": "blue_wave",
         "color": "#0000ff",
@@ -99,7 +104,7 @@ def test_privacy_mode_toggle_and_enroll_block(client: TestClient) -> None:
     files = [("images", ("a.bin", b"alex-photo-bytes", "application/octet-stream"))]
     data = {
         "display_name": "Alex",
-        "consent_version": "v1",
+        "consent_version": CONSENT_VERSION,
         "consent_confirmed": "true",
         "profile_id": "blue_wave",
         "color": "#0000ff",
@@ -143,5 +148,74 @@ def test_get_consent(client: TestClient) -> None:
     data = resp.json()
     assert "version" in data
     assert "text" in data
-    assert "v1" in data["version"]
+    assert data["version"] == CONSENT_VERSION
     assert "consent" in data["text"].lower()
+
+
+# -- remote-enrollment invite endpoints (ADR-0016 §4) -----------------------
+
+_RELAY_ADMIN_ROUTES = [
+    ("post", "/invites"),
+    ("get", "/invites"),
+    ("post", "/invites/inv_abc/revoke"),
+    ("get", "/relay-status"),
+    ("post", "/relay-key/rotate"),
+]
+
+
+@pytest.mark.parametrize(("method", "path"), _RELAY_ADMIN_ROUTES)
+def test_relay_routes_require_admin_auth(ssd_settings: Settings, method: str, path: str) -> None:
+    """Nothing enrollment-related may be reachable without the admin token."""
+    override_settings(ssd_settings)
+    try:
+        with TestClient(app) as anon:
+            kwargs = {"json": {}} if method == "post" else {}
+            resp = getattr(anon, method)(path, **kwargs)
+        assert resp.status_code == 401, f"{method.upper()} {path} was reachable anonymously"
+    finally:
+        reset_settings()
+
+
+def test_create_invite_returns_a_url_with_a_pinned_fingerprint(client: TestClient) -> None:
+    resp = client.post("/invites", json={"label": "Tiger's phone"})
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["invite_id"].startswith("inv_")
+    assert "#k=" in body["url"]
+    assert body["url"].split("#k=", 1)[1] == body["door_key_fingerprint"]
+    # The invite id and secret are separated by a dot in the path segment.
+    token = body["url"].split("#", 1)[0].rsplit("/e/", 1)[1]
+    assert token.split(".", 1)[0] == body["invite_id"]
+
+
+def test_listed_invites_never_expose_the_secret(client: TestClient) -> None:
+    created = client.post("/invites", json={"label": "phone"}).json()
+    secret = created["url"].split("#", 1)[0].rsplit("/e/", 1)[1].split(".", 1)[1]
+
+    listed = client.get("/invites").json()
+    assert [i["invite_id"] for i in listed] == [created["invite_id"]]
+    assert listed[0]["status"] == "open"
+    assert secret not in json.dumps(listed)
+
+
+def test_revoking_an_invite_closes_it(client: TestClient) -> None:
+    created = client.post("/invites", json={}).json()
+    assert client.post(f"/invites/{created['invite_id']}/revoke").json() == {"revoked": True}
+    assert client.get("/invites").json() == []
+    closed = client.get("/invites", params={"include_closed": True}).json()
+    assert closed[0]["status"] == "revoked"
+    # Revoking twice is a no-op, not an error.
+    assert client.post(f"/invites/{created['invite_id']}/revoke").json() == {"revoked": False}
+
+
+def test_relay_status_reports_unconfigured_by_default(client: TestClient) -> None:
+    assert client.get("/relay-status").json() == {"configured": False, "status": "disabled"}
+
+
+def test_rotating_the_relay_key_changes_the_fingerprint(client: TestClient) -> None:
+    before = client.post("/invites", json={}).json()["door_key_fingerprint"]
+    rotated = client.post("/relay-key/rotate").json()
+    assert rotated["fingerprint"] != before
+    assert rotated["door_key_id"].startswith("dky_")
+    after = client.post("/invites", json={}).json()["door_key_fingerprint"]
+    assert after == rotated["fingerprint"]

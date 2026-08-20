@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 from aircraft.enrichment import AircraftEnricher, EnrichmentConfig
-from aircraft.provider import AircraftProvider
+from aircraft.provider import AircraftDataUnavailable, AircraftProvider
 from birdnet.provider import BirdProvider
 from doorboard_contracts.events import (
     AircraftObserver,
@@ -157,13 +157,30 @@ def run_satellite_passes(
         logger.info("No visible satellite passes predicted in the next 24 hours.")
         return None
 
-    # Construct payload
+    # Construct payload.
+    #
+    # The geometry has to be copied through, and was not: this built the payload from five
+    # fields while the provider was returning set_at, the rise/culmination/set azimuths and
+    # the sampled track as well. ADR-0025 added all of that to the contract and the provider,
+    # and it died here — so every event on the wire carried `track: []`, the sky dome rendered
+    # its "high point only" fallback in production for as long as it existed, and the globe
+    # (ADR-0030) had no trajectory to draw. Not visible in tests, because the fixtures supply
+    # a track directly and never went through this function.
+    #
+    # `.get` rather than `[...]`: a provider that does not compute geometry (the mock, or a
+    # pass found by a path that only knows the culmination) omits these entirely, and that
+    # must stay a payload without geometry rather than a KeyError.
     payload = AmbientSatellitePassPayload(
         satellite=pass_data["satellite"],
         rise_at=pass_data["rise_at"],
         max_elevation_deg=pass_data["max_elevation_deg"],
         direction=pass_data["direction"],
         visible=pass_data["visible"],
+        set_at=pass_data.get("set_at"),
+        rise_azimuth_deg=pass_data.get("rise_azimuth_deg"),
+        set_azimuth_deg=pass_data.get("set_azimuth_deg"),
+        culmination_azimuth_deg=pass_data.get("culmination_azimuth_deg"),
+        track=pass_data.get("track") or [],
     )
 
     # Construct event
@@ -216,6 +233,12 @@ def run_aircraft_summary(
 
     try:
         aircraft_list = provider.get_nearby_aircraft(now)
+    except AircraftDataUnavailable as exc:
+        # Publishing nothing is the honest outcome: the tile then shows its last real
+        # reading with an age, or "unavailable" if there has never been one. Publishing an
+        # empty list would state that the sky is clear, which is a different claim.
+        logger.warning(f"No aircraft data to publish: {exc}")
+        return None
     except Exception as exc:
         logger.error(f"Aircraft summary job failed: {exc}")
         # Return None to indicate failure (stale path)
@@ -263,9 +286,13 @@ def run_aircraft_summary(
         for ac in aircraft_list
     ]
 
+    # `now` would make a cached reading look current: OpenSky is polled every 30 s but the
+    # provider serves cache through cooldowns and outages, so as_of has to be the moment the
+    # data was actually observed or the wallboard's staleness marker is decorative.
+    observed_at = getattr(provider, "last_successful_time", None) or now
     payload = AmbientAircraftSummaryPayload(
         nearby=nearby_models,
-        as_of=now,
+        as_of=observed_at,
         observer=AircraftObserver(
             latitude=settings.aircraft_observer_lat,
             longitude=settings.aircraft_observer_lon,
@@ -406,6 +433,8 @@ def run_food_recommendation(
         title=recommendation.title,
         detail=recommendation.detail,
         provider=recommendation.provider,
+        hall=recommendation.hall,
+        backup_hall=recommendation.backup_hall,
     )
 
     event = AmbientFoodRecommendationEvent(

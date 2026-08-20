@@ -82,6 +82,19 @@ class Settings(BaseSettings):
     # Empty closes protected routes with 503.
     admin_token: str = Field(default="", alias="DOOR_VISIOND_ADMIN_TOKEN")
 
+    # ── display path (ADR-0018 §3) ────────────────────────────────────────
+    # door-api owns the kiosk WebSocket and the session state machine, so identity
+    # events must reach it or the wallboard/doorpad greeting never renders. An empty
+    # token disables forwarding: mock/CI stay silent, and the ESP32 profile push and
+    # identity cache behave identically either way.
+    door_api_base_url: str = Field(default="http://127.0.0.1:8080", alias="DOOR_API_BASE_URL")
+    door_api_internal_token: str = Field(default="", alias="DOOR_API_INTERNAL_EVENT_TOKEN")
+    # Bounded tightly: this drains the recognition loop's queue, and a greeting that
+    # arrives late is worth less than a frame that arrives on time.
+    event_forward_timeout_s: float = Field(
+        default=1.0, alias="VISIOND_EVENT_FORWARD_TIMEOUT_S", gt=0
+    )
+
     # ── durable archive purge delivery ───────────────────────────────────
     sync_base_url: str = Field(default="http://127.0.0.1:8083", alias="DOOR_SYNC_BASE_URL")
     sync_admin_token: str = Field(default="", alias="DOOR_SYNC_ADMIN_TOKEN")
@@ -95,6 +108,58 @@ class Settings(BaseSettings):
         default=300.0,
         alias="DOOR_VISIOND_PURGE_RETRY_MAX_S",
         ge=1,
+    )
+
+    # ── arrival log (ADR-0018) ────────────────────────────────────────────
+    # Sightings closer together than the merge window extend one visit rather
+    # than opening another (E-22), so someone lingering is one arrival.
+    visit_merge_window_s: float = Field(default=600.0, alias="VISIOND_VISIT_MERGE_WINDOW_S", gt=0)
+    # How often a sighting may reach SQLite, per person. Defaults to the greeting
+    # cooldown: a visit log needs no finer resolution than that.
+    visit_write_interval_ms: int = Field(
+        default=30_000, alias="VISIOND_VISIT_WRITE_INTERVAL_MS", ge=0
+    )
+
+    # ── remote enrollment relay (ADR-0016) ────────────────────────────────
+    # Empty base URL disables remote enrollment entirely: the worker never
+    # starts, no key is published, and the at-door flow is unaffected.
+    relay_base_url: str = Field(default="", alias="VISIOND_RELAY_BASE_URL")
+    relay_device_token: str = Field(default="", alias="VISIOND_RELAY_DEVICE_TOKEN")
+    # Public origin used to build invite URLs for the QR code; defaults to the
+    # API base when unset (they are normally the same deployment).
+    relay_public_url: str = Field(default="", alias="VISIOND_RELAY_PUBLIC_URL")
+    relay_poll_interval_s: float = Field(default=5.0, alias="VISIOND_RELAY_POLL_INTERVAL_S", gt=0)
+    relay_timeout_s: float = Field(default=5.0, alias="VISIOND_RELAY_TIMEOUT_S", gt=0)
+    relay_backoff_max_s: float = Field(default=300.0, alias="VISIOND_RELAY_BACKOFF_MAX_S", ge=1)
+    relay_invite_ttl_s: float = Field(default=3600.0, alias="VISIOND_RELAY_INVITE_TTL_S", gt=0)
+    # Retired sealing keys are kept only long enough for bundles already in the
+    # relay (15-min TTL) to still open, then deleted (E-12).
+    relay_retired_key_ttl_s: float = Field(
+        default=3600.0, alias="VISIOND_RELAY_RETIRED_KEY_TTL_S", ge=900
+    )
+    relay_max_images: int = Field(default=5, alias="VISIOND_RELAY_MAX_IMAGES", ge=1, le=15)
+
+    # ── self-service enrollment (ADR-0019) ────────────────────────────────
+    # A visitor at the doorpad can mint their own invite with no admin credential.
+    # Presence at the door is the authorization, exactly as it already is for the
+    # bell and the guestbook; these two caps are what stop a passer-by loading the
+    # encrypted volume with strangers' biometrics. 0 disables self-service.
+    self_enroll_per_hour: int = Field(default=6, alias="VISIOND_SELF_ENROLL_PER_HOUR", ge=0)
+    self_enroll_max_enrolled: int = Field(
+        default=50, alias="VISIOND_SELF_ENROLL_MAX_ENROLLED", ge=0
+    )
+
+    # How long to wait before retrying the real vision backend after three
+    # consecutive frame failures dropped it to `disabled`. The frames come from
+    # door-media over HTTP, so the usual cause is that service restarting — which used
+    # to stop recognition permanently on an otherwise healthy door. A permanent fault
+    # simply re-degrades on the next frame, so retrying costs one attempt.
+    # 30 s rather than 15: measured on the door, door-media takes ~20 s from restart to a
+    # live stream, so a 15 s retry always fired too early, failed, and cost an extra
+    # degrade/recover cycle before converging. It still converged — the flapping is
+    # bounded and honest — but one wasted attempt per restart is avoidable.
+    backend_recovery_delay_s: float = Field(
+        default=30.0, alias="VISIOND_BACKEND_RECOVERY_DELAY_S", gt=0
     )
 
     # ── capture cadence (mock/hardware frame pacing) ──────────────────────
@@ -123,6 +188,15 @@ class Settings(BaseSettings):
         alias="VISIOND_SNAPSHOT_TIMEOUT_S",
         gt=0,
     )
+    # The dedicated recognition camera's frames (ADR-0023), used only in
+    # `VISION_MODE=dual-camera`. door-media 404s this when the door has no second camera,
+    # which is what makes the mode fail loudly instead of silently reading the visitor
+    # camera — before ADR-0023 `dual-camera` was accepted and behaved exactly like
+    # `single-camera`, so a door could be configured for two cameras and use one.
+    recognition_snapshot_url: str = Field(
+        default="http://127.0.0.1:8082/snapshot/recognition",
+        alias="VISIOND_RECOGNITION_SNAPSHOT_URL",
+    )
 
     @field_validator("vision_mode")
     @classmethod
@@ -131,6 +205,18 @@ class Settings(BaseSettings):
             msg = f"VISION_MODE must be one of {sorted(_ALLOWED_MODES)}, got {v!r}"
             raise ValueError(msg)
         return v
+
+    @property
+    def face_snapshot_url(self) -> str:
+        """Where face frames come from, per mode.
+
+        `dual-camera` reads the recognition camera; every other hardware mode reads the
+        visitor stream. One property so the backend, the health surface and the startup
+        check cannot disagree about which camera is in use.
+        """
+        if self.vision_mode == "dual-camera":
+            return self.recognition_snapshot_url
+        return self.snapshot_url
 
     @property
     def visiond_root(self) -> Path:
@@ -155,6 +241,23 @@ class Settings(BaseSettings):
     @property
     def purge_outbox_path(self) -> Path:
         return self.visiond_root / "purge_outbox.sqlite"
+
+    @property
+    def relay_key_path(self) -> Path:
+        """Door sealing keypair — on the encrypted enrollment volume (ADR-0016 §3)."""
+        return self.enrollment_root / "relay" / "door_key.json"
+
+    @property
+    def relay_enabled(self) -> bool:
+        return bool(self.relay_base_url and self.relay_device_token)
+
+    @property
+    def event_forwarding_enabled(self) -> bool:
+        return bool(self.door_api_base_url and self.door_api_internal_token)
+
+    @property
+    def relay_invite_base_url(self) -> str:
+        return (self.relay_public_url or self.relay_base_url).rstrip("/")
 
     @property
     def host(self) -> str:

@@ -16,6 +16,7 @@ from door_media.mediamtx_router import (
     _segment_start_epoch,
 )
 from door_media.settings import Settings
+from pydantic import ValidationError
 
 
 def _touch(path: Path, *, modified: float) -> None:
@@ -202,23 +203,109 @@ def test_run_on_init_is_video_only_even_when_audio_enabled(tmp_path: Path) -> No
     assert "{" not in rendered and "}" not in rendered
 
 
-def test_run_on_init_is_byte_for_byte_pre_audio_original(tmp_path: Path) -> None:
-    # The video-only publish command must match the historical (pre-#109)
-    # runOnInit exactly, whether audio is enabled or not.
-    expected = (
-        "sh -c 'rpicam-vid --width 1280 --height 720 --framerate 25 --codec h264 "
-        "--libav-format h264 --profile baseline --level 4.1 --bitrate 2000000 "
-        "--inline --flush 1 --timeout 0 --nopreview --output - | "
-        "ffmpeg -nostats -loglevel error -fflags nobuffer -f h264 -r 25 -i pipe:0 "
-        "-c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/visitor'"
+def test_run_on_init_is_identical_whether_audio_is_enabled(tmp_path: Path) -> None:
+    """The publish command is video-only, and enabling audio must not perturb it.
+
+    This used to pin the whole command as a literal string, which made it a test of the
+    encode settings rather than of audio-independence. Audio going through MediaMTX
+    breaks its fmp4 recorder (#109), which is the actual thing worth guarding; the
+    quality parameters are asserted separately so they can be tuned without editing an
+    unrelated expectation.
+    """
+    commands = {
+        _build_run_on_init(
+            Settings(
+                SSD_DATA_ROOT=tmp_path,
+                MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+                MEDIA_AUDIO_ENABLED=audio_enabled,
+            )
+        )
+        for audio_enabled in (False, True)
+    }
+
+    assert len(commands) == 1
+    command = commands.pop()
+    for audio_flag in ("-c:a", "aac", "--codec libav", "alsa"):
+        assert audio_flag not in command
+
+
+def test_run_on_init_publishes_at_the_configured_quality(tmp_path: Path) -> None:
+    """Encode settings reach rpicam-vid, including the three that were missing.
+
+    Shipped defaults were 720p/2Mbps/baseline with no autofocus mode and no tuning file,
+    on a NoIR sensor — a soft, washed-out picture that no amount of bitrate would fix
+    (T-314). ffmpeg's `-r` has to track the framerate too: it copies the stream, so a
+    mismatch mistimes every frame.
+    """
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_VIDEO_WIDTH=1920,
+        DOOR_MEDIA_VIDEO_HEIGHT=1080,
+        DOOR_MEDIA_VIDEO_FRAMERATE=30,
+        DOOR_MEDIA_VIDEO_BITRATE_BPS=8_000_000,
+        DOOR_MEDIA_VIDEO_H264_PROFILE="high",
+        DOOR_MEDIA_VIDEO_AUTOFOCUS_MODE="continuous",
+        DOOR_MEDIA_CAMERA_TUNING_FILE="/usr/share/libcamera/ipa/rpi/pisp/imx708_noir.json",
+        VISITOR_CAM_INDEX=1,
     )
-    for audio_enabled in (False, True):
-        cfg = Settings(
+
+    command = _build_run_on_init(cfg)
+
+    assert "--width 1920 --height 1080" in command
+    assert "--bitrate 8000000" in command
+    assert "--profile high" in command
+    assert "--autofocus-mode continuous" in command
+    assert "--tuning-file /usr/share/libcamera/ipa/rpi/pisp/imx708_noir.json" in command
+    assert "--camera 1" in command
+    # Both sides of the pipe must agree on the rate, or copied frames are mistimed.
+    assert "--framerate 30" in command
+    assert "-r 30 -i pipe:0" in command
+
+
+def test_tuning_file_can_be_left_to_libcamera(tmp_path: Path) -> None:
+    """An empty tuning path must omit the flag, not pass an empty one."""
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_CAMERA_TUNING_FILE="",
+    )
+
+    assert "--tuning-file" not in _build_run_on_init(cfg)
+
+
+def test_the_default_profile_stays_baseline(tmp_path: Path) -> None:
+    """B-frames break this pipeline, so `baseline` is a constraint and not a preference.
+
+    `main`/`high` enable B-frames, and the publish copies rpicam-vid's elementary stream
+    with a synthetic framerate, so there are no real timestamps to reorder them against.
+    Verified on the door: at `high` the MediaMTX path reported `ready` with a live
+    publisher and every /snapshot came back a placeholder — recognition sees nothing while
+    everything upstream looks healthy. Raising it needs real PTS in the publish first.
+    """
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+
+    assert cfg.video_h264_profile == "baseline"
+    assert "--profile baseline" in _build_run_on_init(cfg)
+
+
+def test_an_unsupported_h264_profile_fails_at_startup(tmp_path: Path) -> None:
+    """rpicam-vid rejects it at launch, where the failure looks like a dead camera."""
+    with pytest.raises(ValidationError):
+        Settings(
             SSD_DATA_ROOT=tmp_path,
             MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
-            MEDIA_AUDIO_ENABLED=audio_enabled,
+            DOOR_MEDIA_VIDEO_H264_PROFILE="ultra",
         )
-        assert _build_run_on_init(cfg) == expected
+
+
+def test_an_unsupported_autofocus_mode_fails_at_startup(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            SSD_DATA_ROOT=tmp_path,
+            MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+            DOOR_MEDIA_VIDEO_AUTOFOCUS_MODE="sometimes",
+        )
 
 
 @pytest.mark.anyio
@@ -687,3 +774,140 @@ async def test_snapshot_returns_none_when_ffmpeg_missing(
 
     router = MediaMTXRouter(cfg)
     assert await router.snapshot() is None
+
+
+class _MjpegStream:
+    """Stdout stub that emits a scripted MJPEG byte sequence, then EOF."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+
+    async def read(self, _n: int) -> bytes:
+        return self._chunks.pop(0) if self._chunks else b""
+
+
+def _jpeg(marker: bytes) -> bytes:
+    """A minimal JPEG-framed payload: SOI, body, EOI."""
+    return b"\xff\xd8" + marker + b"\xff\xd9"
+
+
+@pytest.mark.anyio
+async def test_reader_publishes_each_frame_from_a_split_mjpeg_stream(tmp_path: Path) -> None:
+    """The frame parser must handle MJPEG arriving in arbitrary chunks.
+
+    ffmpeg writes into a pipe, so a JPEG's SOI and EOI routinely land in different
+    reads. Getting this wrong looks like recognition working intermittently, which
+    is far harder to spot than it not working at all.
+    """
+    cfg = Settings(SSD_DATA_ROOT=tmp_path)
+    router = MediaMTXRouter(cfg)
+
+    first, second = _jpeg(b"AAA"), _jpeg(b"BBB")
+    stream = _MjpegStream(
+        [
+            first[:3],  # SOI split mid-marker
+            first[3:] + second[:4],  # rest of one frame plus the head of the next
+            second[4:],
+        ]
+    )
+
+    class _Proc:
+        def __init__(self) -> None:
+            self.stdout = stream
+            self.killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+        async def wait(self) -> int:
+            return 0
+
+    proc = _Proc()
+
+    async def _fake_exec(*_args: str, **_kwargs: object) -> _Proc:
+        return proc
+
+    original = asyncio.create_subprocess_exec
+    asyncio.create_subprocess_exec = _fake_exec  # type: ignore[assignment]
+    try:
+        # The framing lives on the reader now (ADR-0023 extracted it so two cameras
+        # cannot each get it subtly wrong); drive it there rather than through the router.
+        reader = router._visitor_reader
+        reader._last_request_at = time.monotonic()
+        await reader._read_once()
+    finally:
+        asyncio.create_subprocess_exec = original  # type: ignore[assignment]
+
+    assert router.reader_frames == 2
+    # The newest frame wins, and it is a complete JPEG.
+    assert reader._latest_frame == second
+    assert proc.killed, "ffmpeg must be reaped when the reader stops"
+
+
+@pytest.mark.anyio
+async def test_a_stale_cached_frame_is_not_served(tmp_path: Path) -> None:
+    """A frame older than max_age_s describes a doorway that has moved on.
+
+    Serving it would make the door greet someone who has already left, and would
+    hide a dead reader behind a plausible-looking image.
+    """
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, DOOR_MEDIA_SNAPSHOT_MAX_AGE_S=0.5)
+    router = MediaMTXRouter(cfg)
+    reader = router._visitor_reader
+
+    reader._latest_frame = _jpeg(b"fresh")
+    reader._latest_frame_at = time.monotonic()
+    assert reader._fresh_frame() == _jpeg(b"fresh")
+
+    reader._latest_frame_at = time.monotonic() - 5.0
+    assert reader._fresh_frame() is None
+
+
+def test_rotation_reaches_the_camera_when_set(tmp_path: Path) -> None:
+    """An inverted sensor makes recognition look broken, so this has to actually apply.
+
+    ArcFace is not rotation invariant: an upside-down face scores near nothing against
+    upright enrollment photos. Found on the door, where a bell-clip thumbnail came back
+    inverted (T-321).
+    """
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_VIDEO_ROTATION=180,
+    )
+
+    assert "--rotation 180" in _build_run_on_init(cfg)
+
+
+def test_no_orientation_flags_when_the_camera_is_upright(tmp_path: Path) -> None:
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+
+    command = _build_run_on_init(cfg)
+
+    assert "--rotation" not in command
+    assert "--hflip" not in command
+    assert "--vflip" not in command
+
+
+def test_flips_are_independent_of_rotation(tmp_path: Path) -> None:
+    """A mirrored mount is a different fault from an inverted one."""
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_VIDEO_HFLIP=True,
+    )
+
+    command = _build_run_on_init(cfg)
+
+    assert "--hflip" in command
+    assert "--rotation" not in command
+
+
+def test_an_impossible_rotation_fails_at_startup(tmp_path: Path) -> None:
+    """rpicam-vid accepts only 0 or 180; 90 would fail as a dead camera."""
+    with pytest.raises(ValidationError):
+        Settings(
+            SSD_DATA_ROOT=tmp_path,
+            MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+            DOOR_MEDIA_VIDEO_ROTATION=90,
+        )

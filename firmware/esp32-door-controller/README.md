@@ -36,6 +36,58 @@ idf.py set-target esp32s3
 idf.py build
 ```
 
+### Flashing (verified 2026-08-06 on an ESP32-S3-DevKitC N8R8)
+
+The devkit exposes two USB ports and they are not interchangeable:
+
+| Port | Enumerates as | Carries |
+|---|---|---|
+| **USB** (native USB-Serial/JTAG) | `303a:1001` | flashing, and the app console |
+| **UART** (onboard CH343 bridge) | `1a86:55d3` | the wire protocol — the bridge is hardwired to GPIO 43/44, the pins `configure_uart()` gives UART1 |
+
+Both reach the same chip, so `esptool` works over either. Flash over the native
+port and leave the bridge port for the Pi.
+
+Because the board is plugged into the door Pi rather than a workstation, the
+working split is build on the dev machine, flash from the Pi — the Pi needs no
+toolchain, only `esptool`:
+
+```sh
+# on the dev machine
+idf.py build
+scp build/bootloader/bootloader.bin build/partition_table/partition-table.bin \
+      build/esp32-door-controller.bin door-pi.local:~/fw-flash/
+
+# on the Pi
+cd ~/fw-flash && uvx --from "esptool==4.11.0" esptool.py \
+  --chip esp32s3 --port /dev/ttyACM0 -b 460800 \
+  --before default_reset --after hard_reset write_flash \
+  --flash_mode dio --flash_size 2MB --flash_freq 80m \
+  0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 esp32-door-controller.bin
+```
+
+Confirm it took by reading frames off the **bridge** port — a `hello` followed by
+1 Hz `heartbeat`s means the app is up and the link is electrically good:
+
+```sh
+uv run --no-project --with pyserial python -c "
+import serial,time
+p=serial.Serial(); p.port='/dev/ttyACM1'; p.baudrate=115200; p.timeout=.3
+p.dtr=False; p.rts=False; p.open()      # do not hold the board in reset
+t=time.time()
+while time.time()-t<8: print(p.read(2048).decode('utf8','replace'), end='')"
+```
+
+Two things that will otherwise cost an afternoon:
+
+- **Do not capture the console port while resetting the chip.** The native USB
+  device is implemented *by* the ESP32, so a reset re-enumerates it and the read
+  fails with "device reports readiness to read but returned no data".
+- **The ROM bootloader banner lands on the bridge port** (`rst:0x1 (POWERON)…`)
+  regardless of `CONFIG_ESP_CONSOLE_*`, because the ROM runs before that config
+  applies. Anything parsing this port must tolerate a few non-JSON lines after a
+  reset.
+
 The project skeleton is intentionally split along the required four tasks:
 
 | Task | Responsibility |

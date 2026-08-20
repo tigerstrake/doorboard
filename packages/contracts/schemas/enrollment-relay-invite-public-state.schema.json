@@ -1,0 +1,54 @@
+{
+  "$defs": {
+    "OpaqueId": {
+      "pattern": "^[a-z]{3,6}_[A-Za-z0-9]{16,32}$",
+      "type": "string"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "What the phone may learn about its own invite before sealing.",
+  "properties": {
+    "expires_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "invite_id": {
+      "$ref": "#/$defs/OpaqueId"
+    },
+    "max_images": {
+      "maximum": 16,
+      "minimum": 1,
+      "title": "Max Images",
+      "type": "integer"
+    },
+    "status": {
+      "enum": [
+        "open",
+        "consumed",
+        "expired",
+        "revoked",
+        "unknown"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "invite_id",
+    "status",
+    "max_images"
+  ],
+  "title": "InvitePublicState",
+  "type": "object"
+}

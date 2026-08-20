@@ -1,5 +1,6 @@
 packages:
   - "apps/door-ui"
+  - "apps/public-relay"
   - "packages/contracts"
   - "packages/ui-kit"
   - "packages/media-client"

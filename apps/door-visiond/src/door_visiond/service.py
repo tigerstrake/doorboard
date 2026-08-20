@@ -11,11 +11,21 @@ import asyncio
 import contextlib
 import shutil
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from doorboard_contracts.events import DoorboardEvent
+from doorboard_contracts.enrollment_relay import (
+    DoorKeyPublication,
+    InviteRegistration,
+    PickupAck,
+    SealedBundle,
+)
+from doorboard_contracts.events import (
+    DoorboardEvent,
+    consent_covers_extended_personalisation,
+)
 from doorboard_esp32_link import Esp32Transport, wire_message_from_event
 
 from door_visiond._uuid7 import uuid7
@@ -24,7 +34,18 @@ from door_visiond.compat import CompatResult, check_compatibility
 from door_visiond.consent import load_consent_statement
 from door_visiond.embedder import Embedder, HailoEmbedder, MockEmbedder
 from door_visiond.embedding import Embedding
-from door_visiond.enrollment import EnrollmentStore, ProfileSpec
+from door_visiond.enrollment import (
+    DisplayNameTakenError,
+    EnrollmentStore,
+    InvalidAccentColorError,
+    InviteConsumption,
+    InviteUnusableError,
+    NoProfileAvailableError,
+    ProfileSpec,
+    hash_invite_secret,
+    normalize_accent_color,
+)
+from door_visiond.event_forwarder import EventForwarder, HttpEventTransport
 from door_visiond.events import (
     EventEmitter,
     make_door_profile_clear,
@@ -45,6 +66,12 @@ from door_visiond.pipeline import (
 )
 from door_visiond.privacy_store import PrivacyStore
 from door_visiond.purge_outbox import PurgeOutbox
+from door_visiond.relay_client import (
+    HttpRelayTransport,
+    RelayTransport,
+    RelayWorker,
+)
+from door_visiond.relay_seal import RelayKeyring, SealError
 from door_visiond.settings import Settings
 from door_visiond.storage_security import is_luks_backed
 
@@ -85,11 +112,30 @@ class QualityTooLowError(EnrollError):
         super().__init__("all captured faces are below the enrollment quality threshold")
 
 
+class SelfEnrollClosedError(EnrollError):
+    """Self-service enrollment is refused by a cap (ADR-0019 §3).
+
+    ``reason`` is a stable code the doorpad renders as a sentence, because "closed"
+    with no explanation is the failure mode that sends someone to knock instead.
+    """
+
+    def __init__(self, reason: str, *, retry_after_s: int | None = None) -> None:
+        self.reason = reason
+        self.retry_after_s = retry_after_s
+        super().__init__(reason)
+
+
 @dataclass(frozen=True)
 class EnrollResult:
     person_id: str
     embeddings_created: int
     quality: list[float]
+    # The profile actually assigned, and whether it differs from what was asked
+    # for. Two people wanting the same colour is ordinary: the second gets the
+    # next free catalogue entry, and the enrollee is told rather than left to
+    # discover it (ADR-0009 §1 keeps profile_id unique per person).
+    profile_id: str = ""
+    profile_reassigned: bool = False
 
 
 class VisiondService:
@@ -102,6 +148,9 @@ class VisiondService:
         backend: VisionBackend | None = None,
         emitter: EventEmitter | None = None,
         esp32_transport: Esp32Transport | None = None,
+        relay_transport: RelayTransport | None = None,
+        event_forwarder: EventForwarder | None = None,
+        backend_factory: Callable[[], VisionBackend] | None = None,
     ) -> None:
         self._settings = settings
         self._clock: Clock = clock or SystemClock()
@@ -113,6 +162,9 @@ class VisiondService:
         self._esp32_profile_send_failures = 0
         self._esp32_profile_last_error: str | None = None
         self._esp32_tasks: set[asyncio.Task[None]] = set()
+        # The screen half of a greeting: identity events have to reach door-api.
+        # Injectable so tests can assert what is forwarded without an HTTP server.
+        self._event_forwarder: EventForwarder | None = event_forwarder
 
         self._enrollment_locked = settings.require_encrypted_enrollment and not is_luks_backed(
             settings.enrollment_root
@@ -132,6 +184,24 @@ class VisiondService:
         self._pipeline_errors = 0
         self._pipeline_consecutive_errors = 0
         self._runtime_degraded_detail: str | None = None
+        # When to try the real backend again after a degradation, and counters so a
+        # door that is flapping between the two is visible in /metrics.
+        self._backend_recovery_due_ms: int | None = None
+        self._backend_degradations = 0
+        self._backend_recoveries = 0
+
+        # Remote enrollment (ADR-0016). All optional: with no relay configured
+        # none of this starts and the at-door flow is untouched. The keyring is
+        # opened lazily so a locked enrollment volume never causes a keypair to be
+        # written to the unencrypted parent filesystem.
+        self._relay_keyring: RelayKeyring | None = None
+        self._relay_transport: RelayTransport | None = relay_transport
+        self._relay_worker: RelayWorker | None = None
+        self._relay_tasks: set[asyncio.Task[None]] = set()
+
+        # Arrival log (ADR-0018). Per-person throttle so the recognition path does
+        # not touch SQLite on every cache refresh.
+        self._visit_write_ms: dict[str, int] = {}
         # Shared Hailo face pipeline (built once, lazily, for hardware modes so
         # the VDevice + models are reused by both the embedder and the backend).
         self._hailo_pipeline: HailoFacePipeline | None = None
@@ -171,7 +241,14 @@ class VisiondService:
             cache_clear_sink=self._on_cache_clear,
         )
 
-        self._backend: VisionBackend = backend or self._build_backend()
+        # How to rebuild the backend after a degradation. Injectable so the recovery
+        # path is testable without a Hailo: the default builds the real thing.
+        self._backend_factory: Callable[[], VisionBackend] = backend_factory or self._build_backend
+        # Whether the caller owns backend construction. If they do, recovery must not
+        # touch the shared Hailo device — building one is exactly what an injected
+        # factory exists to avoid.
+        self._owns_backend_construction = backend_factory is None
+        self._backend: VisionBackend = backend or self._backend_factory()
         self._privacy_enabled = False
         self._run_task: asyncio.Task[None] | None = None
         self._running = False
@@ -211,7 +288,8 @@ class VisiondService:
             return HardwareBackend(
                 mode=self._effective_mode,
                 embedder=self._embedder,
-                snapshot_url=self._settings.snapshot_url,
+                # Per-mode (ADR-0023): dual-camera reads the recognition camera.
+                snapshot_url=self._settings.face_snapshot_url,
                 snapshot_timeout_s=self._settings.snapshot_timeout_s,
                 pipeline=self._get_hailo_pipeline(),
                 interval_ms=self._settings.frame_interval_ms,
@@ -255,6 +333,64 @@ class VisiondService:
         self._running = True
         self._run_task = asyncio.create_task(self._run_loop(), name="visiond-run-loop")
         self._purge_task = asyncio.create_task(self._purge_loop(), name="visiond-purge-outbox")
+        await self._start_event_forwarder()
+        await self._start_relay_worker()
+
+    async def _start_event_forwarder(self) -> None:
+        """Start the door-api event hop, if one is configured (ADR-0018 §3).
+
+        Without it door-visiond's identity events never leave the process, so the
+        wallboard and doorpad cannot greet a recognised person — see
+        :mod:`door_visiond.event_forwarder`. Unconfigured is a supported state (mock,
+        CI, a door with no screens): recognition, the identity cache and the ESP32
+        profile push are all unaffected.
+        """
+        if self._event_forwarder is not None:
+            await self._event_forwarder.start()
+            return
+        if not self._settings.event_forwarding_enabled:
+            logger.info("event_forwarder_disabled")
+            return
+        self._event_forwarder = EventForwarder(
+            HttpEventTransport(
+                base_url=self._settings.door_api_base_url,
+                token=self._settings.door_api_internal_token,
+                timeout_s=self._settings.event_forward_timeout_s,
+            )
+        )
+        await self._event_forwarder.start()
+        logger.info("event_forwarder_started", extra={"target": self._settings.door_api_base_url})
+
+    async def _start_relay_worker(self) -> None:
+        """Start the remote-enrollment poller, if a relay is configured.
+
+        Nothing here is allowed to prevent the service from coming up: remote
+        enrollment is a convenience, and the door path must not depend on it.
+        """
+        if self._relay_transport is None:
+            if not self._settings.relay_enabled:
+                return
+            self._relay_transport = HttpRelayTransport(
+                base_url=self._settings.relay_base_url,
+                device_token=self._settings.relay_device_token,
+                timeout_s=self._settings.relay_timeout_s,
+            )
+        if self._enrollment_locked:
+            logger.warning("relay_worker_not_started_storage_locked")
+            return
+        try:
+            # Prune sealing keys retired longer ago than the relay's own TTL (E-12).
+            self._keyring().prune_retired(older_than_s=self._settings.relay_retired_key_ttl_s)
+        except (SealError, EnrollmentLockedError) as exc:
+            logger.error("relay_keyring_unavailable", extra={"error_class": type(exc).__name__})
+            return
+        self._relay_worker = RelayWorker(
+            transport=self._relay_transport,
+            handler=self,
+            poll_interval_s=self._settings.relay_poll_interval_s,
+            backoff_max_s=self._settings.relay_backoff_max_s,
+        )
+        await self._relay_worker.start()
 
     async def stop(self) -> None:
         self._running = False
@@ -266,6 +402,12 @@ class VisiondService:
             self._purge_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._purge_task
+        if self._event_forwarder is not None:
+            await self._event_forwarder.stop()
+        if self._relay_worker is not None:
+            await self._relay_worker.stop()
+        if self._relay_tasks:
+            await asyncio.gather(*self._relay_tasks, return_exceptions=True)
         if self._esp32_tasks:
             await asyncio.gather(*self._esp32_tasks, return_exceptions=True)
         await self._backend.close()
@@ -322,6 +464,7 @@ class VisiondService:
         while self._running:
             try:
                 capture = await self._backend.next_capture()
+                await self._maybe_recover_backend()
                 self._core.tick()
                 if capture is not None:
                     self._core.process_capture(capture)
@@ -349,13 +492,85 @@ class VisiondService:
         self._effective_mode = "disabled"
         self._runtime_degraded_detail = f"vision backend failed: {type(exc).__name__}"
         self._pipeline_consecutive_errors = 0
+        self._backend_recovery_due_ms = self._clock.monotonic_ms() + int(
+            self._settings.backend_recovery_delay_s * 1000
+        )
+        self._backend_degradations += 1
         with contextlib.suppress(Exception):
             await failed_backend.close()
+        # `HardwareBackend.close()` closes the Hailo pipeline — and that pipeline is
+        # SHARED: `_get_hailo_pipeline` caches it and the embedder holds the same object.
+        # Forget it here so recovery constructs a fresh device instead of handing back a
+        # closed one. Measured on the door: without this the recovery logged
+        # `vision_backend_recovered`, reported `mode: hardware`, and then sat at zero
+        # frames forever — a failure that actively hides itself, which is worse than
+        # staying visibly degraded.
+        self._hailo_pipeline = None
         self._emit_pipeline_status()
         logger.error(
             "vision_backend_degraded_to_disabled",
-            extra={"error_class": type(exc).__name__},
+            extra={
+                "error_class": type(exc).__name__,
+                "retry_in_s": self._settings.backend_recovery_delay_s,
+            },
         )
+
+    async def _maybe_recover_backend(self) -> None:
+        """Rebuild the real backend after a degradation, once, on a delay.
+
+        Degradation used to be terminal: three consecutive frame errors dropped the
+        service to ``DisabledBackend`` for the rest of its life. The frames come from
+        door-media over HTTP, so *restarting door-media* — for a camera setting, a deploy,
+        anything — reliably produced three ``URLError``s and permanently stopped
+        recognition on a door that otherwise looked healthy. The only symptom was
+        ``mode: disabled`` in ``/health``, and the only cure was noticing.
+
+        Recovery is the right default because the common causes are transient by nature
+        (a sibling service restarting) while the permanent ones re-degrade immediately and
+        harmlessly: a missing Hailo fails the next frame too, and we are back here having
+        spent one attempt.
+        """
+        if self._backend_recovery_due_ms is None:
+            return
+        if self._clock.monotonic_ms() < self._backend_recovery_due_ms:
+            return
+        self._backend_recovery_due_ms = None
+        # No compat re-check: a compat failure means a DisabledBackend was built at
+        # startup, and that backend cannot raise, so no degradation — and therefore no
+        # recovery — is ever scheduled from it. Re-checking here would only be a way to
+        # get this wrong.
+        if self._settings.vision_mode not in _HARDWARE_MODES:
+            # Mock/disabled have no HTTP frame source, so there is no transient failure
+            # to recover from — a scripted backend that fails is failing on purpose.
+            return
+        if self._privacy_enabled or self._enrollment_locked:
+            return
+        # Restore the mode FIRST: `_build_backend` branches on `_effective_mode`, so
+        # building while it still reads "disabled" hands back another DisabledBackend and
+        # then relabels it "hardware" — mode restored, function not, zero frames, and
+        # `runtime_warning` cleared so nothing looks wrong. Measured on the door.
+        self._effective_mode = self._settings.vision_mode
+        try:
+            # The embedder holds a pipeline reference too, so it has to be rebuilt on the
+            # fresh device before the backend that shares it.
+            if self._owns_backend_construction and self._settings.vision_mode in _HARDWARE_MODES:
+                self._embedder = self._build_embedder()
+            restored = self._backend_factory()
+        except Exception as exc:
+            self._effective_mode = "disabled"
+            logger.warning(
+                "vision_backend_recovery_failed", extra={"error_class": type(exc).__name__}
+            )
+            return
+        previous = self._backend
+        self._backend = restored
+        self._runtime_degraded_detail = None
+        self._pipeline_consecutive_errors = 0
+        self._backend_recoveries += 1
+        with contextlib.suppress(Exception):
+            await previous.close()
+        self._emit_pipeline_status()
+        logger.info("vision_backend_recovered", extra={"mode": self._effective_mode})
 
     def _wipe_enroll_tmp(self) -> None:
         root = self._settings.enroll_tmp_root
@@ -392,7 +607,15 @@ class VisiondService:
         consent_confirmed: bool,
         images: list[bytes],
         profile: ProfileSpec,
+        invite: InviteConsumption | None = None,
     ) -> EnrollResult:
+        """Embed and store one person.
+
+        ``invite`` is set only on the remote path (ADR-0016): it is validated and
+        consumed in the same transaction as the insert, so this method is the one
+        place both enrollment paths converge — and therefore the one place the
+        transient-image guarantee (§1) has to hold.
+        """
         if self._enrollment_locked:
             raise EnrollmentLockedError
         if self._privacy_enabled:
@@ -428,6 +651,7 @@ class VisiondService:
                 consent_at=self._clock.utc_now(),
                 embeddings=embeddings,
                 profile=profile,
+                invite=invite,
             )
         finally:
             # E-1/§1: raw enrollment images never survive the request.
@@ -438,6 +662,8 @@ class VisiondService:
             person_id=person_id,
             embeddings_created=len(embeddings),
             quality=qualities,
+            profile_id=self._store.last_assigned_profile,
+            profile_reassigned=self._store.last_profile_was_reassigned,
         )
 
     def unenroll(self, person_id: str) -> dict[str, object]:
@@ -465,6 +691,314 @@ class VisiondService:
             extra={"person_id": person_id, "newly_queued": newly_queued},
         )
         return {"deleted": existed, "archive_purge": "queued"}
+
+    # -- remote enrollment relay (ADR-0016) --------------------------------
+
+    def _keyring(self) -> RelayKeyring:
+        """Lazily open the door sealing keyring.
+
+        Lazy because the key lives on the encrypted volume: constructing it during
+        __init__ would generate a keypair on the unencrypted parent filesystem
+        whenever the volume happens to be locked at boot.
+        """
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        if self._relay_keyring is None:
+            self._relay_keyring = RelayKeyring(self._settings.relay_key_path)
+        return self._relay_keyring
+
+    #: Label stamped on invites minted by a visitor at the doorpad, so the hourly cap
+    #: can be counted from the invite table and owner-minted invites never consume it.
+    SELF_ENROLL_LABEL = "self-service (doorpad)"
+
+    def create_self_enroll_invite(self) -> dict[str, object]:
+        """Mint an invite for a visitor standing at the door, with no admin credential.
+
+        ADR-0019: presence at the doorpad is the authorization, the same gate the bell
+        and the guestbook already use. What keeps that safe is not authentication but
+        bounds -- an hourly cap and a ceiling on how many people this door will ever
+        know -- plus a Telegram notification the owner cannot miss.
+        """
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        if self._privacy_enabled:
+            raise PrivacyModeActiveError
+        per_hour = self._settings.self_enroll_per_hour
+        if per_hour <= 0:
+            raise SelfEnrollClosedError("disabled")
+        max_enrolled = self._settings.self_enroll_max_enrolled
+        if max_enrolled and self._matcher.enrolled_count >= max_enrolled:
+            raise SelfEnrollClosedError("door_full")
+        window_start = datetime.now(UTC) - timedelta(hours=1)
+        minted = self._store.count_invites_since(window_start, label=self.SELF_ENROLL_LABEL)
+        if minted >= per_hour:
+            raise SelfEnrollClosedError("rate_limited", retry_after_s=3600)
+        invite = self.create_invite(label=self.SELF_ENROLL_LABEL)
+        logger.info(
+            "self_enroll_invite_minted",
+            extra={"minted_last_hour": minted + 1, "enrolled": self._matcher.enrolled_count},
+        )
+        return invite
+
+    def create_invite(self, *, label: str | None = None) -> dict[str, object]:
+        """Mint a single-use invite and return the URL a phone can open.
+
+        The secret appears in the returned URL and is never stored or logged; the
+        fragment carries the key fingerprint so the client can detect a relay that
+        substituted its own key (E-10). Fragments are not sent to servers.
+        """
+        if self._privacy_enabled:
+            raise PrivacyModeActiveError
+        keyring = self._keyring()
+        # Invite expiry is wall-clock UTC, not the injectable/monotonic clock: the
+        # phone, the relay, and the Pi are three different hosts comparing the same
+        # instant, so a monotonic value would be meaningless between them. Same
+        # reasoning as door-api's visitor tokens.
+        expires_at = datetime.now(UTC) + timedelta(seconds=self._settings.relay_invite_ttl_s)
+        invite_id, secret = self._store.create_invite(
+            expires_at=expires_at,
+            label=label,
+            max_images=self._settings.relay_max_images,
+        )
+        base = self._settings.relay_invite_base_url
+        url = f"{base}/e/{invite_id}.{secret}#k={keyring.fingerprint}"
+        registration = InviteRegistration(
+            invite_id=invite_id,
+            secret_sha256=hash_invite_secret(secret),
+            expires_at=expires_at,
+            max_images=self._settings.relay_max_images,
+        )
+        # Register outbound so the relay can reject junk before it reaches us. A
+        # failure here is not fatal: the worker's resync re-registers open invites,
+        # and the QR stays valid because the Pi's own table is authoritative.
+        if self._relay_worker is not None:
+            self._submit_relay_registration(registration)
+        logger.info("relay_invite_minted", extra={"invite_id": invite_id})
+        return {
+            "invite_id": invite_id,
+            "url": url,
+            "expires_at": expires_at.isoformat(),
+            "max_images": self._settings.relay_max_images,
+            "relay_configured": self._settings.relay_enabled,
+            "door_key_fingerprint": keyring.fingerprint,
+        }
+
+    def _submit_relay_registration(self, registration: InviteRegistration) -> None:
+        async def _send() -> None:
+            try:
+                await asyncio.to_thread(self._relay_transport_register, registration)
+            except Exception as exc:
+                logger.warning(
+                    "relay_invite_registration_failed",
+                    extra={"invite_id": registration.invite_id, "error_class": type(exc).__name__},
+                )
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(_send(), name="visiond-relay-invite-register")
+        self._relay_tasks.add(task)
+        task.add_done_callback(self._relay_tasks.discard)
+
+    def _relay_transport_register(self, registration: InviteRegistration) -> None:
+        if self._relay_transport is not None:
+            self._relay_transport.register_invite(registration)
+
+    def revoke_invite(self, invite_id: str) -> dict[str, object]:
+        revoked = self._store.revoke_invite(invite_id)
+        if revoked and self._relay_transport is not None:
+            # Best-effort: the Pi's table already refuses the invite, so a failed
+            # relay call cannot authorize anything.
+            with contextlib.suppress(Exception):
+                self._relay_transport.revoke_invite(invite_id)
+        return {"revoked": revoked}
+
+    def list_invites(self, *, include_closed: bool = False) -> list[dict[str, object]]:
+        return self._store.list_invites(include_closed=include_closed)
+
+    def rotate_relay_key(self) -> dict[str, object]:
+        keyring = self._keyring()
+        key_id = keyring.rotate()
+        if self._relay_worker is not None:
+            self._relay_worker.request_resync()
+        return {"door_key_id": key_id, "fingerprint": keyring.fingerprint}
+
+    # -- RelayHandler protocol (called by RelayWorker) ---------------------
+
+    def relay_collection_allowed(self) -> bool:
+        return not self._privacy_enabled and not self._enrollment_locked
+
+    def relay_door_key_publication(self) -> DoorKeyPublication:
+        statement = load_consent_statement(self._settings.consent_statement_path)
+        return self._keyring().publication(
+            consent_version=statement.version,
+            consent_text=statement.text,
+        )
+
+    def relay_invite_registrations(self) -> list[InviteRegistration]:
+        return [
+            InviteRegistration(
+                invite_id=invite_id,
+                secret_sha256=secret_sha256,
+                expires_at=datetime.fromisoformat(expires_at),
+                max_images=max_images,
+            )
+            for invite_id, secret_sha256, expires_at, max_images in (
+                self._store.open_invite_registrations()
+            )
+        ]
+
+    def relay_handle_bundle(self, bundle: SealedBundle) -> PickupAck:
+        """Open a sealed bundle and enroll the person inside it.
+
+        Never raises: every failure becomes an ack with a machine-readable reason,
+        so one bad bundle cannot stall the queue or kill the worker. Reasons never
+        contain user data (P-19).
+        """
+        try:
+            opened = self._keyring().open_bundle(bundle)
+        except SealError as exc:
+            logger.warning(
+                "relay_bundle_unsealable",
+                extra={"bundle_id": bundle.bundle_id, "reason": exc.reason},
+            )
+            return PickupAck(bundle_id=bundle.bundle_id, outcome="rejected", reason=exc.reason)
+        except EnrollmentLockedError:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="failed", reason="enrollment_storage_locked"
+            )
+
+        manifest = opened.manifest
+        # The relay's copy of invite_id is untrusted; the sealed manifest holds the
+        # secret only a genuine invite holder could know (E-11).
+        invite = InviteConsumption(
+            invite_id=bundle.invite_id,
+            secret_sha256=hash_invite_secret(manifest.invite_secret),
+        )
+        max_images = self._store.invite_max_images(bundle.invite_id)
+        if max_images is None:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="rejected", reason="unknown_invite"
+            )
+        if len(opened.images) > max_images:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="rejected", reason="too_many_images"
+            )
+
+        try:
+            result = self.enroll(
+                display_name=manifest.display_name,
+                consent_version=manifest.consent_version,
+                consent_confirmed=manifest.consent_confirmed,
+                images=list(opened.images),
+                profile=ProfileSpec(
+                    profile_id=manifest.profile.profile_id,
+                    color=manifest.profile.color,
+                    sound=manifest.profile.sound,
+                    # Validated here rather than trusted: it arrives from a phone and ends
+                    # up in a CSS custom property (ADR-0021).
+                    accent_color=normalize_accent_color(manifest.profile.accent_color),
+                ),
+                invite=invite,
+            )
+        except InvalidAccentColorError:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="rejected", reason="invalid_accent_color"
+            )
+        except NoProfileAvailableError:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="failed", reason="no_profile_available"
+            )
+        except InviteUnusableError as exc:
+            return PickupAck(bundle_id=bundle.bundle_id, outcome="rejected", reason=exc.reason)
+        except StaleConsentError:
+            return PickupAck(bundle_id=bundle.bundle_id, outcome="rejected", reason="stale_consent")
+        except DisplayNameTakenError:
+            # "rejected", not "failed": the bundle will never succeed as-is, so the
+            # relay should stop offering it and the phone should say to pick another
+            # name rather than sit on "Waiting for the door".
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="rejected", reason="display_name_taken"
+            )
+        except QualityTooLowError:
+            return PickupAck(bundle_id=bundle.bundle_id, outcome="failed", reason="quality_too_low")
+        except PrivacyModeActiveError:
+            return PickupAck(bundle_id=bundle.bundle_id, outcome="failed", reason="privacy_mode")
+        except EnrollmentLockedError:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="failed", reason="enrollment_storage_locked"
+            )
+        except Exception as exc:
+            logger.error(
+                "relay_enroll_failed",
+                extra={"bundle_id": bundle.bundle_id, "error_class": type(exc).__name__},
+            )
+            return PickupAck(bundle_id=bundle.bundle_id, outcome="failed", reason="internal_error")
+
+        logger.info(
+            "relay_enrollment_completed",
+            extra={
+                "bundle_id": bundle.bundle_id,
+                "person_id": result.person_id,
+                "embeddings": result.embeddings_created,
+            },
+        )
+        return PickupAck(
+            bundle_id=bundle.bundle_id,
+            outcome="enrolled",
+            # Tells the phone their colour was taken so it can say so, rather than
+            # letting them find out from the doorboard later.
+            reason=f"profile_reassigned:{result.profile_id}" if result.profile_reassigned else None,
+        )
+
+    def relay_status(self) -> dict[str, object]:
+        if not self._settings.relay_enabled:
+            return {"configured": False, "status": "disabled"}
+        stats = self._relay_worker.stats if self._relay_worker is not None else None
+        if stats is None:
+            return {"configured": True, "status": "stopped"}
+        return {
+            "configured": True,
+            "status": "degraded" if stats.degraded else "ok",
+            "polls_ok": stats.polls_ok,
+            "polls_failed": stats.polls_failed,
+            "bundles_enrolled": stats.bundles_enrolled,
+            "bundles_rejected": stats.bundles_rejected,
+            "consecutive_failures": stats.consecutive_failures,
+            "last_error": stats.last_error,
+            "last_success_at": stats.last_success_at,
+        }
+
+    # -- arrival log reads (ADR-0018 §1, admin-only per E-24) ---------------
+
+    def list_visits(
+        self, *, limit: int = 200, person_id: str | None = None
+    ) -> list[dict[str, object]]:
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        return self._store.list_visits(limit=limit, person_id=person_id)
+
+    def visit_counts(self) -> list[dict[str, object]]:
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        return self._store.visit_counts()
+
+    def purge_visits(self, *, person_id: str | None = None) -> dict[str, object]:
+        """Forget arrival history while keeping the person enrolled.
+
+        Unenroll already cascades visits away; this is the narrower control.
+        """
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        deleted = self._store.purge_visits(person_id=person_id)
+        # Drop the throttle memo so the next sighting opens a fresh visit rather
+        # than being suppressed by a timestamp whose row no longer exists.
+        if person_id is None:
+            self._visit_write_ms.clear()
+        else:
+            self._visit_write_ms.pop(person_id, None)
+        return {"deleted": deleted}
 
     # -- privacy mode ------------------------------------------------------
 
@@ -508,7 +1042,39 @@ class VisiondService:
 
     # -- ESP32 profile mirroring ------------------------------------------
 
+    def _record_visit_sighting(self, person_id: str, consent_version: str = "") -> None:
+        """Log that a recognised person is at the door (ADR-0018 §1).
+
+        Throttled per person: the identity cache refreshes every couple of seconds
+        while someone stands there, and this runs on the recognition path. A visit
+        log needs no better resolution than the greeting cooldown, so writing at
+        most that often keeps SQLite off the hot path while still extending an open
+        visit for as long as the person is present.
+        """
+        if self._enrollment_locked:
+            return
+        # Withhold the arrival log from anyone whose consent predates v3: they
+        # agreed to a greeting, not to being logged (ADR-0018). Fails closed, so an
+        # unparseable version logs nothing.
+        if not consent_covers_extended_personalisation(consent_version):
+            return
+        now_ms = self._clock.monotonic_ms()
+        last_ms = self._visit_write_ms.get(person_id)
+        if last_ms is not None and (now_ms - last_ms) < self._settings.visit_write_interval_ms:
+            return
+        self._visit_write_ms[person_id] = now_ms
+        try:
+            self._store.record_sighting(
+                person_id,
+                now=self._clock.utc_now(),
+                merge_window_s=self._settings.visit_merge_window_s,
+            )
+        except Exception as exc:
+            # A visit-log failure must never disturb recognition or the door.
+            logger.warning("visit_record_failed", extra={"error_class": type(exc).__name__})
+
     def _on_cache_refresh(self, visitor: CurrentVisitor, priority: str, trace_id) -> None:
+        self._record_visit_sighting(visitor.person_id, visitor.consent_version)
         event = make_door_profile_update(
             clock=self._clock,
             door_id=self._settings.door_id,
@@ -604,6 +1170,7 @@ class VisiondService:
             and self._runtime_degraded_detail is None
             and not self._enrollment_locked
         )
+        relay = self.relay_status()
         return {
             "service": "door-visiond",
             "status": "ok" if healthy else "degraded",
@@ -614,17 +1181,53 @@ class VisiondService:
             "enrolled": self._matcher.enrolled_count,
             "enrollment_locked": enrollment_locked,
             "compat": self._compat.detail,
+            # Which camera the face path is actually reading (ADR-0023). Stated rather
+            # than implied by the mode, because "configured for two cameras, using one"
+            # was invisible before and is the thing most worth being able to check.
+            "face_frame_source": self._settings.face_snapshot_url,
             "runtime_warning": self._runtime_degraded_detail,
             "door_id": self._settings.door_id,
             "esp32_connected": esp32_status.connected if esp32_status is not None else None,
             "esp32_profile_push_status": "degraded" if esp32_profile_warning else "ok",
             "esp32_profile_warning": esp32_profile_warning,
             "privacy_state_status": "invalid_fail_closed" if self._privacy_state_degraded else "ok",
+            # How many of the enrolled people added themselves at the doorpad
+            # (ADR-0019 §4). The owner cannot be asked to consent to self-service and
+            # then have no way to see it happening; `GET /people` names them, this
+            # counts them, and both are one request away.
+            "self_enrolled": self._store.count_consumed_invites(label=self.SELF_ENROLL_LABEL),
+            # Frames door-media re-served unchanged. Climbing steadily means its
+            # snapshot reader has stalled and the doorway is being judged on stale
+            # pictures -- recognition looks alive and is not seeing anything new.
+            "snapshot_duplicate_frames": status.duplicate_frames,
             "archive_purge_queue_depth": self._purge_outbox.depth(),
+            # The screen half of the greeting path. Reported but NOT part of
+            # `healthy`: door-api being unreachable costs the display greeting, it
+            # does not break the door. Silence here is what hid the missing hop for
+            # a fortnight, so it is visible in /health from now on.
+            "event_forwarding": self._event_forwarding_status(),
+            "event_forward_last_error": (
+                self._event_forwarder.last_error if self._event_forwarder is not None else None
+            ),
+            # Deliberately NOT part of `healthy`: an unreachable relay must not
+            # make the door service look broken (ADR-0016 §6).
+            "relay_status": relay["status"],
+            "relay_configured": relay["configured"],
         }
+
+    def _event_forwarding_status(self) -> str:
+        if self._event_forwarder is None:
+            return "disabled"
+        if self._event_forwarder.last_error is not None and self._event_forwarder.forwarded == 0:
+            return "failing"
+        return "ok"
 
     def metrics_snapshot(self) -> dict[str, float]:
         snap = self._core.metrics_snapshot()
+        snap["snapshot_duplicate_frames"] = float(self._backend.status().duplicate_frames)
+        snap["self_enrolled"] = float(
+            self._store.count_consumed_invites(label=self.SELF_ENROLL_LABEL)
+        )
         snap["cache_hit_rate"] = self.cache_hit_rate()
         snap["enrolled"] = float(self._matcher.enrolled_count)
         snap["esp32_profile_updates_acked"] = float(self._esp32_profile_updates_acked)
@@ -634,6 +1237,21 @@ class VisiondService:
         snap["archive_purges_delivered"] = float(self._purges_delivered)
         snap["archive_purges_failed"] = float(self._purges_failed)
         snap["pipeline_errors"] = float(self._pipeline_errors)
+        snap["backend_degradations"] = float(self._backend_degradations)
+        snap["backend_recoveries"] = float(self._backend_recoveries)
+        forwarder = self._event_forwarder
+        snap["events_forwarded"] = float(forwarder.forwarded if forwarder else 0)
+        snap["events_forward_dropped"] = float(forwarder.dropped if forwarder else 0)
+        snap["events_forward_failures"] = float(forwarder.failures if forwarder else 0)
+        relay_stats = self._relay_worker.stats if self._relay_worker is not None else None
+        snap["relay_enabled"] = 1.0 if self._settings.relay_enabled else 0.0
+        snap["relay_polls_ok"] = float(relay_stats.polls_ok if relay_stats else 0)
+        snap["relay_polls_failed"] = float(relay_stats.polls_failed if relay_stats else 0)
+        snap["relay_bundles_enrolled"] = float(relay_stats.bundles_enrolled if relay_stats else 0)
+        snap["relay_bundles_rejected"] = float(relay_stats.bundles_rejected if relay_stats else 0)
+        snap["relay_consecutive_failures"] = float(
+            relay_stats.consecutive_failures if relay_stats else 0
+        )
         return snap
 
     def now_utc(self) -> datetime:

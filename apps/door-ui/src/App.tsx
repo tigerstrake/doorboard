@@ -9,6 +9,9 @@ import {
   CrossfadeSwitch,
   SessionState,
   Gauge,
+  profileAccent,
+  accentInk,
+  warmQrEncoder,
 } from "@doorboard/ui-kit";
 import { DoorboardEventClient, uuidv7 } from "@doorboard/event-client";
 import type {
@@ -20,6 +23,11 @@ import type {
   DoorboardEvent,
   PresenceLabel,
 } from "@doorboard/contracts";
+import { AboutDoorboard } from "./AboutDoorboard";
+import { pollShares } from "./PollResultBars";
+import { CampusDiningMap } from "./wallboard/CampusDiningMap";
+import { ApproachGreeting } from "./ApproachGreeting";
+import { AttributionNotice } from "./AttributionNotice";
 import { WallboardVisitorMode } from "./wallboard/WallboardVisitorMode";
 import {
   presenceFixture,
@@ -64,7 +72,10 @@ const CANNED_GUESTBOOK_PHRASES = ["Hey, stopped by!", "Call me later!", "Awesome
 type MyContentRef = { kind: "guestbook" | "checkin"; id: string; label: string };
 type MyContentStore = Record<string, MyContentRef[]>;
 const MY_CONTENT_KEY = "doorboard_my_social_content_v2";
+import { doorpadResetTimeoutMs } from "./doorpadTimeouts";
+
 const ADMIN_TOKEN_KEY = "doorboard_admin_social_token";
+
 const MAX_STORED_VISITOR_SESSIONS = 16;
 const MAX_CONTENT_ITEMS_PER_SESSION = 32;
 
@@ -205,8 +216,27 @@ type DoorPadScreen =
   | "poll"
   | "checkin"
   | "privacy"
-  | "remote";
+  | "remote"
+  | "enroll";
 type VideoStep = "offer" | "countdown" | "recording" | "review" | "saved" | "qr";
+type EnrollState = "idle" | "minting" | "ready" | "closed" | "failed";
+interface EnrollInvite {
+  url: string;
+  expires_at: string;
+}
+/**
+ * Why enrollment is refused, in the visitor's words. Keyed by the reason codes
+ * door-visiond returns (ADR-0019 §3) so a new backend reason surfaces as the
+ * generic line rather than a blank screen.
+ */
+const ENROLL_CLOSED_COPY: Record<string, string> = {
+  rate_limited:
+    "A few people have just signed up. Enrollment reopens within the hour — or ask the resident.",
+  door_full: "This door has as many saved faces as it holds. Ask the resident to make room.",
+  disabled: "Self sign-up is switched off at this door. Ask the resident to add you.",
+  privacy_mode: "The camera is off right now, so nobody can be added. Try later.",
+  locked: "The door cannot reach its secure storage, so nobody can be added right now.",
+};
 type PhotoStep = "offer" | "countdown" | "review" | "saved";
 // Lifecycle of the auto-captured post-bell check-in photo:
 // idle -> capturing -> ready -> (saving -> saved | cleared). "cleared" is a
@@ -230,7 +260,11 @@ interface DoorApiSnapshot {
     state?: SessionState;
     session_id?: string | null;
     display_name?: string | null;
+    /** Recognised person whose name writes will carry (ADR-0018 E-23). */
+    attributed_to?: string | null;
     profile_id?: string | null;
+    /** The colour this person chose at enrollment (ADR-0021), not the profile default. */
+    accent_color?: string | null;
   };
   config?: { max_recording_s?: number };
 }
@@ -253,8 +287,29 @@ interface AmbientAlert {
   priority: number;
 }
 
-function doorPadRouteForState(state: SessionState): { screen: DoorPadScreen; video: VideoStep } {
-  if (state === "IDLE" || state === "SESSION_END") return { screen: "home", video: "offer" };
+export function doorPadRouteForState(
+  state: SessionState
+): { screen: DoorPadScreen | null; video: VideoStep } {
+  // `null` screen means "this transition implies nothing about where the visitor should be".
+  //
+  // IDLE used to route home, and IDLE arrives constantly: door-visiond's identity cache is
+  // 2.5 s, so looking down at the panel drops the session out of APPROACH_DETECTED almost
+  // immediately. Anyone who had tapped into Visitor Check-In, the guestbook or a poll was
+  // yanked back to the home screen mid-task — "it said hi tiger and immediately logged out
+  // again without giving me a chance to send a visitor check in".
+  //
+  // Going home when a visit genuinely finishes is still right, and SESSION_END still says so.
+  // A session merely lapsing to IDLE does not.
+  if (state === "SESSION_END") return { screen: "home", video: "offer" };
+  if (state === "IDLE") return { screen: null, video: "offer" };
+  // Recognition alone must not move the visitor off the home screen. These two states are
+  // reached by walking up, with nothing pressed, and they fell through to the "ringing"
+  // screen — so being recognised showed a bell-ringing UI to somebody who had not rung.
+  // ARCHITECTURE.md §5.4: late recognition may update the display, never re-trigger the
+  // interaction. The greeting overlay and the identity badge carry the recognition.
+  if (state === "APPROACH_DETECTED" || state === "IDENTITY_CACHED") {
+    return { screen: null, video: "offer" };
+  }
   if (state === "VIDEO_MESSAGE_OFFERED") return { screen: "message", video: "offer" };
   if (state === "VIDEO_MESSAGE_RECORDING") return { screen: "message", video: "recording" };
   if (state === "VIDEO_MESSAGE_REVIEW") return { screen: "message", video: "review" };
@@ -271,6 +326,59 @@ interface VideoRecording {
   consent_context: "visitor_initiated" | "bell_event" | null;
   thumbnail_path: string | null;
   playback_url?: string;
+}
+
+function AdminThumbnail({
+  recordingId,
+  token,
+  alt,
+}: {
+  recordingId: string;
+  token: string;
+  alt: string;
+}) {
+  /**
+   * A recording's still, fetched with the admin token and shown from a blob URL.
+   *
+   * `<img src>` cannot carry an Authorization header, so a thumbnail behind an
+   * admin-authenticated route has to be fetched and turned into an object URL — the same
+   * shape AdminVideoMessagePlayer already uses for playback.
+   *
+   * The previous URL was `${MEDIA_API_BASE}/${thumbnail_path}` with MEDIA_API_BASE
+   * hardcoded to http://127.0.0.1:8082 whenever the page came from the dev server. On the
+   * Pi's own browser that is door-media; from a laptop it is the laptop, so every
+   * thumbnail was a broken image (ADR-0024).
+   */
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    fetch(`${API_BASE}/admin/media-inbox/${recordingId}/thumbnail`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("thumbnail unavailable");
+        return response.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setSrc(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [recordingId, token]);
+
+  if (failed) return <span className="placeholder-subtext">no still</span>;
+  if (!src) return <span className="placeholder-subtext">…</span>;
+  return <img src={src} alt={alt} className="recording-thumb" />;
 }
 
 function AdminVideoMessagePlayer({
@@ -370,11 +478,18 @@ interface Recording {
 // thank-you screen is visible before the session auto-expires to IDLE.
 const WALLBOARD_TAKEOVER_STATES: SessionState[] = [...VISITOR_STATES, "SESSION_END"];
 
+
 export function App() {
   const [route, setRoute] = useState<string>(window.location.pathname);
   const [sessionState, setSessionState] = useState<SessionState>("IDLE");
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
   const [activeDisplayName, setActiveDisplayName] = useState<string | null>(null);
+  // The colour the recognised person chose (ADR-0021). Distinct from activeProfile,
+  // which names an LED effect and may be reassigned without their colour changing.
+  const [activeAccent, setActiveAccent] = useState<string | null>(null);
+  // Whose name the door will attach to a note or vote made here. Derived by
+  // door-api's consent gate, never by this UI (ADR-0018 E-23).
+  const [attributedTo, setAttributedTo] = useState<string | null>(null);
   const [mockSessionId, setMockSessionId] = useState<string>(() => safeRandomUUID());
   const [showSimPanel, setShowSimPanel] = useState<boolean>(DEV_TOOLS_ENABLED);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
@@ -408,6 +523,12 @@ export function App() {
   const [postRingName, setPostRingName] = useState<string>("");
   const [postRingCheckinPending, setPostRingCheckinPending] = useState<boolean>(false);
   const [visitorQrUrl, setVisitorQrUrl] = useState<string | null>(null);
+  // Self-service enrollment (ADR-0019). "closed" carries the reason door-visiond
+  // gave, because a visitor who is refused deserves a sentence, not a spinner that
+  // stops: they are standing at a door deciding whether to knock.
+  const [enrollInvite, setEnrollInvite] = useState<EnrollInvite | null>(null);
+  const [enrollState, setEnrollState] = useState<EnrollState>("idle");
+  const [enrollClosedReason, setEnrollClosedReason] = useState<string | null>(null);
   const [mediaActionPending, setMediaActionPending] = useState<boolean>(false);
   const [adminRecordings, setAdminRecordings] = useState<VideoRecording[]>([]);
   const [adminInboxState, setAdminInboxState] = useState<"idle" | "loading" | "ready" | "unavailable">(
@@ -514,6 +635,11 @@ export function App() {
               max_elevation_deg: satelliteFixture.max_elevation_deg,
               direction: satelliteFixture.direction,
               visible: satelliteFixture.visible,
+              set_at: satelliteFixture.set_at,
+              rise_azimuth_deg: satelliteFixture.rise_azimuth_deg,
+              culmination_azimuth_deg: satelliteFixture.culmination_azimuth_deg,
+              set_azimuth_deg: satelliteFixture.set_azimuth_deg,
+              track: satelliteFixture.track,
             },
           }
         : null
@@ -543,6 +669,8 @@ export function App() {
             title: foodFixture.title,
             detail: foodFixture.detail,
             provider: foodFixture.provider,
+            hall: foodFixture.hall,
+            backup_hall: foodFixture.backup_hall,
           },
         }
         : null
@@ -579,13 +707,22 @@ export function App() {
       });
       if (snapshot?.session_id) setMockSessionId(snapshot.session_id);
       if (snapshot?.display_name !== undefined) setActiveDisplayName(snapshot.display_name);
+      if (snapshot?.attributed_to !== undefined) setAttributedTo(snapshot.attributed_to);
       if (snapshot?.profile_id !== undefined) setActiveProfile(snapshot.profile_id);
+      if (snapshot?.accent_color !== undefined) setActiveAccent(snapshot.accent_color);
       const target = doorPadRouteForState(nextState);
-      setDoorPadScreen(target.screen);
+      // Only navigate when the new state actually implies a screen. Recognition and a lapsed
+      // session must never cancel whatever the visitor opened themselves.
+      if (target.screen !== null) setDoorPadScreen(target.screen);
       setVideoStep(target.video);
       if (nextState === "IDLE") {
-        setActiveDisplayName(null);
-        setActiveProfile(null);
+        // Only forget the person if the server has also forgotten them. door-api now
+        // holds a recognised identity across the approach timer (ADR-0020), so IDLE no
+        // longer implies "nobody is here" — clearing unconditionally is what made the
+        // greeting vanish and "Check in as <name>" disappear mid-interaction.
+        if (!snapshot?.display_name) setActiveDisplayName(null);
+        if (!snapshot?.profile_id) setActiveProfile(null);
+        if (!snapshot?.accent_color) setActiveAccent(null);
         setRingRequestState("idle");
         // Fresh session: clear any post-bell check-in photo state.
         setPostRingPhoto(null);
@@ -708,6 +845,13 @@ export function App() {
     return () => window.clearTimeout(timeout);
   }, [wallboardFocusRequest]);
 
+  // Load and exercise the QR encoder while nobody is waiting on it. On the door the
+  // first code paid for fetching the library (the UI is served unbundled by the Vite dev
+  // server), which read as the panel hanging after a tap.
+  useEffect(() => {
+    void warmQrEncoder();
+  }, []);
+
   // Initialize event client
   useEffect(() => {
     const client = new DoorboardEventClient({
@@ -749,6 +893,7 @@ export function App() {
       if (event && event.type === "vision.identity_stable" && event.payload) {
         setActiveProfile(event.payload.profile_id);
         setActiveDisplayName(event.payload.display_name);
+        setActiveAccent(event.payload.accent_color ?? null);
       }
     });
 
@@ -1046,7 +1191,6 @@ export function App() {
     setWallboardChannel("ambient");
   };
 
-  const MEDIA_API_BASE = window.location.port === "5173" ? "http://127.0.0.1:8082" : "";
 
   const fetchRecordings = useCallback(async (cursorVal = currentCursor) => {
     setLoading(true);
@@ -1623,6 +1767,14 @@ export function App() {
                 <>
                   <h4>{foodRecommendation.payload.title}</h4>
                   <p>{foodRecommendation.payload.detail}</p>
+                  {/* The map under the text, at tile density — the hall's name answers
+                      "where" only if you already know campus. */}
+                  <CampusDiningMap
+                    compact
+                    hall={foodRecommendation.payload.hall}
+                    title={foodRecommendation.payload.title}
+                    backupHall={foodRecommendation.payload.backup_hall}
+                  />
                 </>
               ) : <p>Food recommendation unavailable.</p>}
             </div>
@@ -1673,11 +1825,13 @@ export function App() {
               {currentPoll && (
                 <>
                   <p className="poll-q"><strong>{currentPoll.question}</strong></p>
-                  {currentPoll.options.map((opt) => (
+                  {pollShares(currentPoll, pollResults).map((share) => (
                     <PollOptionRow
-                      key={opt.id}
-                      text={opt.text}
-                      votes={pollResults?.find((r) => r.option_id === opt.id)?.votes ?? 0}
+                      key={share.optionId}
+                      text={share.text}
+                      votes={share.votes}
+                      pct={share.pct}
+                      isLeader={share.isLeader}
                     />
                   ))}
                 </>
@@ -1733,7 +1887,17 @@ export function App() {
     ];
 
     return (
-      <CrossfadeSwitch activeKey={isVisitorMode ? "visitor" : focusedChannel ?? "ambient"}>
+      <>
+      {/* The ESP32 light already fires on this same event; this is the screen half. */}
+      <ApproachGreeting
+        sessionState={sessionState}
+        displayName={activeDisplayName}
+        profileId={activeProfile}
+      />
+      <CrossfadeSwitch
+        activeKey={isVisitorMode ? "visitor" : focusedChannel ?? "ambient"}
+        variant="zoom"
+      >
         {isVisitorMode ? (
           <WallboardVisitorMode
             sessionState={sessionState}
@@ -1811,6 +1975,7 @@ export function App() {
           </div>
         )}
       </CrossfadeSwitch>
+      </>
     );
   };
 
@@ -2251,12 +2416,83 @@ export function App() {
 
   const renderVideoPreview = () => <LiveVideoPreview title="Live self-preview" />;
 
+  // Tell door-api somebody is using the panel, so a recognised identity lasts as long as
+  // the interaction (ADR-0020). Screen changes here are client-side and reach no route,
+  // so without this the name is dropped ~12 s after the greeting and "Check in as
+  // <name>" disappears while the visitor is still reading the screen.
+  //
+  // Fire-and-forget and debounced: it must never block a touch, and a failure means the
+  // identity lapses on the idle window — the pre-existing behaviour, not a broken door.
+  const lastActivityPingRef = useRef(0);
+  const reportDoorpadActivity = useCallback(() => {
+    const now = Date.now();
+    if (now - lastActivityPingRef.current < 5000) return;
+    lastActivityPingRef.current = now;
+    // sendBeacon, not fetch: this is a keepalive with nothing to read back. It does not
+    // block the touch that triggered it, it survives the page going away, and it stays
+    // out of the request/response flow the screens actually depend on.
+    //
+    // The response is deliberately unused either way. Feeding it to
+    // applySessionSnapshot would re-derive the doorpad screen from the session state and
+    // bounce the visitor out of whatever they just opened; the name and accent arrive
+    // over /ws regardless.
+    const url = `${API_BASE}/doorpad/activity`;
+    if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+      navigator.sendBeacon(url);
+      return;
+    }
+    void fetch(url, { method: "POST", keepalive: true }).catch(() => {
+      /* the identity simply expires on the idle window */
+    });
+  }, []);
+
+  // The colour the recognised person picked during onboarding, applied as CSS custom
+  // properties so any styled surface can opt in without threading a prop. Falls back to
+  // the default accent when nobody is recognised, so the door has one look for guests.
+  // The person's own colour wins; the cataloged profile colour is the fallback for a
+  // door or a row predating ADR-0021.
+  const accentColor = activeAccent ?? profileAccent(activeProfile);
+  const accentStyle = {
+    "--db-accent": accentColor,
+    "--db-accent-ink": accentInk(accentColor),
+  } as React.CSSProperties;
+
   const renderDoorPad = () => {
+    const startEnrollFlow = async () => {
+      setDoorPadScreen("enroll");
+      setEnrollState("minting");
+      setEnrollInvite(null);
+      setEnrollClosedReason(null);
+      try {
+        // No credential: standing here is the authorization (ADR-0019 §1).
+        const response = await fetch(`${API_BASE}/doorpad/enroll-invite`, { method: "POST" });
+        if (response.status === 201) {
+          setEnrollInvite((await response.json()) as EnrollInvite);
+          setEnrollState("ready");
+          return;
+        }
+        let reason = response.status === 503 ? "locked" : "";
+        try {
+          const detail = (await response.json()).detail;
+          if (typeof detail === "object" && detail?.reason) reason = String(detail.reason);
+          else if (typeof detail === "string" && detail.includes("locked")) reason = "locked";
+          else if (detail === "privacy_mode") reason = "privacy_mode";
+        } catch {
+          // A refusal with an unreadable body still gets the generic sentence.
+        }
+        setEnrollClosedReason(reason);
+        setEnrollState("closed");
+      } catch {
+        setEnrollState("failed");
+      }
+    };
+
     const handleActionClick = (actionName: string, targetScreen: DoorPadScreen) => {
       if (targetScreen === "ringing") {
         ringDoorbell();
       } else {
         setDoorPadScreen(targetScreen);
+        reportDoorpadActivity();
         triggerToast(`${actionName} flow opened`);
       }
     };
@@ -2264,53 +2500,135 @@ export function App() {
     if (doorPadScreen === "home") {
       return (
         <div
-          className="doorpad-view db-app-theme"
+          className="doorpad-view doorpad-view--home db-app-theme doorpad-enter doorpad-enter--back"
           ref={doorPadFocusRef}
           tabIndex={-1}
           aria-label="DoorPad home"
+          style={accentStyle}
         >
+          {/* The doorpad greets too. ApproachGreeting was written to be shared ("so the
+              doorpad can reuse it unchanged") but only ever rendered on the wallboard,
+              so someone standing at the panel that recognised them saw nothing. */}
+          <ApproachGreeting
+            sessionState={sessionState}
+            displayName={activeDisplayName}
+            profileId={activeProfile}
+          />
           <header className="doorpad-header">
-            <h2>Room {ROOM_LABEL} DoorPad</h2>
-            {RESIDENTS_LABEL && <p className="doorpad-residents">{RESIDENTS_LABEL}</p>}
-            <p>Large-touch visitor controls</p>
+            <div className="doorpad-header__row">
+              <div>
+                <h2>Room {ROOM_LABEL} DoorPad</h2>
+                {RESIDENTS_LABEL && <p className="doorpad-residents">{RESIDENTS_LABEL}</p>}
+              </div>
+              {/* Who the door currently thinks you are, for as long as it thinks so
+                  (ADR-0020). Driven by the same identity the check-in button reads, so
+                  the badge disappearing and named check-in vanishing are always the same
+                  event rather than two surfaces disagreeing. */}
+              {activeDisplayName && (
+                <div className="doorpad-identity" data-testid="doorpad-identity">
+                  <span className="doorpad-identity__dot" aria-hidden="true" />
+                  <span className="doorpad-identity__name">{activeDisplayName}</span>
+                  <span className="doorpad-identity__note">recognised</span>
+                </div>
+              )}
+            </div>
+            <p>{activeDisplayName ? "Tap anything below." : "Large-touch visitor controls"}</p>
           </header>
           
           <div className="doorpad-grid">
-            <BigButton id="btn-ring" variant="primary" icon={<span aria-hidden="true">R</span>} onClick={ringDoorbell}>
+            <BigButton
+              id="btn-ring"
+              variant="primary"
+              icon={<span aria-hidden="true">R</span>}
+              hint="Let them know you're here"
+              onClick={ringDoorbell}
+            >
               Ring Bell
             </BigButton>
-            
-            <BigButton id="btn-video" icon={<span aria-hidden="true">V</span>} onClick={() => {
-              setDoorPadScreen("message");
-              setVideoStep("offer");
-            }}>
+
+            {/* Promoted deliberately: this is how anyone becomes recognised at all, and
+                as one of eight identical tiles nobody found it. */}
+            <BigButton
+              id="btn-enroll"
+              className="doorpad-tile--enroll"
+              icon={<span aria-hidden="true">☺</span>}
+              hint="Scan a code once — the door greets you by name after that"
+              onClick={startEnrollFlow}
+            >
+              Enroll My Face
+            </BigButton>
+
+            <BigButton
+              id="btn-video"
+              icon={<span aria-hidden="true">V</span>}
+              hint="Record a clip if nobody answers"
+              onClick={() => {
+                setDoorPadScreen("message");
+                setVideoStep("offer");
+                reportDoorpadActivity();
+              }}
+            >
               Video Message
             </BigButton>
 
             {FEATURE_PHOTOBOOTH && (
-              <BigButton id="btn-photo-booth" icon={<span aria-hidden="true">P</span>} onClick={startPhotoFlow}>
+              <BigButton
+                id="btn-photo-booth"
+                icon={<span aria-hidden="true">P</span>}
+                hint="Take a photo for the gallery"
+                onClick={startPhotoFlow}
+              >
                 Photo Booth
               </BigButton>
             )}
 
-            <BigButton id="btn-guestbook" icon={<span aria-hidden="true">G</span>} onClick={() => handleActionClick("Guestbook", "guestbook")}>
+            <BigButton
+              id="btn-guestbook"
+              icon={<span aria-hidden="true">G</span>}
+              hint="Leave a note on the big screen"
+              onClick={() => handleActionClick("Guestbook", "guestbook")}
+            >
               Guestbook
             </BigButton>
 
-            <BigButton id="btn-poll" icon={<span aria-hidden="true">Q</span>} onClick={() => handleActionClick("Poll Vote", "poll")}>
+            <BigButton
+              id="btn-poll"
+              icon={<span aria-hidden="true">Q</span>}
+              hint="Answer today's question"
+              onClick={() => handleActionClick("Vote in Poll", "poll")}
+            >
               Vote in Poll
             </BigButton>
 
-            <BigButton id="btn-checkin" icon={<span aria-hidden="true">C</span>} onClick={() => handleActionClick("Check In", "checkin")}>
+            <BigButton
+              id="btn-checkin"
+              icon={<span aria-hidden="true">C</span>}
+              hint={
+                activeDisplayName
+                  ? `Sign in as ${activeDisplayName}`
+                  : "Add yourself to today's visitor count"
+              }
+              onClick={() => handleActionClick("Check In", "checkin")}
+            >
               Visitor Check-In
             </BigButton>
 
-            <BigButton id="btn-remote" icon={<span aria-hidden="true">W</span>} onClick={() => handleActionClick("Wallboard", "remote")}>
+            <BigButton
+              id="btn-remote"
+              icon={<span aria-hidden="true">W</span>}
+              hint="Change what the big screen shows"
+              onClick={() => handleActionClick("Wallboard", "remote")}
+            >
               Wallboard Control
             </BigButton>
 
-            <BigButton id="btn-privacy" icon={<span aria-hidden="true">I</span>} onClick={() => handleActionClick("Privacy Notice", "privacy")}>
-              Privacy & Info
+            <BigButton
+              id="btn-privacy"
+              icon={<span aria-hidden="true">I</span>}
+              hint="How this door works, what it records, and how to erase it"
+              onClick={() => handleActionClick("About", "privacy")}
+            >
+              About This Doorboard
             </BigButton>
           </div>
         </div>
@@ -2328,7 +2646,7 @@ export function App() {
               ? discardPhotoFlow
               : handleReset
         }
-        timeoutMs={30000}
+        timeoutMs={doorpadResetTimeoutMs(doorPadScreen, videoStep)}
         paused={
           doorPadScreen === "ringing" ||
           (doorPadScreen === "message" && videoStep !== "offer" && videoStep !== "qr") ||
@@ -2336,7 +2654,12 @@ export function App() {
         }
       >
         <div
-          className="doorpad-view db-app-theme fade-in"
+          className="doorpad-view db-app-theme doorpad-enter"
+          // Keyed on the screen so moving between sub-screens replays the transition. The
+          // wrapper stays mounted across them, so a mount-only animation covered just the
+          // first step in. Photo/video sub-steps keep the same key, which matters: those
+          // hold a live preview element that a remount would restart.
+          key={doorPadScreen}
           ref={doorPadFocusRef}
           tabIndex={-1}
           aria-label="DoorPad visitor workflow"
@@ -2681,6 +3004,8 @@ export function App() {
             <div className={`doorpad-sub-content${guestbookKeyboardOpen ? " osk-open" : ""}`}>
               <h2>Leave a Guestbook Note</h2>
               <p className="placeholder-subtext">Pick a phrase or write a short note (280 chars max)</p>
+              {/* Above the composer, so it is read before anything is written (E-23). */}
+              <AttributionNotice attributedTo={attributedTo} />
               <div className="phrase-grid">
                 {CANNED_GUESTBOOK_PHRASES.map((phrase) => (
                   <button
@@ -2765,29 +3090,55 @@ export function App() {
               {!currentPoll && <p>No poll is running right now — check back later!</p>}
               {currentPoll && (
                 <>
+                  {/* An attributed vote is not a secret ballot; say so first (E-23). */}
+                  <AttributionNotice attributedTo={attributedTo} verb="vote on" />
                   <p className="poll-q"><strong>{currentPoll.question}</strong></p>
                   {pollVoteError && <p className="poll-error">{pollVoteError}</p>}
+                  {/*
+                    Each option is its own bar: the button's fill *is* the graph. A separate
+                    chart below the buttons was the obvious way to do this and measured 741px
+                    of a 600px screen on a six-option poll, pushing "Submit Vote" off the
+                    touchscreen — the cut-off-controls complaint this was not allowed to
+                    reintroduce. This costs no extra height at all.
+
+                    Shown before voting too. The wallboard a metre away already publishes the
+                    same tallies live, so withholding them here protected nothing.
+                  */}
                   <div className="poll-choices">
-                    {currentPoll.options.map((opt) => {
-                      const result = pollResults?.find((r) => r.option_id === opt.id);
-                      return (
-                        <button
-                          key={opt.id}
-                          className="phrase-btn"
-                          style={{ width: "100%", margin: "4px 0" }}
-                          disabled={doorPadVotedOptionId !== null}
-                          aria-pressed={
-                            doorPadVotedOptionId === opt.id || selectedPollOptionId === opt.id
-                          }
-                          onClick={() => setSelectedPollOptionId(opt.id)}
-                        >
-                          {opt.text}
-                          {doorPadVotedOptionId && result !== undefined && (
-                            <span className="poll-vote-count"> — {result.votes} votes</span>
+                    {pollShares(currentPoll, pollResults).map((share) => (
+                      <button
+                        key={share.optionId}
+                        className={`phrase-btn poll-choice${share.isLeader ? " poll-choice--leader" : ""}`}
+                        disabled={doorPadVotedOptionId !== null}
+                        aria-pressed={
+                          doorPadVotedOptionId === share.optionId ||
+                          selectedPollOptionId === share.optionId
+                        }
+                        onClick={() => setSelectedPollOptionId(share.optionId)}
+                      >
+                        <span
+                          className="poll-choice__fill"
+                          style={{ width: `${share.pct}%` }}
+                          aria-hidden="true"
+                        />
+                        <span className="poll-choice__text">
+                          {share.text}
+                          {doorPadVotedOptionId === share.optionId && (
+                            <span className="poll-focus__mine-tag"> your vote</span>
                           )}
-                        </button>
-                      );
-                    })}
+                        </span>
+                        <span
+                          className="poll-choice__count"
+                          role="progressbar"
+                          aria-valuenow={Math.round(share.pct)}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-label={share.text}
+                        >
+                          {share.votes} · {share.pct.toFixed(0)}%
+                        </span>
+                      </button>
+                    ))}
                   </div>
                 </>
               )}
@@ -2843,12 +3194,63 @@ export function App() {
             </div>
           )}
 
+          {doorPadScreen === "enroll" && (
+            <div className="doorpad-sub-content" data-testid="enroll-screen">
+              <h2>Enroll My Face</h2>
+              {enrollState === "minting" && <p>Making you a code…</p>}
+
+              {enrollState === "ready" && enrollInvite && (
+                <>
+                  <QRPlaceholder
+                    url={enrollInvite.url}
+                    alt="Enrollment invite QR code"
+                    text="Scan with your phone camera"
+                    size={300}
+                    showUrl={false}
+                  />
+                  <p className="placeholder-subtext">
+                    Your phone will show what the door records and ask you to agree, then take a few
+                    photos. The photos are scrambled so only this door can read them, and they are
+                    deleted once your face is learned. This code works once.
+                  </p>
+                </>
+              )}
+
+              {enrollState === "closed" && (
+                <div className="privacy-info-box" data-testid="enroll-closed">
+                  <p>
+                    {(enrollClosedReason && ENROLL_CLOSED_COPY[enrollClosedReason]) ??
+                      "Enrollment is not available at this door right now."}
+                  </p>
+                </div>
+              )}
+
+              {enrollState === "failed" && (
+                <div className="privacy-info-box" data-testid="enroll-failed">
+                  <p>The door could not be reached. Try again in a moment.</p>
+                </div>
+              )}
+
+              <div className="action-button-group">
+                {(enrollState === "ready" ||
+                  enrollState === "failed" ||
+                  enrollState === "closed") && (
+                  <BigButton id="btn-enroll-retry" onClick={startEnrollFlow}>
+                    {enrollState === "ready" ? "New Code" : "Try Again"}
+                  </BigButton>
+                )}
+                <BigButton onClick={returnDoorPadToContext}>Back</BigButton>
+              </div>
+            </div>
+          )}
+
           {doorPadScreen === "privacy" && (
             <div className="doorpad-sub-content">
-              <h2>Camera Notice & Deletion Requests</h2>
+              <h2>About This Doorboard</h2>
+              {/* Shared with the wallboard's About channel so the panel and the hallway
+                  cannot end up describing the same door differently. */}
               <div className="privacy-info-box">
-                <p>This door pad uses local cameras for enrolled-resident recognition only.</p>
-                <p>Unknown visitors are never named, and biometric data stays offline on the device.</p>
+                <AboutDoorboard />
               </div>
               {myContent.length > 0 && (
                 <div className="my-content-list">
@@ -2953,7 +3355,18 @@ export function App() {
           <form className="admin-auth-card" onSubmit={submitAdminToken}>
             <p className="surface-eyebrow">Owner access</p>
             <h1>Admin sign in</h1>
-            <p>Enter the Pi-local admin token. Admin tools are never linked from visitor screens.</p>
+            {/* Naming the variable is the whole point: the door has three 48-character
+                admin tokens (door-api, door-visiond, door-media) and this page needs one
+                specific one. Entering another authenticates nothing and used to render as
+                empty panels rather than as a rejection. */}
+            <p>
+              Paste <code>DOOR_API_SOCIAL_ADMIN_TOKEN</code> from the door&apos;s{" "}
+              <code>.env</code> — not the visiond or media token. Admin tools are never
+              linked from visitor screens.
+            </p>
+            <p className="placeholder-subtext">
+              <code>ssh door-pi.local &apos;grep ^DOOR_API_SOCIAL_ADMIN_TOKEN ~/doorboard/.env&apos;</code>
+            </p>
             <label htmlFor="admin-token">Admin token</label>
             <input
               id="admin-token"
@@ -3206,19 +3619,16 @@ export function App() {
                   </thead>
                   <tbody>
                     {recordings.map((rec) => {
-                      const thumbSrc = rec.thumbnail_path
-                        ? `${MEDIA_API_BASE}/${rec.thumbnail_path}`
-                        : null;
                       const sizeKb = rec.size_bytes ? (rec.size_bytes / 1024).toFixed(1) : "0";
                       
                       return (
                         <tr key={rec.recording_id}>
                           <td>
-                            {thumbSrc ? (
-                              <img
-                                src={thumbSrc}
+                            {rec.thumbnail_path ? (
+                              <AdminThumbnail
+                                recordingId={rec.recording_id}
+                                token={adminToken}
                                 alt="Clip thumbnail"
-                                className="recording-thumb-preview"
                               />
                             ) : (
                               <div className="no-thumb-badge">No Thumb</div>

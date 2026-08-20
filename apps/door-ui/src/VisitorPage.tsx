@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { BigButton, SessionState } from "@doorboard/ui-kit";
 import { socialApi, ApiError } from "./socialApi";
+import { AttributionNotice } from "./AttributionNotice";
 import type { Poll, PollResultRow } from "./socialApi";
 
 // Tokenized mobile page reached via the wallboard's visitor-mode QR code
@@ -48,6 +49,8 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
 
   const [deletionRequested, setDeletionRequested] = useState(false);
   const [deletionError, setDeletionError] = useState<string | null>(null);
+  // Whose name will be attached to a note or vote, per door-api's consent gate.
+  const [attributedTo, setAttributedTo] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +59,7 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
         if (cancelled) return null;
         setAccessState("valid");
         setVerifiedSessionState(session.state);
+        setAttributedTo(session.attributed_to ?? null);
         return socialApi.getCurrentPoll();
       })
       .then((p) => {
@@ -158,6 +162,9 @@ export function VisitorPage({ sessionState }: VisitorPageProps) {
         <h3>Ring status</h3>
         <p className="visitor-ring-status">{ringStatus}</p>
       </section>
+
+      {/* Before the note field and the poll, never after (ADR-0018 E-23). */}
+      <AttributionNotice attributedTo={attributedTo} />
 
       {showNoteField && (
         <section className="visitor-section">

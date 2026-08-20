@@ -49,6 +49,7 @@ REAL-TIME DOOR PLANE (hallway, medium/low trust, latency-critical)
 | ESP32 | Low | No secrets at all; profile cache holds only opaque profile IDs |
 | Public screens | Low | Anyone can touch/see. Broad status only — never GPS, calendars, private notes, diagnostics |
 | QR/PWA visitor endpoints | Low | Tokenized, rate-limited, short-lived |
+| Public relay (Vercel) | **None** | Public, outside the house. Enrollment payloads cross it as AEAD ciphertext it holds no key for (ADR-0016); the visitor surface crosses it as plaintext that is already destined for a hallway wallboard, protected by a narrow allow-list rather than secrecy (ADR-0017). No route toward the Pi, no admin surface, per-service scoped tokens. Treated as a hostile courier by design |
 
 ## 3. Services
 
@@ -63,6 +64,7 @@ Each service has a full spec in its directory README. Every service exposes `GET
 | [door-sync](apps/door-sync/) | Pi | Upload queue Pi→NUC/NAS, backoff, dedupe, checksum-verified cleanup | Delete local media before integrity verification |
 | [control-plane-api](apps/control-plane-api/) | NUC | Event history, HA bridge, statuses, social features, integrations, notifications, config distribution | Sit in the door critical path |
 | [wallboard-worker](apps/wallboard-worker/) | NUC | Scheduled jobs: satellite passes, aircraft polling, bird summaries, collages | Run on the door Pi |
+| [public-relay](apps/public-relay/) | Vercel | Public relay for phone enrollment (ciphertext only) and the visitor page (allow-listed public session state) | Hold a decryption key; receive an enrollee's name or photo in the clear; publish identity, media, or diagnostics; expose an admin surface; initiate anything toward the Pi |
 | [simulator](apps/simulator/) | dev | Fake button/vision/camera/outage events for hardware-free development | — |
 | [esp32-door-controller](firmware/esp32-door-controller/) | ESP32 | Button debounce, generic <30 ms feedback, profile cache, LED/audio, knock detection, watchdog fallback | Hold secrets; wait on anything before generic feedback |
 
@@ -79,17 +81,18 @@ Each service has a full spec in its directory README. Every service exposes `GET
 | Local live video (WebRTC) | < 750 ms |
 | NAS upload | non-critical, after interaction |
 
-The performance harness (M1/M7) makes these observable. A change that regresses a p95 target is a bug regardless of features added.
+The performance harness (M1/M7) makes these observable, with two exceptions it reports as `simulator_na` rather than passing: `webrtc_glass_to_glass` needs MediaMTX and a browser, and **`face_to_stable_identity` needs a camera and the Hailo** — frame cadence, detection and embedding are the whole budget and none of them exist in the simulator. On the door that path is measured only by door-visiond's own `face_to_identity_ms_p95` (`/metrics`), timed from the first frame a face appears in. A change that regresses a p95 target is a bug regardless of features added.
 
 ## 5. Identity cache (proactive recognition)
 
 Recognition is proactive, never bell-triggered:
 
 1. Recognition camera runs continuously; `door-visiond` requires a stable match (2 of last 3 frames, minimum face size).
-2. On stability it writes a short-lived `current_visitor` cache (2.5 s TTL) and pushes a `door.profile_update` to the ESP32 (profile ID + monotonic expiry only).
+2. On stability it writes a short-lived `current_visitor` cache (2.5 s TTL), pushes a `door.profile_update` to the ESP32 (profile ID + monotonic expiry only), and forwards `vision.identity_stable` to door-api, which is the only service the kiosks are connected to. All three legs are required: the ESP32 leg is the door light, the door-api leg is the on-screen greeting, and a leg that silently does nothing looks exactly like recognition not working.
 3. Button press consumes the cache instantly; no cache means an immediate generic greeting.
 4. Late recognition may update the display but never delays the initial interaction.
 5. Greeting cooldown: 30 s per person. Unknown faces: generic greeting, nothing persisted.
+6. door-api holds the recognised identity for the *interaction*, not the frame (ADR-0020): ~12 s idle, re-armed to ~2 min by any doorpad use. The 2.5 s cache above is about the next button press; this is about the person still tapping the screen. `identity_expired` therefore does not end it — a face leaving the frame is not a person leaving the door — but privacy mode does, and it is never persisted.
 
 ## 6. Media pipeline
 
@@ -108,7 +111,8 @@ Camera streams **before** the bell press — no cold-start capture on press. Rec
 All events use the shared envelope and catalog in [docs/protocols/events.md](docs/protocols/events.md), implemented once in `packages/contracts` (Pydantic v2 models + exported JSON Schema + generated TypeScript types). Transports:
 
 - **UART** (preferred) Pi ↔ ESP32 for immediate profile/action messages ([wire protocol](docs/protocols/esp32-pi-protocol.md)); UDP acceptable; MQTT never the only immediate transport.
-- **WebSockets** between Pi-local services and the kiosk displays.
+- **WebSockets** between door-api and the kiosk displays (door-api is the hub; the kiosks never connect to another service).
+- **Loopback HTTP** between Pi-local services, for events one service owns and another has to act on — door-visiond's identity events into door-api's session machine, door-visiond's purge requests into door-sync, and the DoorPad's self-enrollment request from door-api into door-visiond (ADR-0019 — the kiosks only ever talk to door-api, so a doorpad action needing another service is forwarded, never dialled direct). Token-authenticated and best-effort: a Pi-local hop may drop an event, never block the emitter.
 - **MQTT (Mosquitto on NUC)** for control-plane fan-out, HA integration, and audit — never in the critical path.
 
 Conventions: UTC internally, local timezone only at the display boundary; monotonic clocks for latency and expiry; opaque `person_id`s (never a name as a key); `trace_id` propagated end to end.
@@ -134,6 +138,8 @@ Button press enters visitor mode immediately; generic feedback precedes any netw
 - Deletion flows exist for messages, guestbook entries, photos, and enrollments.
 - Presence uses broad labels only (Available/Busy/DND/Sleeping/At Class/At Library/Away/Unknown); manual override outranks inference; no raw GPS anywhere.
 - Never log raw biometric data.
+- Face templates never leave the door Pi. Enrollment *photos* may cross the internet on the phone path, but only sealed to a door-held key that no intermediary has — and the relay never receives an enrollee's name (ADR-0016).
+- The public visitor surface carries only what a hallway wallboard already shows: ring state, the current poll, and the visitor's own note. Never identity, media, or diagnostics (ADR-0017 §2).
 
 Any PR touching enrollment, embeddings, retention, or public display content requires `agent:claude` review before merge (ADR-0005, ADR-0008).
 
@@ -147,7 +153,7 @@ Any PR touching enrollment, embeddings, retention, or public display content req
 | Camera unavailable | button/UI still work; UI shows "video unavailable" |
 | ESP32 offline | Pi surfaces admin error; never pretend a physical effect occurred |
 | Pi restart | ESP32 runs generic fallback animation / unavailable state |
-| Internet offline | no impact on core flow |
+| Internet offline | no impact on core flow; the visitor QR falls back to its LAN URL, so it keeps working on the house wifi and stops working only for phones on cellular (ADR-0017 §4) |
 | Storage low | stop recording safely, preserve interaction, alert control plane |
 
 ## 11. Technology stack (ADR-0003)

@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "Base64Url": {
+      "maxLength": 1400000,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "OpaqueId": {
+      "pattern": "^[a-z]{3,6}_[A-Za-z0-9]{16,32}$",
+      "type": "string"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Pushed by the Pi when an admin mints an invite (ADR-0016 \u00a74 step 1).\n\nOnly the *hash* of the secret travels, so the relay cannot reconstruct a\nworking invite URL and cannot mint one the Pi will honour (E-11).",
+  "properties": {
+    "expires_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "invite_id": {
+      "$ref": "#/$defs/OpaqueId"
+    },
+    "max_images": {
+      "default": 5,
+      "maximum": 16,
+      "minimum": 1,
+      "title": "Max Images",
+      "type": "integer"
+    },
+    "secret_sha256": {
+      "$ref": "#/$defs/Base64Url"
+    }
+  },
+  "required": [
+    "invite_id",
+    "secret_sha256",
+    "expires_at"
+  ],
+  "title": "InviteRegistration",
+  "type": "object"
+}

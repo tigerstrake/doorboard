@@ -134,6 +134,8 @@ export interface VisitorSession {
   session_id: string;
   expires_at: number;
   state: SessionState;
+  /** Recognised person whose name will be attached to writes (ADR-0018 E-23). */
+  attributed_to?: string | null;
 }
 
 type SessionState =

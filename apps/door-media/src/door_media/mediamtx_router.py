@@ -44,6 +44,7 @@ from door_media.adapters import (
     RecordingKind,
     StreamInfo,
 )
+from door_media.frame_reader import MjpegFrameReader
 
 if TYPE_CHECKING:
     from door_media.settings import Settings
@@ -102,8 +103,26 @@ def _build_run_on_init(settings: Settings) -> str:
 
     The command is a ``sh -c`` wrapper (MediaMTX does not run runOnInit through a
     shell) around ``rpicam-vid | ffmpeg``. Video is always copied (``-c:v copy``);
-    the Pi 5 has no HW H.264 block so rpicam-vid encodes via libav with an
-    explicit ``--libav-format h264`` and baseline/4.1 profile.
+    the Pi 5 has no HW H.264 block so rpicam-vid encodes via libav.
+
+    Every parameter is configurable because the shipped defaults were costing picture
+    quality for nothing (measured on the door, T-314):
+
+    - **720p at 2 Mbps.** Now 1080p at 6 Mbps, measured at ~90% of one core (of four,
+      against a load of 2.2) versus ~40% before.
+    - **No autofocus mode.** The imx708 has a focus motor; with no mode set the lens
+      stayed wherever it powered up and the stream was soft.
+    - **No tuning file.** Both sensors are NoIR variants, but libcamera was loading the
+      default ``imx708`` tuning, which assumes an IR-cut filter this camera does not
+      have. ``imx708_noir.json``/``imx708_wide_noir.json`` exist for exactly this.
+
+    A larger frame also helps recognition rather than competing with it: door-visiond
+    reads the same stream through ``/snapshot``, so more pixels reach the detector
+    before it downscales for inference.
+
+    The profile deliberately stays ``baseline`` — see ``Settings.video_h264_profile``.
+    ``main``/``high`` publish successfully and are then undecodable downstream, which
+    presents as a live-looking path serving nothing but placeholder frames.
 
     This command is **video-only** regardless of ``audio_enabled``. Audio does
     not go through MediaMTX: its live fmp4 recorder cannot mux an AAC track (it
@@ -115,14 +134,39 @@ def _build_run_on_init(settings: Settings) -> str:
     ``{stream}``/``{segments_root}``/``{segment_s}`` placeholders.
     """
     stream = settings.visitor_cam_stream
-    rpicam = (
-        "rpicam-vid --width 1280 --height 720 --framerate 25 --codec h264 "
-        "--libav-format h264 --profile baseline --level 4.1 --bitrate 2000000 "
-        "--inline --flush 1 --timeout 0 --nopreview --output -"
+    rpicam = " ".join(
+        [
+            "rpicam-vid",
+            f"--camera {settings.visitor_cam_index}",
+            f"--width {settings.video_width}",
+            f"--height {settings.video_height}",
+            f"--framerate {settings.video_framerate}",
+            "--codec h264",
+            "--libav-format h264",
+            f"--profile {settings.video_h264_profile}",
+            f"--level {settings.video_h264_level}",
+            f"--bitrate {settings.video_bitrate_bps}",
+            # The imx708 has a focus motor and no default AF mode was ever set, so the
+            # lens sat wherever it powered up: the live stream was visibly soft.
+            f"--autofocus-mode {settings.video_autofocus_mode}",
+            # Orientation. An inverted sensor is not a cosmetic problem: ArcFace is not
+            # rotation invariant, so upside-down faces score near nothing against upright
+            # enrollment photos and recognition simply appears not to work.
+            *([f"--rotation {settings.video_rotation}"] if settings.video_rotation else []),
+            *(["--hflip"] if settings.video_hflip else []),
+            *(["--vflip"] if settings.video_vflip else []),
+            *(
+                [f"--tuning-file {settings.camera_tuning_file}"]
+                if settings.camera_tuning_file
+                else []
+            ),
+            "--inline --flush 1 --timeout 0 --nopreview --output -",
+        ]
     )
     rtsp = f"-f rtsp -rtsp_transport tcp {settings.mediamtx_rtsp_url(stream)}"
     ffmpeg = (
-        f"ffmpeg -nostats -loglevel error -fflags nobuffer -f h264 -r 25 -i pipe:0 -c:v copy {rtsp}"
+        "ffmpeg -nostats -loglevel error -fflags nobuffer -f h264 "
+        f"-r {settings.video_framerate} -i pipe:0 -c:v copy {rtsp}"
     )
     return f"sh -c '{rpicam} | {ffmpeg}'"
 
@@ -163,6 +207,111 @@ class MediaMTXRouter:
         self._supervisor_task: asyncio.Task[None] | None = None
         self._segment_cleanup_task: asyncio.Task[None] | None = None
 
+        # One long-lived MJPEG reader per camera, newest frame kept in memory, so
+        # /snapshot never waits on a process spawn (T-310). The recognition reader only
+        # exists on a door that has a second camera.
+        self._visitor_reader = MjpegFrameReader(
+            name="visitor",
+            argv_factory=self._visitor_reader_argv,
+            max_age_s=settings.snapshot_max_age_s,
+            idle_stop_s=settings.snapshot_reader_idle_stop_s,
+        )
+        self._recognition_reader: MjpegFrameReader | None = (
+            MjpegFrameReader(
+                name="recognition",
+                argv_factory=self._recognition_reader_argv,
+                max_age_s=settings.snapshot_max_age_s,
+                idle_stop_s=settings.snapshot_reader_idle_stop_s,
+            )
+            if settings.recognition_cam_present
+            else None
+        )
+        self.snapshot_cache_hits = 0
+        # Times the recognition reader needed its bounded warm-up wait to answer.
+        self.recognition_cold_starts = 0
+        self.snapshot_cache_misses = 0
+
+    @property
+    def reader_frames(self) -> int:
+        return self._visitor_reader.frames
+
+    @property
+    def reader_restarts(self) -> int:
+        return self._visitor_reader.restarts
+
+    @property
+    def reader_repeats(self) -> int:
+        return self._visitor_reader.repeats
+
+    @property
+    def recognition_reader_frames(self) -> int:
+        return self._recognition_reader.frames if self._recognition_reader else 0
+
+    @property
+    def recognition_reader_restarts(self) -> int:
+        return self._recognition_reader.restarts if self._recognition_reader else 0
+
+    def _visitor_reader_argv(self) -> list[str]:
+        """ffmpeg decoding the existing RTSP stream to MJPEG.
+
+        A read-only consumer, so the rpicam-vid publisher and MediaMTX's recording are
+        untouched — the visitor camera is already encoding H.264 for the live view and
+        recordings, and re-opening it directly would contend for the sensor.
+        """
+        return [
+            "ffmpeg",
+            "-nostdin",
+            "-nostats",
+            "-loglevel",
+            "error",
+            "-rtsp_transport",
+            "tcp",
+            "-i",
+            self._settings.mediamtx_rtsp_url(self._settings.visitor_cam_stream),
+            "-r",
+            str(self._settings.snapshot_reader_fps),
+            "-q:v",
+            str(self._settings.snapshot_jpeg_quality),
+            "-f",
+            "mjpeg",
+            "pipe:1",
+        ]
+
+    def _recognition_reader_argv(self) -> list[str]:
+        """rpicam-vid straight off the recognition camera, in MJPEG (ADR-0023).
+
+        No RTSP and no H.264: nothing consumes a recognition *stream*, so an encode
+        would cost ~90% of a core to produce something only a JPEG decoder reads.
+        """
+        cfg = self._settings
+        argv = [
+            "rpicam-vid",
+            "--camera",
+            str(cfg.recognition_cam_index),
+            "--width",
+            str(cfg.recognition_width),
+            "--height",
+            str(cfg.recognition_height),
+            "--framerate",
+            str(cfg.recognition_framerate),
+            "--codec",
+            "mjpeg",
+            "--quality",
+            str(max(1, 100 - cfg.snapshot_jpeg_quality * 3)),
+            "--autofocus-mode",
+            cfg.video_autofocus_mode,
+        ]
+        if cfg.recognition_rotation:
+            argv += ["--rotation", str(cfg.recognition_rotation)]
+        if cfg.recognition_hflip:
+            argv.append("--hflip")
+        if cfg.recognition_vflip:
+            argv.append("--vflip")
+        if cfg.recognition_tuning_file:
+            argv += ["--tuning-file", cfg.recognition_tuning_file]
+        argv += ["--timeout", "0", "--nopreview", "--flush", "1", "--output", "-"]
+        return argv
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -179,6 +328,9 @@ class MediaMTXRouter:
 
     async def stop(self) -> None:
         """Shut down MediaMTX and cancel the supervisor."""
+        await self._visitor_reader.stop()
+        if self._recognition_reader is not None:
+            await self._recognition_reader.stop()
         for task in (self._supervisor_task, self._segment_cleanup_task):
             if task:
                 task.cancel()
@@ -678,18 +830,65 @@ class MediaMTXRouter:
         )
 
     async def snapshot(self) -> bytes | None:
-        """Grab a single current JPEG frame from the live visitor RTSP stream.
+        """Return the newest JPEG frame from the live visitor stream.
 
-        Used by ``GET /snapshot`` (door-visiond's HardwareBackend polls it for
-        face frames). ffmpeg is a **read-only consumer** of the existing RTSP
-        stream, so this does not disturb the rpicam-vid publisher or MediaMTX's
-        segment recording. The frame is written to ``pipe:1`` and returned as
-        bytes — no file touches the SSD.
+        Used by ``GET /snapshot``, which door-visiond polls for face frames. Served
+        from the continuous reader's in-memory frame when one is fresh, so the
+        recognition path costs a memory read rather than an ffmpeg spawn. Falls back
+        to a one-shot grab when the reader has nothing recent — a cold start, a
+        restart, or a stream that is not live yet.
+        """
+        if self._settings.snapshot_reader_enabled:
+            frame = self._visitor_reader.request()
+            if frame is not None:
+                self.snapshot_cache_hits += 1
+                return frame
+        self.snapshot_cache_misses += 1
+        return await self._grab_one_frame()
 
-        Best-effort: the grab is bounded by ``snapshot_timeout_s`` and returns
-        ``None`` on any failure (ffmpeg error, timeout, or a not-yet-live
-        stream) so the caller can fall back to a placeholder. The door/face
-        path must never block for long or 500 on a missing frame.
+    async def recognition_snapshot(self) -> bytes | None:
+        """A frame from the dedicated recognition camera, or None if there is not one.
+
+        No one-shot fallback, deliberately. `_grab_one_frame` reads the *visitor* RTSP
+        stream, so falling back to it would silently hand the face path the wrong
+        camera — the exact confusion `VISION_MODE=dual-camera` existed to create before
+        ADR-0023, and impossible to spot from the outside.
+
+        Waits, bounded, for the reader's *first* frame. `request()` starts the reader and
+        returns immediately, so a cold camera answers None for the ~1-2 s `rpicam-vid`
+        needs to open the sensor. door-visiond polls every 100 ms and degrades after three
+        consecutive failures — 300 ms — so without this wait it could kill the backend
+        before the camera it just started had any chance to produce anything, then retry
+        30 s later into an idle-stopped reader and do it again. Measured on the door: 12
+        degradations and 10 recoveries in 20 minutes, flapping indefinitely.
+
+        Only the cold path pays: once frames are flowing the first `request()` returns one.
+        """
+        if self._recognition_reader is None:
+            return None
+        frame = self._recognition_reader.request()
+        if frame is not None:
+            return frame
+
+        deadline = time.monotonic() + self._settings.recognition_first_frame_wait_s
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+            frame = self._recognition_reader.request()
+            if frame is not None:
+                self.recognition_cold_starts += 1
+                return frame
+        return None
+
+    async def _grab_one_frame(self) -> bytes | None:
+        """One-shot grab: spawn ffmpeg for a single frame.
+
+        The original snapshot path, kept as the fallback for a cold reader. Costs a
+        process spawn plus a keyframe wait (~2s on the door Pi), which is why it is
+        no longer the steady-state path.
+
+        Best-effort: bounded by ``snapshot_timeout_s`` and returns ``None`` on any
+        failure so the caller can fall back to a placeholder. The door/face path must
+        never block for long or 500 on a missing frame.
         """
         stream = self._settings.visitor_cam_stream
         rtsp_url = self._settings.mediamtx_rtsp_url(stream)

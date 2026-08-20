@@ -18,7 +18,7 @@ from control_plane_api.db import session_scope
 from control_plane_api.ingest import ingest_one
 from control_plane_api.mqtt import MqttPublisher
 from control_plane_api.notify import NotifyEngine
-from control_plane_api.telegram import VideoMessageDelivery
+from control_plane_api.telegram import RingPhotoDelivery, VideoMessageDelivery
 
 logger = logging.getLogger("control_plane_api.service")
 
@@ -32,6 +32,7 @@ def ingest_batch(
     mqtt_publisher: MqttPublisher,
     notify_engine: NotifyEngine,
     video_delivery: VideoMessageDelivery | None = None,
+    ring_photo_delivery: RingPhotoDelivery | None = None,
 ) -> list[dict]:
     results = []
     for raw in raw_events:
@@ -59,5 +60,13 @@ def ingest_batch(
                         video_delivery.on_event(delivery_session, outcome.event, now=now)
                 except Exception:
                     logger.warning("video_delivery_fanout_failed", exc_info=True)
+            if ring_photo_delivery is not None:
+                # Its own try/except: a Telegram failure here must not cost the video
+                # delivery above or the ingest result below (ADR-0022).
+                try:
+                    with session_scope(session_factory) as photo_session:
+                        ring_photo_delivery.on_event(photo_session, outcome.event, now=now)
+                except Exception:
+                    logger.warning("ring_photo_delivery_fanout_failed", exc_info=True)
 
     return results

@@ -33,7 +33,14 @@ describe("Guestbook/poll render paths never execute untrusted markup", () => {
 
 function mockFetchSequence(responses: Array<{ status?: number; body: unknown }>) {
   let call = 0;
-  const fetchMock = vi.fn<(...args: unknown[]) => Promise<Response>>(async () => {
+  const fetchMock = vi.fn<(...args: unknown[]) => Promise<Response>>(async (...args) => {
+    // The doorpad's identity keepalive (ADR-0020) is fire-and-forget: it reads no body
+    // and is not part of any flow under test. It must not advance the sequence, or
+    // adding a background ping would silently re-target every later assertion. Real
+    // browsers send it via navigator.sendBeacon; jsdom has none, so it lands here.
+    if (String(args[0] ?? "").includes("/doorpad/activity")) {
+      return { ok: true, status: 202, json: async () => ({}) } as Response;
+    }
     const resp = responses[Math.min(call, responses.length - 1)];
     call += 1;
     return {
@@ -213,8 +220,57 @@ describe("T-405 public kiosk regressions", () => {
     await waitFor(() => expect(screen.getByText("Pick one")).toBeTruthy());
     const submit = screen.getByText("Submit Vote").closest("button");
     expect(submit?.disabled).toBe(true);
-    fireEvent.click(screen.getByText("A"));
+    // The button's accessible name now includes its tally, so match on the label text.
+    fireEvent.click(screen.getByText("A").closest("button")!);
     expect(submit?.disabled).toBe(false);
+  });
+
+  it("draws each DoorPad vote button as its own bar", async () => {
+    // The doorpad used to be the one surface with no graph — it printed "— N votes" only
+    // after you had voted, while the wallboard a metre away showed the live tally.
+    window.history.pushState(null, "", "/doorpad");
+    mockFetchSequence([
+      { body: { session: { state: "IDLE" }, config: {} } },
+      {
+        body: {
+          poll: {
+            id: "poll-1",
+            question: "Pick one",
+            status: "open",
+            created_at: "2026-07-08T00:00:00Z",
+            closed_at: null,
+            options: [
+              { id: "a", text: "Alpha" },
+              { id: "b", text: "Beta" },
+            ],
+          },
+        },
+      },
+      {
+        body: {
+          results: [
+            { option_id: "a", text: "Alpha", votes: 3 },
+            { option_id: "b", text: "Beta", votes: 1 },
+          ],
+        },
+      },
+    ]);
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
+    fireEvent.click(screen.getByText("Vote in Poll"));
+    await waitFor(() => expect(screen.getByText("Alpha")).toBeTruthy());
+
+    // Each vote button carries its own bar, so the graph costs no vertical space on a
+    // 600px screen. Shares are of the total cast: 3 of 4 is 75%, not 100%.
+    const alpha = screen.getByRole("progressbar", { name: "Alpha" });
+    expect(alpha.getAttribute("aria-valuenow")).toBe("75");
+    expect(screen.getByRole("progressbar", { name: "Beta" }).getAttribute("aria-valuenow")).toBe(
+      "25"
+    );
+    // The leader is marked, and the fill is a share of the width rather than of the leader.
+    const fill = alpha.closest("button")!.querySelector(".poll-choice__fill") as HTMLElement;
+    expect(fill.style.width).toBe("75%");
   });
 
   it("does not offer a fake privacy deletion success when no local content exists", async () => {
@@ -224,7 +280,7 @@ describe("T-405 public kiosk regressions", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
-    fireEvent.click(screen.getByText("Privacy & Info"));
+    fireEvent.click(document.getElementById("btn-privacy") as HTMLElement);
     const deleteButton = screen.getByText("Request Deletion of My Data").closest("button");
     expect(deleteButton?.disabled).toBe(true);
   });
@@ -310,16 +366,22 @@ describe("T-405 public kiosk regressions", () => {
     expect(screen.queryByText("Recording Starts In")).toBeNull();
   });
 
-  it("keeps the camera notice behind Privacy & Info", async () => {
+  it("keeps the camera notice behind the About tile", async () => {
     window.history.pushState(null, "", "/doorpad");
     mockFetchSequence([{ body: { session: { state: "IDLE" }, config: {} } }]);
 
     render(<App />);
 
     await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
-    expect(screen.queryByText("Camera Notice & Deletion Requests")).toBeNull();
-    fireEvent.click(screen.getByText("Privacy & Info"));
-    expect(screen.getByText("Camera Notice & Deletion Requests")).toBeTruthy();
+    // The home screen stays a grid of actions: the notice is one tap away, not inline.
+    expect(screen.queryByTestId("about-doorboard")).toBeNull();
+
+    const aboutTile = document.getElementById("btn-privacy");
+    expect(aboutTile).toBeTruthy();
+    fireEvent.click(aboutTile as HTMLElement);
+
+    expect(screen.getByTestId("about-doorboard")).toBeTruthy();
+    expect(screen.getByText("If you are not enrolled")).toBeTruthy();
   });
 
   it("lets DoorPad choose a mock Wallboard focused channel locally", async () => {
@@ -337,3 +399,4 @@ describe("T-405 public kiosk regressions", () => {
     expect(stored).toContain('"channel":"aircraft"');
   });
 });
+

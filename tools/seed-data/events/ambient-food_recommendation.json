@@ -4,10 +4,12 @@
   "monotonic_ms": 123456789,
   "occurred_at": "2026-07-04T12:34:56.123000Z",
   "payload": {
+    "backup_hall": "Stern",
     "date": "2026-07-04",
-    "detail": "Good between classes.",
+    "detail": "Try: noodle soup, tofu bowl · high confidence · backup: Stern",
+    "hall": "Lakeside",
     "provider": "manual",
-    "title": "Noodle soup"
+    "title": "Lakeside — dinner"
   },
   "source": "doorboard-contracts-test",
   "trace_id": "9d1e8a34-52a1-4b0e-9c0f-2a7d1f66b100",

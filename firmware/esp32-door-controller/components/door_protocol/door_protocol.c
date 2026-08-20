@@ -1,5 +1,6 @@
 #include "door_protocol.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -217,7 +218,7 @@ static bool make_ack(door_protocol_t *ctx, uint32_t ack_seq, char *out, size_t o
     int written = snprintf(
         out,
         out_len,
-        "{\"v\":1,\"seq\":%u,\"t\":\"ack\",\"ack\":%u,\"p\":{}}\n",
+        "{\"v\":1,\"seq\":%" PRIu32 ",\"t\":\"ack\",\"ack\":%" PRIu32 ",\"p\":{}}\n",
         seq,
         ack_seq
     );
@@ -497,7 +498,7 @@ bool door_protocol_start_hello(door_protocol_t *ctx)
     written = snprintf(
         frame,
         sizeof(frame),
-        "{\"v\":1,\"seq\":%u,\"t\":\"hello\",\"ack\":null,\"p\":{\"fw_version\":\"%s\","
+        "{\"v\":1,\"seq\":%" PRIu32 ",\"t\":\"hello\",\"ack\":null,\"p\":{\"fw_version\":\"%s\","
         "\"proto_v\":1,\"boot_id\":\"%s\"}}\n",
         seq,
         ctx->fw_version,
@@ -528,8 +529,8 @@ bool door_protocol_emit_button_event(
         written = snprintf(
             frame,
             sizeof(frame),
-            "{\"v\":1,\"seq\":%u,\"t\":\"button_event\",\"ack\":null,\"p\":{\"press_id\":\"%s\","
-            "\"pressed_at_mono_ms\":%llu,\"had_cached_profile\":true,\"profile_id\":\"%s\"}}\n",
+            "{\"v\":1,\"seq\":%" PRIu32 ",\"t\":\"button_event\",\"ack\":null,\"p\":{\"press_id\":\"%s\","
+            "\"pressed_at_mono_ms\":%" PRIu64 ",\"had_cached_profile\":true,\"profile_id\":\"%s\"}}\n",
             seq,
             press_id,
             (unsigned long long)pressed_at_mono_ms,
@@ -539,8 +540,8 @@ bool door_protocol_emit_button_event(
         written = snprintf(
             frame,
             sizeof(frame),
-            "{\"v\":1,\"seq\":%u,\"t\":\"button_event\",\"ack\":null,\"p\":{\"press_id\":\"%s\","
-            "\"pressed_at_mono_ms\":%llu,\"had_cached_profile\":false,\"profile_id\":null}}\n",
+            "{\"v\":1,\"seq\":%" PRIu32 ",\"t\":\"button_event\",\"ack\":null,\"p\":{\"press_id\":\"%s\","
+            "\"pressed_at_mono_ms\":%" PRIu64 ",\"had_cached_profile\":false,\"profile_id\":null}}\n",
             seq,
             press_id,
             (unsigned long long)pressed_at_mono_ms
@@ -569,7 +570,7 @@ bool door_protocol_emit_knock_event(
     written = snprintf(
         frame,
         sizeof(frame),
-        "{\"v\":1,\"seq\":%u,\"t\":\"knock_event\",\"ack\":null,\"p\":{\"pattern_id\":\"%s\","
+        "{\"v\":1,\"seq\":%" PRIu32 ",\"t\":\"knock_event\",\"ack\":null,\"p\":{\"pattern_id\":\"%s\","
         "\"confidence\":%.3f}}\n",
         seq,
         pattern_id,
@@ -641,7 +642,7 @@ bool door_protocol_make_heartbeat(
         written = snprintf(
             frame_out,
             frame_out_len,
-            "{\"v\":1,\"seq\":%u,\"t\":\"heartbeat\",\"ack\":null,\"p\":{\"uptime_s\":%u,"
+            "{\"v\":1,\"seq\":%" PRIu32 ",\"t\":\"heartbeat\",\"ack\":null,\"p\":{\"uptime_s\":%" PRIu32 ","
             "\"fallback_active\":%s,\"cached_profile_id\":\"%s\"}}\n",
             seq,
             uptime_s,
@@ -652,7 +653,7 @@ bool door_protocol_make_heartbeat(
         written = snprintf(
             frame_out,
             frame_out_len,
-            "{\"v\":1,\"seq\":%u,\"t\":\"heartbeat\",\"ack\":null,\"p\":{\"uptime_s\":%u,"
+            "{\"v\":1,\"seq\":%" PRIu32 ",\"t\":\"heartbeat\",\"ack\":null,\"p\":{\"uptime_s\":%" PRIu32 ","
             "\"fallback_active\":%s,\"cached_profile_id\":null}}\n",
             seq,
             uptime_s,

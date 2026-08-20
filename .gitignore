@@ -25,6 +25,11 @@ node_modules/
 .vite/
 coverage/
 
+# Next.js / Vercel (enroll-web build output and local link state)
+.next/
+next-env.d.ts
+.vercel/
+
 # Playwright — snapshot baselines are committed, run artifacts are not
 test-results/
 playwright-report/
@@ -58,3 +63,9 @@ Thumbs.db
 firmware/**/build/
 firmware/**/.pio/
 firmware/**/sdkconfig.old
+# Generated from sdkconfig.defaults by `idf.py set-target`; committing it would
+# let a stale local config outrank the defaults that are reviewed.
+firmware/**/sdkconfig
+# Fetched by the component manager from the registry; dependencies.lock pins the
+# versions and IS committed, so these are reproducible without being vendored.
+firmware/**/managed_components/

@@ -1,0 +1,25 @@
+{
+  "$defs": {
+    "OpaqueId": {
+      "pattern": "^[a-z]{3,6}_[A-Za-z0-9]{16,32}$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "action_id": {
+      "$ref": "#/$defs/OpaqueId"
+    },
+    "status": {
+      "const": "queued",
+      "default": "queued",
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "action_id"
+  ],
+  "title": "VisitorActionAccepted",
+  "type": "object"
+}

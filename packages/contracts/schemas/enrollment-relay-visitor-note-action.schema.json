@@ -1,0 +1,22 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "note",
+      "default": "note",
+      "title": "Kind",
+      "type": "string"
+    },
+    "text": {
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "title": "VisitorNoteAction",
+  "type": "object"
+}

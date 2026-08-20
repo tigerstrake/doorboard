@@ -37,6 +37,7 @@ logger = logging.getLogger("control_plane_api.telegram")
 
 _SAVED_STATE = "VIDEO_MESSAGE_SAVED"
 _VIDEO_KIND = "video_message"
+_BELL_KIND = "bell_clip"
 
 
 class TelegramSender(Protocol):
@@ -44,11 +45,21 @@ class TelegramSender(Protocol):
         self, *, video: bytes, filename: str, caption: str, chat_ids: list[str] | None = None
     ) -> None: ...
 
+    def send_photo(
+        self, *, photo: bytes, filename: str, caption: str, chat_ids: list[str] | None = None
+    ) -> None: ...
+
     def send_message(self, *, text: str, chat_ids: list[str] | None = None) -> None: ...
 
 
 class VideoSource(Protocol):
     """Fetches the finalized clip bytes for a recording (returns None on failure)."""
+
+    def fetch(self, recording_id: str) -> bytes | None: ...
+
+
+class ThumbnailSource(Protocol):
+    """Fetches a recording's thumbnail still (returns None on failure)."""
 
     def fetch(self, recording_id: str) -> bytes | None: ...
 
@@ -89,6 +100,18 @@ class TelegramClient:
                     timeout=self._timeout_s,
                 )
                 self._log_non_ok(resp, chat_id, "sendMessage")
+                if resp.status_code < 400:
+                    # A delivered notification left no trace of its own: the only
+                    # evidence was httpx's per-request INFO line, which is now
+                    # silenced because it carried the bot token (see
+                    # doorboard_observability.logging_json). Log the fact here
+                    # instead, with the chat id and nothing that identifies the
+                    # bot — "did my phone get the ring" should be answerable from
+                    # the journal without a credential in it.
+                    logger.info(
+                        "telegram_message_sent",
+                        extra={"chat_id": chat_id, "method": "sendMessage"},
+                    )
             except Exception:
                 logger.warning(
                     "telegram_send_message_failed", extra={"chat_id": chat_id}, exc_info=True
@@ -111,6 +134,25 @@ class TelegramClient:
             except Exception:
                 logger.warning(
                     "telegram_send_video_failed", extra={"chat_id": chat_id}, exc_info=True
+                )
+
+    def send_photo(
+        self, *, photo: bytes, filename: str, caption: str, chat_ids: list[str] | None = None
+    ) -> None:
+        import httpx
+
+        for chat_id in self._targets(chat_ids):
+            try:
+                resp = httpx.post(
+                    self._method_url("sendPhoto"),
+                    data={"chat_id": chat_id, "caption": caption},
+                    files={"photo": (filename, photo, "image/jpeg")},
+                    timeout=self._timeout_s,
+                )
+                self._log_non_ok(resp, chat_id, "sendPhoto")
+            except Exception:
+                logger.warning(
+                    "telegram_send_photo_failed", extra={"chat_id": chat_id}, exc_info=True
                 )
 
     @staticmethod
@@ -155,6 +197,116 @@ class DoorApiVideoSource:
                 exc_info=True,
             )
             return None
+
+
+class DoorApiThumbnailSource:
+    """Pulls a recording's thumbnail still from door-api's admin media endpoint.
+
+    Same shape as :class:`DoorApiVideoSource`, different route: the thumbnail proxy
+    accepts any recording kind, where the file route is scoped to video messages.
+    """
+
+    def __init__(self, *, base_url: str, admin_token: str, timeout_s: float = 15.0) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._admin_token = admin_token
+        self._timeout_s = timeout_s
+
+    def fetch(self, recording_id: str) -> bytes | None:
+        import httpx
+
+        url = f"{self._base_url}/admin/media-inbox/{recording_id}/thumbnail"
+        try:
+            resp = httpx.get(
+                url,
+                headers={"Authorization": f"Bearer {self._admin_token}"},
+                timeout=self._timeout_s,
+            )
+            resp.raise_for_status()
+            return resp.content
+        except Exception:
+            logger.warning(
+                "door_api_thumbnail_fetch_failed",
+                extra={"recording_id": recording_id},
+                exc_info=True,
+            )
+            return None
+
+
+class RingPhotoDelivery:
+    """Sends a picture of whoever rang, once one exists (ADR-0022).
+
+    Split from the ring text on purpose. The owner asked for the text immediately and the
+    picture "as soon as that is possible", and those are genuinely different moments: the
+    ``RINGING`` notification fires the instant the bell is pressed (``notify.py``), while
+    a still only exists after door-media has finalized the bell clip and cut a thumbnail —
+    seconds later. Waiting for the picture to send one message would delay the alert that
+    matters; sending them together is not an option the hardware offers.
+
+    So the trigger here is ``media.thumbnail_ready`` for a ``bell_clip``, and the two
+    messages are independent: no picture ever means the owner still got the text, and a
+    picture arriving late is a second message rather than a slow first one.
+
+    ``photo_booth`` and ``video_message`` thumbnails are ignored — those are visitor
+    surfaces with their own delivery (ADR-0012/0014), and a photo-booth still going to
+    Telegram unbidden would be a privacy defect rather than a feature.
+    """
+
+    def __init__(
+        self,
+        *,
+        sender: TelegramSender | None = None,
+        source: ThumbnailSource | None = None,
+    ) -> None:
+        self._sender = sender
+        self._source = source
+
+    @property
+    def enabled(self) -> bool:
+        return self._sender is not None and self._source is not None
+
+    def on_event(self, session: Session, event: DoorboardEvent, *, now: datetime) -> None:  # noqa: ARG002
+        if self._sender is None or self._source is None:
+            return
+        if event.type != "media.thumbnail_ready":
+            return
+
+        recording_id = str(event.payload.recording_id)
+        row = self._lookup_recording(session, recording_id)
+        if row is None:
+            # The mirror lags the thumbnail occasionally; without the row we cannot tell a
+            # bell clip from a photo-booth still, and guessing would send the wrong ones.
+            logger.info("telegram_ring_photo_unmirrored", extra={"recording_id": recording_id})
+            return
+        if row.kind != _BELL_KIND:
+            return
+        if row.deleted_at is not None:
+            logger.info("telegram_ring_photo_deleted", extra={"recording_id": recording_id})
+            return
+
+        photo = self._source.fetch(recording_id)
+        if photo is None:
+            logger.warning("telegram_ring_photo_fetch_failed", extra={"recording_id": recording_id})
+            return
+
+        self._sender.send_photo(
+            photo=photo,
+            filename=f"doorbell_{recording_id}.jpg",
+            caption=_build_ring_caption(row),
+            chat_ids=None,
+        )
+        logger.info("telegram_ring_photo_sent", extra={"recording_id": recording_id})
+
+    @staticmethod
+    def _lookup_recording(session: Session, recording_id: str) -> MediaMirrorRow | None:
+        return session.execute(
+            select(MediaMirrorRow).where(MediaMirrorRow.recording_id == recording_id)
+        ).scalar_one_or_none()
+
+
+def _build_ring_caption(row: MediaMirrorRow) -> str:
+    """A caption that stands alone, since it may arrive well after the text alert."""
+    when = row.updated_at.strftime("%H:%M") if row.updated_at else ""
+    return f"🔔 At the door{f' · {when}' if when else ''}"
 
 
 class VideoMessageDelivery:
@@ -308,3 +460,11 @@ def build_video_source(*, door_api_base_url: str, door_api_admin_token: str) -> 
     if not door_api_base_url or not door_api_admin_token:
         return None
     return DoorApiVideoSource(base_url=door_api_base_url, admin_token=door_api_admin_token)
+
+
+def build_thumbnail_source(
+    *, door_api_base_url: str, door_api_admin_token: str
+) -> ThumbnailSource | None:
+    if not door_api_base_url or not door_api_admin_token:
+        return None
+    return DoorApiThumbnailSource(base_url=door_api_base_url, admin_token=door_api_admin_token)

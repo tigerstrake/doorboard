@@ -11,9 +11,33 @@
     "VisionIdentityStablePayload": {
       "additionalProperties": false,
       "properties": {
+        "accent_color": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accent Color"
+        },
         "confidence": {
           "title": "Confidence",
           "type": "number"
+        },
+        "consent_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Version"
         },
         "display_name": {
           "title": "Display Name",

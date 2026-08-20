@@ -96,13 +96,48 @@ export const aircraftFixture = {
   ],
 };
 
+const SATELLITE_PASS_DURATION_S = 540; // ~9 minutes, typical for a high ISS pass
+const SATELLITE_MAX_ELEVATION_DEG = 64.5;
+
+/**
+ * A sampled pass for the mock: where to look, and where the satellite actually is.
+ *
+ * Both halves matter, and each has been missing once. Elevation follows a sine and azimuth
+ * sweeps the 180° from rise to set — the shape of a real overhead pass. The sub-satellite
+ * points (ADR-0030) are what the globe plots; without them it renders its honest "this pass
+ * carries no ground track" fallback, so mock mode would show the panel's degraded state
+ * instead of the panel.
+ *
+ * The ground path runs SW to NE and passes near campus at the culmination, so "closest to
+ * here" reads as a small number the way a real overhead pass does.
+ */
+const GROUND_START = { lat: 22.0, lng: -142.0 };
+const GROUND_END = { lat: 52.8, lng: -102.3 };
+
+const satelliteTrack = Array.from({ length: 19 }, (_, index) => {
+  const fraction = index / 18;
+  return {
+    t_offset_s: Math.round(fraction * SATELLITE_PASS_DURATION_S),
+    // 315° → 495°, i.e. NW up over NE (45°) and down to SE (135°).
+    azimuth_deg: Number(((315 + fraction * 180) % 360).toFixed(1)),
+    elevation_deg: Number((Math.sin(Math.PI * fraction) * SATELLITE_MAX_ELEVATION_DEG).toFixed(1)),
+    lat: Number((GROUND_START.lat + (GROUND_END.lat - GROUND_START.lat) * fraction).toFixed(3)),
+    lng: Number((GROUND_START.lng + (GROUND_END.lng - GROUND_START.lng) * fraction).toFixed(3)),
+  };
+});
+
 export const satelliteFixture = {
   occurred_at: "2026-07-04T12:34:56.123Z",
   satellite: "ISS",
   visible: true,
   rise_at: new Date(Date.now() + 600000).toISOString(), // 10 minutes in future
+  set_at: new Date(Date.now() + 600000 + SATELLITE_PASS_DURATION_S * 1000).toISOString(),
   direction: "NW",
-  max_elevation_deg: 64.5,
+  max_elevation_deg: SATELLITE_MAX_ELEVATION_DEG,
+  rise_azimuth_deg: 315,
+  culmination_azimuth_deg: 45,
+  set_azimuth_deg: 135,
+  track: satelliteTrack,
 };
 
 export const printerFixture = {
@@ -124,9 +159,13 @@ export const scoreboardFixture = {
 
 export const foodFixture = {
   occurred_at: "2026-07-04T12:34:56.123Z",
-  title: "Noodle soup",
-  detail: "Good between classes.",
+  // Shaped like the real provider's output ("{hall} — {meal}"), so mock mode exercises the
+  // campus map rather than only its "hall not in the catalogue" fallback.
+  title: "Lakeside — dinner",
+  detail: "Try: noodle soup, tofu bowl · high confidence · backup: Stern",
   provider: "manual",
+  hall: "Lakeside",
+  backup_hall: "Stern",
 };
 
 export const pollFixture = {

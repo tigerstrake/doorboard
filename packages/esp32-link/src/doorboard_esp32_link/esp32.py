@@ -8,7 +8,7 @@ import random
 import socket
 import termios
 import time
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, Protocol, Self, cast
@@ -375,10 +375,10 @@ class Esp32ProtocolTransport:
         msg = wire_message_from_event(event, seq=self._next_seq(), now_mono_ms=self._now_mono_ms())
         return await self.send(msg)
 
-    def events(self) -> AsyncIterator[DoorboardEvent]:
+    def events(self) -> AsyncGenerator[DoorboardEvent, None]:
         return self._event_stream()
 
-    def link_state_events(self) -> AsyncIterator[Esp32LinkState]:
+    def link_state_events(self) -> AsyncGenerator[Esp32LinkState, None]:
         return self._link_state_stream()
 
     def status(self) -> Esp32TransportStatus:
@@ -434,11 +434,11 @@ class Esp32ProtocolTransport:
     def inbound_dedupe_entries(self) -> int:
         return len(self._dedupe_recent_seqs)
 
-    async def _event_stream(self) -> AsyncIterator[DoorboardEvent]:
+    async def _event_stream(self) -> AsyncGenerator[DoorboardEvent, None]:
         while True:
             yield await self._events.get()
 
-    async def _link_state_stream(self) -> AsyncIterator[Esp32LinkState]:
+    async def _link_state_stream(self) -> AsyncGenerator[Esp32LinkState, None]:
         while True:
             yield await self._link_states.get()
 

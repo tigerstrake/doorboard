@@ -8,6 +8,7 @@ import pytest
 from aircraft.enrichment import AircraftEnricher
 from aircraft.provider import (
     AircraftConfig,
+    AircraftDataUnavailable,
     MockAircraftProvider,
     OpenSkyAircraftProvider,
     haversine_distance,
@@ -371,3 +372,79 @@ def test_opensky_anonymous_when_unconfigured(mock_get, mock_post) -> None:
 
     mock_post.assert_not_called()  # no token fetch without credentials
     assert "Authorization" not in mock_get.call_args[1].get("headers", {})
+
+
+# ---------------------------------------------------------------------------
+# An empty sky and a rate-limited API must not look the same
+# ---------------------------------------------------------------------------
+#
+# The bug, live on the door: OpenSky answered 429 to every poll (anonymous access, polled
+# every 30 s), the provider returned its still-empty cache, and the wallboard published
+# `nearby: []` — which renders as the confident claim "No nearby aircraft." over a Bay Area
+# that had, in the owner's words, tens if not hundreds of them.
+#
+# Two dishonesties were in play: an empty cache presented as an observation, and `as_of`
+# stamped with the send time so a cached reading looked current.
+
+
+def _cfg() -> AircraftConfig:
+    return AircraftConfig(
+        observer_lat=37.422,
+        observer_lon=-122.172,
+        bbox_half_size_lat=0.1,
+        bbox_half_size_lon=0.1,
+        poll_cooldown_seconds=10,
+    )
+
+
+@patch("httpx.get")
+def test_rate_limited_with_no_cache_raises_rather_than_reporting_an_empty_sky(mock_get) -> None:
+    provider = OpenSkyAircraftProvider(_cfg())
+    mock_resp = MagicMock()
+    mock_resp.status_code = 429
+    mock_get.return_value = mock_resp
+
+    # Deliberately not `assert result == []` — that assertion is what let this ship.
+    with pytest.raises(AircraftDataUnavailable):
+        provider.get_nearby_aircraft(datetime(2026, 8, 18, 12, 0, 0, tzinfo=UTC))
+
+
+@patch("httpx.get")
+def test_an_empty_response_really_does_mean_an_empty_sky(mock_get) -> None:
+    # The other half of the distinction: "no states" is a real observation and must come
+    # back as an empty list, not an error.
+    provider = OpenSkyAircraftProvider(_cfg())
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"states": []}
+    mock_get.return_value = mock_resp
+
+    now = datetime(2026, 8, 18, 12, 0, 0, tzinfo=UTC)
+    assert provider.get_nearby_aircraft(now) == []
+    assert provider.last_successful_time == now
+
+
+@patch("httpx.get")
+def test_a_later_failure_serves_cache_and_keeps_the_original_observation_time(mock_get) -> None:
+    provider = OpenSkyAircraftProvider(_cfg())
+    now = datetime(2026, 8, 18, 12, 0, 0, tzinfo=UTC)
+
+    ok = MagicMock()
+    ok.status_code = 200
+    ok.json.return_value = OPENSKY_MOCK_RESPONSE
+    mock_get.return_value = ok
+    first = provider.get_nearby_aircraft(now)
+    assert first, "fixture should yield at least one aircraft"
+    assert provider.last_successful_time == now
+
+    limited = MagicMock()
+    limited.status_code = 429
+    mock_get.return_value = limited
+    # Well past the cooldown, so this really does attempt and really does get 429'd.
+    served = provider.get_nearby_aircraft(now + timedelta(hours=1))
+
+    assert served == first, "a stale reading beats nothing"
+    assert provider.last_successful_time == now, (
+        "the timestamp must stay at the observation, or the staleness marker is decorative "
+        "and cached data reads as current"
+    )

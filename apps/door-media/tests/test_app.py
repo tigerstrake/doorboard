@@ -220,6 +220,13 @@ def test_video_message_discard_deletes_finalized_clip(client: TestClient):
     )
     assert file_response.status_code == 200
 
+    # The thumbnail was generated and recorded and then had no way out of this service
+    # until ADR-0022 needed it for the owner's ring notification. Any kind, unlike /file.
+    thumb = client.get(f"/recordings/{recording['recording_id']}/thumbnail")
+    assert thumb.status_code == 200
+    assert thumb.headers["content-type"] == "image/jpeg"
+    assert thumb.content
+
     discard = client.post(
         "/internal/session_event",
         json=_session_event(
@@ -236,6 +243,17 @@ def test_video_message_discard_deletes_finalized_clip(client: TestClient):
     assert client.get("/recordings").json()["recordings"] == []
     missing = client.get(f"/recordings/{recording['recording_id']}/file?session_id={session_id}")
     assert missing.status_code == 404
+    # A discarded recording's still must go with it.
+    assert client.get(f"/recordings/{recording['recording_id']}/thumbnail").status_code == 404
+
+
+def test_thumbnail_rejects_a_malformed_recording_id(client: TestClient) -> None:
+    assert client.get("/recordings/not-a-uuid/thumbnail").status_code == 422
+
+
+def test_thumbnail_is_404_for_an_unknown_recording(client: TestClient) -> None:
+    unknown = "55555555-5555-4555-8555-555555555555"
+    assert client.get(f"/recordings/{unknown}/thumbnail").status_code == 404
 
 
 def test_snapshot_mock_mode_returns_placeholder(client: TestClient) -> None:

@@ -334,6 +334,34 @@ body {
   line-height: 1.15;
 }
 
+.db-big-button__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22em;
+  align-items: inherit;
+  min-width: 0;
+}
+
+/* The "what this does" line. Sized well below the label so the tile still reads as
+   one word at a glance from across a hallway, and only then explains itself. */
+.db-big-button__hint {
+  font-size: 0.74em;
+  font-weight: 500;
+  line-height: 1.25;
+  opacity: 0.78;
+  max-width: 22ch;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+/* A hinted tile is taller by nature; let it size to its content rather than
+   clipping the second line on a short kiosk screen. */
+.db-big-button--with-hint {
+  height: auto;
+  align-items: flex-start;
+  text-align: left;
+}
+
 .db-big-button__icon {
   font-size: 1.8rem;
   display: flex;
@@ -891,8 +919,8 @@ body {
 .db-crossfade__layer {
   position: absolute;
   inset: 0;
-  transition-property: opacity;
-  transition-timing-function: ease-in-out;
+  transition-property: opacity, transform, filter;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
   opacity: 1;
 }
 
@@ -903,6 +931,55 @@ body {
 
 .db-crossfade__layer--in {
   opacity: 1;
+}
+
+/*
+ * The zoom variant: the outgoing view recedes and softens while the incoming one comes
+ * forward, so opening a channel reads as moving into it rather than as one picture being
+ * replaced by another.
+ *
+ * transform and opacity only (plus a small blur on the way out, which the compositor also
+ * handles) — nothing here triggers layout, which is what keeps a 1920x1080 swap smooth on a
+ * Pi that is simultaneously running face recognition.
+ */
+.db-crossfade--zoom .db-crossfade__layer--out {
+  transform: scale(1.06);
+  filter: blur(6px);
+}
+
+.db-crossfade--zoom .db-crossfade__layer--in {
+  animation: db-crossfade-zoom-in var(--db-crossfade-duration, 400ms)
+    cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes db-crossfade-zoom-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/*
+ * A 24/7 wallboard must honour this, and so must a door: motion is decoration here, the
+ * information is the content underneath it.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .db-crossfade__layer {
+    transition-property: opacity;
+  }
+
+  .db-crossfade--zoom .db-crossfade__layer--out {
+    transform: none;
+    filter: none;
+  }
+
+  .db-crossfade--zoom .db-crossfade__layer--in {
+    animation: none;
+  }
 }
 
 @keyframes db-pulse {

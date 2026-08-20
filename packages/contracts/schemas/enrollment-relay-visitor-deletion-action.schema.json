@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "deletion_request",
+      "default": "deletion_request",
+      "title": "Kind",
+      "type": "string"
+    },
+    "target_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Target Id",
+      "type": "string"
+    },
+    "target_kind": {
+      "enum": [
+        "guestbook",
+        "checkin",
+        "photo",
+        "video_message"
+      ],
+      "title": "Target Kind",
+      "type": "string"
+    }
+  },
+  "required": [
+    "target_kind",
+    "target_id"
+  ],
+  "title": "VisitorDeletionAction",
+  "type": "object"
+}

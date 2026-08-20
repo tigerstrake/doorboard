@@ -6,10 +6,15 @@ import type {
   AmbientAircraftNearby,
   AmbientAircraftSummaryPayload,
 } from "@doorboard/contracts";
+import { maxViewBounds, viewBoundsFor } from "./flightsMapView";
+import type { LatLngTuple } from "./flightsMapView";
 
 // Fallback observer location (Stanford) used when the payload omits `observer`
 // — keeps the map centred on the door rather than [0,0] in the ocean.
 const STANFORD_OBSERVER: AircraftObserver = { latitude: 37.4275, longitude: -122.1697 };
+
+// The framing rule (campus centred, capped at the Golden Gate) lives in
+// ./flightsMapView so it can be tested without Leaflet.
 
 // CARTO dark raster tiles match the wallboard's dark theme. If the display is
 // offline the tiles simply fail to load and we degrade to the dark backdrop +
@@ -85,7 +90,10 @@ function FlightsMap({ planes, observer }: FlightsMapProps) {
         boxZoom: false,
         keyboard: false,
         touchZoom: false,
-      }).setView([observer.latitude, observer.longitude], 9);
+        // Never wider than campus→Golden Gate, whatever is plotted on it.
+        maxBounds: maxViewBounds(observer),
+        maxBoundsViscosity: 1.0,
+      }).fitBounds(maxViewBounds(observer));
 
       const tiles = L.tileLayer(TILE_URL, {
         attribution: TILE_ATTRIBUTION,
@@ -155,7 +163,7 @@ function FlightsMap({ planes, observer }: FlightsMapProps) {
         keyboard: false,
       }).addTo(layer);
 
-      const points: L.LatLngExpression[] = [[observer.latitude, observer.longitude]];
+      const points: LatLngTuple[] = [[observer.latitude, observer.longitude]];
 
       for (const plane of planes) {
         const lat = finiteNum(plane.latitude);
@@ -178,11 +186,15 @@ function FlightsMap({ planes, observer }: FlightsMapProps) {
         points.push([lat, lng]);
       }
 
-      if (points.length > 1) {
-        map.fitBounds(L.latLngBounds(points), { padding: [46, 46], maxZoom: 11 });
-      } else {
-        map.setView([observer.latitude, observer.longitude], 9);
-      }
+      // Only ever tighter than the campus→Golden Gate box: a single distant aircraft
+      // must not drag the view out to a continent's worth of empty land. A plane outside
+      // the box still gets a marker — it just no longer sets the scale.
+      map.fitBounds(viewBoundsFor(points, observer), {
+        padding: [46, 46],
+        // Keeps the surroundings legible when the only traffic overhead is two planes a
+        // mile apart, which would otherwise fill the screen with rooftops.
+        maxZoom: 12,
+      });
     } catch {
       /* ignore transient Leaflet errors (e.g. during teardown) */
     }

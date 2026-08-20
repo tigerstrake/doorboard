@@ -37,6 +37,39 @@ type UTCDateTime = Annotated[AwareDatetime, AfterValidator(_ensure_utc)]
 type UUIDv7 = Annotated[UUID, AfterValidator(_ensure_uuid7)]
 
 
+# Consent policy shared by every service that acts on a recognised identity
+# (ADR-0018). Lives here rather than in one service because door-visiond gates the
+# arrival log and door-api gates attribution, and the two must not drift into
+# disagreeing about what a given enrollee agreed to.
+#
+# v1/v2 scoped recognition to "greeting, lights, and sounds". v3 added the arrival
+# log, attribution of interactions, and the name in notifications. Someone enrolled
+# under an older statement consented to the greeting only, so the extended
+# behaviours must be withheld from them until they re-enroll under current text.
+CONSENT_VERSION_FOR_EXTENDED_PERSONALISATION = "v3"
+
+
+def _consent_ordinal(version: str | None) -> int:
+    """Parse a 'vN' consent tag to N. Unparseable or missing sorts lowest."""
+    if not version:
+        return -1
+    try:
+        return int(version.lstrip("vV"))
+    except ValueError:
+        return -1
+
+
+def consent_covers_extended_personalisation(version: str | None) -> bool:
+    """True when this enrollee's consent covers the arrival log and attribution.
+
+    Fails closed: an unknown or unparseable version is treated as not covering it,
+    so a malformed record cannot silently opt someone in.
+    """
+    return _consent_ordinal(version) >= _consent_ordinal(
+        CONSENT_VERSION_FOR_EXTENDED_PERSONALISATION
+    )
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -198,6 +231,16 @@ class VisionFaceVisiblePayload(StrictModel):
 class VisionIdentityStablePayload(StrictModel):
     person_id: str
     display_name: str
+    # The colour this person chose at enrollment (ADR-0021), as `#rgb`/`#rrggbb`. The
+    # kiosks accent the greeting, the identity badge and the doorpad frame with it. Not
+    # unique across people and NOT the same thing as `profile_id`, which names an ESP32
+    # LED effect and must stay unique. None means "fall back to the profile's catalogue
+    # colour" — an older door, or a row enrolled before this field existed.
+    accent_color: str | None = None
+    # Which consent statement this person enrolled under (ADR-0018). door-api needs
+    # it to decide whether attribution is permitted for them; the greeting is
+    # covered by every version, so this gates only the extended behaviours.
+    consent_version: str | None = None
     confidence: float
     expires_at: UTCDateTime
     expires_at_monotonic_ms: int
@@ -206,6 +249,20 @@ class VisionIdentityStablePayload(StrictModel):
 
 class VisionIdentityExpiredPayload(StrictModel):
     person_id: str
+    # Why the identity went away (ADR-0029). door-visiond has always known this and dropped
+    # it here, which left the consumer unable to tell two very different facts apart:
+    #
+    #   "expired"      — the 2.5 s cache lapsed because the face left frame. Routine: it
+    #                    happens constantly while someone stands at the doorpad looking down
+    #                    at it, and ADR-0020 requires the held name to survive it.
+    #   "admin"        — the person was unenrolled. Their face data is gone and their name
+    #                    must come off the screen now, not when a timer happens to lapse.
+    #   "privacy_mode" — recognition was switched off (ADR-0009 §4).
+    #
+    # Optional, so an older producer still validates; a consumer that sees None must assume
+    # the routine case, which is the safe default — it keeps the name up rather than
+    # flickering it off, and the deletion paths below are the ones that explicitly clear.
+    reason: Literal["expired", "admin", "privacy_mode"] | None = None
 
 
 class VisionPrivacyModeChangedPayload(StrictModel):
@@ -225,6 +282,12 @@ class SessionStateChangedPayload(StrictModel):
     from_state: SessionState
     to_state: SessionState
     trigger: str
+    # Recognised visitor's display name, or None when nobody is recognised
+    # (ADR-0018 §4). The control plane evaluates notification rules from this
+    # event and has no other route to the name, so "Tiger is here" needs it here.
+    # Deliberately the name alone -- never person_id alongside it in a message
+    # that leaves the house -- and None keeps the generic notification path intact.
+    display_name: str | None = None
     # Chosen recipient KEYS for per-recipient video-message routing (ADR-0014).
     # Only populated on the VIDEO_MESSAGE_SAVED transition, when the visitor
     # picked who the clip should go to (e.g. ["tiger"], ["adam"], or both). Keys
@@ -360,12 +423,44 @@ class AmbientBirdSummaryPayload(StrictModel):
     total_detections: int
 
 
+class SatelliteTrackSample(StrictModel):
+    """One point on a pass: seconds after rise, where to look, and where it is (ADR-0030).
+
+    ``azimuth_deg``/``elevation_deg`` answer "where do I look from here" and drive the sky
+    dome. ``lat``/``lng`` are the sub-satellite point — the spot on Earth it is directly
+    over — which is what a globe needs and what the az/el pair cannot be converted into
+    without the orbit. The provider computes both from the same moment, so they cannot
+    disagree about where the satellite was.
+
+    The ground position is optional: a producer from before this existed omits it, and the
+    globe then has nothing to plot and says so rather than guessing a position from a bearing.
+    """
+
+    t_offset_s: float
+    azimuth_deg: float
+    elevation_deg: float
+    lat: float | None = None
+    lng: float | None = None
+
+
 class AmbientSatellitePassPayload(StrictModel):
     satellite: str
     rise_at: UTCDateTime
     max_elevation_deg: float
     direction: str
     visible: bool
+    # Additive pass geometry (ADR-0025). The provider already finds rise, culmination and
+    # set events and then kept only the culmination compass point, so the shape of the pass
+    # — the thing that tells you where to look and for how long — was computed and
+    # discarded. All optional: older producers and the offline mock omit them, so consumers
+    # must treat every field below as "may be absent" and fall back to the text above.
+    set_at: UTCDateTime | None = None
+    rise_azimuth_deg: float | None = None
+    set_azimuth_deg: float | None = None
+    culmination_azimuth_deg: float | None = None
+    # Sampled arc from rise to set, for drawing the path across the sky. Bounded by the
+    # producer; a consumer must not assume a fixed count or even spacing.
+    track: list[SatelliteTrackSample] = []
 
 
 class AmbientAircraftNearby(StrictModel):
@@ -420,6 +515,13 @@ class AmbientFoodRecommendationPayload(StrictModel):
     title: str
     detail: str | None
     provider: str
+    # The recommended hall as its own field (ADR-0026), because `title` is prose — it is
+    # built as "{best_hall} — {meal}" and a consumer that wants to place the hall on a map
+    # would otherwise have to split a display string on an em dash. Optional: a provider
+    # with no concept of a named venue omits it, and the consumer then draws no point rather
+    # than guessing one.
+    hall: str | None = None
+    backup_hall: str | None = None
 
 
 class SystemServiceHealthPayload(HealthPayload):

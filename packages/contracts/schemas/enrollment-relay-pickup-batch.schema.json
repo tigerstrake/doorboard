@@ -1,0 +1,130 @@
+{
+  "$defs": {
+    "Base64Url": {
+      "maxLength": 1400000,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "OpaqueId": {
+      "pattern": "^[a-z]{3,6}_[A-Za-z0-9]{16,32}$",
+      "type": "string"
+    },
+    "PickupItem": {
+      "additionalProperties": false,
+      "description": "One pending bundle handed to the Pi on its outbound poll.",
+      "properties": {
+        "bundle": {
+          "$ref": "#/$defs/SealedBundle"
+        },
+        "submitted_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        }
+      },
+      "required": [
+        "bundle",
+        "submitted_at"
+      ],
+      "title": "PickupItem",
+      "type": "object"
+    },
+    "SealedBundle": {
+      "additionalProperties": false,
+      "description": "What the phone uploads. Opaque to the relay in its entirety.",
+      "properties": {
+        "bundle_id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "door_key_id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "ephemeral_public_key": {
+          "$ref": "#/$defs/Base64Url",
+          "description": "Uncompressed SEC1 P-256 point of the phone's single-use keypair"
+        },
+        "invite_id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/SealedItem"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Items",
+          "type": "array"
+        },
+        "salt": {
+          "$ref": "#/$defs/Base64Url",
+          "description": "32-byte HKDF salt"
+        },
+        "suite": {
+          "const": "ecies-p256-hkdf-sha256-aes256gcm",
+          "default": "ecies-p256-hkdf-sha256-aes256gcm",
+          "title": "Suite",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "default": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bundle_id",
+        "invite_id",
+        "door_key_id",
+        "ephemeral_public_key",
+        "salt",
+        "items"
+      ],
+      "title": "SealedBundle",
+      "type": "object"
+    },
+    "SealedItem": {
+      "additionalProperties": false,
+      "description": "One AES-256-GCM item: the manifest (index 0) or a photo (index 1..N).\n\n``aad`` is not transmitted \u2014 both sides recompute it from\n``bundle_id || \":\" || door_key_id || \":\" || index`` so a tampered index or a\nbundle transplanted from another door fails authentication (ADR-0016 \u00a72).",
+      "properties": {
+        "ciphertext": {
+          "$ref": "#/$defs/Base64Url",
+          "description": "GCM ciphertext with appended 16-byte tag"
+        },
+        "index": {
+          "maximum": 16,
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "nonce": {
+          "$ref": "#/$defs/Base64Url",
+          "description": "12-byte GCM nonce, base64url"
+        }
+      },
+      "required": [
+        "index",
+        "nonce",
+        "ciphertext"
+      ],
+      "title": "SealedItem",
+      "type": "object"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "$ref": "#/$defs/PickupItem"
+      },
+      "maxItems": 8,
+      "title": "Items",
+      "type": "array"
+    }
+  },
+  "title": "PickupBatch",
+  "type": "object"
+}
