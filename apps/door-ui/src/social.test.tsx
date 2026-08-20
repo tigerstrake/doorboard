@@ -399,3 +399,4 @@ describe("T-405 public kiosk regressions", () => {
     expect(stored).toContain('"channel":"aircraft"');
   });
 });
+
