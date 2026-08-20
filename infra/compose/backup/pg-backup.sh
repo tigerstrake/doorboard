@@ -48,7 +48,13 @@ run_backup() {
   if pg_dump --dbname="$POSTGRES_DSN" --format=plain --no-owner --no-privileges \
       | gzip -9 > "$tmp_path"; then
     mv "$tmp_path" "$dump_path"
-    sha256sum "$dump_path" > "$dump_path.sha256"
+    # Record a BARE filename, not $dump_path: the path here is the container's
+    # (/mnt/nas-backups), so an absolute entry makes `sha256sum -c` fail for
+    # anyone verifying from the host or after a restore — which is precisely
+    # when it gets run. docs/runbooks/nas-backup-restore.md step 3 does
+    # `cd "$NAS_BACKUP_PATH" && sha256sum -c ...` and could never have passed.
+    dump_name="$(basename "$dump_path")"
+    (cd "$BACKUP_DEST" && sha256sum "$dump_name" > "$dump_name.sha256")
     size=$(wc -c < "$dump_path")
     log info "backup_completed path=$dump_path size_bytes=$size"
   else
