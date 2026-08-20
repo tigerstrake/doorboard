@@ -157,6 +157,7 @@ services:
       - ./../../integrations/home-assistant/config/configuration.yaml:/config/configuration.yaml:ro
       - ./../../integrations/home-assistant/config/automations.yaml:/config/automations.yaml:ro
       - ./../../integrations/home-assistant/config/rest_commands.yaml:/config/rest_commands.yaml:ro
+      - ./../../integrations/home-assistant/config/doorboard-dashboard.yaml:/config/doorboard-dashboard.yaml:ro
     # Never exposed beyond the LAN (handoff §16); the door plane never talks
     # to HA directly (ADR-0002) — this port is for the owner's browser/app
     # and for the Caddy profile below.

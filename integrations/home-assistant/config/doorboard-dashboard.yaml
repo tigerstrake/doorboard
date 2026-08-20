@@ -1,0 +1,53 @@
+# Doorboard dashboard (YAML-mode, registered from configuration.yaml).
+#
+# Added as an EXTRA dashboard, so the default UI-managed one is untouched — this
+# shows up as its own "Doorboard" item in the sidebar.
+#
+# Entity ids are doubled ("doorboard_doorboard_bell") because the MQTT device
+# name and the entity name both feed HA's slug. Left as-is deliberately: renaming
+# them means new unique_ids, which orphans the existing entities and loses their
+# history for a cosmetic gain.
+title: Doorboard
+views:
+  - title: Door
+    path: door
+    icon: mdi:door
+    cards:
+      - type: entities
+        title: At the door
+        entities:
+          - entity: binary_sensor.doorboard_doorboard_bell
+            name: Bell
+            icon: mdi:bell-ring
+          - entity: sensor.doorboard_doorboard_presence
+            name: Presence
+        footer:
+          type: graph
+          entity: sensor.doorboard_sync_backlog
+
+      - type: entities
+        title: Health
+        entities:
+          - entity: sensor.doorboard_sync_backlog
+            name: Archive backlog
+          - entity: sensor.doorboard_doorboard_storage_alert
+            name: Door storage
+          - entity: sensor.doorboard_doorboard_sync_status
+            name: Oldest unsynced (raw)
+
+      - type: markdown
+        title: What these mean
+        content: >-
+          **Archive backlog** is how long the oldest un-archived clip has been
+          waiting to reach the NAS. Normal is under an hour. If it climbs past a
+          day something has stopped: check `door-sync` on the Pi and that
+          `/mnt/nas` is still mounted. It sat at 31 days undetected before the
+          alert below existed.
+
+
+          **Door storage** is the Pi's own disk. `critical` means recording is
+          about to be affected.
+
+
+          **Presence** is display-only and never authorises anything
+          (ARCHITECTURE.md §9) — it changes a greeting, not a lock.

@@ -35,3 +35,67 @@
         subject_id: "{{ trigger.json.subject_id }}"
         source: "{{ trigger.json.source }}"
         label: "{{ trigger.json.label }}"
+
+# ---------------------------------------------------------------------------
+# Notifications to the owner's phone.
+#
+# All three use `notify.notify`, which fans out to every registered notify
+# target, rather than a `notify.mobile_app_<device>` slug. The slug is derived
+# from the device name ("Tiger's iPhone 17 Pro Max"), so it breaks on a rename
+# or a new phone — and it breaks silently, which is the wrong failure mode for
+# the only channel that tells you the door is broken.
+#
+# ADR-0002: HA is an integration surface, never a dependency of the door path.
+# If HA is down the door still rings, records and archives — you just don't get
+# a push. Nothing here gates door behaviour.
+# ---------------------------------------------------------------------------
+
+- id: doorboard_bell_push
+  alias: "Doorboard: notify when the bell rings"
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.doorboard_doorboard_bell
+      to: "on"
+  actions:
+    - action: notify.notify
+      data:
+        title: "Someone's at the door"
+        message: "The doorbell just rang."
+        data:
+          # iOS companion app: bypass Focus for a doorbell, it's time-critical.
+          push:
+            interruption-level: time-sensitive
+
+- id: doorboard_archive_stalled_push
+  alias: "Doorboard: notify when clips stop reaching the NAS"
+  mode: single
+  triggers:
+    # `for` avoids firing on the normal sawtooth as a clip waits its turn.
+    - trigger: numeric_state
+      entity_id: sensor.doorboard_doorboard_sync_status
+      above: 86400
+      for: "01:00:00"
+  actions:
+    - action: notify.notify
+      data:
+        title: "Doorboard archive has stalled"
+        message: >-
+          The oldest clip has been waiting
+          {{ states('sensor.doorboard_sync_backlog') }}h to reach the NAS.
+          Check door-sync on the Pi and that /mnt/nas is still mounted.
+
+- id: doorboard_storage_critical_push
+  alias: "Doorboard: notify when the door's disk is critical"
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: sensor.doorboard_doorboard_storage_alert
+      to: "critical"
+  actions:
+    - action: notify.notify
+      data:
+        title: "Doorboard storage critical"
+        message: >-
+          The door Pi is nearly out of disk — recording is about to be
+          affected. Retention should be pruning; check door-media's logs.
