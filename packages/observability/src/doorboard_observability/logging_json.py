@@ -123,5 +123,25 @@ def json_logging_config(
                 "filters": filter_names,
             }
         },
+        "loggers": _LIBRARY_LOGGERS,
         "root": {"level": level, "handlers": ["stdout"]},
     }
+
+
+# httpx logs every request at INFO as "HTTP Request: POST <full url> ...".
+#
+# For the Telegram client that is a credential disclosure, not noise: Telegram
+# puts the bot token in the URL path (`/bot<TOKEN>/sendMessage`, telegram.py
+# `_method_url`), so every notification wrote the token in clear text to the
+# control plane's log stream — where it persists in Docker's json-file driver and
+# goes wherever those logs are shipped. Nothing redacted it, because the
+# BiometricRedactionFilter scrubs biometric fields, not URLs.
+#
+# Raised to WARNING rather than filtered by pattern: a regex over URLs would have
+# to keep pace with every provider's way of embedding secrets, and the per-request
+# lines have no diagnostic value the services do not already log themselves.
+# Failures still surface — httpx warnings and the client's own `_log_non_ok`.
+_LIBRARY_LOGGERS: Final[dict[str, dict[str, Any]]] = {
+    "httpx": {"level": "WARNING"},
+    "httpcore": {"level": "WARNING"},
+}

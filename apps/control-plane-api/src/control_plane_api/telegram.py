@@ -89,6 +89,18 @@ class TelegramClient:
                     timeout=self._timeout_s,
                 )
                 self._log_non_ok(resp, chat_id, "sendMessage")
+                if resp.status_code < 400:
+                    # A delivered notification left no trace of its own: the only
+                    # evidence was httpx's per-request INFO line, which is now
+                    # silenced because it carried the bot token (see
+                    # doorboard_observability.logging_json). Log the fact here
+                    # instead, with the chat id and nothing that identifies the
+                    # bot — "did my phone get the ring" should be answerable from
+                    # the journal without a credential in it.
+                    logger.info(
+                        "telegram_message_sent",
+                        extra={"chat_id": chat_id, "method": "sendMessage"},
+                    )
             except Exception:
                 logger.warning(
                     "telegram_send_message_failed", extra={"chat_id": chat_id}, exc_info=True

@@ -40,6 +40,7 @@ from pydantic import BaseModel
 
 from door_api.broadcast import DisplayBroadcast
 from door_api.config import SessionConfig
+from door_api.esp32_link import Esp32LinkSettings, Esp32LinkSupervisor
 from door_api.mqtt_bridge import MqttBridge
 from door_api.persistence import SessionStore
 from door_api.session import SessionMachine
@@ -105,6 +106,8 @@ class DoorApiState:
         self._sync_forward_task: asyncio.Task[None] | None = None
         self.mqtt_bridge: MqttBridge | None = None
         self._mqtt_bridge_task: asyncio.Task[None] | None = None
+        self.esp32_link: Esp32LinkSupervisor | None = None
+        self._esp32_link_task: asyncio.Task[None] | None = None
 
         # Visitor relay (ADR-0017). All optional: with no relay configured the QR
         # behaves exactly as before and no worker or egress exists.
@@ -162,6 +165,7 @@ class DoorApiState:
         self.machine.restore_from_persistence()
         self.broadcast.update_snapshot(self.session_snapshot_dict())
         self.start_esp32_event_consumer()
+        self.start_esp32_link()
         self.start_media_forwarder()
         self.start_sync_forwarder()
         self.start_mqtt_bridge()
@@ -171,6 +175,8 @@ class DoorApiState:
         """Close resources."""
         if self._esp32_event_task is not None:
             self._esp32_event_task.cancel()
+        if self._esp32_link_task is not None:
+            self._esp32_link_task.cancel()
         if self._media_forward_task is not None:
             self._media_forward_task.cancel()
         if self._sync_forward_task is not None:
@@ -209,6 +215,67 @@ class DoorApiState:
                 self.mqtt_bridge.run(),
                 name="door-api-mqtt-bridge",
             )
+
+    def start_esp32_link(self) -> None:
+        """Spawn the supervisor that owns the door controller's serial link.
+
+        Inert unless ESP32_TRANSPORT names a real transport. Like the MQTT bridge,
+        the connection is NEVER awaited here: an unplugged or unflashed controller
+        must not delay startup or stand in front of the door interaction path.
+        """
+        settings = Esp32LinkSettings(
+            transport=self.config.esp32_transport,
+            uart_device=self.config.esp32_uart_device,
+            uart_baud=self.config.esp32_uart_baud,
+            udp_local_addr=self.config.esp32_udp_local_addr,
+            udp_remote_addr=self.config.esp32_udp_remote_addr,
+            reconnect_base_s=self.config.esp32_reconnect_base_s,
+            reconnect_max_s=self.config.esp32_reconnect_max_s,
+            door_id=self.config.door_id,
+        )
+        opener = settings.opener()
+        if opener is None or self._esp32_link_task is not None:
+            return
+        # A transport injected by a test or the simulator wins: it is the whole
+        # point of that injection, and opening a second link would fight it.
+        if self.esp32_transport is not None:
+            logger.info(
+                "esp32_link_supervisor_skipped",
+                extra={"reason": "transport_already_attached", "target": settings.describe()},
+            )
+            return
+
+        self.esp32_link = Esp32LinkSupervisor(
+            opener=opener,
+            attach=self.attach_esp32_transport,
+            detach=self.detach_esp32_transport,
+            target=settings.describe(),
+            reconnect_base_s=settings.reconnect_base_s,
+            reconnect_max_s=settings.reconnect_max_s,
+        )
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+            self._esp32_link_task = loop.create_task(
+                self.esp32_link.run(),
+                name="door-api-esp32-link",
+            )
+
+    def attach_esp32_transport(self, transport: Esp32Transport) -> None:
+        """Adopt a live controller link and start draining its events."""
+        self.esp32_transport = transport
+        self.start_esp32_event_consumer()
+
+    def detach_esp32_transport(self) -> None:
+        """Drop the current link so a replacement can be adopted cleanly.
+
+        The event consumer has to be cancelled, not merely abandoned: `events()`
+        is an endless queue read, so it would otherwise sit on a dead transport
+        forever and block the next `start_esp32_event_consumer()` call.
+        """
+        if self._esp32_event_task is not None:
+            self._esp32_event_task.cancel()
+            self._esp32_event_task = None
+        self.esp32_transport = None
 
     def start_esp32_event_consumer(self) -> None:
         if self.esp32_transport is None or self._esp32_event_task is not None:
@@ -852,6 +919,21 @@ async def metrics() -> Response:
             ),
             "door_api_mqtt_bridge_broadcast_errors_total": (
                 state.mqtt_bridge.broadcast_errors if state.mqtt_bridge else 0
+            ),
+            # Distinguishes "no controller configured" from "configured and
+            # failing", which is the first question to ask during bring-up.
+            "door_api_esp32_link_enabled": int(state.esp32_link is not None),
+            "door_api_esp32_transport_attached": int(state.esp32_transport is not None),
+            **(
+                state.esp32_link.metrics()
+                if state.esp32_link is not None
+                else {
+                    "door_api_esp32_link_connected": 0,
+                    "door_api_esp32_link_connects_total": 0,
+                    "door_api_esp32_link_reopens_total": 0,
+                    "door_api_esp32_link_open_failures_total": 0,
+                    "door_api_esp32_link_idle_timeouts_total": 0,
+                }
             ),
         }
     )

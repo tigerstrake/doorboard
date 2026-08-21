@@ -1,0 +1,17 @@
+## Registry dependencies for the door controller.
+##
+## `main/CMakeLists.txt` has always REQUIRED `led_strip`, but nothing declared
+## where it comes from: it is not an IDF built-in and not a local component under
+## `components/`, so a clean `idf.py build` failed to resolve it. That went
+## unnoticed because CI only compiles the host-testable modules
+## (`tests/firmware/*_conformance.c`) and never runs a device build.
+##
+## Pinned to the 2.x line deliberately. `main.c` configures the strip with
+## `led_pixel_format` / `LED_PIXEL_FORMAT_GRB`, which 3.0 replaced with
+## `color_component_format` — taking 3.x would not compile.
+##
+## The generated `dependencies.lock` is committed alongside this file so a
+## rebuild resolves to the same versions the flashed image was built from.
+dependencies:
+  idf: ">=5.3"
+  espressif/led_strip: "^2.5.5"

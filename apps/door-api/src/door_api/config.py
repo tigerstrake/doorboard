@@ -181,6 +181,24 @@ class SessionConfig:
     mqtt_password: str = ""
     mqtt_topics: tuple[str, ...] = ("doorboard/ambient/#", "doorboard/status/#")
 
+    # ESP32 door-controller link (see esp32_link.py).
+    #
+    # Defaults to "mock", meaning no link is opened and `esp32_transport` stays
+    # None — which is exactly how every test, CI run and dev machine behaved
+    # before this knob was read at all, so nothing changes for them. Real
+    # hardware sets ESP32_TRANSPORT=uart in the Pi's .env.
+    #
+    # The device default is what an ESP32-S3-DevKitC's onboard bridge enumerates
+    # as, because that bridge is wired to GPIO 43/44 — the pins the firmware gives
+    # UART1. It is NOT the Pi's own GPIO UART: the AI HAT+ occupies that header.
+    esp32_transport: str = "mock"
+    esp32_uart_device: str = "/dev/ttyACM1"
+    esp32_uart_baud: int = 115_200
+    esp32_udp_local_addr: str = ""
+    esp32_udp_remote_addr: str = ""
+    esp32_reconnect_base_s: float = 1.0
+    esp32_reconnect_max_s: float = 30.0
+
     @staticmethod
     def from_env() -> SessionConfig:
         """Load configuration, applying environment variable overrides."""
@@ -261,4 +279,13 @@ class SessionConfig:
                 "DOOR_API_MQTT_TOPICS",
                 ("doorboard/ambient/#", "doorboard/status/#"),
             ),
+            # Unprefixed, because the door plane shares these with the firmware's
+            # view of the same cable rather than owning them.
+            esp32_transport=os.environ.get("ESP32_TRANSPORT", "mock").strip().lower(),
+            esp32_uart_device=os.environ.get("ESP32_UART_DEVICE", "/dev/ttyACM1"),
+            esp32_uart_baud=int(_env_float("ESP32_UART_BAUD", 115_200.0)),
+            esp32_udp_local_addr=os.environ.get("ESP32_UDP_LOCAL_ADDR", ""),
+            esp32_udp_remote_addr=os.environ.get("ESP32_UDP_REMOTE_ADDR", ""),
+            esp32_reconnect_base_s=_env_float("ESP32_RECONNECT_BASE_S", 1.0),
+            esp32_reconnect_max_s=_env_float("ESP32_RECONNECT_MAX_S", 30.0),
         )

@@ -63,3 +63,9 @@ Thumbs.db
 firmware/**/build/
 firmware/**/.pio/
 firmware/**/sdkconfig.old
+# Generated from sdkconfig.defaults by `idf.py set-target`; committing it would
+# let a stale local config outrank the defaults that are reviewed.
+firmware/**/sdkconfig
+# Fetched by the component manager from the registry; dependencies.lock pins the
+# versions and IS committed, so these are reproducible without being vendored.
+firmware/**/managed_components/

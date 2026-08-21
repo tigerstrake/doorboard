@@ -141,3 +141,21 @@ def test_config_actually_applies_end_to_end(capsys: pytest.CaptureFixture[str]) 
     payload = json.loads(line)
     assert payload["error_class"] == "X"
     assert payload["service"] == "door-visiond"
+
+
+def test_httpx_request_logging_is_silenced(capsys: pytest.CaptureFixture[str]) -> None:
+    """httpx's INFO line carries the full URL — and Telegram puts the bot token in it.
+
+    Asserted here rather than trusted to a comment: this is the difference between
+    a notification and a credential written to disk on every ring.
+    """
+    logging.config.dictConfig(json_logging_config("control-plane-api"))
+    logging.getLogger("httpx").info(
+        'HTTP Request: POST https://api.telegram.org/bot123:SECRET/sendMessage "200 OK"'
+    )
+    captured = capsys.readouterr().out
+    assert captured == "", "httpx request lines must not reach the log stream"
+
+    # A real failure still gets through.
+    logging.getLogger("httpx").warning("connect_timeout")
+    assert "connect_timeout" in capsys.readouterr().out
