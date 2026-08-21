@@ -4,7 +4,7 @@
 
 Extends `vision.identity_expired`. Additive and optional; no existing field changes meaning.
 Resolves a conflict between [ADR-0020](0020-interaction-scoped-identity.md) and the deletion
-invariants in ARCHITECTURE.md §9 / [ADR-0009](0009-privacy-enforcement.md).
+invariants in ARCHITECTURE.md §9 / [ADR-0009](0009-enrollment-and-biometric-data.md).
 
 ## Context
 

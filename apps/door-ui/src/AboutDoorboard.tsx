@@ -102,6 +102,14 @@ export const ABOUT_SECTIONS: AboutSection[] = [
       "marking it hidden.",
   },
   {
+    heading: "If the door speaks your name",
+    body:
+      "A screen at arm's length shows your name to you. A speaker tells everyone in the " +
+      "hallway. So saying your name out loud is a separate choice from enrolling: it is off " +
+      "unless you opt in specifically, it stays quiet overnight, and it will not repeat " +
+      "itself at someone standing in their own doorway.",
+  },
+  {
     heading: "Being recognised is not a key",
     body:
       "It changes a greeting and a colour. It never unlocks anything, grants anything, or " +

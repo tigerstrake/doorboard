@@ -1,0 +1,33 @@
+[Unit]
+Description=Doorboard spoken greeting service
+# Wants, not Requires: speech is cosmetic by construction (ADR-0034). If
+# door-api is down this reconnects on its own, and the door keeps working with
+# no speech — nothing on `button -> ESP32 feedback -> local UI` depends on it.
+Wants=door-api.service
+After=door-api.service sound.target
+
+[Service]
+Type=simple
+User=doorboard
+Group=doorboard
+WorkingDirectory=/opt/doorboard
+EnvironmentFile=/etc/doorboard/doorboard.env
+ExecStart=/opt/doorboard/.venv/bin/python -m door_voice
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=10s
+# Reads a websocket on loopback and runs a local TTS binary. It stores nothing,
+# holds no credentials, and needs no write access anywhere.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# The audio device is the one thing it does need.
+DeviceAllow=char-alsa rw
+SupplementaryGroups=audio
+
+[Install]
+WantedBy=multi-user.target

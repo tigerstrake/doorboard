@@ -15,6 +15,7 @@ members = [
     "doorboard-door-media",
     "doorboard-door-sync",
     "doorboard-door-visiond",
+    "doorboard-door-voice",
     "doorboard-esp32-link",
     "doorboard-food-recommendation",
     "doorboard-media-client",
@@ -275,6 +276,7 @@ dev = [
     { name = "doorboard-door-media" },
     { name = "doorboard-door-sync" },
     { name = "doorboard-door-visiond" },
+    { name = "doorboard-door-voice" },
     { name = "doorboard-esp32-link" },
     { name = "doorboard-media-client" },
     { name = "doorboard-observability" },
@@ -298,6 +300,7 @@ dev = [
     { name = "doorboard-door-media", editable = "apps/door-media" },
     { name = "doorboard-door-sync", editable = "apps/door-sync" },
     { name = "doorboard-door-visiond", editable = "apps/door-visiond" },
+    { name = "doorboard-door-voice", editable = "apps/door-voice" },
     { name = "doorboard-esp32-link", editable = "packages/esp32-link" },
     { name = "doorboard-media-client", editable = "packages/media-client" },
     { name = "doorboard-observability", editable = "packages/observability" },
@@ -517,6 +520,27 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "uvicorn" },
+]
+
+[[package]]
+name = "doorboard-door-voice"
+version = "0.0.0"
+source = { editable = "apps/door-voice" }
+dependencies = [
+    { name = "doorboard-contracts" },
+    { name = "doorboard-observability" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "doorboard-contracts", editable = "packages/contracts" },
+    { name = "doorboard-observability", editable = "packages/observability" },
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "pydantic-settings", specifier = ">=2.6" },
 ]
 
 [[package]]
