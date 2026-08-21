@@ -28,6 +28,12 @@
 # away, unknown. Anything else is a 422 rather than a silent default.
 - id: doorboard_presence_label_webhook
   alias: "Doorboard: forward a Focus change to control-plane-api"
+  # Explicitly true, not just omitted. This automation previously shipped
+  # `initial_state: false`, and HA keys an automation's registry entry on its
+  # `id` — so with the key absent it RESTORES the last known state, which was
+  # off. Removing the false was not enough: it loaded fine, logged nothing, and
+  # silently never triggered.
+  initial_state: true
   mode: queued
   max: 10
   triggers:
@@ -50,15 +56,20 @@
 # already has.
 - id: doorboard_presence_from_zone
   alias: "Doorboard: forward a location change to control-plane-api"
+  # Explicitly true, not just omitted. This automation previously shipped
+  # `initial_state: false`, and HA keys an automation's registry entry on its
+  # `id` — so with the key absent it RESTORES the last known state, which was
+  # off. Removing the false was not enough: it loaded fine, logged nothing, and
+  # silently never triggered.
+  initial_state: true
   mode: queued
   max: 10
   triggers:
     - trigger: state
-      # CHECK THIS ONE VALUE. HA derives the entity id from the person's name in
-      # Settings -> People; person.tiger is a guess. Developer Tools -> States,
-      # filter for "person." to see the real id. A wrong id here fails silently:
-      # the automation simply never triggers.
-      entity_id: person.tiger
+      # Verified against the live entity registry on 2026-08-21. HA derives this
+      # from the name in Settings -> People, so it changes if the person is
+      # renamed — and a wrong id fails SILENTLY, by simply never triggering.
+      entity_id: person.tiger_strake
   conditions:
     # Ignore the momentary unknown/unavailable flaps the app produces on
     # restart, which would otherwise publish "away" while you are sitting there.

@@ -101,14 +101,24 @@ def test_no_rest_command_sends_coordinates(rest_commands):
             assert word not in payload, f"{name} payload mentions {word!r}"
 
 
-def test_presence_automations_are_enabled(automations):
-    """They shipped disabled, waiting on an endpoint that already existed."""
+def test_presence_automations_are_explicitly_enabled(automations):
+    """They shipped disabled, waiting on an endpoint that already existed.
+
+    `initial_state: true` must be PRESENT, not merely not-false. HA keys an
+    automation's registry entry on its `id`, so when the key is absent it restores
+    the last known state — and the last known state here was off. Deleting the
+    `initial_state: false` was not enough: on 2026-08-21 the automation parsed
+    cleanly, logged nothing, and silently never triggered. An earlier version of
+    this test accepted an absent key and so passed against that exact bug.
+    """
     presence = [a for a in automations if "presence" in a["id"]]
     assert len(presence) == 2, f"expected 2 presence automations, found {len(presence)}"
     for automation in presence:
-        assert automation.get("initial_state", True) is True, (
-            f"{automation['id']} is still disabled"
+        assert "initial_state" in automation, (
+            f"{automation['id']} omits initial_state, so HA will restore its previous "
+            "state rather than enabling it"
         )
+        assert automation["initial_state"] is True, f"{automation['id']} is disabled"
 
 
 def test_presence_automations_only_call_presence_rest_commands(automations, rest_commands):
