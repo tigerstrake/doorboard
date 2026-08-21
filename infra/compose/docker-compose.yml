@@ -152,6 +152,12 @@ services:
       # In-network service name, not the Pi-facing CONTROL_PLANE_URL from
       # .env (that one points at the NUC's LAN hostname for door-sync).
       CONTROL_PLANE_URL: http://control-plane-api:8090
+      # The presence webhooks are admin-authenticated, so the rest_commands in
+      # integrations/home-assistant/config/rest_commands.yaml need this. Read
+      # there via !env_var, never written into that file.
+      # Pre-formatted as a full header value: HA's !env_var substitutes a value
+      # verbatim and cannot concatenate, so "Bearer " has to live here.
+      CONTROL_PLANE_ADMIN_TOKEN_HEADER: Bearer ${CONTROL_PLANE_ADMIN_TOKEN:?CONTROL_PLANE_ADMIN_TOKEN must be set in .env}
     volumes:
       - ha_data:/config
       - ./../../integrations/home-assistant/config/configuration.yaml:/config/configuration.yaml:ro

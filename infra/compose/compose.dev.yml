@@ -118,6 +118,10 @@ services:
       MQTT_HA_USERNAME: home-assistant
       MQTT_HA_PASSWORD: ${MQTT_HA_PASSWORD:-devpassword}
       CONTROL_PLANE_URL: http://control-plane-api:8090
+      # Presence webhooks are admin-authenticated; rest_commands.yaml reads this
+      # via !env_var so the token never lands in a config file.
+      # Pre-formatted: HA's !env_var cannot concatenate a "Bearer " prefix.
+      CONTROL_PLANE_ADMIN_TOKEN_HEADER: Bearer ${CONTROL_PLANE_ADMIN_TOKEN:-dev-admin-token}
     volumes:
       - ./../../integrations/home-assistant/config/configuration.yaml:/config/configuration.yaml:ro
       - ./../../integrations/home-assistant/config/automations.yaml:/config/automations.yaml:ro

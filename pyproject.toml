@@ -23,6 +23,12 @@ dev = [
     "doorboard-wallboard-worker",
     "hatchling>=1.27.0",
     "pyright>=1.1.403",
+    # Test-only: tests/test_home_assistant_presence_config.py parses HA config,
+    # which carries custom tags (!env_var, !include) that regex cannot handle.
+    "pyyaml>=6.0",
+    # Test-only: renders the HA zone->label template, which is how the folded
+    # block scalar emitting " available " instead of "available" gets caught.
+    "jinja2>=3.1",
     "pytest>=8.4.1",
     "ruff>=0.12.1",
 ]

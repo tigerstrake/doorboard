@@ -1,20 +1,45 @@
-# rest_command targets HA automations call into. T-503 wires the HA side of
-# "inbound webhook config for Focus shortcuts/geofence labels ->
-# control-plane-api"; the receiving endpoint is presence computation, which
-# is explicitly T-504's scope (out of scope here, see docs/tasks/T-503-nuc-stack.md).
+# rest_command targets HA automations call into (T-503/T-504).
 #
-# Until T-504 lands, `presence_label_update` 404s against control-plane-api
-# — expected, and harmless (HA is never a dependency of the door path,
-# ADR-0002). Enable the automation in automations.yaml once the endpoint
-# exists.
-presence_label_update:
-  # Same in-network hostname as the `mqtt:` block above's `broker:` — a
-  # topology fact fixed by the compose service name, not a secret, so it's
-  # not worth an `!env_var` indirection (CONTROL_PLANE_URL is still passed
-  # into this container's environment for anyone extending this).
-  url: "http://control-plane-api:8090/webhooks/presence"
+# These replace a single `presence_label_update` that pointed at
+# `/webhooks/presence`. That endpoint was never implemented under that name and
+# the call had three faults, each fatal on its own:
+#
+#   1. Wrong path. control-plane-api exposes one endpoint PER SOURCE:
+#      /status/presence/webhook/focus-shortcut and .../geofence-label. The source
+#      comes from the URL, which is what makes it unspoofable by the caller.
+#   2. It sent `source` in the body. PresenceWebhookRequest is extra="forbid",
+#      so that alone was a 422 — and letting a client name its own source would
+#      defeat the precedence order (manual > focus_shortcut > geofence_label >
+#      calendar > default).
+#   3. No Authorization header. Both endpoints are admin-authenticated.
+#
+# `until` is deliberately omitted: a Focus change has no natural expiry, and the
+# next Focus change supersedes it. Leaving it null means "until something else
+# says otherwise" rather than inventing a timeout.
+#
+# LABELS ONLY, never coordinates. control-plane-api runs
+# `reject_coordinate_payload` over the body and 422s on any coordinate-shaped
+# field at any depth, so a well-meaning "let's also send lat/long" fails loudly
+# instead of quietly starting a location history.
+
+presence_focus_update:
+  # Same in-network hostname as the MQTT broker's — a topology fact fixed by the
+  # compose service name, not a secret.
+  url: "http://control-plane-api:8090/status/presence/webhook/focus-shortcut"
   method: POST
   headers:
     content-type: "application/json"
+    # From the container environment (see infra/compose/docker-compose.yml), so
+    # the token is never written into this file.
+    authorization: !env_var CONTROL_PLANE_ADMIN_TOKEN_HEADER
   payload: >-
-    {"subject_id": "{{ subject_id }}", "source": "{{ source }}", "label": "{{ label }}"}
+    {"subject_id": "{{ subject_id }}", "label": "{{ label }}"}
+
+presence_geofence_update:
+  url: "http://control-plane-api:8090/status/presence/webhook/geofence-label"
+  method: POST
+  headers:
+    content-type: "application/json"
+    authorization: !env_var CONTROL_PLANE_ADMIN_TOKEN_HEADER
+  payload: >-
+    {"subject_id": "{{ subject_id }}", "label": "{{ label }}"}
