@@ -12,7 +12,23 @@
  * Split from the interpolation so the panel can decide *what* to say — counting down to a
  * rise, tracking a pass in progress, or reporting one that is over — without recomputing
  * time arithmetic in three places.
+ *
+ * These two declarations were dropped when this module was extracted from `skyDome.ts`,
+ * which left door-ui failing `tsc` with "Cannot find name 'PassProgress'" — the comment
+ * above survived the move but the types it documents did not.
  */
+export type PassPhase = "before" | "during" | "after";
+
+export interface PassProgress {
+  phase: PassPhase;
+  /** 0 at rise, 1 at set, clamped — so a caller can interpolate without re-checking phase. */
+  fraction: number;
+  /** Negative once the rise is in the past. */
+  secondsUntilRise: number;
+  /** Negative once the pass is over; 0 when the payload carried no set time. */
+  secondsUntilSet: number;
+}
+
 export function passProgress(
   riseAtMs: number,
   setAtMs: number | null,

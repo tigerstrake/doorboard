@@ -242,7 +242,7 @@ type PhotoStep = "offer" | "countdown" | "review" | "saved";
 // idle -> capturing -> ready -> (saving -> saved | cleared). "cleared" is a
 // terminal state used for both "No thanks" and discard-on-abandon so the
 // auto-capture effect (which only fires from "idle") never re-triggers.
-type PostRingPhotoStatus =
+type PhotoCaptureStatus =
   | "idle"
   | "capturing"
   | "ready"
@@ -519,9 +519,12 @@ export function App() {
   // separate from the manual photo-booth `currentPhoto` so the two flows never
   // clobber each other's save/discard bookkeeping.
   const [postRingPhoto, setPostRingPhoto] = useState<PhotoReview | null>(null);
-  const [postRingPhotoStatus, setPostRingPhotoStatus] = useState<PostRingPhotoStatus>("idle");
+  const [postRingPhotoStatus, setPostRingPhotoStatus] = useState<PhotoCaptureStatus>("idle");
   const [postRingName, setPostRingName] = useState<string>("");
   const [postRingCheckinPending, setPostRingCheckinPending] = useState<boolean>(false);
+  const [checkinPhoto, setCheckinPhoto] = useState<PhotoReview | null>(null);
+  const [checkinPhotoStatus, setCheckinPhotoStatus] = useState<PhotoCaptureStatus>("idle");
+  const [checkinPendingLabel, setCheckinPendingLabel] = useState<string | null>(null);
   const [visitorQrUrl, setVisitorQrUrl] = useState<string | null>(null);
   // Self-service enrollment (ADR-0019). "closed" carries the reason door-visiond
   // gave, because a visitor who is refused deserves a sentence, not a spinner that
@@ -1454,26 +1457,123 @@ export function App() {
     }
   };
 
-  const handleCheckin = async (kind: "enrolled" | "guest") => {
-    if (checkinSubmitting) return;
+  const resetCheckinPhotoState = () => {
+    setCheckinPhoto(null);
+    setCheckinPhotoStatus("idle");
+    setCheckinPendingLabel(null);
+  };
+
+  // Actually record the check-in. `photoRecordingId` is null both when the
+  // camera was unavailable and when the visitor declined the photo — the
+  // check-in itself never depends on it.
+  const finishCheckin = async (label: string, photoRecordingId: string | null) => {
     setCheckinSubmitting(true);
     try {
-      const label = kind === "enrolled" && activeDisplayName ? activeDisplayName : "Guest";
       // door-api derives attribution server-side from the session's cached
       // identity — this client never asserts a person_id.
-      const checkin = await socialApi.createCheckin(label);
+      const checkin = await socialApi.createCheckin(label, photoRecordingId);
       rememberMyContent({ kind: "checkin", id: checkin.id, label });
       triggerToast(
         checkin.person_id
           ? "Recognized check-in saved."
           : `Checked in as ${label}`
       );
+      resetCheckinPhotoState();
       returnDoorPadToContext();
     } catch (err) {
       triggerToast(apiErrorMessage(err, "Couldn't check in — try again."));
+      // Stay on the confirm step so the photo isn't silently lost on a retry.
+      setCheckinPhotoStatus(photoRecordingId ? "ready" : "unavailable");
     } finally {
       setCheckinSubmitting(false);
     }
+  };
+
+  // Tapping a check-in button takes the photo first and shows it; nothing is
+  // recorded until the visitor confirms. With the photo booth off this stays
+  // exactly the old one-tap behaviour.
+  const handleCheckin = async (kind: "enrolled" | "guest") => {
+    if (checkinSubmitting || checkinPhotoStatus === "capturing") return;
+    const label = kind === "enrolled" && activeDisplayName ? activeDisplayName : "Guest";
+    setCheckinPendingLabel(label);
+    if (!FEATURE_PHOTOBOOTH) {
+      await finishCheckin(label, null);
+      return;
+    }
+    setCheckinPhotoStatus("capturing");
+    try {
+      const response = await fetch(`${API_BASE}/doorpad/photo-booth/capture`, { method: "POST" });
+      if (!response.ok) {
+        setCheckinPhotoStatus("unavailable");
+        return;
+      }
+      const data = (await response.json()) as { photo: PhotoReview };
+      setCheckinPhoto(data.photo);
+      setCheckinPhotoStatus("ready");
+    } catch {
+      setCheckinPhotoStatus("unavailable");
+    }
+  };
+
+  // Best-effort discard of a still-private capture. Used for "Skip the photo"
+  // and for walking away mid-confirm, so a declined photo doesn't linger.
+  const discardCheckinPhoto = async (): Promise<void> => {
+    const photo = checkinPhoto;
+    setCheckinPhoto(null);
+    if (!photo) return;
+    try {
+      await fetch(`${API_BASE}/doorpad/photo-booth/${photo.recording_id}/discard`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: photo.session_id }),
+      });
+    } catch {
+      // The capture is still private to the photo-booth pipeline and remains
+      // owner-deletable, so a failed discard never exposes anything.
+    }
+  };
+
+  const confirmCheckinWithPhoto = async () => {
+    const photo = checkinPhoto;
+    const label = checkinPendingLabel ?? "Guest";
+    if (!photo) {
+      await finishCheckin(label, null);
+      return;
+    }
+    setCheckinPhotoStatus("saving");
+    try {
+      // Save through the photo-booth pipeline first so the recording is
+      // persisted (privately, for owner review) before the check-in links it.
+      const response = await fetch(
+        `${API_BASE}/doorpad/photo-booth/${photo.recording_id}/save`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: photo.session_id }),
+        }
+      );
+      if (!response.ok) {
+        triggerToast("Couldn't save your photo — try again.");
+        setCheckinPhotoStatus("ready");
+        return;
+      }
+    } catch {
+      triggerToast("Couldn't save your photo — try again.");
+      setCheckinPhotoStatus("ready");
+      return;
+    }
+    await finishCheckin(label, photo.recording_id);
+  };
+
+  const skipCheckinPhoto = async () => {
+    const label = checkinPendingLabel ?? "Guest";
+    await discardCheckinPhoto();
+    await finishCheckin(label, null);
+  };
+
+  const cancelCheckinPhoto = async () => {
+    await discardCheckinPhoto();
+    resetCheckinPhotoState();
   };
 
   const handleDeletionRequest = async (item: MyContentRef) => {
@@ -2334,6 +2434,21 @@ export function App() {
     }
   };
 
+  // Navigating away from the Check In screen mid-confirm discards the still
+  // private capture, so declining by walking off leaves nothing behind.
+  useEffect(() => {
+    if (doorPadScreen === "checkin") return undefined;
+    if (!checkinPhoto && checkinPhotoStatus === "idle") return undefined;
+    void (async () => {
+      await discardCheckinPhoto();
+      resetCheckinPhotoState();
+    })();
+    return undefined;
+    // discardCheckinPhoto/resetCheckinPhotoState are stable enough for this
+    // guard; re-running on their identity would fight the state reset below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doorPadScreen]);
+
   // Fire the single auto-capture shortly after the ringing screen appears.
   useEffect(() => {
     if (!FEATURE_PHOTOBOOTH) return undefined;
@@ -3164,33 +3279,96 @@ export function App() {
           {doorPadScreen === "checkin" && (
             <div className="doorpad-sub-content">
               <h2>Check In</h2>
-              <p>Voluntarily mark yourself as a visitor to increment stats!</p>
-              <div className="phrase-grid">
-                {activeDisplayName && (
-                  <button
-                    className="phrase-btn"
-                    disabled={checkinSubmitting}
-                    onClick={() => handleCheckin("enrolled")}
-                  >
-                    Check in as {activeDisplayName}
-                  </button>
-                )}
-                <button
-                  className="phrase-btn"
-                  disabled={checkinSubmitting}
-                  onClick={() => handleCheckin("guest")}
+              {checkinPhotoStatus === "idle" ? (
+                <>
+                  <p>Voluntarily mark yourself as a visitor to increment stats!</p>
+                  <div className="phrase-grid">
+                    {activeDisplayName && (
+                      <button
+                        className="phrase-btn"
+                        disabled={checkinSubmitting}
+                        onClick={() => handleCheckin("enrolled")}
+                      >
+                        Check in as {activeDisplayName}
+                      </button>
+                    )}
+                    <button
+                      className="phrase-btn"
+                      disabled={checkinSubmitting}
+                      onClick={() => handleCheckin("guest")}
+                    >
+                      Check in as Guest
+                    </button>
+                  </div>
+                  {!activeDisplayName && (
+                    <p className="placeholder-subtext">
+                      Named check-in is available only when an enrolled, consenting visitor is recognized.
+                    </p>
+                  )}
+                  <div className="action-button-group">
+                    <BigButton onClick={returnDoorPadToContext}>Back</BigButton>
+                  </div>
+                </>
+              ) : (
+                <div
+                  id="checkin-photo-confirm"
+                  className="doorpad-photo-checkin"
+                  role="group"
+                  aria-label="Check-in photo"
                 >
-                  Check in as Guest
-                </button>
-              </div>
-              {!activeDisplayName && (
-                <p className="placeholder-subtext">
-                  Named check-in is available only when an enrolled, consenting visitor is recognized.
-                </p>
+                  <div className="doorpad-photo-checkin__header">
+                    <h3>Checking in as {checkinPendingLabel ?? "Guest"}</h3>
+                    <p className="placeholder-subtext">
+                      Keep the photo with your check-in, or skip it — either way the check-in
+                      counts. Photos are saved privately for owner review.
+                    </p>
+                  </div>
+                  {checkinPhotoStatus === "ready" && checkinPhoto ? (
+                    <img
+                      className="review-photo"
+                      src={checkinPhoto.review_url}
+                      alt="Your check-in photo"
+                    />
+                  ) : checkinPhotoStatus === "unavailable" ? (
+                    <p className="placeholder-subtext">
+                      Camera unavailable right now — you can still check in without a photo.
+                    </p>
+                  ) : (
+                    <div className="video-preview-frame video-preview-frame--unavailable">
+                      Taking your photo…
+                    </div>
+                  )}
+                  <div className="action-button-group">
+                    {checkinPhotoStatus === "ready" && (
+                      <BigButton
+                        id="checkin-photo-keep"
+                        variant="primary"
+                        disabled={checkinSubmitting}
+                        onClick={confirmCheckinWithPhoto}
+                      >
+                        Keep photo &amp; check in
+                      </BigButton>
+                    )}
+                    <BigButton
+                      id="checkin-photo-skip"
+                      variant={checkinPhotoStatus === "unavailable" ? "primary" : undefined}
+                      disabled={checkinSubmitting || checkinPhotoStatus === "capturing"}
+                      onClick={skipCheckinPhoto}
+                    >
+                      {checkinPhotoStatus === "unavailable"
+                        ? "Check in without a photo"
+                        : "Skip the photo"}
+                    </BigButton>
+                    <BigButton
+                      id="checkin-photo-cancel"
+                      disabled={checkinSubmitting}
+                      onClick={cancelCheckinPhoto}
+                    >
+                      Cancel
+                    </BigButton>
+                  </div>
+                </div>
               )}
-              <div className="action-button-group">
-                <BigButton onClick={returnDoorPadToContext}>Back</BigButton>
-              </div>
             </div>
           )}
 
