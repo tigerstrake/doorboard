@@ -10,7 +10,7 @@ from door_visiond.clock import FakeClock
 from door_visiond.embedder import MockEmbedder
 from door_visiond.embedding import Embedding
 from door_visiond.enrollment import ProfileSpec
-from door_visiond.pipeline import BackendStatus
+from door_visiond.pipeline import BackendStatus, DisabledBackend, FrameCapture
 from door_visiond.service import (
     EnrollmentLockedError,
     PrivacyModeActiveError,
@@ -272,5 +272,198 @@ async def test_unenroll_outbox_delivers_and_clears_after_success(
         assert delivered == ["prs_remote_purge"]
         assert svc.health()["archive_purge_queue_depth"] == 0
         assert svc.metrics_snapshot()["archive_purges_delivered"] == 1
+    finally:
+        await svc.stop()
+
+
+class _FlakyBackend:
+    """Fails its first `fail_times` frames, then behaves.
+
+    Stands in for door-media restarting underneath us: the frames arrive over HTTP, so a
+    sibling service bouncing raises URLError for a few seconds and then stops.
+    """
+
+    def __init__(self, *, fail_times: int) -> None:
+        self.remaining_failures = fail_times
+        self.closed = False
+        self.captures = 0
+
+    def set_capturing(self, enabled: bool) -> None:
+        return
+
+    async def next_capture(self):
+        await asyncio.sleep(0)
+        if self.remaining_failures > 0:
+            self.remaining_failures -= 1
+            raise OSError("door-media is restarting")
+        self.captures += 1
+        return FrameCapture(faces=(), inference_ms=1.0)
+
+    def status(self) -> BackendStatus:
+        return BackendStatus(mode="hardware", hailo_ok=True, fps=10.0, inference_ms_p50=1.0)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.anyio
+async def test_a_degraded_backend_recovers_on_its_own(
+    ssd_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Degradation used to be terminal, so restarting door-media stopped recognition
+    permanently on an otherwise healthy door — visible only as `mode: disabled` in
+    /health, and curable only by noticing. Found on the door (T-321)."""
+    monkeypatch.setenv("VISION_MODE", "hardware")
+    monkeypatch.setenv("VISIOND_BACKEND_RECOVERY_DELAY_S", "0.01")
+    settings = Settings()
+
+    failing = _FailingBackend()
+    healthy = _FlakyBackend(fail_times=0)
+    svc = VisiondService(
+        settings,
+        backend=failing,
+        backend_factory=lambda: healthy,  # type: ignore[arg-type]
+    )
+    await svc.start()
+    try:
+        for _ in range(200):
+            if svc.effective_mode == "disabled":
+                break
+            await asyncio.sleep(0.01)
+        assert svc.effective_mode == "disabled"
+
+        # ...and then comes back without anybody restarting the service.
+        for _ in range(400):
+            if svc.effective_mode == "hardware":
+                break
+            await asyncio.sleep(0.01)
+        assert svc.effective_mode == "hardware"
+        assert svc.health()["runtime_warning"] is None
+        assert svc.metrics_snapshot()["backend_recoveries"] == 1
+    finally:
+        await svc.stop()
+
+
+@pytest.mark.anyio
+async def test_a_permanently_broken_backend_re_degrades(
+    ssd_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retrying is safe because a real fault simply fails the next frame too."""
+    monkeypatch.setenv("VISION_MODE", "hardware")
+    monkeypatch.setenv("VISIOND_BACKEND_RECOVERY_DELAY_S", "0.01")
+    settings = Settings()
+
+    svc = VisiondService(
+        settings,
+        backend=_FailingBackend(),
+        backend_factory=_FailingBackend,  # type: ignore[arg-type]
+    )
+    await svc.start()
+    try:
+        for _ in range(400):
+            if svc.metrics_snapshot()["backend_degradations"] >= 2:
+                break
+            await asyncio.sleep(0.01)
+        # It flaps rather than wedging, and the flapping is countable in /metrics.
+        assert svc.metrics_snapshot()["backend_degradations"] >= 2
+        assert svc.effective_mode == "disabled"
+    finally:
+        await svc.stop()
+
+
+def test_single_camera_reads_the_visitor_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VISION_MODE", "single-camera")
+    settings = Settings()
+
+    assert settings.face_snapshot_url == settings.snapshot_url
+
+
+def test_dual_camera_reads_the_recognition_camera(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`dual-camera` used to be indistinguishable from `single-camera` (ADR-0023).
+
+    It was in the allowed-modes set and nothing plumbed a second camera anywhere, so a
+    door configured for two cameras quietly used one, with no signal of any kind.
+    """
+    monkeypatch.setenv("VISION_MODE", "dual-camera")
+    settings = Settings()
+
+    assert settings.face_snapshot_url == settings.recognition_snapshot_url
+    assert settings.face_snapshot_url != settings.snapshot_url
+    assert settings.face_snapshot_url.endswith("/snapshot/recognition")
+
+
+def test_hardware_mode_still_reads_the_visitor_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The mode the door actually runs today must be untouched by ADR-0023."""
+    monkeypatch.setenv("VISION_MODE", "hardware")
+    settings = Settings()
+
+    assert settings.face_snapshot_url == settings.snapshot_url
+
+
+def test_health_states_which_camera_the_face_path_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "Configured for two cameras, using one" was invisible; now it is one field."""
+    monkeypatch.setenv("SSD_DATA_ROOT", str(tmp_path / "ssd"))
+    monkeypatch.setenv("VISION_MODE", "dual-camera")
+    monkeypatch.setenv("VISIOND_MODEL_DIM", str(TEST_DIM))
+    settings = Settings()
+
+    svc = VisiondService(settings, backend=_FlakyBackend(fail_times=0))  # type: ignore[arg-type]
+
+    assert str(svc.health()["face_frame_source"]).endswith("/snapshot/recognition")
+
+
+@pytest.mark.anyio
+async def test_recovery_rebuilds_the_shared_hailo_pipeline(
+    ssd_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Degrading closes the SHARED pipeline, so recovery must not hand the closed one back.
+
+    `HardwareBackend.close()` closes the Hailo pipeline, and that object is cached by
+    `_get_hailo_pipeline` and also held by the embedder. Reusing it after a degradation
+    produced the worst possible outcome on the door: `vision_backend_recovered` logged,
+    `mode: hardware` reported, and zero frames forever — a failure that hides itself.
+    """
+    monkeypatch.setenv("VISION_MODE", "hardware")
+    monkeypatch.setenv("VISIOND_BACKEND_RECOVERY_DELAY_S", "0.01")
+    settings = Settings()
+
+    built: list[object] = []
+
+    class _Pipeline:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    def _fake_pipeline() -> object:
+        pipeline = _Pipeline()
+        built.append(pipeline)
+        return pipeline
+
+    # NO backend_factory: the default path is `_build_backend`, which is where the bug
+    # lived. A fake Hailo pipeline is all that is needed to run it without the hardware.
+    svc = VisiondService(settings, backend=_FailingBackend())
+    monkeypatch.setattr(svc, "_get_hailo_pipeline", _fake_pipeline)
+    svc._hailo_pipeline = _fake_pipeline()  # type: ignore[assignment]
+    first = built[0]
+
+    await svc.start()
+    try:
+        for _ in range(400):
+            if svc.effective_mode == "hardware" and svc.metrics_snapshot()["backend_recoveries"]:
+                break
+            await asyncio.sleep(0.01)
+        assert svc.metrics_snapshot()["backend_recoveries"] == 1
+        # The cached pipeline was dropped, so the next build makes a new device rather
+        # than reusing the one the degradation closed.
+        assert svc._hailo_pipeline is not first
+        # And the rebuilt backend is a REAL one. Building while `_effective_mode` still
+        # read "disabled" produced another DisabledBackend relabelled "hardware": mode
+        # restored, function not, and nothing in /health saying so.
+        assert not isinstance(svc._backend, DisabledBackend)
+        assert svc._backend.status().hailo_ok is True
     finally:
         await svc.stop()

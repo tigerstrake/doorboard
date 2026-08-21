@@ -15,6 +15,7 @@ ENTRY_ID = UUID("9f3a02d5-6442-4478-a5bb-0b84f5e915db")
 
 OCCURRED_AT = datetime(2026, 7, 4, 12, 34, 56, 123000, tzinfo=UTC)
 EXPIRES_AT = datetime(2026, 7, 4, 12, 34, 58, 623000, tzinfo=UTC)
+SATELLITE_SET_AT = datetime(2026, 7, 4, 21, 17, 30, tzinfo=UTC)
 NEXT_RETRY_AT = datetime(2026, 7, 4, 12, 39, 56, 123000, tzinfo=UTC)
 
 
@@ -43,6 +44,7 @@ PAYLOADS: dict[str, dict[str, Any]] = {
     "vision.identity_stable": {
         "person_id": "prs_8f3k2j",
         "display_name": "Alex",
+        "accent_color": "#ffb300",
         "confidence": 0.93,
         "expires_at": EXPIRES_AT,
         "expires_at_monotonic_ms": 123459280,
@@ -132,6 +134,15 @@ PAYLOADS: dict[str, dict[str, Any]] = {
         "total_detections": 7,
     },
     "ambient.satellite_pass": {
+        "set_at": SATELLITE_SET_AT,
+        "rise_azimuth_deg": 292.0,
+        "set_azimuth_deg": 118.0,
+        "culmination_azimuth_deg": 205.0,
+        "track": [
+            {"t_offset_s": 0.0, "azimuth_deg": 292.0, "elevation_deg": 0.0},
+            {"t_offset_s": 165.0, "azimuth_deg": 205.0, "elevation_deg": 61.0},
+            {"t_offset_s": 330.0, "azimuth_deg": 118.0, "elevation_deg": 0.0},
+        ],
         "satellite": "ISS",
         "rise_at": NEXT_RETRY_AT,
         "max_elevation_deg": 64.5,

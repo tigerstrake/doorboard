@@ -4,6 +4,7 @@
   "monotonic_ms": 123456789,
   "occurred_at": "2026-07-04T12:34:56.123000Z",
   "payload": {
+    "accent_color": "#ffb300",
     "confidence": 0.93,
     "consent_version": null,
     "display_name": "Alex",

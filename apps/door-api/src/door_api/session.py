@@ -98,6 +98,11 @@ def _system_boot_id() -> str:
 # The owner (FastAPI app) wires this to WebSocket broadcast + event emission.
 type TransitionCallback = Callable[[dict[str, Any]], None]
 
+# Notified of each recognised identity: person_id, display name, consent version,
+# profile id, accent colour. Named rather than inlined because it is declared in three
+# places and one of them silently drifting is how the holder stops being told things.
+type IdentityObserver = Callable[[str, str, str | None, str | None, str | None], None]
+
 
 @dataclass
 class SessionSnapshot:
@@ -209,15 +214,13 @@ class SessionMachine:
     # Notified on every recognised identity, so the interaction-scoped holder cannot
     # fall out of step with the machine (ADR-0020). Optional: the machine is useful
     # on its own and the simulator constructs it without one.
-    _on_identity: Callable[[str, str, str | None, str | None], None] | None = field(
-        default=None, init=False
-    )
+    _on_identity: IdentityObserver | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._monotonic_ms_fn = lambda: int(time.monotonic() * 1000)
         self._boot_id_fn = _system_boot_id
 
-    def set_identity_observer(self, fn: Callable[[str, str, str | None, str | None], None]) -> None:
+    def set_identity_observer(self, fn: IdentityObserver) -> None:
         """Register the holder notified of each recognised identity."""
         self._on_identity = fn
 
@@ -615,6 +618,7 @@ class SessionMachine:
         profile_id: str,
         trace_id: UUID | None = None,
         consent_version: str | None = None,
+        accent_color: str | None = None,
     ) -> bool:
         """Handle a ``vision.identity_stable`` event."""
         # Tell whoever holds the interaction-scoped identity (ADR-0020) before doing
@@ -623,7 +627,7 @@ class SessionMachine:
         # internal ingest, the simulator, a test — updates both. Two entry points for
         # one fact is how the greeting and the check-in button drift apart.
         if self._on_identity is not None:
-            self._on_identity(person_id, display_name, consent_version, profile_id)
+            self._on_identity(person_id, display_name, consent_version, profile_id, accent_color)
         # Recorded before branching so it is present on the first transition as
         # well as on later refreshes — attribution is gated on it, and a missing
         # value fails closed to "not attributable".

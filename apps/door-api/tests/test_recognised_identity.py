@@ -155,3 +155,73 @@ def test_the_holder_does_not_itself_gate_consent(consent: str | None) -> None:
     held = holder.current()
     assert held is not None
     assert held.consent_version == consent
+
+
+def test_seconds_remaining_reports_the_live_window() -> None:
+    """The UI shows this as a countdown, so it has to track the interaction window."""
+    clock = _Clock()
+    holder = _holder(clock, idle=12.0, interaction=120.0)
+    _remember(holder)
+    assert holder.seconds_remaining() == pytest.approx(12.0)
+
+    holder.touch()
+    assert holder.seconds_remaining() == pytest.approx(120.0)
+
+    clock.advance(30.0)
+    assert holder.seconds_remaining() == pytest.approx(90.0)
+
+
+def test_expiry_is_observable_without_an_event() -> None:
+    """door-api sweeps for this edge: nothing emits an event when the window runs out.
+
+    Without a sweep the kiosks kept showing a name the server had already stopped
+    honouring, until some unrelated broadcast happened to refresh them.
+    """
+    clock = _Clock()
+    holder = _holder(clock)
+    _remember(holder)
+    assert holder.current() is not None
+
+    clock.advance(13.0)
+
+    # Purely time-driven: no call, no event, no transition.
+    assert holder.current() is None
+    assert holder.seconds_remaining() == 0.0
+
+
+def test_an_interaction_has_a_stable_id() -> None:
+    """A visitor token needs a session-shaped key, and this identity outlives the session.
+
+    The bug this pins: a recognised person whose approach session had timed out saw
+    "Check in as <name>", tapped it, and nothing happened — /visitor-token 409'd with no
+    session, the doorpad sent an empty session_token, and POST /checkins 422'd. Before
+    ADR-0020 the name died with the session so the two were accidentally consistent.
+    """
+    clock = _Clock()
+    holder = _holder(clock)
+    _remember(holder)
+
+    first = holder.current()
+    assert first is not None
+    assert first.interaction_id is not None
+
+    # Re-recognised mid-interaction: the same id, or their rate-limit key would reset
+    # every time the matcher fired again.
+    _remember(holder)
+    again = holder.current()
+    assert again is not None
+    assert again.interaction_id == first.interaction_id
+
+
+def test_a_different_person_gets_a_different_interaction() -> None:
+    clock = _Clock()
+    holder = _holder(clock)
+    _remember(holder, person_id="prs_1")
+    first = holder.current()
+    assert first is not None
+
+    _remember(holder, person_id="prs_2")
+    second = holder.current()
+
+    assert second is not None
+    assert second.interaction_id != first.interaction_id

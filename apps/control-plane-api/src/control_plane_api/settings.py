@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     telegram_max_video_bytes: int = Field(
         default=50 * 1024 * 1024, alias="TELEGRAM_MAX_VIDEO_BYTES"
     )
+    # A picture of whoever rang, sent after the ring text (ADR-0022). Separate from
+    # DOORBELL_NOTIFY_ENABLED so the owner can keep the instant text alert without the
+    # follow-up photo — some people want to know someone is there without a frame of
+    # every passing delivery driver on their phone.
+    ring_photo_enabled: bool = Field(default=True, alias="RING_PHOTO_ENABLED")
+
     # door-api admin media source: the clip lives on the Pi; the NUC pulls it on
     # demand (the NUC is the legitimate holder of admin credentials, not the Pi).
     door_api_base_url: str = Field(default="", alias="CONTROL_PLANE_DOOR_API_BASE_URL")

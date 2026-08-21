@@ -8,8 +8,10 @@ from control_plane_api.notify import NotifyEngine, build_notifier
 from control_plane_api.presence import CalendarProvider, MockCalendarProvider
 from control_plane_api.settings import Settings
 from control_plane_api.telegram import (
+    RingPhotoDelivery,
     VideoMessageDelivery,
     build_telegram_sender,
+    build_thumbnail_source,
     build_video_source,
 )
 
@@ -68,6 +70,26 @@ class AppState:
             # or a message with no recipients falls back to broadcasting to all
             # TELEGRAM_CHAT_IDS.
             recipient_map=cfg.video_message_recipient_map,
+        )
+        # A picture of whoever rang (ADR-0022). Same credentials, separate delivery: the
+        # ring text goes out on RINGING via the notify engine, this follows when
+        # door-media has cut a thumbnail. Disabled by the same "unless configured" rule,
+        # and gated on RING_PHOTO_ENABLED so the owner can have the text without the
+        # picture.
+        self.ring_photo_delivery = RingPhotoDelivery(
+            sender=(
+                build_telegram_sender(
+                    bot_token=cfg.telegram_bot_token,
+                    chat_ids=cfg.telegram_chat_id_list,
+                    api_base_url=cfg.telegram_api_base_url,
+                )
+                if cfg.ring_photo_enabled
+                else None
+            ),
+            source=build_thumbnail_source(
+                door_api_base_url=cfg.door_api_base_url,
+                door_api_admin_token=cfg.door_api_admin_token,
+            ),
         )
         # Real calendar wiring is a later brief (T-504) — `MockCalendarProvider`
         # always returns "no signal", so calendar simply never wins precedence

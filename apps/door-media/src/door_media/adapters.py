@@ -114,6 +114,16 @@ class MediaRouter(Protocol):
         """
         ...
 
+    async def recognition_snapshot(self) -> bytes | None:
+        """A frame from the dedicated recognition camera, or None if there is not one.
+
+        Distinct from :meth:`snapshot`, which serves the *visitor* camera. Returning
+        ``None`` here means "this door has no recognition camera" and the route 404s
+        rather than substituting the visitor frame — door-visiond must be able to tell a
+        missing camera from an empty doorway (ADR-0023).
+        """
+        ...
+
     def storage_status(self) -> MediaStorageStatus:
         """Return storage state used by retention and sync logic."""
         ...

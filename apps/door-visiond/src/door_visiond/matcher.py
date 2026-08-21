@@ -31,6 +31,8 @@ class MatchResult:
     sound: str | None
     score: float
     consent_version: str = ""
+    # The enrollee's chosen screen colour (ADR-0021); None falls back to `color`.
+    accent_color: str | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,7 @@ class _EnrolledVector:
     color: str
     sound: str | None
     consent_version: str
+    accent_color: str | None
     unit: tuple[float, ...]  # L2-normalized enrolled vector
 
 
@@ -77,6 +80,7 @@ class Matcher:
                         color=person.color,
                         sound=person.sound,
                         consent_version=person.consent_version,
+                        accent_color=person.accent_color,
                         unit=unit,
                     )
                 )
@@ -131,4 +135,5 @@ class Matcher:
             sound=best.sound,
             score=best_score,
             consent_version=best.consent_version,
+            accent_color=best.accent_color,
         )

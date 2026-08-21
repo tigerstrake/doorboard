@@ -334,6 +334,34 @@ body {
   line-height: 1.15;
 }
 
+.db-big-button__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22em;
+  align-items: inherit;
+  min-width: 0;
+}
+
+/* The "what this does" line. Sized well below the label so the tile still reads as
+   one word at a glance from across a hallway, and only then explains itself. */
+.db-big-button__hint {
+  font-size: 0.74em;
+  font-weight: 500;
+  line-height: 1.25;
+  opacity: 0.78;
+  max-width: 22ch;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+/* A hinted tile is taller by nature; let it size to its content rather than
+   clipping the second line on a short kiosk screen. */
+.db-big-button--with-hint {
+  height: auto;
+  align-items: flex-start;
+  text-align: left;
+}
+
 .db-big-button__icon {
   font-size: 1.8rem;
   display: flex;

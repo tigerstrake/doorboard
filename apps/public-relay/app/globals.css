@@ -416,3 +416,40 @@ textarea:focus-visible {
   width: 1.3rem;
   height: 1.3rem;
 }
+
+/* Exact colour choice (ADR-0021). The six swatches above pick an LED effect *and* seed
+   this; this moves the screen colour on its own, which is the whole point of the split. */
+.colour-exact {
+  margin-top: 1rem;
+}
+
+.colour-exact__row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.colour-exact__row input[type="color"] {
+  /* A large, obvious tap target: this is used on a phone, one-handed. */
+  width: 3.4rem;
+  height: 3.4rem;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 10px;
+  background: none;
+  cursor: pointer;
+}
+
+.colour-exact__hex {
+  width: 8ch;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: lowercase;
+}
+
+.colour-exact__preview {
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  flex: 0 0 auto;
+}

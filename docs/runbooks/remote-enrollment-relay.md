@@ -6,7 +6,9 @@ Operating the phone-enrollment path (ADR-0016). Applies to `apps/public-relay` o
 
 ## Normal operation
 
-1. Admin opens the doorboard admin panel → *Enroll from a phone* → **Create QR invite**.
+1. The invite is minted one of two ways: the visitor taps **Enroll my face** on the DoorPad
+   (self-service, ADR-0019, capped at `VISIOND_SELF_ENROLL_PER_HOUR`), or the owner runs
+   `scripts/enrollment-qr "Name"` which mints via the admin API and prints the QR.
 2. door-visiond mints a single-use invite, registers `sha256(secret)` with the relay, and returns a URL whose fragment carries the door key fingerprint.
 3. The enrollee scans it, reads consent, takes photos, and their phone seals everything to the door's public key.
 4. The relay holds the ciphertext (≤15 min). The Pi collects it on its next poll (default 5 s), decrypts, embeds, wipes, and acks.
@@ -65,6 +67,7 @@ The Pi never collected. The ciphertext expires on its own within 15 minutes; not
 | `stale_consent` | Consent text changed mid-enrollment | Reload the page and start again |
 | `privacy_mode` | Recognition off at the door | Turn privacy mode off |
 | `enrollment_storage_locked` | Encrypted volume locked | Unlock it, then re-enrol |
+| `display_name_taken` | Someone enrolled already answers to that name (ADR-0019 §2) | Re-enrol with a different name; check `GET /people` for who holds it |
 
 ## Rotating the door sealing key
 

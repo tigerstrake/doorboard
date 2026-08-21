@@ -67,6 +67,7 @@ export interface VisionFaceVisiblePayload {
 export interface VisionIdentityStablePayload {
   person_id: string;
   display_name: string;
+  accent_color?: string | null;
   consent_version?: string | null;
   confidence: number;
   expires_at: string;
@@ -214,12 +215,23 @@ export interface AmbientBirdSummaryPayload {
   total_detections: number;
 }
 
+export interface SatelliteTrackSample {
+  t_offset_s: number;
+  azimuth_deg: number;
+  elevation_deg: number;
+}
+
 export interface AmbientSatellitePassPayload {
   satellite: string;
   rise_at: string;
   max_elevation_deg: number;
   direction: string;
   visible: boolean;
+  set_at?: string | null;
+  rise_azimuth_deg?: number | null;
+  set_azimuth_deg?: number | null;
+  culmination_azimuth_deg?: number | null;
+  track: Array<SatelliteTrackSample>;
 }
 
 export interface AmbientAircraftNearby {
@@ -293,6 +305,7 @@ export interface SealedProfile {
   profile_id: string;
   color: string;
   sound?: string | null;
+  accent_color?: string | null;
 }
 
 export interface SealedManifest {

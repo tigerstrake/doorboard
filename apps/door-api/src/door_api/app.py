@@ -54,6 +54,14 @@ from door_api.esp32_link import Esp32LinkSettings, Esp32LinkSupervisor
 from door_api.mqtt_bridge import MqttBridge
 from door_api.persistence import SessionStore
 from door_api.recognised_identity import RecognisedIdentity
+from door_api.service_proxy import (
+    MEDIA_ROUTES,
+    VISIOND_ROUTES,
+    ProxyDenied,
+    ProxyRoute,
+    forward,
+    resolve,
+)
 from door_api.session import SessionMachine
 from door_api.social.config import SocialConfig
 from door_api.social.routes import build_social_router
@@ -122,6 +130,7 @@ class DoorApiState:
         self._esp32_event_task: asyncio.Task[None] | None = None
         self._media_forward_task: asyncio.Task[None] | None = None
         self._sync_forward_task: asyncio.Task[None] | None = None
+        self._identity_sweep_task: asyncio.Task[None] | None = None
         self.mqtt_bridge: MqttBridge | None = None
         self._mqtt_bridge_task: asyncio.Task[None] | None = None
         self.esp32_link: Esp32LinkSupervisor | None = None
@@ -151,11 +160,14 @@ class DoorApiState:
 
         self.machine = SessionMachine(config=self.config, store=self.store, on_event=on_event)
         self.machine.set_identity_observer(
-            lambda person_id, display_name, consent_version, profile_id: self.identity.remember(
-                person_id=person_id,
-                display_name=display_name,
-                consent_version=consent_version,
-                profile_id=profile_id,
+            lambda person_id, display_name, consent_version, profile_id, accent_color: (
+                self.identity.remember(
+                    person_id=person_id,
+                    display_name=display_name,
+                    consent_version=consent_version,
+                    profile_id=profile_id,
+                    accent_color=accent_color,
+                )
             )
         )
 
@@ -192,6 +204,9 @@ class DoorApiState:
             snapshot["display_name"] = held.display_name
             snapshot["profile_id"] = held.profile_id
             snapshot["consent_version"] = held.consent_version
+            # The chosen colour (ADR-0021), so the kiosks accent by person rather than by
+            # whichever LED effect they happened to be allocated.
+            snapshot["accent_color"] = held.accent_color
         return {
             **snapshot,
             "attributed_to": self.attributed_display_name(),
@@ -208,6 +223,7 @@ class DoorApiState:
         self.start_esp32_link()
         self.start_media_forwarder()
         self.start_sync_forwarder()
+        self.start_identity_sweeper()
         self.start_mqtt_bridge()
         self.start_visitor_relay()
 
@@ -221,6 +237,9 @@ class DoorApiState:
             self._media_forward_task.cancel()
         if self._sync_forward_task is not None:
             self._sync_forward_task.cancel()
+        if self._identity_sweep_task is not None:
+            self._identity_sweep_task.cancel()
+            self._identity_sweep_task = None
         if self._mqtt_bridge_task is not None:
             self._mqtt_bridge_task.cancel()
         if self._visitor_relay_task is not None:
@@ -353,6 +372,7 @@ class DoorApiState:
                 profile_id=payload.profile_id,
                 trace_id=event.trace_id,
                 consent_version=payload.consent_version,
+                accent_color=payload.accent_color,
             )
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "vision.identity_expired":
@@ -390,6 +410,37 @@ class DoorApiState:
                 "feature_photobooth": self.config.feature_photobooth,
             },
         }
+
+    def start_identity_sweeper(self) -> None:
+        """Push one snapshot when a recognised identity lapses.
+
+        Expiry is lazy — ``RecognisedIdentity.current()`` only notices on read — and
+        nothing else emits an event when the window runs out. So the badge and the named
+        check-in button stayed on screen until some unrelated event happened to trigger a
+        broadcast, which on a quiet door can be minutes. The visitor sees a name that the
+        server has already stopped honouring.
+
+        Cheap by construction: it broadcasts on the *edge*, when a held identity becomes
+        absent, never on a tick where nothing changed.
+        """
+        if self._identity_sweep_task is not None:
+            return
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+            self._identity_sweep_task = loop.create_task(
+                self._identity_sweep_loop(),
+                name="door-api-identity-sweep",
+            )
+
+    async def _identity_sweep_loop(self) -> None:
+        held = self.identity.current() is not None
+        while True:
+            await asyncio.sleep(self.config.identity_sweep_interval_s)
+            now_held = self.identity.current() is not None
+            if held and not now_held:
+                self.broadcast.update_snapshot(self.session_snapshot_dict())
+                logger.info("recognised_identity_expired")
+            held = now_held
 
     def start_media_forwarder(self) -> None:
         if self._media_forward_task is not None:
@@ -529,7 +580,19 @@ class DoorApiState:
 
     def visitor_token(self) -> dict[str, str | int]:
         snapshot = self.machine.snapshot()
-        if snapshot.session_id is None:
+        # An active session is the usual key. Failing that, a recognised person who is
+        # still mid-interaction gets one keyed on their interaction id (ADR-0020): the
+        # identity deliberately outlives the approach session, so "the door knows who you
+        # are" and "the door will let you check in" must not disagree.
+        #
+        # This is what broke: with the session IDLE this returned 409, the doorpad sent an
+        # empty session_token, and POST /checkins 422'd — a visitor tapped
+        # "Check in as <name>" and nothing happened at all.
+        session_key = snapshot.session_id
+        if session_key is None:
+            held = self.identity.current()
+            session_key = held.interaction_id if held is not None else None
+        if session_key is None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="No active visitor session",
@@ -537,7 +600,7 @@ class DoorApiState:
         expires_at = int(time.time() + self.config.visitor_token_ttl_s)
         token = encode_visitor_token(
             secret=self.config.visitor_token_secret,
-            session_id=snapshot.session_id,
+            session_id=session_key,
             expires_at=expires_at,
         )
 
@@ -862,7 +925,18 @@ app = FastAPI(lifespan=lifespan)
 # recognised identity should outlive the approach timer (ADR-0020). A middleware rather
 # than a `touch()` in each handler because there are a dozen of these and more coming:
 # one forgotten call would look like the intermittent version of the bug this fixes.
-_INTERACTION_PATH_PREFIXES = ("/doorpad", "/social", "/visitor")
+# The social write routes sit at the top level, not under /social — checking in POSTs to
+# /checkins, the guestbook to /guestbook, a vote to /polls/{id}/vote. Listing only
+# ("/doorpad", "/social", "/visitor") meant the actual writes never re-armed the identity
+# window, so somebody who took their time on the check-in screen was forgotten mid-flow.
+_INTERACTION_PATH_PREFIXES = (
+    "/doorpad",
+    "/social",
+    "/visitor",
+    "/checkins",
+    "/guestbook",
+    "/polls",
+)
 
 
 @app.middleware("http")
@@ -929,6 +1003,7 @@ WALLBOARD_FOCUS_CHANNELS = frozenset(
         "poll",
         "guestbook",
         "moments",
+        "about",
     }
 )
 # Matches WALLBOARD_FOCUS_TIMEOUT_MS in wallboardChannelModel.ts: a focus auto-
@@ -1314,6 +1389,53 @@ async def visitor_token() -> dict[str, str | int]:
     return state.visitor_token()
 
 
+@app.post("/doorpad/enroll-invite", status_code=status.HTTP_201_CREATED)
+async def doorpad_enroll_invite() -> dict[str, Any]:
+    """Mint a self-service enrollment invite for whoever is at the doorpad (ADR-0019).
+
+    A forwarder, not a policy: every cap, the locked-volume check and privacy mode all
+    live in door-visiond, which owns the enrollment store. This exists because the
+    kiosks connect to door-api and nothing else (ARCHITECTURE.md §7) — the doorpad
+    cannot call door-visiond itself, and giving the kiosk browser a second base URL and
+    a credential to go with it is exactly what §7 exists to prevent.
+
+    Unauthenticated, like the bell and the guestbook: standing at the door is the
+    authorization (ADR-0019 §1). The response carries the invite URL, which is the only
+    copy of its secret — same as the admin path.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=state.config.visiond_timeout_s) as client:
+            resp = await client.post(
+                f"{state.config.visiond_base_url.rstrip('/')}/self-enroll/invites",
+            )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="door-visiond unavailable",
+        ) from exc
+    if resp.status_code == status.HTTP_201_CREATED:
+        body: dict[str, Any] = resp.json()
+        return body
+    # Refusals are passed through with their status and reason intact, so the doorpad
+    # can say "enrollment is closed for the next hour" rather than "something failed".
+    if resp.status_code in (
+        status.HTTP_409_CONFLICT,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+    ):
+        detail: Any = "enrollment unavailable"
+        with contextlib.suppress(Exception):
+            detail = resp.json().get("detail", detail)
+        headers = (
+            {"Retry-After": resp.headers["Retry-After"]} if "Retry-After" in resp.headers else None
+        )
+        raise HTTPException(status_code=resp.status_code, detail=detail, headers=headers)
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="door-visiond refused the request",
+    )
+
+
 @app.get("/visitor-relay-status")
 async def visitor_relay_status() -> dict[str, Any]:
     """Whether the visitor QR is currently pointing at the relay or the LAN.
@@ -1384,6 +1506,131 @@ async def admin_media_inbox_file(recording_id: str) -> Response:
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
         },
+    )
+
+
+@app.get(
+    "/admin/media-inbox/{recording_id}/thumbnail",
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_media_inbox_thumbnail(recording_id: str) -> Response:
+    """Proxy a recording's thumbnail still, for the owner's ring notification.
+
+    Unlike the ``/file`` route beside it this accepts any ``kind``: that one exists for
+    the DoorPad's video-message review and is deliberately scoped to ``video_message``,
+    whereas the picture the owner wants on a bell press comes from a ``bell_clip``.
+
+    Still admin-authenticated. A thumbnail is a frame of whoever was at the door, so it
+    is exactly the kind of thing ARCHITECTURE.md §2 keeps off low-trust surfaces.
+    """
+    row = await _media_recording(recording_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="recording not found")
+    try:
+        async with httpx.AsyncClient(timeout=state.config.media_timeout_s) as client:
+            response = await client.get(
+                f"{state.config.media_base_url.rstrip('/')}/recordings/{recording_id}/thumbnail",
+                headers=_media_auth_headers(),
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="door-media unavailable") from exc
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="thumbnail not found")
+    if response.status_code >= 400:
+        raise HTTPException(status_code=503, detail="door-media unavailable")
+    return Response(
+        content=response.content,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.api_route(
+    "/admin/visiond/{path:path}",
+    methods=["GET", "POST"],
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_visiond_proxy(path: str, request: Request) -> Response:
+    """Reach door-visiond's admin surface from the owner's browser (ADR-0024).
+
+    door-visiond binds loopback, so the admin page could not talk to it from anything but
+    the Pi's own browser — and it rendered those failures as facts: "Enrolled Members (0)"
+    for a door with two people enrolled, "Relay not configured" for a configured relay.
+
+    Allow-listed per method+path in `service_proxy`, not open forwarding: door-api's admin
+    token must not become a skeleton key for every route door-visiond ever grows.
+    """
+    return await _proxy_to_service(
+        request=request,
+        path=f"/{path}",
+        routes=VISIOND_ROUTES,
+        base_url=state.config.visiond_base_url,
+        token=state.config.visiond_admin_token,
+        timeout_s=state.config.visiond_timeout_s,
+        service="door-visiond",
+    )
+
+
+@app.api_route(
+    "/admin/door-media/{path:path}",
+    methods=["GET"],
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_media_proxy(path: str, request: Request) -> Response:
+    """The one door-media route the admin page needs that is not already first-class."""
+    return await _proxy_to_service(
+        request=request,
+        path=f"/{path}",
+        routes=MEDIA_ROUTES,
+        base_url=state.config.media_base_url,
+        token=state.config.media_admin_token,
+        timeout_s=state.config.media_timeout_s,
+        service="door-media",
+    )
+
+
+async def _proxy_to_service(
+    *,
+    request: Request,
+    path: str,
+    routes: tuple[ProxyRoute, ...],
+    base_url: str,
+    token: str,
+    timeout_s: float,
+    service: str,
+) -> Response:
+    try:
+        resolve(routes, request.method, path)
+    except ProxyDenied as exc:
+        # 403 rather than 404: the caller authenticated fine, this route is simply not
+        # something the admin surface may reach.
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    body = await request.body()
+    try:
+        response = await forward(
+            base_url=base_url,
+            token=token,
+            method=request.method,
+            path=path,
+            query=str(request.url.query),
+            timeout_s=timeout_s,
+            body=body or None,
+            content_type=request.headers.get("content-type"),
+        )
+    except Exception as exc:
+        # An explicit 503 with the service named, so the page can say "could not reach
+        # door-visiond" instead of drawing an empty list.
+        raise HTTPException(status_code=503, detail=f"{service} unavailable") from exc
+
+    return Response(
+        content=response.content,
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type", "application/json"),
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
     )
 
 

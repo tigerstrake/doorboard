@@ -54,6 +54,8 @@ def test_admin_routes_fail_closed_without_configured_token() -> None:
     for method, path in (
         ("get", "/admin/media-inbox"),
         ("get", "/admin/media-inbox/recording-1/file"),
+        # A thumbnail is a frame of whoever was at the door (ADR-0022).
+        ("get", "/admin/media-inbox/recording-1/thumbnail"),
         ("get", "/admin/recordings"),
         ("delete", "/admin/recordings/recording-1"),
         ("post", "/admin/session/answer"),

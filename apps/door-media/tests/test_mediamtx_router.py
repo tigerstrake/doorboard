@@ -801,7 +801,6 @@ async def test_reader_publishes_each_frame_from_a_split_mjpeg_stream(tmp_path: P
     """
     cfg = Settings(SSD_DATA_ROOT=tmp_path)
     router = MediaMTXRouter(cfg)
-    router._last_snapshot_request_at = time.monotonic()
 
     first, second = _jpeg(b"AAA"), _jpeg(b"BBB")
     stream = _MjpegStream(
@@ -831,13 +830,17 @@ async def test_reader_publishes_each_frame_from_a_split_mjpeg_stream(tmp_path: P
     original = asyncio.create_subprocess_exec
     asyncio.create_subprocess_exec = _fake_exec  # type: ignore[assignment]
     try:
-        await router._read_frames_once()
+        # The framing lives on the reader now (ADR-0023 extracted it so two cameras
+        # cannot each get it subtly wrong); drive it there rather than through the router.
+        reader = router._visitor_reader
+        reader._last_request_at = time.monotonic()
+        await reader._read_once()
     finally:
         asyncio.create_subprocess_exec = original  # type: ignore[assignment]
 
     assert router.reader_frames == 2
     # The newest frame wins, and it is a complete JPEG.
-    assert router._latest_frame == second
+    assert reader._latest_frame == second
     assert proc.killed, "ffmpeg must be reaped when the reader stops"
 
 
@@ -850,10 +853,61 @@ async def test_a_stale_cached_frame_is_not_served(tmp_path: Path) -> None:
     """
     cfg = Settings(SSD_DATA_ROOT=tmp_path, DOOR_MEDIA_SNAPSHOT_MAX_AGE_S=0.5)
     router = MediaMTXRouter(cfg)
+    reader = router._visitor_reader
 
-    router._latest_frame = _jpeg(b"fresh")
-    router._latest_frame_at = time.monotonic()
-    assert router._fresh_frame() == _jpeg(b"fresh")
+    reader._latest_frame = _jpeg(b"fresh")
+    reader._latest_frame_at = time.monotonic()
+    assert reader._fresh_frame() == _jpeg(b"fresh")
 
-    router._latest_frame_at = time.monotonic() - 5.0
-    assert router._fresh_frame() is None
+    reader._latest_frame_at = time.monotonic() - 5.0
+    assert reader._fresh_frame() is None
+
+
+def test_rotation_reaches_the_camera_when_set(tmp_path: Path) -> None:
+    """An inverted sensor makes recognition look broken, so this has to actually apply.
+
+    ArcFace is not rotation invariant: an upside-down face scores near nothing against
+    upright enrollment photos. Found on the door, where a bell-clip thumbnail came back
+    inverted (T-321).
+    """
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_VIDEO_ROTATION=180,
+    )
+
+    assert "--rotation 180" in _build_run_on_init(cfg)
+
+
+def test_no_orientation_flags_when_the_camera_is_upright(tmp_path: Path) -> None:
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+
+    command = _build_run_on_init(cfg)
+
+    assert "--rotation" not in command
+    assert "--hflip" not in command
+    assert "--vflip" not in command
+
+
+def test_flips_are_independent_of_rotation(tmp_path: Path) -> None:
+    """A mirrored mount is a different fault from an inverted one."""
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_VIDEO_HFLIP=True,
+    )
+
+    command = _build_run_on_init(cfg)
+
+    assert "--hflip" in command
+    assert "--rotation" not in command
+
+
+def test_an_impossible_rotation_fails_at_startup(tmp_path: Path) -> None:
+    """rpicam-vid accepts only 0 or 180; 90 would fail as a dead camera."""
+    with pytest.raises(ValidationError):
+        Settings(
+            SSD_DATA_ROOT=tmp_path,
+            MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+            DOOR_MEDIA_VIDEO_ROTATION=90,
+        )

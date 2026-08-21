@@ -7,9 +7,11 @@ import type {
   AmbientPrinterStatusPayload,
   AmbientSatellitePassPayload,
 } from "@doorboard/contracts";
+import { AboutDoorboard } from "./AboutDoorboard";
 import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
 import { GuestbookQuote } from "./SocialRenderers";
 import { AircraftFocusPanel } from "./wallboard/AircraftFocusPanel";
+import { SatelliteSkyPanel } from "./wallboard/SatelliteSkyPanel";
 import { WALLBOARD_CHANNELS } from "./wallboardChannelModel";
 import type { WallboardFocusChannel } from "./wallboardChannelModel";
 
@@ -477,7 +479,7 @@ function renderFocusContent(
       );
     case "satellite":
       return ambient.satellite ? (
-        <SatelliteFocusPanel payload={ambient.satellite} />
+        <SatelliteSkyPanel payload={ambient.satellite} />
       ) : (
         <FocusEmpty
           title="Satellite pass data is unavailable."
@@ -590,5 +592,9 @@ function renderFocusContent(
       ) : (
         <FocusEmpty title="No approved moments yet." hint="Photo-booth highlights land here once approved." />
       );
+    case "about":
+      // The only channel with no data source: it explains the door itself, so it never
+      // has an empty state and is always safe to focus.
+      return <AboutDoorboard className="about-doorboard--focus" />;
   }
 }

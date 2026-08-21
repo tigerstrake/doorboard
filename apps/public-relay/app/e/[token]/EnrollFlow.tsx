@@ -56,6 +56,9 @@ export default function EnrollFlow({ token }: { token: string }) {
   const [cameraReady, setCameraReady] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [profileId, setProfileId] = useState(PROFILES[0]!.id);
+  // The colour is now the enrollee's own (ADR-0021), independent of which LED effect
+  // the door ends up allocating. Two people may pick the same one.
+  const [accentColor, setAccentColor] = useState(PROFILES[0]!.color);
   const [statusReason, setStatusReason] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -256,7 +259,15 @@ export default function EnrollFlow({ token }: { token: string }) {
 
     try {
       const chosen = PROFILES.find((entry) => entry.id === profileId) ?? PROFILES[0]!;
-      const profile: SealedProfile = { profile_id: chosen.id, color: chosen.color, sound: null };
+      const profile: SealedProfile = {
+        profile_id: chosen.id,
+        color: chosen.color,
+        sound: null,
+        // Sent separately from `color`, which stays the catalogue colour of the LED
+        // effect. The door may reassign that effect if it is taken; it must not move the
+        // colour with it (ADR-0021).
+        accent_color: accentColor,
+      };
       const bundleId = newBundleId();
 
       const secret = token.slice(token.indexOf(".") + 1);
@@ -445,22 +456,64 @@ export default function EnrollFlow({ token }: { token: string }) {
             <p className="hint">Shown on the doorboard when it recognises you.</p>
 
             <label htmlFor="colour-choice">Your colour</label>
-            <p className="hint">The light the door shows for you.</p>
+            <p className="hint">
+              Used for your greeting on the screens. Somebody else having the same colour
+              is fine — the door tells you apart by name.
+            </p>
             <div className="swatches" id="colour-choice">
               {PROFILES.map((entry) => (
                 <div key={entry.id}>
                   <button
                     className="swatch"
                     style={{ background: entry.color }}
-                    aria-pressed={profileId === entry.id}
+                    aria-pressed={accentColor.toLowerCase() === entry.color.toLowerCase()}
                     aria-label={entry.name}
-                    onClick={() => setProfileId(entry.id)}
+                    onClick={() => {
+                      // The preset sets both: a nudge toward a distinct door light, and
+                      // the colour itself. The picker below can then move the colour
+                      // alone, which is the point of separating them.
+                      setProfileId(entry.id);
+                      setAccentColor(entry.color);
+                    }}
                   >
                     {entry.name}
                   </button>
                   <span className="swatch-name">{entry.name}</span>
                 </div>
               ))}
+            </div>
+
+            <div className="colour-exact">
+              <label htmlFor="colour-exact-input">Or pick an exact colour</label>
+              <div className="colour-exact__row">
+                <input
+                  id="colour-exact-input"
+                  type="color"
+                  value={accentColor}
+                  onChange={(event) => setAccentColor(event.target.value)}
+                  aria-describedby="colour-exact-hint"
+                />
+                <input
+                  className="colour-exact__hex"
+                  type="text"
+                  inputMode="text"
+                  spellCheck={false}
+                  maxLength={7}
+                  value={accentColor}
+                  aria-label="Colour hex value"
+                  onChange={(event) => {
+                    // Typed input is accepted as it is written and only committed when it
+                    // is a full hex literal, so the swatch does not flicker through
+                    // partial values while somebody types "#ff…".
+                    const next = event.target.value.trim();
+                    if (/^#[0-9a-fA-F]{0,6}$/.test(next)) setAccentColor(next);
+                  }}
+                />
+                <span className="colour-exact__preview" style={{ background: accentColor }} />
+              </div>
+              <p className="hint" id="colour-exact-hint">
+                The door light uses the closest of the six above; the screens use exactly this.
+              </p>
             </div>
 
             <div className="button-row">
@@ -624,6 +677,10 @@ export function outcomeMessage(reason: string): string {
       return "The invitation expired before the door collected your photos. Ask for a fresh QR code.";
     case "stale_consent":
       return "The consent wording changed while you were enrolling. Please reload and start again.";
+    case "display_name_taken":
+      return "Someone at this door already uses that name. Start again with a different one — the door needs to tell you apart.";
+    case "invalid_accent_color":
+      return "That colour wasn't something the door could read. Pick one from the swatches and try again.";
     case "privacy_mode":
       return "Recognition is currently switched off at the door, so enrolment was declined.";
     case "enrollment_storage_locked":

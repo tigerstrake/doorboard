@@ -181,6 +181,10 @@ class MockMediaRouter:
         """No live camera in mock mode — the app returns its placeholder JPEG."""
         return None
 
+    async def recognition_snapshot(self) -> bytes | None:
+        """No cameras at all in mock mode, so no recognition camera either."""
+        return None
+
     def storage_status(self) -> MediaStorageStatus:
         """Return storage status based on the mock recordings directory."""
         recordings_dir = self._settings.ssd_data_root

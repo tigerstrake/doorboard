@@ -32,7 +32,9 @@ caller may reach an access decision, and ADR-0009 P-11 continues to enforce that
 
 from __future__ import annotations
 
+import dataclasses
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -43,6 +45,18 @@ class RecognisedPerson:
     display_name: str
     consent_version: str | None
     profile_id: str | None
+    # The colour this person chose at enrollment (ADR-0021). None means the kiosks fall
+    # back to the catalogue colour for `profile_id`.
+    accent_color: str | None = None
+    # A stable id for *this interaction*, minted when the person is first remembered.
+    #
+    # It exists because a visitor token needs a session-shaped key and this identity
+    # deliberately outlives the session (ADR-0020). Without it, a recognised person whose
+    # approach session had timed out could see "Check in as <name>" and have the check-in
+    # fail: /visitor-token 409s with no session, the client sent an empty token, and the
+    # write 422'd. Before ADR-0020 the name died with the session so the two were
+    # accidentally consistent; decoupling them exposed this.
+    interaction_id: uuid.UUID = dataclasses.field(default_factory=uuid.uuid4)
 
 
 class RecognisedIdentity:
@@ -68,6 +82,7 @@ class RecognisedIdentity:
         display_name: str,
         consent_version: str | None,
         profile_id: str | None,
+        accent_color: str | None = None,
     ) -> None:
         """Record a freshly recognised person, or refresh the one already held.
 
@@ -76,11 +91,16 @@ class RecognisedIdentity:
         and merging them would attribute one person's writes to the other.
         """
         previous = self.current()
+        same_person = previous is not None and previous.person_id == person_id
         self._person = RecognisedPerson(
             person_id=person_id,
             display_name=display_name,
             consent_version=consent_version,
             profile_id=profile_id,
+            accent_color=accent_color,
+            # One id for the whole interaction: re-recognising the same person mid-visit
+            # must not mint a new one, or their rate-limit key would reset every 30 s.
+            **({"interaction_id": previous.interaction_id} if same_person and previous else {}),
         )
         # Someone mid-interaction keeps their longer window when re-recognised; a new
         # arrival starts on the short one until they actually touch something.

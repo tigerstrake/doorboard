@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import shutil
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -34,12 +35,15 @@ from door_visiond.consent import load_consent_statement
 from door_visiond.embedder import Embedder, HailoEmbedder, MockEmbedder
 from door_visiond.embedding import Embedding
 from door_visiond.enrollment import (
+    DisplayNameTakenError,
     EnrollmentStore,
+    InvalidAccentColorError,
     InviteConsumption,
     InviteUnusableError,
     NoProfileAvailableError,
     ProfileSpec,
     hash_invite_secret,
+    normalize_accent_color,
 )
 from door_visiond.event_forwarder import EventForwarder, HttpEventTransport
 from door_visiond.events import (
@@ -108,6 +112,19 @@ class QualityTooLowError(EnrollError):
         super().__init__("all captured faces are below the enrollment quality threshold")
 
 
+class SelfEnrollClosedError(EnrollError):
+    """Self-service enrollment is refused by a cap (ADR-0019 §3).
+
+    ``reason`` is a stable code the doorpad renders as a sentence, because "closed"
+    with no explanation is the failure mode that sends someone to knock instead.
+    """
+
+    def __init__(self, reason: str, *, retry_after_s: int | None = None) -> None:
+        self.reason = reason
+        self.retry_after_s = retry_after_s
+        super().__init__(reason)
+
+
 @dataclass(frozen=True)
 class EnrollResult:
     person_id: str
@@ -133,6 +150,7 @@ class VisiondService:
         esp32_transport: Esp32Transport | None = None,
         relay_transport: RelayTransport | None = None,
         event_forwarder: EventForwarder | None = None,
+        backend_factory: Callable[[], VisionBackend] | None = None,
     ) -> None:
         self._settings = settings
         self._clock: Clock = clock or SystemClock()
@@ -166,6 +184,11 @@ class VisiondService:
         self._pipeline_errors = 0
         self._pipeline_consecutive_errors = 0
         self._runtime_degraded_detail: str | None = None
+        # When to try the real backend again after a degradation, and counters so a
+        # door that is flapping between the two is visible in /metrics.
+        self._backend_recovery_due_ms: int | None = None
+        self._backend_degradations = 0
+        self._backend_recoveries = 0
 
         # Remote enrollment (ADR-0016). All optional: with no relay configured
         # none of this starts and the at-door flow is untouched. The keyring is
@@ -218,7 +241,14 @@ class VisiondService:
             cache_clear_sink=self._on_cache_clear,
         )
 
-        self._backend: VisionBackend = backend or self._build_backend()
+        # How to rebuild the backend after a degradation. Injectable so the recovery
+        # path is testable without a Hailo: the default builds the real thing.
+        self._backend_factory: Callable[[], VisionBackend] = backend_factory or self._build_backend
+        # Whether the caller owns backend construction. If they do, recovery must not
+        # touch the shared Hailo device — building one is exactly what an injected
+        # factory exists to avoid.
+        self._owns_backend_construction = backend_factory is None
+        self._backend: VisionBackend = backend or self._backend_factory()
         self._privacy_enabled = False
         self._run_task: asyncio.Task[None] | None = None
         self._running = False
@@ -258,7 +288,8 @@ class VisiondService:
             return HardwareBackend(
                 mode=self._effective_mode,
                 embedder=self._embedder,
-                snapshot_url=self._settings.snapshot_url,
+                # Per-mode (ADR-0023): dual-camera reads the recognition camera.
+                snapshot_url=self._settings.face_snapshot_url,
                 snapshot_timeout_s=self._settings.snapshot_timeout_s,
                 pipeline=self._get_hailo_pipeline(),
                 interval_ms=self._settings.frame_interval_ms,
@@ -433,6 +464,7 @@ class VisiondService:
         while self._running:
             try:
                 capture = await self._backend.next_capture()
+                await self._maybe_recover_backend()
                 self._core.tick()
                 if capture is not None:
                     self._core.process_capture(capture)
@@ -460,13 +492,85 @@ class VisiondService:
         self._effective_mode = "disabled"
         self._runtime_degraded_detail = f"vision backend failed: {type(exc).__name__}"
         self._pipeline_consecutive_errors = 0
+        self._backend_recovery_due_ms = self._clock.monotonic_ms() + int(
+            self._settings.backend_recovery_delay_s * 1000
+        )
+        self._backend_degradations += 1
         with contextlib.suppress(Exception):
             await failed_backend.close()
+        # `HardwareBackend.close()` closes the Hailo pipeline — and that pipeline is
+        # SHARED: `_get_hailo_pipeline` caches it and the embedder holds the same object.
+        # Forget it here so recovery constructs a fresh device instead of handing back a
+        # closed one. Measured on the door: without this the recovery logged
+        # `vision_backend_recovered`, reported `mode: hardware`, and then sat at zero
+        # frames forever — a failure that actively hides itself, which is worse than
+        # staying visibly degraded.
+        self._hailo_pipeline = None
         self._emit_pipeline_status()
         logger.error(
             "vision_backend_degraded_to_disabled",
-            extra={"error_class": type(exc).__name__},
+            extra={
+                "error_class": type(exc).__name__,
+                "retry_in_s": self._settings.backend_recovery_delay_s,
+            },
         )
+
+    async def _maybe_recover_backend(self) -> None:
+        """Rebuild the real backend after a degradation, once, on a delay.
+
+        Degradation used to be terminal: three consecutive frame errors dropped the
+        service to ``DisabledBackend`` for the rest of its life. The frames come from
+        door-media over HTTP, so *restarting door-media* — for a camera setting, a deploy,
+        anything — reliably produced three ``URLError``s and permanently stopped
+        recognition on a door that otherwise looked healthy. The only symptom was
+        ``mode: disabled`` in ``/health``, and the only cure was noticing.
+
+        Recovery is the right default because the common causes are transient by nature
+        (a sibling service restarting) while the permanent ones re-degrade immediately and
+        harmlessly: a missing Hailo fails the next frame too, and we are back here having
+        spent one attempt.
+        """
+        if self._backend_recovery_due_ms is None:
+            return
+        if self._clock.monotonic_ms() < self._backend_recovery_due_ms:
+            return
+        self._backend_recovery_due_ms = None
+        # No compat re-check: a compat failure means a DisabledBackend was built at
+        # startup, and that backend cannot raise, so no degradation — and therefore no
+        # recovery — is ever scheduled from it. Re-checking here would only be a way to
+        # get this wrong.
+        if self._settings.vision_mode not in _HARDWARE_MODES:
+            # Mock/disabled have no HTTP frame source, so there is no transient failure
+            # to recover from — a scripted backend that fails is failing on purpose.
+            return
+        if self._privacy_enabled or self._enrollment_locked:
+            return
+        # Restore the mode FIRST: `_build_backend` branches on `_effective_mode`, so
+        # building while it still reads "disabled" hands back another DisabledBackend and
+        # then relabels it "hardware" — mode restored, function not, zero frames, and
+        # `runtime_warning` cleared so nothing looks wrong. Measured on the door.
+        self._effective_mode = self._settings.vision_mode
+        try:
+            # The embedder holds a pipeline reference too, so it has to be rebuilt on the
+            # fresh device before the backend that shares it.
+            if self._owns_backend_construction and self._settings.vision_mode in _HARDWARE_MODES:
+                self._embedder = self._build_embedder()
+            restored = self._backend_factory()
+        except Exception as exc:
+            self._effective_mode = "disabled"
+            logger.warning(
+                "vision_backend_recovery_failed", extra={"error_class": type(exc).__name__}
+            )
+            return
+        previous = self._backend
+        self._backend = restored
+        self._runtime_degraded_detail = None
+        self._pipeline_consecutive_errors = 0
+        self._backend_recoveries += 1
+        with contextlib.suppress(Exception):
+            await previous.close()
+        self._emit_pipeline_status()
+        logger.info("vision_backend_recovered", extra={"mode": self._effective_mode})
 
     def _wipe_enroll_tmp(self) -> None:
         root = self._settings.enroll_tmp_root
@@ -602,6 +706,39 @@ class VisiondService:
         if self._relay_keyring is None:
             self._relay_keyring = RelayKeyring(self._settings.relay_key_path)
         return self._relay_keyring
+
+    #: Label stamped on invites minted by a visitor at the doorpad, so the hourly cap
+    #: can be counted from the invite table and owner-minted invites never consume it.
+    SELF_ENROLL_LABEL = "self-service (doorpad)"
+
+    def create_self_enroll_invite(self) -> dict[str, object]:
+        """Mint an invite for a visitor standing at the door, with no admin credential.
+
+        ADR-0019: presence at the doorpad is the authorization, the same gate the bell
+        and the guestbook already use. What keeps that safe is not authentication but
+        bounds -- an hourly cap and a ceiling on how many people this door will ever
+        know -- plus a Telegram notification the owner cannot miss.
+        """
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        if self._privacy_enabled:
+            raise PrivacyModeActiveError
+        per_hour = self._settings.self_enroll_per_hour
+        if per_hour <= 0:
+            raise SelfEnrollClosedError("disabled")
+        max_enrolled = self._settings.self_enroll_max_enrolled
+        if max_enrolled and self._matcher.enrolled_count >= max_enrolled:
+            raise SelfEnrollClosedError("door_full")
+        window_start = datetime.now(UTC) - timedelta(hours=1)
+        minted = self._store.count_invites_since(window_start, label=self.SELF_ENROLL_LABEL)
+        if minted >= per_hour:
+            raise SelfEnrollClosedError("rate_limited", retry_after_s=3600)
+        invite = self.create_invite(label=self.SELF_ENROLL_LABEL)
+        logger.info(
+            "self_enroll_invite_minted",
+            extra={"minted_last_hour": minted + 1, "enrolled": self._matcher.enrolled_count},
+        )
+        return invite
 
     def create_invite(self, *, label: str | None = None) -> dict[str, object]:
         """Mint a single-use invite and return the URL a phone can open.
@@ -759,8 +896,15 @@ class VisiondService:
                     profile_id=manifest.profile.profile_id,
                     color=manifest.profile.color,
                     sound=manifest.profile.sound,
+                    # Validated here rather than trusted: it arrives from a phone and ends
+                    # up in a CSS custom property (ADR-0021).
+                    accent_color=normalize_accent_color(manifest.profile.accent_color),
                 ),
                 invite=invite,
+            )
+        except InvalidAccentColorError:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="rejected", reason="invalid_accent_color"
             )
         except NoProfileAvailableError:
             return PickupAck(
@@ -770,6 +914,13 @@ class VisiondService:
             return PickupAck(bundle_id=bundle.bundle_id, outcome="rejected", reason=exc.reason)
         except StaleConsentError:
             return PickupAck(bundle_id=bundle.bundle_id, outcome="rejected", reason="stale_consent")
+        except DisplayNameTakenError:
+            # "rejected", not "failed": the bundle will never succeed as-is, so the
+            # relay should stop offering it and the phone should say to pick another
+            # name rather than sit on "Waiting for the door".
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="rejected", reason="display_name_taken"
+            )
         except QualityTooLowError:
             return PickupAck(bundle_id=bundle.bundle_id, outcome="failed", reason="quality_too_low")
         except PrivacyModeActiveError:
@@ -1030,12 +1181,21 @@ class VisiondService:
             "enrolled": self._matcher.enrolled_count,
             "enrollment_locked": enrollment_locked,
             "compat": self._compat.detail,
+            # Which camera the face path is actually reading (ADR-0023). Stated rather
+            # than implied by the mode, because "configured for two cameras, using one"
+            # was invisible before and is the thing most worth being able to check.
+            "face_frame_source": self._settings.face_snapshot_url,
             "runtime_warning": self._runtime_degraded_detail,
             "door_id": self._settings.door_id,
             "esp32_connected": esp32_status.connected if esp32_status is not None else None,
             "esp32_profile_push_status": "degraded" if esp32_profile_warning else "ok",
             "esp32_profile_warning": esp32_profile_warning,
             "privacy_state_status": "invalid_fail_closed" if self._privacy_state_degraded else "ok",
+            # How many of the enrolled people added themselves at the doorpad
+            # (ADR-0019 §4). The owner cannot be asked to consent to self-service and
+            # then have no way to see it happening; `GET /people` names them, this
+            # counts them, and both are one request away.
+            "self_enrolled": self._store.count_consumed_invites(label=self.SELF_ENROLL_LABEL),
             # Frames door-media re-served unchanged. Climbing steadily means its
             # snapshot reader has stalled and the doorway is being judged on stale
             # pictures -- recognition looks alive and is not seeing anything new.
@@ -1065,6 +1225,9 @@ class VisiondService:
     def metrics_snapshot(self) -> dict[str, float]:
         snap = self._core.metrics_snapshot()
         snap["snapshot_duplicate_frames"] = float(self._backend.status().duplicate_frames)
+        snap["self_enrolled"] = float(
+            self._store.count_consumed_invites(label=self.SELF_ENROLL_LABEL)
+        )
         snap["cache_hit_rate"] = self.cache_hit_rate()
         snap["enrolled"] = float(self._matcher.enrolled_count)
         snap["esp32_profile_updates_acked"] = float(self._esp32_profile_updates_acked)
@@ -1074,6 +1237,8 @@ class VisiondService:
         snap["archive_purges_delivered"] = float(self._purges_delivered)
         snap["archive_purges_failed"] = float(self._purges_failed)
         snap["pipeline_errors"] = float(self._pipeline_errors)
+        snap["backend_degradations"] = float(self._backend_degradations)
+        snap["backend_recoveries"] = float(self._backend_recoveries)
         forwarder = self._event_forwarder
         snap["events_forwarded"] = float(forwarder.forwarded if forwarder else 0)
         snap["events_forward_dropped"] = float(forwarder.dropped if forwarder else 0)

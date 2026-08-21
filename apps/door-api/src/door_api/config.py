@@ -147,6 +147,17 @@ class SessionConfig:
     media_retry_base_s: float = 0.5
     media_retry_max_s: float = 30.0
 
+    # door-visiond local base URL. Used only to forward the doorpad's self-service
+    # enrollment request (ADR-0019): the kiosks connect to door-api and nothing else
+    # (ARCHITECTURE.md §7), so a doorpad action that needs visiond has to come
+    # through here. Nothing about recognition or identity flows this way.
+    visiond_base_url: str = "http://127.0.0.1:8081"
+    visiond_timeout_s: float = 3.0
+    # door-visiond's own admin token, held here so the owner's browser never receives it
+    # (ADR-0024). Empty means the admin page's enrollment panels return 503 rather than
+    # reaching an unauthenticated service.
+    visiond_admin_token: str = ""
+
     # door-sync local base URL for non-critical admin/gallery operations.
     sync_base_url: str = "http://127.0.0.1:8083"
     sync_admin_token: str = ""
@@ -170,6 +181,10 @@ class SessionConfig:
     # the name vanished ten seconds after the greeting and Check In refused to offer it.
     recognised_identity_idle_ttl_s: float = 12.0
     recognised_identity_interaction_ttl_s: float = 120.0
+    # How often to notice that the window above has run out. Expiry is lazy, so without
+    # this the kiosks keep showing a name the server has already stopped honouring until
+    # some unrelated event triggers a broadcast.
+    identity_sweep_interval_s: float = 2.0
 
     # Feature gate for the explicit photo-booth + private gallery flow.
     feature_photobooth: bool = False
@@ -278,6 +293,9 @@ class SessionConfig:
             media_forward_poll_s=_env_float("DOOR_API_MEDIA_FORWARD_POLL_S", 0.25),
             media_retry_base_s=_env_float("DOOR_API_MEDIA_RETRY_BASE_S", 0.5),
             media_retry_max_s=_env_float("DOOR_API_MEDIA_RETRY_MAX_S", 30.0),
+            visiond_base_url=os.environ.get("DOOR_API_VISIOND_BASE_URL", "http://127.0.0.1:8081"),
+            visiond_timeout_s=_env_float("DOOR_API_VISIOND_TIMEOUT_S", 3.0),
+            visiond_admin_token=os.environ.get("DOOR_VISIOND_ADMIN_TOKEN", ""),
             sync_base_url=os.environ.get("DOOR_API_SYNC_BASE_URL", "http://127.0.0.1:8083"),
             sync_admin_token=os.environ.get("DOOR_SYNC_ADMIN_TOKEN", ""),
             sync_timeout_s=_env_float("DOOR_API_SYNC_TIMEOUT_S", 1.0),
@@ -290,6 +308,7 @@ class SessionConfig:
             recognised_identity_interaction_ttl_s=_env_float(
                 "DOOR_API_IDENTITY_INTERACTION_TTL_S", 120.0
             ),
+            identity_sweep_interval_s=_env_float("DOOR_API_IDENTITY_SWEEP_INTERVAL_S", 2.0),
             feature_photobooth=_env_bool("FEATURE_PHOTOBOOTH", False),
             visitor_token_secret=os.environ.get(
                 "DOOR_API_VISITOR_TOKEN_SECRET",

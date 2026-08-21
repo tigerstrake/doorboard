@@ -235,6 +235,7 @@ async def ingest(
         mqtt_publisher=state.mqtt_publisher,
         notify_engine=state.notify_engine,
         video_delivery=state.video_message_delivery,
+        ring_photo_delivery=state.ring_photo_delivery,
     )
     return {"batch_id": body.batch_id, "results": results}
 

@@ -3018,3 +3018,303 @@ input:focus-visible {
   opacity: 0.75;
   font-size: 0.85em;
 }
+
+/* --- DoorPad identity + tile clarity (T-316) --------------------------------
+   Three complaints, one screen: tiles that named themselves instead of saying
+   what they do, no standing indication of who the door thinks you are, and
+   content clipping on the 1024x600 panel. */
+
+/* The title block stays exactly where it is whether or not somebody is recognised.
+   This was a flex row with `justify-content: space-between`, which looks right with a
+   badge in it and silently re-aligns the centred title to the left the moment the badge
+   disappears — so the header never went back to normal after the name expired. The badge
+   is taken out of flow instead: it can come and go without moving anything. */
+.doorpad-header__row {
+  position: relative;
+}
+
+/* Who the door currently believes it is talking to. Uses the recognised person's own
+   accent (--db-accent, set from their onboarding colour) so the badge, the greeting and
+   the door's LED all agree. Disappears the moment the identity window lapses. */
+.doorpad-identity {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--db-accent);
+  background: color-mix(in srgb, var(--db-accent) 14%, transparent);
+}
+
+.doorpad-identity__dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--db-accent);
+  box-shadow: 0 0 8px var(--db-accent);
+}
+
+.doorpad-identity__name {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.doorpad-identity__note {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.7;
+}
+
+/* Enrollment is the entry point to everything personalised, so it reads as an
+   invitation rather than one of eight equal squares. */
+/* The one non-primary tile that still needs to draw the eye: it is how anyone becomes
+   recognised at all. Emphasis comes from its accent rather than a second primary, so
+   "Ring Bell" stays the single obvious action on the screen. */
+.doorpad-tile--enroll {
+  border-color: var(--db-accent);
+  background: color-mix(in srgb, var(--db-accent) 12%, var(--db-bg-card));
+  box-shadow: 0 0 12px color-mix(in srgb, var(--db-accent) 22%, transparent);
+}
+
+.doorpad-tile--enroll .db-big-button__icon {
+  color: var(--db-accent);
+}
+
+/* --- 1024x600 kiosk fit ---
+   The panel is exactly 1024x600. `.doorpad-view` is `height: 100vh` and the home grid
+   carries nine tiles that now each have a second line, so at the default sizes the last
+   row fell below the fold. A touchscreen gives no scrollbar hint, so "off the fold" reads
+   as "the button is cut off". Height-based rather than width-based: the Dell is also
+   under 1100px wide in some layouts but has 1080px of height to spend. */
+@media (max-height: 660px) {
+  .doorpad-view {
+    padding: 0.6rem 0.9rem;
+  }
+
+  .doorpad-header {
+    margin-bottom: 0.5rem;
+  }
+
+  .doorpad-header h2 {
+    font-size: 1.15rem;
+    margin-bottom: 0.1rem;
+  }
+
+  .doorpad-header p,
+  .doorpad-residents {
+    font-size: 0.8rem;
+    margin: 0.1rem 0;
+  }
+
+  .doorpad-identity {
+    padding: 0.25rem 0.6rem;
+  }
+
+  /* Fill the panel rather than floating in it. Centring left ~300px of dead space
+     above and below the grid on a 600px screen: on a 7" touchscreen that space should
+     be touch target, not padding. The grid takes the remaining height and its rows
+     stretch, so the tiles get as large as the screen allows. */
+  .doorpad-view {
+    justify-content: flex-start;
+  }
+
+  .doorpad-grid {
+    max-width: none;
+    gap: 0.5rem;
+    /* Four, not five: the eight default tiles then fill two complete rows instead of
+       leaving a three-wide hole in the second. Wider tiles also give the hint lines room
+       to sit on two lines rather than three. With the photo-booth flag on there are nine
+       and the last row is short — acceptable, and the flag is off by default. */
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    /* Equal rows keep a tile whose hint wraps further from making its whole row taller
+       than the other. */
+    grid-auto-rows: 1fr;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .doorpad-grid .db-big-button {
+    min-height: 0;
+    height: 100%;
+    padding: 0.6rem 0.7rem;
+    font-size: 0.92rem;
+  }
+
+  .doorpad-grid .db-big-button__icon {
+    font-size: 1.1rem;
+  }
+
+  .doorpad-grid .db-big-button__hint {
+    font-size: 0.7rem;
+    max-width: none;
+  }
+}
+
+/* --- About this doorboard (T-316) ---
+   Shared by the doorpad screen and the wallboard's About channel. Left-aligned prose:
+   this is meant to be read, not glanced at, unlike the rest of the wallboard. */
+.about-doorboard {
+  display: grid;
+  gap: 0.85rem;
+  text-align: left;
+}
+
+.about-doorboard__heading {
+  margin: 0 0 0.2rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  color: var(--db-accent);
+}
+
+.about-doorboard__body {
+  margin: 0;
+  line-height: 1.5;
+  opacity: 0.9;
+}
+
+/* On the 1080p wallboard there is room to read it across two columns from a distance. */
+.about-doorboard--focus {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.1rem 2rem;
+  font-size: 1.05rem;
+}
+
+.about-doorboard--focus .about-doorboard__heading {
+  font-size: 1.15rem;
+}
+
+@media (max-height: 660px) {
+  /* Six sections of prose are 660px tall in a 580px content area on the 7" panel, so
+     they needed internal scrolling that a touchscreen gives no hint of. The panel is
+     1024px WIDE, though, which is ample for two columns — halving the height is the fix
+     that keeps the text readable, rather than shrinking it until it fits. */
+  .about-doorboard {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem 1.2rem;
+    font-size: 0.8rem;
+  }
+
+  .about-doorboard__heading {
+    font-size: 0.82rem;
+    margin-bottom: 0.1rem;
+  }
+
+  .about-doorboard__body {
+    line-height: 1.35;
+  }
+
+  /* Sub-screens centre their content and then grow past the fold. Let them start at the
+     top and use the height they have; the grid above is what needed centring. */
+  .doorpad-sub-content {
+    justify-content: flex-start;
+    gap: 0.4rem;
+  }
+
+  .doorpad-sub-content h2 {
+    font-size: 1.1rem;
+    margin: 0.2rem 0;
+  }
+
+  .doorpad-sub-content .phrase-grid {
+    gap: 0.4rem;
+  }
+}
+
+/* --- Satellite sky dome (T-325) ---
+   A pass is a direction to look, not a place on the ground, so this is the conventional
+   az/el polar plot: horizon at the rim, zenith at the centre, north up. */
+.satellite-sky__body {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.sky-dome {
+  width: min(320px, 42vw);
+  height: auto;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.sky-dome__horizon,
+.sky-dome__ring {
+  fill: none;
+  stroke: rgba(140, 190, 255, 0.28);
+  stroke-width: 1;
+}
+
+.sky-dome__horizon {
+  fill: rgba(20, 40, 70, 0.35);
+  stroke: rgba(140, 190, 255, 0.5);
+  stroke-width: 1.5;
+}
+
+.sky-dome__ring {
+  stroke-dasharray: 3 5;
+}
+
+.sky-dome__compass {
+  fill: var(--db-text-secondary);
+  font-size: 13px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  letter-spacing: 0.05em;
+}
+
+/* The whole arc, drawn faintly; the travelled part is overlaid brighter during a pass. */
+.sky-dome__arc {
+  fill: none;
+  stroke: rgba(140, 190, 255, 0.45);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 4 4;
+}
+
+.sky-dome__arc-done {
+  fill: none;
+  stroke: var(--db-accent, #6ea8ff);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+
+.sky-dome__endpoint {
+  fill: rgba(140, 190, 255, 0.85);
+}
+
+.sky-dome__endpoint--set {
+  fill: rgba(255, 150, 120, 0.85);
+}
+
+.sky-dome__marker-dot {
+  fill: #fff;
+}
+
+.sky-dome__marker-glow {
+  fill: var(--db-accent, #6ea8ff);
+  opacity: 0.28;
+  animation: sky-dome-pulse 2s ease-in-out infinite;
+}
+
+@keyframes sky-dome-pulse {
+  0%, 100% { opacity: 0.18; transform: scale(0.85); transform-origin: center; }
+  50% { opacity: 0.4; }
+}
+
+/* A 24/7 wallboard should respect this: the pulse is decoration, the position is not. */
+@media (prefers-reduced-motion: reduce) {
+  .sky-dome__marker-glow {
+    animation: none;
+  }
+}
+
+.satellite-sky__note {
+  margin-top: 0.5rem;
+  text-align: center;
+}

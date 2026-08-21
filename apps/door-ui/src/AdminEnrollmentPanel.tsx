@@ -45,11 +45,11 @@ export function AdminEnrollmentPanel() {
     // We also fetch the consent statement to show
     Promise.all([
       enrollmentApi.getPeople(activeToken),
-      enrollmentApi.getConsent(),
-      // Call /health on visiond via request to know privacy mode
-      fetch(`http://${window.location.hostname}:8081/health`, {
-        headers: { Authorization: `Bearer ${activeToken}` },
-      }).then((r) => r.json()),
+      enrollmentApi.getConsent(activeToken),
+      // Privacy state, through door-api like everything else here (ADR-0024). This was
+      // a hardcoded fetch to <host>:8081, which door-visiond only serves on loopback — so
+      // from a laptop the whole Promise.all rejected and the panel rendered as empty.
+      enrollmentApi.getVisiondHealth(activeToken),
     ])
       .then(([p, c, h]) => {
         setPeople(p);

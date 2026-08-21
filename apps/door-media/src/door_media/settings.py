@@ -132,8 +132,62 @@ class Settings(BaseSettings):
         alias="DOOR_MEDIA_CAMERA_TUNING_FILE",
     )
 
+    # Sensor orientation. This is not cosmetic: a bell-clip thumbnail pulled off the
+    # door came back upside down, which means every face the recogniser sees is inverted
+    # too. ArcFace embeddings are not rotation invariant, so an inverted face scores near
+    # nothing against upright enrollment photos -- an upside-down camera looks exactly
+    # like "recognition does not work". 0 or 180 only, per rpicam-vid.
+    video_rotation: int = Field(default=0, alias="DOOR_MEDIA_VIDEO_ROTATION")
+    video_hflip: bool = Field(default=False, alias="DOOR_MEDIA_VIDEO_HFLIP")
+    video_vflip: bool = Field(default=False, alias="DOOR_MEDIA_VIDEO_VFLIP")
+
+    # ── recognition camera (ADR-0023) ─────────────────────────────────────────
+    # The second CSI camera, used for faces only. -1 means "not present", which is the
+    # single-camera door: /snapshot/recognition then 404s rather than quietly serving the
+    # visitor camera, so door-visiond can tell a missing camera from an empty doorway.
+    #
+    # Read directly with `rpicam-vid --codec mjpeg` rather than through RTSP: the face
+    # path wants stills, so an H.264 encode (~90% of a core at 1080p) and a MediaMTX hop
+    # would buy it nothing. Smaller frames too — the detector downscales anyway, and the
+    # budget that matters is frames per second reaching it.
+    recognition_cam_index: int = Field(default=-1, alias="RECOGNITION_CAM_INDEX", ge=-1, le=7)
+    recognition_width: int = Field(default=1280, alias="DOOR_MEDIA_RECOGNITION_WIDTH", ge=320)
+    recognition_height: int = Field(default=720, alias="DOOR_MEDIA_RECOGNITION_HEIGHT", ge=240)
+    recognition_framerate: int = Field(
+        default=10, alias="DOOR_MEDIA_RECOGNITION_FRAMERATE", ge=1, le=30
+    )
+    recognition_rotation: int = Field(default=0, alias="DOOR_MEDIA_RECOGNITION_ROTATION")
+    recognition_hflip: bool = Field(default=False, alias="DOOR_MEDIA_RECOGNITION_HFLIP")
+    recognition_vflip: bool = Field(default=False, alias="DOOR_MEDIA_RECOGNITION_VFLIP")
+    # Its own tuning file: the two sensors are different variants (imx708_noir vs
+    # imx708_wide_noir) and the wrong one washes the picture out.
+    recognition_tuning_file: str = Field(
+        default="/usr/share/libcamera/ipa/rpi/pisp/imx708_noir.json",
+        alias="DOOR_MEDIA_RECOGNITION_TUNING_FILE",
+    )
+
     # rpicam-vid segment length (seconds) for the rolling recording buffer.
     segment_s: int = Field(default=2, alias="DOOR_MEDIA_SEGMENT_S")
+
+    @property
+    def recognition_cam_present(self) -> bool:
+        return self.recognition_cam_index >= 0
+
+    @field_validator("recognition_rotation")
+    @classmethod
+    def _validate_recognition_rotation(cls, v: int) -> int:
+        if v not in {0, 180}:
+            msg = f"DOOR_MEDIA_RECOGNITION_ROTATION must be 0 or 180, got {v}"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("video_rotation")
+    @classmethod
+    def _validate_rotation(cls, v: int) -> int:
+        if v not in {0, 180}:
+            msg = f"DOOR_MEDIA_VIDEO_ROTATION must be 0 or 180, got {v}"
+            raise ValueError(msg)
+        return v
 
     @field_validator("video_h264_profile")
     @classmethod

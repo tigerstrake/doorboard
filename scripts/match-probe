@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# Score a face image against the door's enrolled templates, on the door.
+#
+# Answers the question the live camera cannot answer while it is badly aimed: *can this
+# door recognise a good, frontal, well-lit face at all?*
+#
+#   * A clear photo scoring near the threshold  -> templates and pipeline are fine, the
+#     problem is framing or lighting.
+#   * A clear photo scoring near zero           -> the templates themselves are unusable
+#     and no amount of aiming will help.
+#
+# It also separates the genuine score from the impostor scores, so "recognises the wrong
+# person" and "recognises nobody" stop looking alike.
+#
+# Measured this way on 2026-08-17: the same face scored 0.476 upright and 0.064 inverted
+# against a 0.62 threshold, which is how the upside-down camera mount was found. Rerun it
+# after aiming the camera before touching VISIOND_MATCH_THRESHOLD.
+#
+# Usage:
+#   scripts/match-probe photo.jpg [more.jpg ...]   # score local images on the door
+#   scripts/match-probe --live                     # grab the current camera frame first
+#   scripts/match-probe --live --rotate photo.jpg  # also try each image rotated 180
+#
+# Env: DOORBOARD_PI_HOST (default door-pi.local), DOORBOARD_PI_REPO (default ~/doorboard).
+#
+# Prints scalar scores only, never a vector (ADR-0009 E-3), and deletes every image it
+# copied to the door before exiting -- these are frames of people's faces.
+#
+# IT STOPS door-visiond FOR THE DURATION, and this is not optional. The Hailo VDevice does
+# not tolerate a second opener: running the probe against a live service left visiond with
+# `hailo_ok: false` and a frame counter frozen at the value it held when the probe started
+# -- inference wedged inside a worker thread, recognition silently dead, and the probe
+# itself exiting on a bus error. Measured, not theorised. Recognition is offline for the
+# few seconds this takes and is restarted afterwards even if the probe fails.
+set -euo pipefail
+
+host="${DOORBOARD_PI_HOST:-door-pi.local}"
+pi_repo="${DOORBOARD_PI_REPO:-doorboard}"
+remote_dir="/tmp/doorboard-match-probe.$$"
+
+use_live=0
+rotate=0
+images=()
+for arg in "$@"; do
+  case "$arg" in
+    --live) use_live=1 ;;
+    --rotate) rotate=1 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    *) images+=("$arg") ;;
+  esac
+done
+
+if [[ ${#images[@]-0} -eq 0 && $use_live -eq 0 ]]; then
+  echo "nothing to probe: pass an image, or --live to use the current camera frame" >&2
+  exit 2
+fi
+
+cleanup() {
+  # Face images must not be left lying in /tmp on the door, and recognition must come
+  # back even if the probe died halfway through.
+  ssh -o ConnectTimeout=20 "$host" "
+    rm -rf '$remote_dir'
+    sudo systemctl start door-visiond.service
+  " 2>/dev/null || echo "WARNING: could not restart door-visiond on $host -- do it by hand" >&2
+}
+trap cleanup EXIT
+
+echo "stopping door-visiond (the Hailo device cannot be shared) ..." >&2
+ssh -o ConnectTimeout=20 "$host" "sudo systemctl stop door-visiond.service"
+sleep 2
+
+ssh -o ConnectTimeout=10 "$host" "mkdir -p '$remote_dir'"
+
+for image in "${images[@]+"${images[@]}"}"; do
+  [[ -f "$image" ]] || { echo "no such file: $image" >&2; exit 1; }
+  scp -q -o ConnectTimeout=10 "$image" "$host:$remote_dir/"
+done
+
+ssh -o ConnectTimeout=60 "$host" "
+set -euo pipefail
+cd \"\$HOME/$pi_repo\"
+
+if [[ $use_live -eq 1 ]]; then
+  # Whatever the camera is looking at right now, through the same endpoint the
+  # recogniser uses -- so a placeholder here explains a probe with no face in it.
+  src=\$(curl -s -D /tmp/hdr.\$\$ -o '$remote_dir/live.jpg' --max-time 15 http://127.0.0.1:8082/snapshot \
+        && grep -i x-snapshot-source /tmp/hdr.\$\$ | tr -d '\r' | cut -d' ' -f2)
+  rm -f /tmp/hdr.\$\$
+  echo \"live frame: \${src:-unknown}\"
+fi
+
+if [[ $rotate -eq 1 ]]; then
+  python3 - <<'PY'
+import pathlib
+from PIL import Image
+for path in sorted(pathlib.Path('$remote_dir').glob('*.jpg')):
+    if path.stem.endswith('_rot180'):
+        continue
+    Image.open(path).rotate(180).save(path.with_name(f'{path.stem}_rot180.jpg'), quality=95)
+PY
+fi
+
+cat > '$remote_dir/probe.py' <<'PY'
+import sys
+from pathlib import Path
+
+from door_visiond.embedder import HailoEmbedder
+from door_visiond.enrollment import EnrollmentStore
+from door_visiond.matcher import Matcher
+from door_visiond.settings import settings
+
+cfg = settings()
+store = EnrollmentStore(cfg.enrollment_db_path)
+enrolled = store.load_enrolled()
+print(f'enrolled: {len(enrolled)} people, threshold {cfg.match_threshold}')
+for person in enrolled:
+    print(f'  {person.display_name}: {len(person.vectors)} template(s)')
+if not enrolled:
+    raise SystemExit('nobody is enrolled, so nothing can match')
+
+embedder = HailoEmbedder(
+    dim=cfg.model_dim,
+    model_id=cfg.model_id,
+    detector_hef_path=str(cfg.detector_hef_path),
+    recognizer_hef_path=str(cfg.recognizer_hef_path),
+)
+
+for path in sorted(Path(sys.argv[1]).glob('*.jpg')):
+    embedding, quality = embedder.embed(path.read_bytes())
+    print(f'\n{path.name}: detector quality {quality:.3f}')
+    if quality <= 0.0:
+        print('  no face detected')
+        continue
+    scores = []
+    for person in enrolled:
+        # Threshold -1 so the raw score is visible rather than just pass/fail: a genuine
+        # match sitting just under the bar looks identical to a total miss otherwise.
+        single = Matcher(-1.0)
+        single.refresh([person])
+        result = single.match(embedding)
+        score = result.score if result else float('nan')
+        scores.append((score, person.display_name))
+        flag = 'MATCH' if score >= cfg.match_threshold else 'below'
+        print(f'  vs {person.display_name:<14} {score:+.4f}  {flag}')
+    scores.sort(reverse=True)
+    if len(scores) > 1:
+        # The gap between best and runner-up is what says the door can tell people
+        # apart, independently of whether the absolute score clears the threshold.
+        print(f'  best {scores[0][1]} {scores[0][0]:+.4f}, '
+              f'margin over next {scores[0][0] - scores[1][0]:+.4f}')
+
+# Close the VDevice explicitly. Left to interpreter teardown the Hailo runtime exits on a
+# bus error *after* printing correct results, which reads like the probe crashed and the
+# numbers cannot be trusted.
+embedder.pipeline.close()
+store.close()
+PY
+
+set -a; . ./.env; set +a
+\"\$HOME/.venvs/doorboard-visiond/bin/python\" '$remote_dir/probe.py' '$remote_dir' 2>&1 \
+  | grep -vE '^\[[0-9]|INFO RPI|WARN RPI'
+"

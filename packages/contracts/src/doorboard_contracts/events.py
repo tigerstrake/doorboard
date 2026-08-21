@@ -231,6 +231,12 @@ class VisionFaceVisiblePayload(StrictModel):
 class VisionIdentityStablePayload(StrictModel):
     person_id: str
     display_name: str
+    # The colour this person chose at enrollment (ADR-0021), as `#rgb`/`#rrggbb`. The
+    # kiosks accent the greeting, the identity badge and the doorpad frame with it. Not
+    # unique across people and NOT the same thing as `profile_id`, which names an ESP32
+    # LED effect and must stay unique. None means "fall back to the profile's catalogue
+    # colour" — an older door, or a row enrolled before this field existed.
+    accent_color: str | None = None
     # Which consent statement this person enrolled under (ADR-0018). door-api needs
     # it to decide whether attribution is permitted for them; the greeting is
     # covered by every version, so this gates only the extended behaviours.
@@ -403,12 +409,32 @@ class AmbientBirdSummaryPayload(StrictModel):
     total_detections: int
 
 
+class SatelliteTrackSample(StrictModel):
+    """One point on a pass's sky track: seconds after rise, azimuth, elevation."""
+
+    t_offset_s: float
+    azimuth_deg: float
+    elevation_deg: float
+
+
 class AmbientSatellitePassPayload(StrictModel):
     satellite: str
     rise_at: UTCDateTime
     max_elevation_deg: float
     direction: str
     visible: bool
+    # Additive pass geometry (ADR-0025). The provider already finds rise, culmination and
+    # set events and then kept only the culmination compass point, so the shape of the pass
+    # — the thing that tells you where to look and for how long — was computed and
+    # discarded. All optional: older producers and the offline mock omit them, so consumers
+    # must treat every field below as "may be absent" and fall back to the text above.
+    set_at: UTCDateTime | None = None
+    rise_azimuth_deg: float | None = None
+    set_azimuth_deg: float | None = None
+    culmination_azimuth_deg: float | None = None
+    # Sampled arc from rise to set, for drawing the path across the sky. Bounded by the
+    # producer; a consumer must not assume a fixed count or even spacing.
+    track: list[SatelliteTrackSample] = []
 
 
 class AmbientAircraftNearby(StrictModel):

@@ -139,6 +139,29 @@ class Settings(BaseSettings):
     )
     relay_max_images: int = Field(default=5, alias="VISIOND_RELAY_MAX_IMAGES", ge=1, le=15)
 
+    # ── self-service enrollment (ADR-0019) ────────────────────────────────
+    # A visitor at the doorpad can mint their own invite with no admin credential.
+    # Presence at the door is the authorization, exactly as it already is for the
+    # bell and the guestbook; these two caps are what stop a passer-by loading the
+    # encrypted volume with strangers' biometrics. 0 disables self-service.
+    self_enroll_per_hour: int = Field(default=6, alias="VISIOND_SELF_ENROLL_PER_HOUR", ge=0)
+    self_enroll_max_enrolled: int = Field(
+        default=50, alias="VISIOND_SELF_ENROLL_MAX_ENROLLED", ge=0
+    )
+
+    # How long to wait before retrying the real vision backend after three
+    # consecutive frame failures dropped it to `disabled`. The frames come from
+    # door-media over HTTP, so the usual cause is that service restarting — which used
+    # to stop recognition permanently on an otherwise healthy door. A permanent fault
+    # simply re-degrades on the next frame, so retrying costs one attempt.
+    # 30 s rather than 15: measured on the door, door-media takes ~20 s from restart to a
+    # live stream, so a 15 s retry always fired too early, failed, and cost an extra
+    # degrade/recover cycle before converging. It still converged — the flapping is
+    # bounded and honest — but one wasted attempt per restart is avoidable.
+    backend_recovery_delay_s: float = Field(
+        default=30.0, alias="VISIOND_BACKEND_RECOVERY_DELAY_S", gt=0
+    )
+
     # ── capture cadence (mock/hardware frame pacing) ──────────────────────
     frame_interval_ms: int = Field(default=100, alias="VISIOND_FRAME_INTERVAL_MS")
 
@@ -165,6 +188,15 @@ class Settings(BaseSettings):
         alias="VISIOND_SNAPSHOT_TIMEOUT_S",
         gt=0,
     )
+    # The dedicated recognition camera's frames (ADR-0023), used only in
+    # `VISION_MODE=dual-camera`. door-media 404s this when the door has no second camera,
+    # which is what makes the mode fail loudly instead of silently reading the visitor
+    # camera — before ADR-0023 `dual-camera` was accepted and behaved exactly like
+    # `single-camera`, so a door could be configured for two cameras and use one.
+    recognition_snapshot_url: str = Field(
+        default="http://127.0.0.1:8082/snapshot/recognition",
+        alias="VISIOND_RECOGNITION_SNAPSHOT_URL",
+    )
 
     @field_validator("vision_mode")
     @classmethod
@@ -173,6 +205,18 @@ class Settings(BaseSettings):
             msg = f"VISION_MODE must be one of {sorted(_ALLOWED_MODES)}, got {v!r}"
             raise ValueError(msg)
         return v
+
+    @property
+    def face_snapshot_url(self) -> str:
+        """Where face frames come from, per mode.
+
+        `dual-camera` reads the recognition camera; every other hardware mode reads the
+        visitor stream. One property so the backend, the health surface and the startup
+        check cannot disagree about which camera is in use.
+        """
+        if self.vision_mode == "dual-camera":
+            return self.recognition_snapshot_url
+        return self.snapshot_url
 
     @property
     def visiond_root(self) -> Path:

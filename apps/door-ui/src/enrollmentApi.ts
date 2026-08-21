@@ -1,12 +1,26 @@
 import { ApiError } from "./socialApi";
 
+import { API_BASE } from "./apiBase";
+
+// Routed through door-api rather than at door-visiond and door-media directly (ADR-0024).
+//
+// Those two bind 127.0.0.1 on purpose — door-visiond's is the biometric enrollment API —
+// so calling them from the browser only ever worked when the browser was the Pi's own.
+// From a laptop every panel here failed, and failed *silently*: the enrollment list drew
+// "Enrolled Members (0)" for a door with two people enrolled, and the relay panel said
+// "Relay not configured" for a configured relay. Wrong facts, not errors.
+//
+// door-api is already LAN-exposed and admin-authenticated, and it holds each service's own
+// token server-side, so the browser gains the capability without the credential.
+//
+// The explicit VITE_* overrides still win, for a dev pointing at services by hand.
 const VISIOND_BASE_URL =
   (import.meta.env.VITE_DOOR_VISIOND_BASE_URL as string | undefined) ||
-  `http://${window.location.hostname}:8081`;
+  `${API_BASE}/admin/visiond`;
 
 const MEDIA_BASE_URL =
   (import.meta.env.VITE_DOOR_MEDIA_BASE_URL as string | undefined) ||
-  `http://${window.location.hostname}:8082`;
+  `${API_BASE}/admin/door-media`;
 
 async function request<T>(
   baseUrl: string,
@@ -131,8 +145,24 @@ export const enrollmentApi = {
     return request<EnrolledPerson[]>(VISIOND_BASE_URL, "/people", { adminToken: token });
   },
 
-  async getConsent(): Promise<{ text: string; version: string }> {
-    return request<{ text: string; version: string }>(VISIOND_BASE_URL, "/consent");
+  /**
+   * The consent statement and its version.
+   *
+   * Takes the admin token even though door-visiond serves `/consent` unauthenticated:
+   * it is reached through door-api's admin proxy now (ADR-0024), and that proxy
+   * authenticates uniformly. Called without one it 401'd, which rejected the panel's
+   * whole `Promise.all` and drew "Enrolled Members (0)" for a door with two enrolled —
+   * the same class of silent-empty failure the proxy was added to end.
+   */
+  async getConsent(adminToken?: string): Promise<{ text: string; version: string }> {
+    return request<{ text: string; version: string }>(VISIOND_BASE_URL, "/consent", {
+      adminToken,
+    });
+  },
+
+  /** door-visiond's health, for the enrollment panel's privacy toggle. */
+  async getVisiondHealth(adminToken: string): Promise<{ privacy_enabled: boolean }> {
+    return request<{ privacy_enabled: boolean }>(VISIOND_BASE_URL, "/health", { adminToken });
   },
 
   async enroll(
