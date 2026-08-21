@@ -157,13 +157,30 @@ def run_satellite_passes(
         logger.info("No visible satellite passes predicted in the next 24 hours.")
         return None
 
-    # Construct payload
+    # Construct payload.
+    #
+    # The geometry has to be copied through, and was not: this built the payload from five
+    # fields while the provider was returning set_at, the rise/culmination/set azimuths and
+    # the sampled track as well. ADR-0025 added all of that to the contract and the provider,
+    # and it died here — so every event on the wire carried `track: []`, the sky dome rendered
+    # its "high point only" fallback in production for as long as it existed, and the globe
+    # (ADR-0030) had no trajectory to draw. Not visible in tests, because the fixtures supply
+    # a track directly and never went through this function.
+    #
+    # `.get` rather than `[...]`: a provider that does not compute geometry (the mock, or a
+    # pass found by a path that only knows the culmination) omits these entirely, and that
+    # must stay a payload without geometry rather than a KeyError.
     payload = AmbientSatellitePassPayload(
         satellite=pass_data["satellite"],
         rise_at=pass_data["rise_at"],
         max_elevation_deg=pass_data["max_elevation_deg"],
         direction=pass_data["direction"],
         visible=pass_data["visible"],
+        set_at=pass_data.get("set_at"),
+        rise_azimuth_deg=pass_data.get("rise_azimuth_deg"),
+        set_azimuth_deg=pass_data.get("set_azimuth_deg"),
+        culmination_azimuth_deg=pass_data.get("culmination_azimuth_deg"),
+        track=pass_data.get("track") or [],
     )
 
     # Construct event

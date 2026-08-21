@@ -6,6 +6,7 @@ Docker Compose stack (files in `infra/compose/`): Home Assistant, Mosquitto, Pos
 - Postgres: volumes on NUC disk (never the NAS), scheduled `pg_dump` backups shipped *to* the NAS.
 - Mosquitto: authenticated (per-device credentials), not exposed beyond the LAN/VLAN.
 - Caddy fronts control-plane-api and HA if HTTPS-internal is adopted; nothing is exposed to the public internet (handoff §16).
+- `control-plane-api` and `wallboard-worker` are updated **together**: contract models forbid unknown fields, so a new producer against an old consumer is rejected outright (ADR-0031). Splitting them to reduce risk is the wrong instinct.
 - Update procedure and outage behavior documented in `docs/runbooks/` (door keeps working during NUC maintenance by design — verify with simulator scenario before relying on it).
 
 ## T-503 status (this task)

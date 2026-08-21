@@ -138,6 +138,7 @@ class PipelineCore:
         ttl_ms: int,
         cooldown_ms: int,
         stability_window: int,
+        max_faces_matched: int = 5,
         stability_required: int,
         cache_update_sink: CacheUpdateSink | None = None,
         cache_clear_sink: CacheClearSink | None = None,
@@ -148,6 +149,9 @@ class PipelineCore:
         self._clock = clock
         self._door_id = door_id
         self._min_face_px = min_face_px
+        # Upper bound on faces compared per frame. A doorway crowd should cost a bounded
+        # amount of work, and the people at the back are not the ones ringing the bell.
+        self._max_faces_matched = max_faces_matched
         self._ttl_ms = ttl_ms
         self._cooldown_ms = cooldown_ms
         self._stability_required = stability_required
@@ -250,12 +254,32 @@ class PipelineCore:
         # never stored, buffered, logged, or keyed by identity (E-1).
 
     def _match_primary_face(self, capture: FrameCapture, now: int) -> MatchResult | None:
-        # The primary face is the largest one meeting the minimum size gate.
-        qualifying = [f for f in capture.faces if f.size_px >= self._min_face_px]
+        # Every face big enough to be worth matching, best match wins — not just the largest.
+        #
+        # Matching only the largest face meant arriving with anyone standing closer to the
+        # camera than you silently stopped you being recognised: your face was detected, never
+        # compared, and the door greeted nobody with no trace of why. On a door that people
+        # walk up to in pairs that is a routine occurrence, not an edge case.
+        #
+        # Cheap enough to do properly: a match is a dot product against a handful of
+        # templates, and the frame's faces are bounded below so a crowd cannot make this
+        # unbounded. Nothing about the non-matching faces is kept, exactly as before.
+        qualifying = sorted(
+            (f for f in capture.faces if f.size_px >= self._min_face_px),
+            key=lambda f: f.size_px,
+            reverse=True,
+        )[: self._max_faces_matched]
         if not qualifying:
             return None
-        primary = max(qualifying, key=lambda f: f.size_px)
-        result = self._matcher.match(primary.embedding)
+
+        result: MatchResult | None = None
+        for face in qualifying:
+            candidate = self._matcher.match(face.embedding)
+            if candidate is None:
+                continue
+            # Ties go to the larger face, which is what the sort above already gives us.
+            if result is None or candidate.score > result.score:
+                result = candidate
         if result is None:
             return None
         # First appearance in this streak → record first-seen for the metric.
@@ -360,6 +384,9 @@ class PipelineCore:
                 door_id=self._door_id,
                 trace_id=trace,
                 person_id=person_id,
+                # Carried through rather than dropped: "unenrolled" and "face left the
+                # frame" require opposite responses downstream (ADR-0029).
+                reason=reason,
             )
         )
         if self._cache_clear_sink is not None:

@@ -34,7 +34,8 @@
     {
       "monotonic_ms": 200,
       "payload": {
-        "person_id": "prs_1"
+        "person_id": "prs_1",
+        "reason": "expired"
       },
       "type": "vision.identity_expired"
     },
@@ -79,7 +80,8 @@
     {
       "monotonic_ms": 400,
       "payload": {
-        "person_id": "prs_2"
+        "person_id": "prs_2",
+        "reason": "expired"
       },
       "type": "vision.identity_expired"
     },

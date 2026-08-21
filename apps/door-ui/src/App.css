@@ -3179,8 +3179,14 @@ input:focus-visible {
   /* Fill the panel rather than floating in it. Centring left ~300px of dead space
      above and below the grid on a 600px screen: on a 7" touchscreen that space should
      be touch target, not padding. The grid takes the remaining height and its rows
-     stretch, so the tiles get as large as the screen allows. */
-  .doorpad-view {
+     stretch, so the tiles get as large as the screen allows.
+
+     Scoped to the *home* screen. `.doorpad-view` is the shared wrapper for home and for
+     every sub-screen, so an unscoped flex-start also overrode the `safe center` the
+     2026-07-18 kiosk fix put there specifically so sub-screens "never clip off the top" —
+     which pinned the live preview to the top edge of the ringing screen with a 170 px void
+     underneath it. Caught by the e2e snapshot, a month after the baseline was last taken. */
+  .doorpad-view--home {
     justify-content: flex-start;
   }
 
@@ -3303,100 +3309,6 @@ input:focus-visible {
   }
 }
 
-/* --- Satellite sky dome (T-325) ---
-   A pass is a direction to look, not a place on the ground, so this is the conventional
-   az/el polar plot: horizon at the rim, zenith at the centre, north up. */
-.satellite-sky__body {
-  display: flex;
-  gap: 1.5rem;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-
-.sky-dome {
-  width: min(320px, 42vw);
-  height: auto;
-  flex: 0 0 auto;
-  overflow: visible;
-}
-
-.sky-dome__horizon,
-.sky-dome__ring {
-  fill: none;
-  stroke: rgba(140, 190, 255, 0.28);
-  stroke-width: 1;
-}
-
-.sky-dome__horizon {
-  fill: rgba(20, 40, 70, 0.35);
-  stroke: rgba(140, 190, 255, 0.5);
-  stroke-width: 1.5;
-}
-
-.sky-dome__ring {
-  stroke-dasharray: 3 5;
-}
-
-.sky-dome__compass {
-  fill: var(--db-text-secondary);
-  font-size: 13px;
-  font-weight: 700;
-  text-anchor: middle;
-  dominant-baseline: middle;
-  letter-spacing: 0.05em;
-}
-
-/* The whole arc, drawn faintly; the travelled part is overlaid brighter during a pass. */
-.sky-dome__arc {
-  fill: none;
-  stroke: rgba(140, 190, 255, 0.45);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-dasharray: 4 4;
-}
-
-.sky-dome__arc-done {
-  fill: none;
-  stroke: var(--db-accent, #6ea8ff);
-  stroke-width: 2.5;
-  stroke-linecap: round;
-}
-
-.sky-dome__endpoint {
-  fill: rgba(140, 190, 255, 0.85);
-}
-
-.sky-dome__endpoint--set {
-  fill: rgba(255, 150, 120, 0.85);
-}
-
-.sky-dome__marker-dot {
-  fill: #fff;
-}
-
-.sky-dome__marker-glow {
-  fill: var(--db-accent, #6ea8ff);
-  opacity: 0.28;
-  animation: sky-dome-pulse 2s ease-in-out infinite;
-}
-
-@keyframes sky-dome-pulse {
-  0%, 100% { opacity: 0.18; transform: scale(0.85); transform-origin: center; }
-  50% { opacity: 0.4; }
-}
-
-/* A 24/7 wallboard should respect this: the pulse is decoration, the position is not. */
-@media (prefers-reduced-motion: reduce) {
-  .sky-dome__marker-glow {
-    animation: none;
-  }
-}
-
-.satellite-sky__note {
-  margin-top: 0.5rem;
-  text-align: center;
-}
 
 /* ── Campus dining map: the recommended hall, placed ──────────────────────── */
 /*
@@ -3685,23 +3597,10 @@ input:focus-visible {
 .ambient-grid,
 .wallboard-focus-panel,
 .campus-map,
-.poll-focus__options--doorpad,
-.doorpad-sub-content {
-  scrollbar-width: none; /* Firefox */
-  -ms-overflow-style: none; /* old Edge */
-}
-
 .doorpad-view::-webkit-scrollbar,
 .ambient-grid::-webkit-scrollbar,
 .wallboard-focus-panel::-webkit-scrollbar,
 .campus-map::-webkit-scrollbar,
-.poll-focus__options--doorpad::-webkit-scrollbar,
-.doorpad-sub-content::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-  display: none;
-}
-
 /* The map is a fixed-aspect SVG; it should never have been able to scroll at all. */
 .campus-map,
 .campus-map__svg {
@@ -3823,4 +3722,104 @@ input:focus-visible {
 
 .about-tech-facts__item::marker {
   color: var(--db-accent);
+}
+
+/* ── Satellite globe: where it is, not just which way to look ─────────────── */
+/*
+ * Orthographic Earth centred on the door. Ocean disc, graticule, real Natural Earth
+ * coastline, the ground track, and a pinging marker at the sub-satellite point. Everything is
+ * culled at the limb in globe.ts — half the sphere is behind this circle.
+ */
+.satellite-globe {
+  display: grid;
+  gap: var(--db-spacing-md);
+  justify-items: center;
+}
+
+.satellite-globe__body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--db-spacing-lg);
+  align-items: center;
+  justify-content: center;
+}
+
+.globe {
+  width: min(340px, 42vw);
+  height: auto;
+  flex: 0 0 auto;
+}
+
+.globe__ocean {
+  fill: rgba(18, 46, 80, 0.55);
+  stroke: rgba(120, 200, 255, 0.45);
+  stroke-width: 1;
+}
+
+.globe__graticule {
+  fill: none;
+  stroke: rgba(140, 190, 255, 0.14);
+  stroke-width: 0.5px;
+  vector-effect: non-scaling-stroke;
+}
+
+.globe__coast {
+  fill: none;
+  stroke: rgba(150, 210, 255, 0.75);
+  stroke-width: 0.8px;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.globe__track {
+  fill: none;
+  stroke: var(--db-gold, #ffc454);
+  stroke-width: 1.6px;
+  stroke-dasharray: 5 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.globe__here-ring {
+  fill: none;
+  stroke: var(--db-text-primary);
+  stroke-width: 1;
+  opacity: 0.75;
+}
+
+.globe__here-dot {
+  fill: var(--db-text-primary);
+}
+
+.globe__sat-dot {
+  fill: #fff;
+}
+
+/* The ping the owner asked for: a pulse at the sub-satellite point. */
+.globe__sat-ping {
+  fill: var(--db-accent);
+  opacity: 0.3;
+  transform-origin: center;
+  animation: globe-ping 1.8s ease-out infinite;
+}
+
+@keyframes globe-ping {
+  0% { opacity: 0.45; transform: scale(0.45); }
+  70% { opacity: 0.06; transform: scale(1.25); }
+  100% { opacity: 0; transform: scale(1.35); }
+}
+
+.satellite-globe__credit,
+.satellite-globe__note {
+  margin: 0;
+  color: var(--db-text-secondary);
+  font-family: var(--db-font-mono);
+  font-size: 0.72rem;
+}
+
+/* Decoration, not information: the position is the point. */
+@media (prefers-reduced-motion: reduce) {
+  .globe__sat-ping {
+    animation: none;
+    opacity: 0.28;
+  }
 }

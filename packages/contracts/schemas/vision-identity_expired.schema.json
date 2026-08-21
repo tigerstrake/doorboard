@@ -14,6 +14,23 @@
         "person_id": {
           "title": "Person Id",
           "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "expired",
+                "admin",
+                "privacy_mode"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
         }
       },
       "required": [

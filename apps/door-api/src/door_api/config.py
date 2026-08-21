@@ -183,7 +183,19 @@ class SessionConfig:
     # Just over the daily food job's interval, so a normal cadence survives a reload but a
     # dead producer stops being quoted as current (ADR-0027).
     ambient_cache_max_age_s: float = 26 * 3600.0
-    recognised_identity_idle_ttl_s: float = 12.0
+    # Must stay >= door-visiond's greeting cooldown (VISIOND_GREETING_COOLDOWN_MS, 30 s).
+    #
+    # Measured on the door: while someone stands there continuously, vision.identity_stable
+    # arrives at exactly the cooldown floor — 20:21:36, 20:22:06, 20:22:36. At 12 s this
+    # holder therefore expired 18 seconds before the next announcement could arrive, so for
+    # 18 of every 30 seconds the door had forgotten a person standing in front of it, and
+    # nothing they could do brought the name back. That is the "I looked at the camera again
+    # and nothing happened" report.
+    #
+    # The cooldown exists so the door does not say "Hi Tiger" every two seconds (P-10). It
+    # was never meant to mean "door-api may forget you", but with no separate liveness signal
+    # it does, so this window has to cover it. See ADR-0028.
+    recognised_identity_idle_ttl_s: float = 33.0
     recognised_identity_interaction_ttl_s: float = 120.0
     # How often to notice that the window above has run out. Expiry is lazy, so without
     # this the kiosks keep showing a name the server has already stopped honouring until
@@ -309,7 +321,7 @@ class SessionConfig:
             sync_retry_max_s=_env_float("DOOR_API_SYNC_RETRY_MAX_S", 30.0),
             internal_event_token=os.environ.get("DOOR_API_INTERNAL_EVENT_TOKEN", ""),
             ambient_cache_max_age_s=_env_float("DOOR_API_AMBIENT_CACHE_MAX_AGE_S", 26 * 3600.0),
-            recognised_identity_idle_ttl_s=_env_float("DOOR_API_IDENTITY_IDLE_TTL_S", 12.0),
+            recognised_identity_idle_ttl_s=_env_float("DOOR_API_IDENTITY_IDLE_TTL_S", 33.0),
             recognised_identity_interaction_ttl_s=_env_float(
                 "DOOR_API_IDENTITY_INTERACTION_TTL_S", 120.0
             ),

@@ -383,10 +383,20 @@ class DoorApiState:
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "vision.identity_expired":
             payload = event.payload
-            # Deliberately does NOT drop the held identity (ADR-0020). This fires when
-            # door-visiond's 2.5 s cache lapses — i.e. a face left the frame, which
-            # happens constantly while someone stands at the doorpad looking down at it.
-            # Clearing here would reinstate the bug this holder exists to fix.
+            # Whether to drop the held identity depends on *why* it expired (ADR-0029).
+            #
+            # "expired" (or an older producer sending no reason at all) means door-visiond's
+            # 2.5 s cache lapsed — a face left the frame, which happens constantly while
+            # someone stands at the doorpad looking down at it. Clearing on that would
+            # reinstate the bug this holder exists to fix (ADR-0020).
+            #
+            # "admin" and "privacy_mode" are the opposite: the person was unenrolled or
+            # recognition was switched off. Their face data is already gone, and leaving
+            # their name on the screen until an unrelated timer lapses — up to 33 s idle, or
+            # two minutes mid-interaction — contradicts the deletion promise this door makes
+            # to visitors in as many words (ARCHITECTURE.md §9, ADR-0009).
+            if payload.reason in ("admin", "privacy_mode"):
+                self.identity.forget_person(payload.person_id)
             changed = self.machine.handle_identity_expired(person_id=payload.person_id)
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "vision.privacy_mode_changed":
@@ -401,6 +411,26 @@ class DoorApiState:
         elif event.type == "door.contact_changed":
             payload = event.payload
             changed = self.machine.handle_contact_changed(state=payload.state)
+        elif event.type == "media.storage_status":
+            # Pure pass-through, to two places. The session machine has no opinion about disk
+            # space, but two surfaces are waiting on this and neither could receive it:
+            #
+            #  - door-ui subscribes over /ws, and the capacity card read "Waiting for a
+            #    media.storage_status update" indefinitely.
+            #  - Home Assistant's "Doorboard Sync Status" entity reads
+            #    `doorboard/media/storage_status`, which control-plane-api only publishes for
+            #    events it has actually ingested — so the entity sat at unknown.
+            #
+            # The sync outbox is the route off the door (door-sync -> control plane -> MQTT
+            # fan-out), and it is durable and retrying, which suits telemetry that is dull but
+            # should not silently stop. Safe to leave the door: free bytes, queue depth, oldest
+            # unsynced age and a recording-allowed flag carry nothing personal, so none of
+            # ARCHITECTURE.md §9's constraints apply.
+            as_dict = event.model_dump(mode="json")
+            self.broadcast.send_delta(as_dict)
+            dropped = self.store.enqueue_sync_event(as_dict)
+            if dropped:
+                self.sync_forward_errors += dropped
         if changed or event.type.startswith("vision."):
             self.broadcast.update_snapshot(self.session_snapshot_dict())
         return changed
@@ -1008,6 +1038,20 @@ class WallboardFocusBody(BaseModel):
     channel: str
 
 
+# Non-``vision.*`` events this route also accepts, named one at a time.
+#
+# ``media.storage_status`` is here because door-media emits it every 30 s, door-ui *subscribes*
+# to it, and nothing carried it between the two: door-api forwards session events *to*
+# door-media and nothing comes back, so the capacity card sat on "Waiting for a
+# media.storage_status update; no capacity is being guessed." permanently. Same shape as the
+# greeting bug this route was created to fix.
+#
+# Listed rather than allowing ``media.*`` wholesale: the other media events assert that a
+# recording exists or was deleted, which is a claim about durable state. Read-only capacity
+# telemetry is not.
+_INTERNAL_EVENT_TYPES = frozenset({"media.storage_status"})
+
+
 # Focusable wallboard tiles — kept in lockstep with the ``WallboardFocusChannel``
 # ids in apps/door-ui/src/wallboardChannelModel.ts. ``"ambient"`` (return to the
 # default grid) is accepted by the endpoint but is not itself a focus channel.
@@ -1166,9 +1210,11 @@ async def internal_events(payload: dict[str, Any]) -> dict[str, Any]:
 
     Narrow on purpose:
 
-    - **``vision.*`` only.** The route can never be used to fake a button press, a
-      contact change, or a session transition — the door's own inputs stay on the
-      ESP32 link, which is the trust boundary that gives them meaning.
+    - **``vision.*``, plus the named exceptions in ``_INTERNAL_EVENT_TYPES``.** The route
+      can never be used to fake a button press, a contact change, or a session transition —
+      the door's own inputs stay on the ESP32 link, which is the trust boundary that gives
+      them meaning. Additions are listed one type at a time rather than by prefix, so
+      widening this is always a deliberate act.
     - **Token required, 503 when unset.** An open identity ingest would let anything
       that can reach door-api assert who is standing at the door, and identity is
       what personalisation reads. Loopback binding is not the control here: the
@@ -1182,7 +1228,7 @@ async def internal_events(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid event envelope"
         ) from exc
-    if not event.type.startswith("vision."):
+    if event.type not in _INTERNAL_EVENT_TYPES and not event.type.startswith("vision."):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"event type {event.type} is not accepted on this route",

@@ -114,11 +114,16 @@ def make_identity_stable(
 
 
 def make_identity_expired(
-    *, clock: Clock, door_id: str, trace_id: UUID, person_id: str
+    *,
+    clock: Clock,
+    door_id: str,
+    trace_id: UUID,
+    person_id: str,
+    reason: str | None = None,
 ) -> VisionIdentityExpiredEvent:
     return VisionIdentityExpiredEvent(
         type="vision.identity_expired",
-        payload=VisionIdentityExpiredPayload(person_id=person_id),
+        payload=VisionIdentityExpiredPayload(person_id=person_id, reason=reason),
         **_base_fields(clock, door_id, trace_id),
     )
 

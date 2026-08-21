@@ -14,6 +14,43 @@ from __future__ import annotations
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Values that are obviously the template's, not a real secret. `.env.example` ships
+# POSTGRES_PASSWORD=CHANGE_ME and six MQTT passwords the same way, and the door's own .env was
+# found with a *duplicate* POSTGRES_PASSWORD — a dead CHANGE_ME above the real secret, working
+# only because compose takes the last occurrence. Reorder those two lines and the stack would
+# have come up on a password that is written down in the public repo, silently.
+#
+# So: refuse to start instead. A service that will not boot is a bad afternoon; a service
+# quietly running on a known-published credential is a different category of problem.
+_PLACEHOLDER_SECRETS = frozenset(
+    {
+        "change_me",
+        "changeme",
+        "change-me",
+        "placeholder",
+        "secret",
+        "password",
+        "todo",
+        "xxx",
+    }
+)
+
+
+def _is_placeholder(value: str) -> bool:
+    return value.strip().strip("\"'").lower() in _PLACEHOLDER_SECRETS
+
+
+def _dsn_password(dsn: str) -> str:
+    """The password out of a URL-style DSN, or "" if there is not one.
+
+    Deliberately string-sliced rather than urlparse'd: a malformed DSN must not raise here.
+    Missing a placeholder is better than crashing on startup for an unrelated reason.
+    """
+    if "://" not in dsn or "@" not in dsn:
+        return ""
+    creds = dsn.split("://", 1)[1].rsplit("@", 1)[0]
+    return creds.split(":", 1)[1] if ":" in creds else ""
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -197,6 +234,27 @@ def get_settings() -> Settings:
     return Settings()
 
 
+def _check_no_placeholder_secrets(s: Settings) -> None:
+    """Refuse a deployment configured with the template's placeholder credentials."""
+    offenders: list[str] = []
+    dsn_password = _dsn_password(s.postgres_dsn)
+    if dsn_password and _is_placeholder(dsn_password):
+        offenders.append("POSTGRES_DSN (its password)")
+    if s.mqtt_password and _is_placeholder(s.mqtt_password):
+        offenders.append("MQTT_PASSWORD")
+    if s.admin_token and _is_placeholder(s.admin_token):
+        offenders.append("CONTROL_PLANE_ADMIN_TOKEN")
+    if s.door_api_admin_token and _is_placeholder(s.door_api_admin_token):
+        offenders.append("CONTROL_PLANE_DOOR_API_ADMIN_TOKEN")
+    if offenders:
+        msg = (
+            "refusing to start with placeholder credentials from .env.example: "
+            + ", ".join(offenders)
+            + ". Generate real values (e.g. `openssl rand -hex 32`)."
+        )
+        raise ValueError(msg)
+
+
 _settings: Settings | None = None
 
 
@@ -204,6 +262,7 @@ def settings() -> Settings:
     global _settings  # noqa: PLW0603
     if _settings is None:
         _settings = get_settings()
+        _check_no_placeholder_secrets(_settings)
     return _settings
 
 

@@ -291,3 +291,113 @@ def test_run_satellite_passes_coordinates_never_leaked(
     serialized_payload = json.dumps(body)
     assert str(lat) not in serialized_payload
     assert str(lon) not in serialized_payload
+
+
+def _ingested_payload(mock_post) -> dict:
+    """The payload from the ingest POST, whichever call that turned out to be.
+
+    Indexing `mock_calls[1]` assumes a token fetch happened first, which depends on whether an
+    admin token is configured — so it breaks depending on the ambient environment.
+    """
+    for call in mock_post.mock_calls:
+        body = call.kwargs.get("json")
+        if isinstance(body, dict) and body.get("events"):
+            return body["events"][0]["payload"]
+    raise AssertionError("no ingest POST was made")
+
+
+@patch("httpx.post")
+def test_the_job_forwards_the_pass_geometry_it_is_given(mock_post) -> None:
+    """The geometry must survive the job, not just exist in the provider.
+
+    This built the payload from five fields while the provider returned set_at, three azimuths
+    and a sampled track as well. So every event on the wire carried `track: []`: the sky dome
+    rendered its "high point only" fallback in production for as long as it existed, and the
+    globe had no trajectory to draw. The fixtures supply a track directly and never went
+    through this function, so nothing caught it.
+    """
+    settings = Settings()
+
+    rise = datetime(2026, 8, 18, 12, 0, 0, tzinfo=UTC)
+    provider = MagicMock()
+    provider.get_next_pass.return_value = {
+        "satellite": "ISS (ZARYA)",
+        "rise_at": rise,
+        "max_elevation_deg": 64.5,
+        "direction": "NW",
+        "visible": True,
+        "set_at": rise + timedelta(seconds=540),
+        "rise_azimuth_deg": 315.0,
+        "set_azimuth_deg": 135.0,
+        "culmination_azimuth_deg": 45.0,
+        "track": [
+            {
+                "t_offset_s": 0.0,
+                "azimuth_deg": 315.0,
+                "elevation_deg": 0.0,
+                "lat": 30.0,
+                "lng": -128.0,
+            },
+            {
+                "t_offset_s": 270.0,
+                "azimuth_deg": 45.0,
+                "elevation_deg": 64.5,
+                "lat": 37.6,
+                "lng": -122.0,
+            },
+            {
+                "t_offset_s": 540.0,
+                "azimuth_deg": 135.0,
+                "elevation_deg": 0.0,
+                "lat": 45.0,
+                "lng": -114.0,
+            },
+        ],
+    }
+
+    token_resp, ingest_resp = MagicMock(), MagicMock()
+    token_resp.status_code = 200
+    token_resp.json.return_value = {"token": "tok"}
+    ingest_resp.status_code = 200
+    ingest_resp.json.return_value = {"status": "stored"}
+    mock_post.side_effect = [token_resp, ingest_resp]
+
+    assert run_satellite_passes(settings, provider, now=rise) is not None
+
+    payload = _ingested_payload(mock_post)
+    assert payload["set_at"] is not None, "the pass had no end on the wire"
+    assert payload["rise_azimuth_deg"] == 315.0
+    assert payload["culmination_azimuth_deg"] == 45.0
+    assert payload["set_azimuth_deg"] == 135.0
+    assert len(payload["track"]) == 3, "the trajectory was dropped"
+    # And the sub-satellite points the globe plots (ADR-0030).
+    assert payload["track"][1]["lat"] == 37.6
+    assert payload["track"][1]["lng"] == -122.0
+
+
+@patch("httpx.post")
+def test_a_provider_without_geometry_still_produces_a_valid_event(mock_post) -> None:
+    # The mock provider, and any pass found by a path that only knows its culmination, omit
+    # these keys entirely. That must stay a payload without geometry, not a KeyError.
+    settings = Settings()
+    rise = datetime(2026, 8, 18, 12, 0, 0, tzinfo=UTC)
+    provider = MagicMock()
+    provider.get_next_pass.return_value = {
+        "satellite": "ISS",
+        "rise_at": rise,
+        "max_elevation_deg": 40.0,
+        "direction": "S",
+        "visible": True,
+    }
+
+    token_resp, ingest_resp = MagicMock(), MagicMock()
+    token_resp.status_code = 200
+    token_resp.json.return_value = {"token": "tok"}
+    ingest_resp.status_code = 200
+    ingest_resp.json.return_value = {"status": "stored"}
+    mock_post.side_effect = [token_resp, ingest_resp]
+
+    assert run_satellite_passes(settings, provider, now=rise) is not None
+    payload = _ingested_payload(mock_post)
+    assert payload["set_at"] is None
+    assert payload["track"] == []

@@ -129,3 +129,96 @@ def test_every_worker_setting_reaches_the_container() -> None:
         "wallboard-worker reads these, and the compose stack never passes them — so setting "
         "them in .env does nothing:\n  " + "\n  ".join(missing)
     )
+
+
+def test_the_worker_starts_with_every_compose_default_applied() -> None:
+    """Reachable is not the same as loadable.
+
+    The previous test only proved each setting *arrives*. Wiring 20 of them through then
+    crash-looped the worker on startup: `BIRDNET_SPECIES_FILTER` and `SATELLITES_WATCHLIST` are
+    `list[str]`, pydantic-settings JSON-decodes complex types at the source *before* any
+    validator runs, and the compose default is an empty string — which is not valid JSON.
+
+    So this constructs Settings() with exactly the environment compose produces, defaults and
+    all. An unloadable default is a crash loop, and a crash loop is worse than a wrong value.
+    """
+    import re as _re
+    import subprocess
+    import sys
+
+    compose = (REPO_ROOT / "infra/compose/docker-compose.yml").read_text()
+    env: dict[str, str] = {}
+    # KEY: ${VAR:-default} — take the default, i.e. an operator who set nothing at all.
+    for key, _var, default in _re.findall(
+        r"^\s{6}([A-Z0-9_]+):\s*\$\{([A-Z0-9_]+):-([^}]*)\}", compose, _re.M
+    ):
+        env[key] = default
+    assert len(env) > 30, "no compose defaults found — has the file layout changed?"
+
+    # A token is required when any job is enabled; supply one so this tests the *parsing*.
+    env.setdefault("WALLBOARD_WORKER_INGEST_TOKEN", "tok_for_settings_parse")
+
+    script = (
+        "from wallboard_worker.settings import Settings; "
+        "s = Settings(); "
+        "print(s.satellites_watchlist, s.birdnet_species_filter)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", **env},
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, (
+        "wallboard-worker cannot load the settings the compose stack gives it:\n"
+        + result.stderr[-1500:]
+    )
+
+
+def test_every_compose_default_matches_the_setting_it_stands_in_for() -> None:
+    """A compose default must mean what the code's default means.
+
+    T-331 wired 22 settings through by generating the compose block from the Settings module —
+    and the extractor's regex quietly failed on any default that was not a simple scalar. So
+    `WALLBOARD_WORKER_HEARTBEAT_PATH` shipped as an empty string instead of
+    `/tmp/wallboard-worker-heartbeat`, `Path("")` resolved to `.`, and the heartbeat write hit
+    `IsADirectoryError` on every tick — an unhealthy container, minutes after deploy.
+
+    Two settings are exempt: their validators treat an empty string as "use the default"
+    deliberately, so a human can leave the line blank in .env.
+    """
+    import re as _re
+
+    from wallboard_worker.settings import Settings
+
+    # `list[str]` fields whose validators map "" to the documented default on purpose.
+    EMPTY_MEANS_DEFAULT = {"BIRDNET_SPECIES_FILTER", "SATELLITES_WATCHLIST"}
+
+    compose = (REPO_ROOT / "infra/compose/docker-compose.yml").read_text()
+    alias_to_field = {f.alias: name for name, f in Settings.model_fields.items() if f.alias}
+
+    mismatched: list[str] = []
+    for _key, var, composed in _re.findall(
+        r"^\s{6}([A-Z0-9_]+):\s*\$\{([A-Z0-9_]+):-([^}]*)\}", compose, _re.M
+    ):
+        name = alias_to_field.get(var)
+        if name is None or var in EMPTY_MEANS_DEFAULT:
+            continue
+        field = Settings.model_fields[name]
+        if field.default_factory is not None:
+            real = str(field.default_factory())  # type: ignore[call-arg]
+        elif repr(field.default) != "PydanticUndefined":
+            real = str(field.default)
+        else:
+            continue
+        if composed.strip().lower() == real.strip().lower():
+            continue
+        try:
+            if float(composed) == float(real):
+                continue
+        except ValueError:
+            pass
+        mismatched.append(f"  {var}: compose says {composed!r}, the code says {real!r}")
+
+    assert not mismatched, "compose defaults disagree with the code's:\n" + "\n".join(mismatched)

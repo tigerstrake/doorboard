@@ -21,21 +21,37 @@ describe("shouldGreetOnApproach", () => {
     expect(shouldGreetOnApproach("IDENTITY_CACHED", "Tiger")).toBe(true);
   });
 
+  it("keeps greeting at IDLE while the door still knows who is there", () => {
+    // The reported bug: "it said hi tiger and immediately logged out again".
+    //
+    // door-visiond's identity cache is 2.5 s, so the moment someone looks down at the panel
+    // they are standing at, their face leaves the frame and the session drops to IDLE — while
+    // door-api goes on holding the name for another 33 s (ADR-0020, ADR-0028). Gating the
+    // greeting on the *session* made it last two and a half seconds; gating it on the name
+    // makes it last as long as the door actually knows you.
+    expect(shouldGreetOnApproach("IDLE", "Tiger")).toBe(true);
+    // And still nothing when the name has genuinely gone.
+    expect(shouldGreetOnApproach("IDLE", null)).toBe(false);
+  });
+
   it("stays silent when nobody is recognised", () => {
     expect(shouldGreetOnApproach("APPROACH_DETECTED", null)).toBe(false);
     expect(shouldGreetOnApproach("IDENTITY_CACHED", "")).toBe(false);
   });
 
-  it("stays silent at idle and once a session is under way", () => {
+  it("stays silent once a session is under way", () => {
     // A ring hands over to the visitor-mode takeover, which greets on its own —
-    // two greetings at once would be a bug.
+    // two greetings at once would be a bug. A finished visit is not a greeting either.
     const notApproach: SessionState[] = [
-      "IDLE",
       "BUTTON_PRESSED",
       "VISITOR_MODE",
       "RINGING",
       "ANSWERED",
       "UNANSWERED_TIMEOUT",
+      "VIDEO_MESSAGE_OFFERED",
+      "VIDEO_MESSAGE_RECORDING",
+      "VIDEO_MESSAGE_REVIEW",
+      "VIDEO_MESSAGE_SAVED",
       "SESSION_END",
     ];
     for (const state of notApproach) {

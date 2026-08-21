@@ -100,13 +100,20 @@ const SATELLITE_PASS_DURATION_S = 540; // ~9 minutes, typical for a high ISS pas
 const SATELLITE_MAX_ELEVATION_DEG = 64.5;
 
 /**
- * A sampled arc for the mock pass: NW horizon → 64.5° near NE → SE horizon.
+ * A sampled pass for the mock: where to look, and where the satellite actually is.
  *
- * The sky panel draws whatever track it is given and honestly says "high point only" when
- * given none — so a fixture without one leaves mock mode unable to show the panel's whole
- * point. Elevation follows a sine and azimuth sweeps the 180° from rise to set, which is
- * the shape of a real overhead pass rather than an arbitrary squiggle.
+ * Both halves matter, and each has been missing once. Elevation follows a sine and azimuth
+ * sweeps the 180° from rise to set — the shape of a real overhead pass. The sub-satellite
+ * points (ADR-0030) are what the globe plots; without them it renders its honest "this pass
+ * carries no ground track" fallback, so mock mode would show the panel's degraded state
+ * instead of the panel.
+ *
+ * The ground path runs SW to NE and passes near campus at the culmination, so "closest to
+ * here" reads as a small number the way a real overhead pass does.
  */
+const GROUND_START = { lat: 22.0, lng: -142.0 };
+const GROUND_END = { lat: 52.8, lng: -102.3 };
+
 const satelliteTrack = Array.from({ length: 19 }, (_, index) => {
   const fraction = index / 18;
   return {
@@ -114,6 +121,8 @@ const satelliteTrack = Array.from({ length: 19 }, (_, index) => {
     // 315° → 495°, i.e. NW up over NE (45°) and down to SE (135°).
     azimuth_deg: Number(((315 + fraction * 180) % 360).toFixed(1)),
     elevation_deg: Number((Math.sin(Math.PI * fraction) * SATELLITE_MAX_ELEVATION_DEG).toFixed(1)),
+    lat: Number((GROUND_START.lat + (GROUND_END.lat - GROUND_START.lat) * fraction).toFixed(3)),
+    lng: Number((GROUND_START.lng + (GROUND_END.lng - GROUND_START.lng) * fraction).toFixed(3)),
   };
 });
 

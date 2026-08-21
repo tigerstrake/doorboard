@@ -287,15 +287,28 @@ interface AmbientAlert {
   priority: number;
 }
 
-function doorPadRouteForState(state: SessionState): { screen: DoorPadScreen; video: VideoStep } {
-  if (state === "IDLE" || state === "SESSION_END") return { screen: "home", video: "offer" };
+export function doorPadRouteForState(
+  state: SessionState
+): { screen: DoorPadScreen | null; video: VideoStep } {
+  // `null` screen means "this transition implies nothing about where the visitor should be".
+  //
+  // IDLE used to route home, and IDLE arrives constantly: door-visiond's identity cache is
+  // 2.5 s, so looking down at the panel drops the session out of APPROACH_DETECTED almost
+  // immediately. Anyone who had tapped into Visitor Check-In, the guestbook or a poll was
+  // yanked back to the home screen mid-task — "it said hi tiger and immediately logged out
+  // again without giving me a chance to send a visitor check in".
+  //
+  // Going home when a visit genuinely finishes is still right, and SESSION_END still says so.
+  // A session merely lapsing to IDLE does not.
+  if (state === "SESSION_END") return { screen: "home", video: "offer" };
+  if (state === "IDLE") return { screen: null, video: "offer" };
   // Recognition alone must not move the visitor off the home screen. These two states are
   // reached by walking up, with nothing pressed, and they fell through to the "ringing"
   // screen — so being recognised showed a bell-ringing UI to somebody who had not rung.
   // ARCHITECTURE.md §5.4: late recognition may update the display, never re-trigger the
   // interaction. The greeting overlay and the identity badge carry the recognition.
   if (state === "APPROACH_DETECTED" || state === "IDENTITY_CACHED") {
-    return { screen: "home", video: "offer" };
+    return { screen: null, video: "offer" };
   }
   if (state === "VIDEO_MESSAGE_OFFERED") return { screen: "message", video: "offer" };
   if (state === "VIDEO_MESSAGE_RECORDING") return { screen: "message", video: "recording" };
@@ -698,7 +711,9 @@ export function App() {
       if (snapshot?.profile_id !== undefined) setActiveProfile(snapshot.profile_id);
       if (snapshot?.accent_color !== undefined) setActiveAccent(snapshot.accent_color);
       const target = doorPadRouteForState(nextState);
-      setDoorPadScreen(target.screen);
+      // Only navigate when the new state actually implies a screen. Recognition and a lapsed
+      // session must never cancel whatever the visitor opened themselves.
+      if (target.screen !== null) setDoorPadScreen(target.screen);
       setVideoStep(target.video);
       if (nextState === "IDLE") {
         // Only forget the person if the server has also forgotten them. door-api now
@@ -2485,7 +2500,7 @@ export function App() {
     if (doorPadScreen === "home") {
       return (
         <div
-          className="doorpad-view db-app-theme doorpad-enter doorpad-enter--back"
+          className="doorpad-view doorpad-view--home db-app-theme doorpad-enter doorpad-enter--back"
           ref={doorPadFocusRef}
           tabIndex={-1}
           aria-label="DoorPad home"

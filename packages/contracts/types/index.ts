@@ -77,6 +77,7 @@ export interface VisionIdentityStablePayload {
 
 export interface VisionIdentityExpiredPayload {
   person_id: string;
+  reason?: "expired" | "admin" | "privacy_mode" | null;
 }
 
 export interface VisionPrivacyModeChangedPayload {
@@ -219,6 +220,8 @@ export interface SatelliteTrackSample {
   t_offset_s: number;
   azimuth_deg: number;
   elevation_deg: number;
+  lat?: number | null;
+  lng?: number | null;
 }
 
 export interface AmbientSatellitePassPayload {

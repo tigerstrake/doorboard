@@ -249,6 +249,20 @@ class VisionIdentityStablePayload(StrictModel):
 
 class VisionIdentityExpiredPayload(StrictModel):
     person_id: str
+    # Why the identity went away (ADR-0029). door-visiond has always known this and dropped
+    # it here, which left the consumer unable to tell two very different facts apart:
+    #
+    #   "expired"      — the 2.5 s cache lapsed because the face left frame. Routine: it
+    #                    happens constantly while someone stands at the doorpad looking down
+    #                    at it, and ADR-0020 requires the held name to survive it.
+    #   "admin"        — the person was unenrolled. Their face data is gone and their name
+    #                    must come off the screen now, not when a timer happens to lapse.
+    #   "privacy_mode" — recognition was switched off (ADR-0009 §4).
+    #
+    # Optional, so an older producer still validates; a consumer that sees None must assume
+    # the routine case, which is the safe default — it keeps the name up rather than
+    # flickering it off, and the deletion paths below are the ones that explicitly clear.
+    reason: Literal["expired", "admin", "privacy_mode"] | None = None
 
 
 class VisionPrivacyModeChangedPayload(StrictModel):
@@ -410,11 +424,23 @@ class AmbientBirdSummaryPayload(StrictModel):
 
 
 class SatelliteTrackSample(StrictModel):
-    """One point on a pass's sky track: seconds after rise, azimuth, elevation."""
+    """One point on a pass: seconds after rise, where to look, and where it is (ADR-0030).
+
+    ``azimuth_deg``/``elevation_deg`` answer "where do I look from here" and drive the sky
+    dome. ``lat``/``lng`` are the sub-satellite point — the spot on Earth it is directly
+    over — which is what a globe needs and what the az/el pair cannot be converted into
+    without the orbit. The provider computes both from the same moment, so they cannot
+    disagree about where the satellite was.
+
+    The ground position is optional: a producer from before this existed omits it, and the
+    globe then has nothing to plot and says so rather than guessing a position from a bearing.
+    """
 
     t_offset_s: float
     azimuth_deg: float
     elevation_deg: float
+    lat: float | None = None
+    lng: float | None = None
 
 
 class AmbientSatellitePassPayload(StrictModel):

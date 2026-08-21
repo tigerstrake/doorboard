@@ -12,18 +12,26 @@
 
 default_config:
 
-# MQTT broker connection. `!env_var` (supported by HA's YAML loader) reads
-# straight from the container's environment — set by compose from `.env` —
-# so no second secrets file needs to stay in sync with `.env` by hand.
-# Discovery is automatic once this integration is up; the retained
-# discovery config messages themselves are published once by the
-# `ha-discovery-publisher` one-shot container
-# (integrations/home-assistant/discovery/).
-mqtt:
-  broker: mosquitto
-  port: 1883
-  username: !env_var MQTT_HA_USERNAME
-  password: !env_var MQTT_HA_PASSWORD
+# MQTT broker connection is NOT configured here.
+#
+# It used to be, and it could never have worked: Home Assistant removed YAML
+# configuration of the MQTT broker in favour of a UI config flow, so the
+# `mqtt: broker/port/username/password` block that used to sit here was rejected
+# outright — "'broker' is an invalid option for 'mqtt'" — and MQTT setup failed, taking
+# all four doorboard entities with it. The block was hand-checked against HA's schema
+# when it was written and never run against a real HA until 2026-08-20.
+#
+# Set it up once via Settings -> Devices & Services -> Add Integration -> MQTT:
+#   host      mosquitto        (the compose service name; HA is on the same network)
+#   port      1883
+#   username  home-assistant
+#   password  MQTT_HA_PASSWORD from the NUC's .env
+#
+# HA stores that in its own `.storage/`, which lives in the `ha_data` volume and
+# survives restarts and image updates — so this is genuinely once, not once per deploy.
+#
+# Discovery needs no flag: `ha-discovery-publisher` writes the four config messages
+# retained, so HA picks them up whenever the integration connects, in either order.
 
 rest_command: !include rest_commands.yaml
 automation: !include automations.yaml

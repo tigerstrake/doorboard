@@ -31,6 +31,11 @@ class AircraftConfig(BaseModel):
     opensky_url: str = "https://opensky-network.org/api/states/all"
     opensky_token_url: str = OPENSKY_TOKEN_URL
     poll_cooldown_seconds: int = 30
+    # adsb.fi's open feed: no key, point-and-radius instead of a bounding box. Used when
+    # OpenSky has no credentials, because anonymous OpenSky cannot sustain any useful cadence.
+    adsbfi_url: str = "https://opendata.adsb.fi/api/v2"
+    radius_nm: int = 50
+    request_timeout_s: float = 10.0
 
 
 class AircraftDataUnavailable(RuntimeError):
@@ -271,3 +276,126 @@ class MockAircraftProvider(AircraftProvider):
                 "heading": 95,
             },
         ]
+
+
+# Below this, an aircraft is taxiing or parked rather than overhead. Nothing meaningfully
+# "nearby and in the sky" is under a couple of hundred feet.
+GROUND_ALTITUDE_GATE_FT = 200.0
+
+
+class AdsbFiAircraftProvider(AircraftProvider):
+    """Nearby aircraft from adsb.fi's open ADS-B feed.
+
+    Exists because OpenSky's anonymous tier cannot do this job. Without registered
+    credentials it allows a few hundred requests per IP per day, and on the owner's door it
+    answered HTTP 429 to *every* poll, with the API itself reporting
+    ``x-rate-limit-retry-after-seconds: 16841`` — nearly five hours. A wallboard that says
+    nothing about the sky over a Bay Area holding hundreds of aircraft is not a rate-limit
+    problem the operator can tune their way out of; it needs a source that will answer.
+
+    adsb.fi needs no key, takes a point and a radius rather than a bounding box, and returns
+    *more* than OpenSky does: registration and type arrive inline, which the enrichment step
+    otherwise fetches from two more services.
+
+    OpenSky remains the better source when credentials exist — it is global and
+    community-run rather than dependent on one aggregator's goodwill — so the scheduler
+    prefers it whenever a client id is configured. This is the fallback that makes an
+    unconfigured door work.
+    """
+
+    def __init__(self, config: AircraftConfig) -> None:
+        self.config = config
+        self._cached_aircraft: list[dict[str, Any]] = []
+        self._last_request_time: datetime | None = None
+        self._last_successful_time: datetime | None = None
+
+    @property
+    def last_successful_time(self) -> datetime | None:
+        return self._last_successful_time
+
+    def get_nearby_aircraft(self, now: datetime) -> list[dict[str, Any]]:
+        if self._last_request_time is not None:
+            elapsed = (now - self._last_request_time).total_seconds()
+            if elapsed < self.config.poll_cooldown_seconds:
+                logger.debug("Within cooldown period. Serving cached aircraft data.")
+                return self._serve_cache("cooldown")
+
+        url = (
+            f"{self.config.adsbfi_url.rstrip('/')}"
+            f"/lat/{self.config.observer_lat}/lon/{self.config.observer_lon}"
+            f"/dist/{self.config.radius_nm}"
+        )
+        self._last_request_time = now
+        try:
+            resp = httpx.get(url, timeout=self.config.request_timeout_s)
+            if resp.status_code != 200:
+                logger.warning(
+                    f"adsb.fi returned HTTP {resp.status_code}. Serving cached aircraft data."
+                )
+                return self._serve_cache(f"HTTP {resp.status_code}")
+
+            nearby: list[dict[str, Any]] = []
+            for entry in resp.json().get("aircraft", []):
+                mapped = self._map_aircraft(entry)
+                if mapped is not None:
+                    nearby.append(mapped)
+            nearby.sort(key=lambda item: item["distance_km"])
+            self._cached_aircraft = nearby
+            self._last_successful_time = now
+            return nearby
+        except Exception as exc:
+            logger.warning(f"Error fetching from adsb.fi: {exc}. Serving cached aircraft data.")
+            return self._serve_cache("fetch failed")
+
+    def _map_aircraft(self, entry: dict[str, Any]) -> dict[str, Any] | None:
+        """Map one adsb.fi record onto the shape the summary job expects.
+
+        Returns None for anything that cannot be placed or is sitting on the ground: a
+        wallboard tile called "overhead aircraft" that leads with parked jets at the nearest
+        airport is answering a different question than the one asked.
+        """
+        lat, lon = entry.get("lat"), entry.get("lon")
+        if lat is None or lon is None:
+            return None
+        altitude = entry.get("alt_baro")
+        if altitude == "ground" or altitude is None:
+            return None
+        # Some feeds report a *numeric* barometric altitude for an aircraft that is on the
+        # ground — near sea level it can even read negative. Seen live: an Asiana 747 at
+        # "-75 ft", 28 km away, sitting at SFO and listed among the overhead aircraft. The
+        # string check above does not catch those, so anything below the gate is on the
+        # ground as far as this tile is concerned.
+        if float(altitude) < GROUND_ALTITUDE_GATE_FT:
+            return None
+
+        callsign = (entry.get("flight") or "").strip()
+        ground_speed_kt = entry.get("gs")
+        return {
+            "callsign": callsign or (entry.get("hex") or "unknown"),
+            "altitude_ft": int(altitude),
+            "distance_km": round(
+                haversine_distance(self.config.observer_lat, self.config.observer_lon, lat, lon), 2
+            ),
+            "heading": int(entry.get("track") or 0),
+            "icao24": entry.get("hex"),
+            "latitude": lat,
+            "longitude": lon,
+            # adsb.fi reports knots; the contract is km/h, and it is an *int* — a float here
+            # raised int_from_float and took the whole summary job down with it.
+            "ground_speed_kmh": (
+                round(float(ground_speed_kt) * 1.852) if ground_speed_kt is not None else None
+            ),
+            "vertical_rate_fpm": entry.get("baro_rate"),
+            "on_ground": False,
+            # Inline, where OpenSky needs two more services to supply them.
+            "registration": entry.get("r"),
+            "aircraft_type": entry.get("t"),
+        }
+
+    def _serve_cache(self, why: str) -> list[dict[str, Any]]:
+        """The cache, or an explicit "unknown" if nothing has ever been fetched."""
+        if self._last_successful_time is None:
+            raise AircraftDataUnavailable(
+                f"no aircraft data has been retrieved successfully yet ({why})"
+            )
+        return self._cached_aircraft
