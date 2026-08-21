@@ -48,9 +48,16 @@ def _sha(path: Path) -> str:
 def _make_video(path: Path) -> Path:
     subprocess.run(
         [
-            "ffmpeg", "-nostdin", "-y",
-            "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=10",
-            "-pix_fmt", "yuv420p", str(path),
+            "ffmpeg",
+            "-nostdin",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=64x64:rate=10",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
         ],
         capture_output=True,
         check=True,
@@ -78,7 +85,12 @@ def env(tmp_path: Path):
 
     rows = [
         ("rec-good", "recordings/bell_clip_good.mp4", "f" * 64, "local checksum mismatch"),
-        ("rec-matching", "recordings/bell_clip_matching.mp4", _sha(matching), "local checksum mismatch"),
+        (
+            "rec-matching",
+            "recordings/bell_clip_matching.mp4",
+            _sha(matching),
+            "local checksum mismatch",
+        ),
         ("rec-corrupt", "recordings/bell_clip_corrupt.mp4", "a" * 64, "local checksum mismatch"),
         ("rec-gone", "recordings/bell_clip_gone.mp4", "b" * 64, "local media missing"),
     ]
@@ -93,7 +105,8 @@ def env(tmp_path: Path):
         media.execute(
             """INSERT INTO recordings(recording_id, session_id, kind, stream, started_at_utc,
                                       started_mono_ms, path, sha256, sync_status)
-               VALUES(?, 'sess', 'bell_clip', 'visitor', '2026-07-20T15:11:03+00:00', 1, ?, ?, 'pending')""",
+               VALUES(?, 'sess', 'bell_clip', 'visitor', '2026-07-20T15:11:03+00:00',
+                      1, ?, ?, 'pending')""",
             (item_id, rel, expected),
         )
     sync.commit()
@@ -106,10 +119,14 @@ def env(tmp_path: Path):
 def _run(env, *extra) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
-            sys.executable, str(TOOL),
-            "--ssd-root", str(env["ssd"]),
-            "--sync-db", str(env["sync_db"]),
-            "--media-db", str(env["media_db"]),
+            sys.executable,
+            str(TOOL),
+            "--ssd-root",
+            str(env["ssd"]),
+            "--sync-db",
+            str(env["sync_db"]),
+            "--media-db",
+            str(env["media_db"]),
             *extra,
         ],
         capture_output=True,
@@ -121,7 +138,9 @@ def _run(env, *extra) -> subprocess.CompletedProcess:
 def _status(db: Path, item_id: str) -> str:
     conn = sqlite3.connect(db)
     try:
-        return conn.execute("SELECT status FROM queue_item WHERE item_id=?", (item_id,)).fetchone()[0]
+        return conn.execute("SELECT status FROM queue_item WHERE item_id=?", (item_id,)).fetchone()[
+            0
+        ]
     finally:
         conn.close()
 
@@ -151,7 +170,8 @@ def test_apply_requeues_only_the_recoverable_clip(env):
     # Recovered: re-queued with the TRUE on-disk hash, retry state cleared.
     conn = sqlite3.connect(env["sync_db"])
     row = conn.execute(
-        "SELECT status, expected_sha256, attempts, last_error FROM queue_item WHERE item_id='rec-good'"
+        """SELECT status, expected_sha256, attempts, last_error
+           FROM queue_item WHERE item_id='rec-good'"""
     ).fetchone()
     conn.close()
     true_sha = _sha(env["good"])
@@ -179,9 +199,12 @@ def test_both_databases_are_updated_so_mark_synced_can_apply(env):
 
     conn = sqlite3.connect(env["media_db"])
     try:
-        assert conn.execute(
-            "SELECT sha256 FROM recordings WHERE recording_id='rec-good'"
-        ).fetchone()[0] == true_sha
+        assert (
+            conn.execute("SELECT sha256 FROM recordings WHERE recording_id='rec-good'").fetchone()[
+                0
+            ]
+            == true_sha
+        )
 
         applied = conn.execute(
             """UPDATE recordings SET sync_status='synced', synced_sha256=?
