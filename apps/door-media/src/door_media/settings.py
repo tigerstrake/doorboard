@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from doorboard_config import KindRetentionPolicy, RetentionConfig
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -163,7 +163,15 @@ class Settings(BaseSettings):
     recognition_framerate: int = Field(
         default=10, alias="DOOR_MEDIA_RECOGNITION_FRAMERATE", ge=1, le=30
     )
-    recognition_rotation: int = Field(default=0, alias="DOOR_MEDIA_RECOGNITION_ROTATION")
+    # Defaults to `None`, meaning "same as DOOR_MEDIA_VIDEO_ROTATION" — resolved in
+    # _inherit_video_rotation below. Both sensors sit in ONE enclosure, so an inverted
+    # mount inverts both; having these default independently is how the door ended up
+    # de-rotating its video while still feeding the recogniser upside-down faces. That
+    # looks exactly like "recognition is broken": on 2026-08-21 the door had detected 537
+    # faces and identified 2, with VIDEO_ROTATION=180 and this left at 0.
+    #
+    # Set it explicitly only if the two modules really are mounted differently.
+    recognition_rotation: int | None = Field(default=None, alias="DOOR_MEDIA_RECOGNITION_ROTATION")
     recognition_hflip: bool = Field(default=False, alias="DOOR_MEDIA_RECOGNITION_HFLIP")
     recognition_vflip: bool = Field(default=False, alias="DOOR_MEDIA_RECOGNITION_VFLIP")
     # Its own tuning file: the two sensors are different variants (imx708_noir vs
@@ -182,11 +190,18 @@ class Settings(BaseSettings):
 
     @field_validator("recognition_rotation")
     @classmethod
-    def _validate_recognition_rotation(cls, v: int) -> int:
-        if v not in {0, 180}:
+    def _validate_recognition_rotation(cls, v: int | None) -> int | None:
+        if v is not None and v not in {0, 180}:
             msg = f"DOOR_MEDIA_RECOGNITION_ROTATION must be 0 or 180, got {v}"
             raise ValueError(msg)
         return v
+
+    @model_validator(mode="after")
+    def _inherit_video_rotation(self) -> Settings:
+        """An unset recognition rotation follows the video camera's."""
+        if self.recognition_rotation is None:
+            object.__setattr__(self, "recognition_rotation", self.video_rotation)
+        return self
 
     @field_validator("video_rotation")
     @classmethod

@@ -911,3 +911,45 @@ def test_an_impossible_rotation_fails_at_startup(tmp_path: Path) -> None:
             MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
             DOOR_MEDIA_VIDEO_ROTATION=90,
         )
+
+
+def test_recognition_rotation_follows_the_video_camera_by_default(tmp_path: Path) -> None:
+    """One enclosure, one orientation.
+
+    The door had DOOR_MEDIA_VIDEO_ROTATION=180 and DOOR_MEDIA_RECOGNITION_ROTATION unset,
+    so it de-rotated its video while still feeding the recogniser upside-down faces.
+    ArcFace is not rotation invariant, so that reads as "recognition is broken": on
+    2026-08-21 the door had detected 537 faces and identified 2.
+    """
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_VIDEO_ROTATION=180,
+        RECOGNITION_CAM_INDEX=0,
+    )
+
+    assert cfg.recognition_rotation == 180
+
+
+def test_an_upright_video_camera_leaves_recognition_upright(tmp_path: Path) -> None:
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        RECOGNITION_CAM_INDEX=0,
+    )
+
+    assert cfg.recognition_rotation == 0
+
+
+def test_recognition_rotation_can_still_be_set_independently(tmp_path: Path) -> None:
+    """The two modules are separately mounted, so an override has to remain possible."""
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_VIDEO_ROTATION=180,
+        DOOR_MEDIA_RECOGNITION_ROTATION=0,
+        RECOGNITION_CAM_INDEX=0,
+    )
+
+    assert cfg.video_rotation == 180
+    assert cfg.recognition_rotation == 0
