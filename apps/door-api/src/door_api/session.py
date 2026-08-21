@@ -206,10 +206,20 @@ class SessionMachine:
     _timer: _TimerState = field(default_factory=_TimerState, init=False)
     _monotonic_ms_fn: Callable[[], int] = field(init=False)
     _boot_id_fn: Callable[[], str] = field(init=False)
+    # Notified on every recognised identity, so the interaction-scoped holder cannot
+    # fall out of step with the machine (ADR-0020). Optional: the machine is useful
+    # on its own and the simulator constructs it without one.
+    _on_identity: Callable[[str, str, str | None, str | None], None] | None = field(
+        default=None, init=False
+    )
 
     def __post_init__(self) -> None:
         self._monotonic_ms_fn = lambda: int(time.monotonic() * 1000)
         self._boot_id_fn = _system_boot_id
+
+    def set_identity_observer(self, fn: Callable[[str, str, str | None, str | None], None]) -> None:
+        """Register the holder notified of each recognised identity."""
+        self._on_identity = fn
 
     # ---------------------------------------------------------------------------
     # Lifecycle
@@ -404,6 +414,28 @@ class SessionMachine:
         self._last_transition_mono_ms = now_ms
         self.metrics.transitions += 1
 
+        # Every accepted transition, with what caused it.
+        #
+        # Only *rejected* transitions were logged before, which made a live door
+        # undiagnosable: a visitor session was observed ending 31s after a ring
+        # without passing through UNANSWERED_TIMEOUT, and the journal could not say
+        # which trigger did it — the scheduler and the contracts table both allow
+        # the message path, so the answer was only ever going to be in a log line
+        # that did not exist.
+        #
+        # Uses extra= rather than this module's json.dumps-into-the-message style so
+        # the fields arrive as real fields (JsonLogFormatter emits extras), which is
+        # what makes `trigger` filterable instead of buried in an escaped string.
+        logger.info(
+            "session_transition",
+            extra={
+                "from_state": from_state.value,
+                "to_state": to_state.value,
+                "trigger": trigger,
+                "session_id": str(self._session_id),
+            },
+        )
+
         # Emit session.state_changed event.
         assert self._session_id is not None
         assert self._trace_id is not None
@@ -585,6 +617,13 @@ class SessionMachine:
         consent_version: str | None = None,
     ) -> bool:
         """Handle a ``vision.identity_stable`` event."""
+        # Tell whoever holds the interaction-scoped identity (ADR-0020) before doing
+        # anything else. Wired here rather than at the event-ingest call site so every
+        # path that informs the machine of an identity — the ESP32 consumer, the
+        # internal ingest, the simulator, a test — updates both. Two entry points for
+        # one fact is how the greeting and the check-in button drift apart.
+        if self._on_identity is not None:
+            self._on_identity(person_id, display_name, consent_version, profile_id)
         # Recorded before branching so it is present on the first transition as
         # well as on later refreshes — attribution is gated on it, and a missing
         # value fails closed to "not attributable".

@@ -64,3 +64,22 @@ def test_media_base_url_defaults_to_door_media_port(
     assert cfg.media_public_base_url == "http://127.0.0.1:8082"
     # And the dataclass field default matches (not the stale :8001).
     assert SessionConfig(db_path=":memory:").media_base_url == "http://127.0.0.1:8082"
+
+
+def test_the_visitor_writing_window_is_not_shorter_than_the_doorpad_promises() -> None:
+    """The server must not cut off a message the doorboard gave time to write.
+
+    The DoorPad allows 10 minutes on the "scan to leave a message" screen
+    (VISITOR_WRITING_TIMEOUT_MS in door-ui/src/doorpadTimeouts.ts). Whichever side is
+    shorter is the real limit, and this side was 120s — so a visitor was cut off two
+    and a half minutes into a note. Asserted rather than commented because the two
+    numbers live in different languages and nothing else relates them.
+    """
+    config = SessionConfig(db_path=":memory:")
+    doorpad_writing_window_s = 600.0
+    assert config.inactivity_timeout_s >= doorpad_writing_window_s
+
+    # And the visitor token has to outlast neither: it is refreshed by the page, but
+    # a token TTL longer than the session window would promise a link the session
+    # cannot honour.
+    assert config.visitor_token_ttl_s <= config.inactivity_timeout_s

@@ -81,17 +81,18 @@ Each service has a full spec in its directory README. Every service exposes `GET
 | Local live video (WebRTC) | < 750 ms |
 | NAS upload | non-critical, after interaction |
 
-The performance harness (M1/M7) makes these observable. A change that regresses a p95 target is a bug regardless of features added.
+The performance harness (M1/M7) makes these observable, with two exceptions it reports as `simulator_na` rather than passing: `webrtc_glass_to_glass` needs MediaMTX and a browser, and **`face_to_stable_identity` needs a camera and the Hailo** — frame cadence, detection and embedding are the whole budget and none of them exist in the simulator. On the door that path is measured only by door-visiond's own `face_to_identity_ms_p95` (`/metrics`), timed from the first frame a face appears in. A change that regresses a p95 target is a bug regardless of features added.
 
 ## 5. Identity cache (proactive recognition)
 
 Recognition is proactive, never bell-triggered:
 
 1. Recognition camera runs continuously; `door-visiond` requires a stable match (2 of last 3 frames, minimum face size).
-2. On stability it writes a short-lived `current_visitor` cache (2.5 s TTL) and pushes a `door.profile_update` to the ESP32 (profile ID + monotonic expiry only).
+2. On stability it writes a short-lived `current_visitor` cache (2.5 s TTL), pushes a `door.profile_update` to the ESP32 (profile ID + monotonic expiry only), and forwards `vision.identity_stable` to door-api, which is the only service the kiosks are connected to. All three legs are required: the ESP32 leg is the door light, the door-api leg is the on-screen greeting, and a leg that silently does nothing looks exactly like recognition not working.
 3. Button press consumes the cache instantly; no cache means an immediate generic greeting.
 4. Late recognition may update the display but never delays the initial interaction.
 5. Greeting cooldown: 30 s per person. Unknown faces: generic greeting, nothing persisted.
+6. door-api holds the recognised identity for the *interaction*, not the frame (ADR-0020): ~12 s idle, re-armed to ~2 min by any doorpad use. The 2.5 s cache above is about the next button press; this is about the person still tapping the screen. `identity_expired` therefore does not end it — a face leaving the frame is not a person leaving the door — but privacy mode does, and it is never persisted.
 
 ## 6. Media pipeline
 
@@ -110,7 +111,8 @@ Camera streams **before** the bell press — no cold-start capture on press. Rec
 All events use the shared envelope and catalog in [docs/protocols/events.md](docs/protocols/events.md), implemented once in `packages/contracts` (Pydantic v2 models + exported JSON Schema + generated TypeScript types). Transports:
 
 - **UART** (preferred) Pi ↔ ESP32 for immediate profile/action messages ([wire protocol](docs/protocols/esp32-pi-protocol.md)); UDP acceptable; MQTT never the only immediate transport.
-- **WebSockets** between Pi-local services and the kiosk displays.
+- **WebSockets** between door-api and the kiosk displays (door-api is the hub; the kiosks never connect to another service).
+- **Loopback HTTP** between Pi-local services, for events one service owns and another has to act on — door-visiond's identity events into door-api's session machine, door-visiond's purge requests into door-sync. Token-authenticated and best-effort: a Pi-local hop may drop an event, never block the emitter.
 - **MQTT (Mosquitto on NUC)** for control-plane fan-out, HA integration, and audit — never in the critical path.
 
 Conventions: UTC internally, local timezone only at the display boundary; monotonic clocks for latency and expiry; opaque `person_id`s (never a name as a key); `trace_id` propagated end to end.

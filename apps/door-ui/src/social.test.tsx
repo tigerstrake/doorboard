@@ -33,7 +33,14 @@ describe("Guestbook/poll render paths never execute untrusted markup", () => {
 
 function mockFetchSequence(responses: Array<{ status?: number; body: unknown }>) {
   let call = 0;
-  const fetchMock = vi.fn<(...args: unknown[]) => Promise<Response>>(async () => {
+  const fetchMock = vi.fn<(...args: unknown[]) => Promise<Response>>(async (...args) => {
+    // The doorpad's identity keepalive (ADR-0020) is fire-and-forget: it reads no body
+    // and is not part of any flow under test. It must not advance the sequence, or
+    // adding a background ping would silently re-target every later assertion. Real
+    // browsers send it via navigator.sendBeacon; jsdom has none, so it lands here.
+    if (String(args[0] ?? "").includes("/doorpad/activity")) {
+      return { ok: true, status: 202, json: async () => ({}) } as Response;
+    }
     const resp = responses[Math.min(call, responses.length - 1)];
     call += 1;
     return {

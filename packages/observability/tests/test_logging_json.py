@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.config
 from typing import Any
 
 import pytest
@@ -133,8 +134,6 @@ def test_config_builder_wires_the_formatter_and_filters() -> None:
 
 def test_config_actually_applies_end_to_end(capsys: pytest.CaptureFixture[str]) -> None:
     """dictConfig accepts it and a real logger call produces parseable JSON."""
-    import logging.config
-
     logging.config.dictConfig(json_logging_config("door-visiond"))
     logging.getLogger("door_visiond.e2e").info("relay_enroll_failed", extra={"error_class": "X"})
     line = capsys.readouterr().out.strip().splitlines()[-1]

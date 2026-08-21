@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 import types
 from dataclasses import dataclass
 from typing import Any
@@ -152,12 +153,12 @@ def test_embedder_without_pipeline_or_paths_raises() -> None:
 
 
 def _backend(pipeline: Any, **kwargs: Any) -> HardwareBackend:
+    kwargs.setdefault("interval_ms", 0)
     return HardwareBackend(
         mode="hardware",
         embedder=MockEmbedder(dim=_DIM),
         snapshot_url="http://127.0.0.1:8082/snapshot",
         pipeline=pipeline,
-        interval_ms=0,
         **kwargs,
     )
 
@@ -226,6 +227,107 @@ def test_backend_close_closes_pipeline() -> None:
     backend = _backend(pipeline)
     asyncio.run(backend.close())
     assert pipeline.closed is True
+
+
+def test_repeated_snapshot_is_not_processed_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A frame door-media re-serves unchanged must not reach the core again.
+
+    /snapshot answers from a cached reader frame for up to a second, so polling it
+    faster than the reader publishes returns the same JPEG. Counting one photograph
+    as several frames would let the 2-of-3 stability window confirm an identity from
+    a single observation -- and pay for a SCRFD + ArcFace pass per copy.
+    """
+    pipeline = _FakePipeline(all_faces=[_FakeFace(tuple(0.2 for _ in range(_DIM)), 0.9, 120)])
+    backend = _backend(pipeline)
+    monkeypatch.setattr(backend, "_fetch_snapshot", lambda: b"identical-jpeg")
+
+    first = asyncio.run(backend.next_capture())
+    second = asyncio.run(backend.next_capture())
+    third = asyncio.run(backend.next_capture())
+
+    assert first is not None
+    assert second is None
+    assert third is None
+    assert pipeline.embed_all_calls == 1, "inference ran on a frame already processed"
+    assert backend.status().duplicate_frames == 2
+
+
+def test_new_snapshot_after_duplicates_is_processed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Suppression is per-frame, not a latch: the next distinct frame gets through."""
+    pipeline = _FakePipeline(all_faces=[_FakeFace(tuple(0.2 for _ in range(_DIM)), 0.9, 120)])
+    backend = _backend(pipeline)
+    frames = iter([b"frame-a", b"frame-a", b"frame-b", b"frame-a"])
+    monkeypatch.setattr(backend, "_fetch_snapshot", lambda: next(frames))
+
+    captures = [asyncio.run(backend.next_capture()) for _ in range(4)]
+
+    assert [c is not None for c in captures] == [True, False, True, True]
+    assert pipeline.embed_all_calls == 3
+    assert backend.status().duplicate_frames == 1
+
+
+class _PacingRig:
+    """Drives ``next_capture`` on a fake clock, recording what it slept for.
+
+    ``asyncio.sleep`` is replaced with an advance of the same fake clock, and each
+    snapshot fetch advances it by ``work_s`` — so the recorded delays are exactly
+    the pacing decisions, with no wall-clock timing in the assertions.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, interval_ms: int, work_s: float) -> None:
+        self.now = 1_000.0
+        self.slept: list[float] = []
+        self._work_s = work_s
+
+        async def _sleep(delay: float) -> None:
+            self.slept.append(delay)
+            self.now += delay
+
+        monkeypatch.setattr(time, "monotonic", lambda: self.now)
+        monkeypatch.setattr(asyncio, "sleep", _sleep)
+
+        self.pipeline = _FakePipeline(all_faces=[])
+        self.backend = _backend(self.pipeline, interval_ms=interval_ms)
+        monkeypatch.setattr(self.backend, "_fetch_snapshot", self._fetch)
+
+    def _fetch(self) -> bytes:
+        self.now += self._work_s
+        return f"jpeg-{self.now}".encode()  # distinct each frame: never a duplicate
+
+    def run(self, frames: int) -> None:
+        async def _drive() -> None:
+            for _ in range(frames):
+                await self.backend.next_capture()
+
+        asyncio.run(_drive())
+
+
+def test_capture_work_does_not_add_to_the_frame_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The interval is a period, not a delay bolted onto each capture's cost.
+
+    Sleeping the full interval before every capture made the real cadence
+    interval + fetch + inference: at the default 100 ms with ~60 ms of work the loop
+    ran at 6.25 fps while door-media published at 10, so a visitor contributed fewer
+    frames than the stability window wants and waited longer for the greeting.
+    """
+    rig = _PacingRig(monkeypatch, interval_ms=100, work_s=0.06)
+
+    rig.run(frames=3)
+
+    # One startup beat, then only the remainder of each 100 ms slot.
+    assert rig.slept[0] == pytest.approx(0.1, abs=1e-9)
+    assert rig.slept[1:] == [pytest.approx(0.04, abs=1e-9)] * 2
+
+
+def test_overrunning_capture_takes_its_slot_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Work slower than the interval must not bank up a burst of captures."""
+    rig = _PacingRig(monkeypatch, interval_ms=100, work_s=0.4)
+
+    rig.run(frames=3)
+
+    assert rig.slept[0] == pytest.approx(0.1, abs=1e-9)
+    # Already past every slot: take them at once rather than sleeping negative.
+    assert rig.slept[1:] == [0.0, 0.0]
 
 
 def test_backend_status_reports_hardware_mode() -> None:

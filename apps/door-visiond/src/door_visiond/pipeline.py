@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import hashlib
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -79,6 +81,9 @@ class BackendStatus:
     hailo_ok: bool
     fps: float
     inference_ms_p50: float
+    # Frames the source re-served unchanged (see HardwareBackend). Zero for the
+    # backends that generate their own frames.
+    duplicate_frames: int = 0
 
 
 class VisionBackend(Protocol):
@@ -149,6 +154,11 @@ class PipelineCore:
         self._cache_update_sink = cache_update_sink
         self._cache_clear_sink = cache_clear_sink
         self._ring: collections.deque[str | None] = collections.deque(maxlen=stability_window)
+        # When a face -- anyone's, matched or not -- first appeared in the current
+        # presence streak. This is the start of the path ARCHITECTURE.md §4 budgets
+        # at p95 < 600 ms, and it is deliberately NOT keyed by person: the frames a
+        # visitor spends too far away to match are part of what they wait through.
+        self._face_present_since_ms: int | None = None
         # Cooldown + streak bookkeeping, keyed only by ENROLLED person_id
         # (never by an unknown) and pruned on refresh / when a person leaves.
         self._last_stable_ms: dict[str, int] = {}
@@ -213,6 +223,8 @@ class PipelineCore:
             m.frame_drops += capture.dropped
 
         if capture.faces:
+            if self._face_present_since_ms is None:
+                self._face_present_since_ms = now
             m.face_visible_count += 1
             largest_px = max(f.size_px for f in capture.faces)
             self._sink(
@@ -224,6 +236,9 @@ class PipelineCore:
                     largest_face_px=largest_px,
                 )
             )
+        else:
+            # Doorway empty: the next face starts a new streak, and a new clock.
+            self._face_present_since_ms = None
 
         result = self._match_primary_face(capture, now)
         self._ring.append(result.person_id if result is not None else None)
@@ -286,9 +301,18 @@ class PipelineCore:
             return  # greeting cooldown (P-10): at most one identity_stable / 30 s
 
         trace = self._streak_trace.get(person_id, uuid7())
-        first_seen = self._first_seen_ms.get(person_id, now)
-        self._metrics.face_to_identity_ms.append(float(now - first_seen))
-        obs_metrics.record_sample("face_to_stable_identity", float(now - first_seen))
+        # "Face visible → stable identity" (ARCHITECTURE.md §4), timed from the
+        # first frame a face appeared in rather than the first frame this person
+        # *matched* in. The old start point excluded every frame spent detected but
+        # unrecognised -- too far, too small, mid-turn -- which is most of the wait
+        # a visitor actually experiences, and made the p95 read barely one frame
+        # interval. Still a lower bound: exposure, RTSP and the reader's own age
+        # happen before door-visiond sees the frame at all.
+        started_ms = self._face_present_since_ms
+        if started_ms is None:
+            started_ms = self._first_seen_ms.get(person_id, now)
+        self._metrics.face_to_identity_ms.append(float(now - started_ms))
+        obs_metrics.record_sample("face_to_stable_identity", float(now - started_ms))
 
         self._sink(
             make_identity_stable(
@@ -450,6 +474,13 @@ class HardwareBackend:
         self._interval_s = interval_ms / 1000.0
         self._capturing = True
         self._last_inference_ms = 0.0
+        self._next_capture_at: float | None = None
+        # Digest of the last frame actually processed, so the same photograph is
+        # never counted twice. 16 bytes, in RAM, per-process, never logged or
+        # persisted -- it identifies a JPEG, not a person (two frames of the same
+        # face hash differently), so it is outside ADR-0009's embedding rules.
+        self._last_frame_digest: bytes | None = None
+        self._duplicate_frames = 0
 
     def set_capturing(self, enabled: bool) -> None:
         self._capturing = enabled
@@ -477,6 +508,20 @@ class HardwareBackend:
         if not self._capturing:
             return None
         image_bytes = self._fetch_snapshot()
+        # door-media's /snapshot answers from its in-memory reader frame and keeps
+        # serving it until a newer one arrives (up to DOOR_MEDIA_SNAPSHOT_MAX_AGE_S,
+        # 1 s by default), so polling faster than the reader publishes -- or polling
+        # at all while it restarts -- returns the identical JPEG repeatedly. Feeding
+        # those to the core would break the one rule that makes recognition
+        # trustworthy: the stability window (2 of the last 3 frames) is supposed to
+        # mean a face held still across *time*. Three polls of one cached frame is
+        # one observation, and would promote a single-frame false match to a
+        # confirmed identity. It also costs a full SCRFD + ArcFace pass per copy.
+        digest = hashlib.blake2b(image_bytes, digest_size=16).digest()
+        if digest == self._last_frame_digest:
+            self._duplicate_frames += 1
+            return None
+        self._last_frame_digest = digest
         faces, inference_ms = self._get_pipeline().embed_all(image_bytes)
         # Re-check the kill switch: do not surface faces captured mid-toggle.
         if not self._capturing:
@@ -492,8 +537,34 @@ class HardwareBackend:
         )
         return FrameCapture(faces=detected, inference_ms=inference_ms)
 
+    async def _pace(self) -> None:
+        """Wait for the next frame slot, counting the work already done in it.
+
+        Sleeping the whole interval *before* each capture made the real period
+        ``interval + snapshot fetch + inference``: at the default 100 ms and ~40 ms
+        of work the loop sampled at ~7 fps while door-media published at 10, so a
+        person walking up contributed fewer frames than the stability window wants
+        and every skipped frame was latency the greeting paid for. Pacing to a
+        deadline holds the configured rate instead, and when a frame costs more
+        than the interval it degrades to "as fast as the work allows" rather than
+        banking up a burst of immediate captures.
+        """
+        now = time.monotonic()
+        if self._next_capture_at is None:
+            # First call: keep one startup beat, so the loop does not fire before
+            # door-media's reader has had a chance to publish anything.
+            deadline = now + self._interval_s
+            delay = self._interval_s
+        else:
+            deadline = self._next_capture_at
+            # Non-negative: an overrun takes its slot at once (sleep(0) still
+            # yields, so the run loop's other tasks are not starved).
+            delay = max(0.0, deadline - now)
+        await asyncio.sleep(delay)
+        self._next_capture_at = max(deadline + self._interval_s, time.monotonic())
+
     async def next_capture(self) -> FrameCapture | None:
-        await asyncio.sleep(self._interval_s)
+        await self._pace()
         if not self._capturing:
             return None
         return await asyncio.to_thread(self._capture_blocking)
@@ -504,6 +575,7 @@ class HardwareBackend:
             hailo_ok=self._capturing,
             fps=1.0 / self._interval_s if self._interval_s else 0.0,
             inference_ms_p50=self._last_inference_ms,
+            duplicate_frames=self._duplicate_frames,
         )
 
     async def close(self) -> None:

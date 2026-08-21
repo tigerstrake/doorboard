@@ -93,9 +93,24 @@ class SessionConfig:
     # How long VIDEO_MESSAGE_SAVED shows confirmation before SESSION_END (seconds).
     saved_linger_s: float = 5.0
 
-    # Inactivity timeout: if no transition occurs within this many seconds,
-    # the session auto-expires to IDLE regardless of current state (seconds).
-    inactivity_timeout_s: float = 120.0
+    # Inactivity timeout: if no transition occurs within this many seconds, the
+    # session auto-expires (seconds). In practice this only schedules a timer for
+    # VIDEO_MESSAGE_OFFERED — every other non-IDLE state has a timer of its own —
+    # so it is really "how long the door waits while a visitor decides what to do".
+    #
+    # Ten minutes because that state is where a visitor sits while writing a note on
+    # their phone. It is a cap rather than a completion signal: a submitted note is a
+    # social write and causes no transition, so the session runs the full window even
+    # after the visitor has finished. The DoorPad allows the same budget
+    # (VISITOR_WRITING_TIMEOUT_MS in door-ui/src/doorpadTimeouts.ts). The two must
+    # agree: whichever is shorter is the real limit, and when this was 120s the
+    # server cut a visitor off two and a half minutes into a message the doorboard
+    # had promised them ten for.
+    #
+    # It also bounds how long a persisted session survives a door-api restart
+    # (see restore_from_persistence), which the same reasoning favours: a restart
+    # mid-message should not silently discard the visitor's session.
+    inactivity_timeout_s: float = 600.0
 
     # APPROACH_DETECTED / IDENTITY_CACHED expire back to IDLE after this long
     # with no button press (seconds).
@@ -141,12 +156,31 @@ class SessionConfig:
     sync_retry_base_s: float = 0.5
     sync_retry_max_s: float = 30.0
 
+    # Shared secret door-visiond presents on POST /internal/events, the hop that
+    # carries recognised identities into the session machine and onto the kiosk
+    # WebSocket (ADR-0018 §3). Empty closes the route with 503 — an unauthenticated
+    # identity ingest would let anything that can reach door-api assert who is at
+    # the door, which is the one claim personalisation reads.
+    internal_event_token: str = ""
+
+    # How long door-api keeps treating a recognised person as present (ADR-0020).
+    # `idle` is the window with nobody touching anything — a passer-by's name must not
+    # sit in memory. `interaction` is re-armed by every doorpad action, so the identity
+    # lasts as long as the interaction and no longer. Bound to session state instead,
+    # the name vanished ten seconds after the greeting and Check In refused to offer it.
+    recognised_identity_idle_ttl_s: float = 12.0
+    recognised_identity_interaction_ttl_s: float = 120.0
+
     # Feature gate for the explicit photo-booth + private gallery flow.
     feature_photobooth: bool = False
 
     # Short-lived visitor QR tokens.  If unset, a per-process boot secret is used.
     visitor_token_secret: str = ""
-    visitor_token_ttl_s: float = 300.0
+    # Matches inactivity_timeout_s: with the DoorPad allowing ten minutes to write
+    # a message, a five-minute token made the token the thing that cut the visitor
+    # off instead. The exposure is one session's scoped capability (read snapshot,
+    # leave a note, vote, request deletion), rate-limited, for five extra minutes.
+    visitor_token_ttl_s: float = 600.0
     visitor_public_base_url: str = "http://door.local"
 
     # Public visitor relay (ADR-0017).  The LAN base URL above cannot load on a
@@ -227,7 +261,7 @@ class SessionConfig:
             max_recording_s=max_recording_s,
             review_timeout_s=review_timeout_s,
             saved_linger_s=_env_float("DOOR_API_SAVED_LINGER_S", 5.0),
-            inactivity_timeout_s=_env_float("DOOR_API_INACTIVITY_TIMEOUT_S", 120.0),
+            inactivity_timeout_s=_env_float("DOOR_API_INACTIVITY_TIMEOUT_S", 600.0),
             approach_timeout_s=_env_float("DOOR_API_APPROACH_TIMEOUT_S", 10.0),
             session_end_linger_s=_env_float("DOOR_API_SESSION_END_LINGER_S", 3.0),
             db_path=db_path,
@@ -251,12 +285,17 @@ class SessionConfig:
             sync_forward_poll_s=_env_float("DOOR_API_SYNC_FORWARD_POLL_S", 0.25),
             sync_retry_base_s=_env_float("DOOR_API_SYNC_RETRY_BASE_S", 0.5),
             sync_retry_max_s=_env_float("DOOR_API_SYNC_RETRY_MAX_S", 30.0),
+            internal_event_token=os.environ.get("DOOR_API_INTERNAL_EVENT_TOKEN", ""),
+            recognised_identity_idle_ttl_s=_env_float("DOOR_API_IDENTITY_IDLE_TTL_S", 12.0),
+            recognised_identity_interaction_ttl_s=_env_float(
+                "DOOR_API_IDENTITY_INTERACTION_TTL_S", 120.0
+            ),
             feature_photobooth=_env_bool("FEATURE_PHOTOBOOTH", False),
             visitor_token_secret=os.environ.get(
                 "DOOR_API_VISITOR_TOKEN_SECRET",
                 secrets.token_urlsafe(32),
             ),
-            visitor_token_ttl_s=_env_float("DOOR_API_VISITOR_TOKEN_TTL_S", 300.0),
+            visitor_token_ttl_s=_env_float("DOOR_API_VISITOR_TOKEN_TTL_S", 600.0),
             visitor_public_base_url=os.environ.get(
                 "DOOR_API_VISITOR_PUBLIC_BASE_URL",
                 "http://door.local",

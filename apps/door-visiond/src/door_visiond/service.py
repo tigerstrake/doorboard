@@ -41,6 +41,7 @@ from door_visiond.enrollment import (
     ProfileSpec,
     hash_invite_secret,
 )
+from door_visiond.event_forwarder import EventForwarder, HttpEventTransport
 from door_visiond.events import (
     EventEmitter,
     make_door_profile_clear,
@@ -131,6 +132,7 @@ class VisiondService:
         emitter: EventEmitter | None = None,
         esp32_transport: Esp32Transport | None = None,
         relay_transport: RelayTransport | None = None,
+        event_forwarder: EventForwarder | None = None,
     ) -> None:
         self._settings = settings
         self._clock: Clock = clock or SystemClock()
@@ -142,6 +144,9 @@ class VisiondService:
         self._esp32_profile_send_failures = 0
         self._esp32_profile_last_error: str | None = None
         self._esp32_tasks: set[asyncio.Task[None]] = set()
+        # The screen half of a greeting: identity events have to reach door-api.
+        # Injectable so tests can assert what is forwarded without an HTTP server.
+        self._event_forwarder: EventForwarder | None = event_forwarder
 
         self._enrollment_locked = settings.require_encrypted_enrollment and not is_luks_backed(
             settings.enrollment_root
@@ -297,7 +302,33 @@ class VisiondService:
         self._running = True
         self._run_task = asyncio.create_task(self._run_loop(), name="visiond-run-loop")
         self._purge_task = asyncio.create_task(self._purge_loop(), name="visiond-purge-outbox")
+        await self._start_event_forwarder()
         await self._start_relay_worker()
+
+    async def _start_event_forwarder(self) -> None:
+        """Start the door-api event hop, if one is configured (ADR-0018 §3).
+
+        Without it door-visiond's identity events never leave the process, so the
+        wallboard and doorpad cannot greet a recognised person — see
+        :mod:`door_visiond.event_forwarder`. Unconfigured is a supported state (mock,
+        CI, a door with no screens): recognition, the identity cache and the ESP32
+        profile push are all unaffected.
+        """
+        if self._event_forwarder is not None:
+            await self._event_forwarder.start()
+            return
+        if not self._settings.event_forwarding_enabled:
+            logger.info("event_forwarder_disabled")
+            return
+        self._event_forwarder = EventForwarder(
+            HttpEventTransport(
+                base_url=self._settings.door_api_base_url,
+                token=self._settings.door_api_internal_token,
+                timeout_s=self._settings.event_forward_timeout_s,
+            )
+        )
+        await self._event_forwarder.start()
+        logger.info("event_forwarder_started", extra={"target": self._settings.door_api_base_url})
 
     async def _start_relay_worker(self) -> None:
         """Start the remote-enrollment poller, if a relay is configured.
@@ -340,6 +371,8 @@ class VisiondService:
             self._purge_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._purge_task
+        if self._event_forwarder is not None:
+            await self._event_forwarder.stop()
         if self._relay_worker is not None:
             await self._relay_worker.stop()
         if self._relay_tasks:
@@ -1003,15 +1036,35 @@ class VisiondService:
             "esp32_profile_push_status": "degraded" if esp32_profile_warning else "ok",
             "esp32_profile_warning": esp32_profile_warning,
             "privacy_state_status": "invalid_fail_closed" if self._privacy_state_degraded else "ok",
+            # Frames door-media re-served unchanged. Climbing steadily means its
+            # snapshot reader has stalled and the doorway is being judged on stale
+            # pictures -- recognition looks alive and is not seeing anything new.
+            "snapshot_duplicate_frames": status.duplicate_frames,
             "archive_purge_queue_depth": self._purge_outbox.depth(),
+            # The screen half of the greeting path. Reported but NOT part of
+            # `healthy`: door-api being unreachable costs the display greeting, it
+            # does not break the door. Silence here is what hid the missing hop for
+            # a fortnight, so it is visible in /health from now on.
+            "event_forwarding": self._event_forwarding_status(),
+            "event_forward_last_error": (
+                self._event_forwarder.last_error if self._event_forwarder is not None else None
+            ),
             # Deliberately NOT part of `healthy`: an unreachable relay must not
             # make the door service look broken (ADR-0016 §6).
             "relay_status": relay["status"],
             "relay_configured": relay["configured"],
         }
 
+    def _event_forwarding_status(self) -> str:
+        if self._event_forwarder is None:
+            return "disabled"
+        if self._event_forwarder.last_error is not None and self._event_forwarder.forwarded == 0:
+            return "failing"
+        return "ok"
+
     def metrics_snapshot(self) -> dict[str, float]:
         snap = self._core.metrics_snapshot()
+        snap["snapshot_duplicate_frames"] = float(self._backend.status().duplicate_frames)
         snap["cache_hit_rate"] = self.cache_hit_rate()
         snap["enrolled"] = float(self._matcher.enrolled_count)
         snap["esp32_profile_updates_acked"] = float(self._esp32_profile_updates_acked)
@@ -1021,6 +1074,10 @@ class VisiondService:
         snap["archive_purges_delivered"] = float(self._purges_delivered)
         snap["archive_purges_failed"] = float(self._purges_failed)
         snap["pipeline_errors"] = float(self._pipeline_errors)
+        forwarder = self._event_forwarder
+        snap["events_forwarded"] = float(forwarder.forwarded if forwarder else 0)
+        snap["events_forward_dropped"] = float(forwarder.dropped if forwarder else 0)
+        snap["events_forward_failures"] = float(forwarder.failures if forwarder else 0)
         relay_stats = self._relay_worker.stats if self._relay_worker is not None else None
         snap["relay_enabled"] = 1.0 if self._settings.relay_enabled else 0.0
         snap["relay_polls_ok"] = float(relay_stats.polls_ok if relay_stats else 0)

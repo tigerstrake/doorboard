@@ -52,6 +52,16 @@ def get_broadcast_queue() -> asyncio.Queue[DoorboardEvent]:
     return _broadcast_queue
 
 
+def reset_broadcast_queue() -> None:
+    """Drop the queue so the next call rebuilds it — for tests only.
+
+    An ``asyncio.Queue`` binds to the loop that first awaits it, so a module-global
+    one leaks across per-test event loops.
+    """
+    global _broadcast_queue  # noqa: PLW0603
+    _broadcast_queue = None
+
+
 def _base_fields(clock: Clock, door_id: str, trace_id: UUID) -> dict[str, Any]:
     return {
         "event_id": uuid7(),

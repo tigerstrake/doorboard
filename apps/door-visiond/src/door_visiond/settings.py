@@ -82,6 +82,19 @@ class Settings(BaseSettings):
     # Empty closes protected routes with 503.
     admin_token: str = Field(default="", alias="DOOR_VISIOND_ADMIN_TOKEN")
 
+    # ── display path (ADR-0018 §3) ────────────────────────────────────────
+    # door-api owns the kiosk WebSocket and the session state machine, so identity
+    # events must reach it or the wallboard/doorpad greeting never renders. An empty
+    # token disables forwarding: mock/CI stay silent, and the ESP32 profile push and
+    # identity cache behave identically either way.
+    door_api_base_url: str = Field(default="http://127.0.0.1:8080", alias="DOOR_API_BASE_URL")
+    door_api_internal_token: str = Field(default="", alias="DOOR_API_INTERNAL_EVENT_TOKEN")
+    # Bounded tightly: this drains the recognition loop's queue, and a greeting that
+    # arrives late is worth less than a frame that arrives on time.
+    event_forward_timeout_s: float = Field(
+        default=1.0, alias="VISIOND_EVENT_FORWARD_TIMEOUT_S", gt=0
+    )
+
     # ── durable archive purge delivery ───────────────────────────────────
     sync_base_url: str = Field(default="http://127.0.0.1:8083", alias="DOOR_SYNC_BASE_URL")
     sync_admin_token: str = Field(default="", alias="DOOR_SYNC_ADMIN_TOKEN")
@@ -193,6 +206,10 @@ class Settings(BaseSettings):
     @property
     def relay_enabled(self) -> bool:
         return bool(self.relay_base_url and self.relay_device_token)
+
+    @property
+    def event_forwarding_enabled(self) -> bool:
+        return bool(self.door_api_base_url and self.door_api_internal_token)
 
     @property
     def relay_invite_base_url(self) -> str:
