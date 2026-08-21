@@ -220,8 +220,57 @@ describe("T-405 public kiosk regressions", () => {
     await waitFor(() => expect(screen.getByText("Pick one")).toBeTruthy());
     const submit = screen.getByText("Submit Vote").closest("button");
     expect(submit?.disabled).toBe(true);
-    fireEvent.click(screen.getByText("A"));
+    // The button's accessible name now includes its tally, so match on the label text.
+    fireEvent.click(screen.getByText("A").closest("button")!);
     expect(submit?.disabled).toBe(false);
+  });
+
+  it("draws each DoorPad vote button as its own bar", async () => {
+    // The doorpad used to be the one surface with no graph — it printed "— N votes" only
+    // after you had voted, while the wallboard a metre away showed the live tally.
+    window.history.pushState(null, "", "/doorpad");
+    mockFetchSequence([
+      { body: { session: { state: "IDLE" }, config: {} } },
+      {
+        body: {
+          poll: {
+            id: "poll-1",
+            question: "Pick one",
+            status: "open",
+            created_at: "2026-07-08T00:00:00Z",
+            closed_at: null,
+            options: [
+              { id: "a", text: "Alpha" },
+              { id: "b", text: "Beta" },
+            ],
+          },
+        },
+      },
+      {
+        body: {
+          results: [
+            { option_id: "a", text: "Alpha", votes: 3 },
+            { option_id: "b", text: "Beta", votes: 1 },
+          ],
+        },
+      },
+    ]);
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
+    fireEvent.click(screen.getByText("Vote in Poll"));
+    await waitFor(() => expect(screen.getByText("Alpha")).toBeTruthy());
+
+    // Each vote button carries its own bar, so the graph costs no vertical space on a
+    // 600px screen. Shares are of the total cast: 3 of 4 is 75%, not 100%.
+    const alpha = screen.getByRole("progressbar", { name: "Alpha" });
+    expect(alpha.getAttribute("aria-valuenow")).toBe("75");
+    expect(screen.getByRole("progressbar", { name: "Beta" }).getAttribute("aria-valuenow")).toBe(
+      "25"
+    );
+    // The leader is marked, and the fill is a share of the width rather than of the leader.
+    const fill = alpha.closest("button")!.querySelector(".poll-choice__fill") as HTMLElement;
+    expect(fill.style.width).toBe("75%");
   });
 
   it("does not offer a fake privacy deletion success when no local content exists", async () => {

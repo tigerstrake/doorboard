@@ -39,7 +39,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 from urllib.parse import urlparse
 
 from doorboard_contracts.events import EVENT_ADAPTER
@@ -62,6 +63,7 @@ class MqttBridge:
         *,
         url: str,
         broadcast: DisplayBroadcast,
+        remember: Callable[[dict[str, Any]], bool] | None = None,
         topics: Sequence[str] = ("doorboard/ambient/#", "doorboard/status/#"),
         username: str = "",
         password: str = "",
@@ -70,6 +72,9 @@ class MqttBridge:
     ) -> None:
         self.url = url
         self.broadcast = broadcast
+        # Optional sink for the last-value cache (ambient_cache.AmbientCache.remember), so a
+        # wallboard that reconnects can be told about a once-a-day event it missed.
+        self._remember = remember
         self.topics = tuple(topics)
         self.username = username
         self.password = password
@@ -103,7 +108,12 @@ class MqttBridge:
         # dump/broadcast failure can't escape handle_payload and unwind run()'s
         # `async for`, which would force an unnecessary broker reconnect.
         try:
-            self.broadcast.send_delta(event.model_dump(mode="json"))
+            as_dict = event.model_dump(mode="json")
+            # Remember before broadcasting: a live client gets it either way, and a
+            # reconnecting one only benefits if this ran.
+            if self._remember is not None:
+                self._remember(as_dict)
+            self.broadcast.send_delta(as_dict)
         except Exception:
             self.broadcast_errors += 1
             logger.warning("mqtt_bridge_broadcast_failed", exc_info=True)

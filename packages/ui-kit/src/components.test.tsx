@@ -3,6 +3,7 @@ import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act, cleanup } from "@testing-library/react";
 import { Tile } from "./Tile";
+import { CrossfadeSwitch } from "./CrossfadeSwitch";
 import { GreetingBanner } from "./GreetingBanner";
 import { StatusBadge } from "./StatusBadge";
 import { CountdownAutoReset } from "./CountdownAutoReset";
@@ -167,5 +168,59 @@ describe("Gauge", () => {
     const fillBar = container.querySelector(".gauge-bar-fill");
     expect(fillBar).toBeTruthy();
     expect(fillBar?.getAttribute("style")).toContain("width: 50%");
+  });
+});
+
+describe("CrossfadeSwitch variants", () => {
+  // This file scopes cleanup per describe block rather than globally.
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("keeps the outgoing view mounted so a swap never shows a bare frame", () => {
+    const { rerender } = render(
+      <CrossfadeSwitch activeKey="ambient">
+        <p>ambient grid</p>
+      </CrossfadeSwitch>
+    );
+    rerender(
+      <CrossfadeSwitch activeKey="food">
+        <p>food focus</p>
+      </CrossfadeSwitch>
+    );
+    // Both present mid-transition: that is the whole point of the component.
+    expect(screen.getByText("ambient grid")).toBeTruthy();
+    expect(screen.getByText("food focus")).toBeTruthy();
+  });
+
+  it("defaults to the plain fade, so existing callers are unchanged", () => {
+    render(
+      <CrossfadeSwitch activeKey="a">
+        <p>a</p>
+      </CrossfadeSwitch>
+    );
+    expect(screen.getByTestId("crossfade-switch").getAttribute("data-variant")).toBe("fade");
+  });
+
+  it("marks the zoom variant so opening a channel can read as moving into it", () => {
+    render(
+      <CrossfadeSwitch activeKey="a" variant="zoom">
+        <p>a</p>
+      </CrossfadeSwitch>
+    );
+    const root = screen.getByTestId("crossfade-switch");
+    expect(root.getAttribute("data-variant")).toBe("zoom");
+    expect(root.className).toContain("db-crossfade--zoom");
+  });
+
+  it("publishes its duration to CSS so the fade and the zoom cannot drift apart", () => {
+    render(
+      <CrossfadeSwitch activeKey="a" variant="zoom" durationMs={250}>
+        <p>a</p>
+      </CrossfadeSwitch>
+    );
+    const layer = screen.getByTestId("crossfade-switch").firstElementChild as HTMLElement;
+    expect(layer.style.getPropertyValue("--db-crossfade-duration")).toBe("250ms");
+    expect(layer.style.transitionDuration).toBe("250ms");
   });
 });

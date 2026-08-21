@@ -161,6 +161,22 @@ def test_provider_maps_to_public_recommendation(wilbur_html: str) -> None:
     assert rec.provider == "stanford"
     assert " — Lunch" in rec.title
     assert rec.detail and "confidence" in rec.detail
+    # The hall as its own field (ADR-0026), not only inside the prose title. A consumer
+    # placing it on a map must not have to split the title on an em dash.
+    assert rec.hall == "Wilbur Dining"
+    assert rec.hall and rec.hall in rec.title
+
+
+def test_provider_omits_a_backup_hall_that_repeats_the_pick(wilbur_html: str) -> None:
+    # With one hall configured the recommender's backup is the pick itself. Publishing that
+    # as `backup_hall` would draw a second, differently-coloured marker on the same building.
+    provider = StanfordDiningProvider(
+        StanfordDiningConfig(request_delay_s=0.0, hall_ids=["Wilbur"]),
+        now=lambda: FIXED_NOW,
+        http_transport=_menu_transport(wilbur_html),
+    )
+    rec = provider.get_daily_recommendation()
+    assert rec.backup_hall is None
 
 
 def test_provider_raises_when_no_menu_items() -> None:

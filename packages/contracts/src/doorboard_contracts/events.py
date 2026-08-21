@@ -489,6 +489,13 @@ class AmbientFoodRecommendationPayload(StrictModel):
     title: str
     detail: str | None
     provider: str
+    # The recommended hall as its own field (ADR-0026), because `title` is prose — it is
+    # built as "{best_hall} — {meal}" and a consumer that wants to place the hall on a map
+    # would otherwise have to split a display string on an em dash. Optional: a provider
+    # with no concept of a named venue omits it, and the consumer then draws no point rather
+    # than guessing one.
+    hall: str | None = None
+    backup_hall: str | None = None
 
 
 class SystemServiceHealthPayload(HealthPayload):

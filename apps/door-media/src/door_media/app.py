@@ -444,9 +444,22 @@ async def recognition_snapshot(request: Request) -> Response:
     if frame is None:
         # No placeholder here, unlike /snapshot: a placeholder is a valid-looking image
         # of nothing, and the face path would treat it as a frame with no face in it.
+        #
+        # But "there is no second camera" and "the camera I just started has not produced
+        # its first frame" are different facts, and answering 404 to both made them
+        # indistinguishable to door-visiond — which treats a hard error as a reason to
+        # disable the vision backend. So: 404 stays for the structural case ADR-0023 cares
+        # about, and a configured-but-not-yet-ready camera gets 503, which is a retry.
+        cfg: Settings = request.app.state.cfg
+        if not cfg.recognition_cam_present:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="this door has no recognition camera",
+            )
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="no recognition camera frame available",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="recognition camera has not produced a frame yet",
+            headers={"Retry-After": "1"},
         )
     return Response(
         content=frame,

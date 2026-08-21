@@ -12,6 +12,60 @@
  * features come and go. Anything softer belongs in the feature copy, not here.
  */
 
+import aboutStats from "./aboutStats.json";
+
+/**
+ * The numbers, for the focused view.
+ *
+ * The grid tile showed five stat chips and the focused channel — the one you get when you
+ * deliberately open "About this doorboard" and stand there reading — showed none of them, so
+ * choosing to look closer gave you *less*. These fill that in.
+ *
+ * Every value is generated from the tree by tools/project-stats/collect.py. None of it is
+ * typed in by hand, which is the only reason it can be trusted after a few months: the
+ * previous baked figures were from July and had drifted to half the real line count and a
+ * third of the real ADR count.
+ */
+export interface AboutFact {
+  value: string;
+  label: string;
+}
+
+const nf = (n: number) => n.toLocaleString();
+
+export const ABOUT_FACTS: AboutFact[] = [
+  { value: nf(aboutStats.lines_of_code), label: "lines of code" },
+  { value: nf(aboutStats.tracked_files), label: "files in the repo" },
+  { value: String(aboutStats.languages.length), label: "languages" },
+  { value: String(aboutStats.counts.services), label: "services running" },
+  { value: String(aboutStats.counts.contract_event_types), label: "event types on the wire" },
+  { value: String(aboutStats.counts.adrs), label: "architecture decisions written down" },
+  { value: String(aboutStats.counts.test_files), label: "test files" },
+  { value: String(aboutStats.counts.task_briefs), label: "task briefs" },
+];
+
+/**
+ * Facts about the machine rather than the codebase.
+ *
+ * Deliberately concrete and deliberately checkable — each of these is a number from the
+ * hardware, the pinned model, or a measurement taken on this door, not a marketing claim.
+ * Anything I could not point at is not here.
+ */
+export const ABOUT_TECH_FACTS: string[] = [
+  "The bell is wired to a microcontroller, not to the computer. Press it and the light and " +
+    "chime fire in under a tenth of a second — that path does not touch the network, the " +
+    "operating system, or anything that can be slow.",
+  "Faces are compared as 512 numbers. A photo becomes a vector, the vector is compared to " +
+    "the ones people enrolled, and the photo is thrown away. The comparison takes about 14 " +
+    "milliseconds on the AI chip in this door.",
+  "There are two cameras because one lens cannot do both jobs: a wide one to frame whoever " +
+    "is at the door, a narrower one to put enough pixels on a face to recognise it.",
+  "Nothing about an unrecognised face is written down — not a template, not a hash, not a " +
+    "'seen before' counter. There is no list for you to be on.",
+  "The door keeps working when the house network does not. Recognition, the bell, the " +
+    "screens and the guestbook are all local; the rest is a bonus that can be missing.",
+];
+
 export interface AboutSection {
   heading: string;
   body: string;
@@ -63,7 +117,20 @@ export const ABOUT_SECTIONS: AboutSection[] = [
   },
 ];
 
-export function AboutDoorboard({ className = "" }: { className?: string }) {
+export function AboutDoorboard({
+  className = "",
+  showFacts = false,
+}: {
+  className?: string;
+  /**
+   * Render the numbers and the hardware facts as well as the prose.
+   *
+   * On by the caller rather than sniffed from `className`: the doorpad screen is a
+   * scrolling column on a 7" panel where the extra material would bury the part a visitor
+   * actually needs (what is recorded, and how to erase it).
+   */
+  showFacts?: boolean;
+}) {
   return (
     <div className={`about-doorboard ${className}`} data-testid="about-doorboard">
       {ABOUT_SECTIONS.map((section) => (
@@ -72,6 +139,37 @@ export function AboutDoorboard({ className = "" }: { className?: string }) {
           <p className="about-doorboard__body">{section.body}</p>
         </section>
       ))}
+
+      {showFacts ? (
+        <>
+          <section className="about-doorboard__section about-doorboard__section--facts">
+            <h3 className="about-doorboard__heading">By the numbers</h3>
+            <dl className="about-facts" data-testid="about-facts">
+              {ABOUT_FACTS.map((fact) => (
+                <div className="about-facts__item" key={fact.label}>
+                  <dt className="about-facts__value">{fact.value}</dt>
+                  <dd className="about-facts__label">{fact.label}</dd>
+                </div>
+              ))}
+            </dl>
+            <p className="about-facts__asof">
+              Counted from the source on {aboutStats.generated_at} ·{" "}
+              {aboutStats.languages.map((lang) => lang.name).join(" · ")}
+            </p>
+          </section>
+
+          <section className="about-doorboard__section">
+            <h3 className="about-doorboard__heading">How it actually works</h3>
+            <ul className="about-tech-facts" data-testid="about-tech-facts">
+              {ABOUT_TECH_FACTS.map((fact) => (
+                <li key={fact.slice(0, 24)} className="about-tech-facts__item">
+                  {fact}
+                </li>
+              ))}
+            </ul>
+          </section>
+        </>
+      ) : null}
     </div>
   );
 }

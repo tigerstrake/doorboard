@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 from aircraft.enrichment import AircraftEnricher, EnrichmentConfig
-from aircraft.provider import AircraftProvider
+from aircraft.provider import AircraftDataUnavailable, AircraftProvider
 from birdnet.provider import BirdProvider
 from doorboard_contracts.events import (
     AircraftObserver,
@@ -216,6 +216,12 @@ def run_aircraft_summary(
 
     try:
         aircraft_list = provider.get_nearby_aircraft(now)
+    except AircraftDataUnavailable as exc:
+        # Publishing nothing is the honest outcome: the tile then shows its last real
+        # reading with an age, or "unavailable" if there has never been one. Publishing an
+        # empty list would state that the sky is clear, which is a different claim.
+        logger.warning(f"No aircraft data to publish: {exc}")
+        return None
     except Exception as exc:
         logger.error(f"Aircraft summary job failed: {exc}")
         # Return None to indicate failure (stale path)
@@ -263,9 +269,13 @@ def run_aircraft_summary(
         for ac in aircraft_list
     ]
 
+    # `now` would make a cached reading look current: OpenSky is polled every 30 s but the
+    # provider serves cache through cooldowns and outages, so as_of has to be the moment the
+    # data was actually observed or the wallboard's staleness marker is decorative.
+    observed_at = getattr(provider, "last_successful_time", None) or now
     payload = AmbientAircraftSummaryPayload(
         nearby=nearby_models,
-        as_of=now,
+        as_of=observed_at,
         observer=AircraftObserver(
             latitude=settings.aircraft_observer_lat,
             longitude=settings.aircraft_observer_lon,
@@ -406,6 +416,8 @@ def run_food_recommendation(
         title=recommendation.title,
         detail=recommendation.detail,
         provider=recommendation.provider,
+        hall=recommendation.hall,
+        backup_hall=recommendation.backup_hall,
     )
 
     event = AmbientFoodRecommendationEvent(

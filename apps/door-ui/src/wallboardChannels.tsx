@@ -1,5 +1,5 @@
 import React from "react";
-import { BigButton, StatusBadge } from "@doorboard/ui-kit";
+import { BigButton } from "@doorboard/ui-kit";
 import type {
   AmbientAircraftSummaryPayload,
   AmbientBirdSummaryPayload,
@@ -8,9 +8,11 @@ import type {
   AmbientSatellitePassPayload,
 } from "@doorboard/contracts";
 import { AboutDoorboard } from "./AboutDoorboard";
+import { PollResultBars, pollTotalVotes } from "./PollResultBars";
 import type { GuestbookEntry, Poll, PollResultRow } from "./socialApi";
 import { GuestbookQuote } from "./SocialRenderers";
 import { AircraftFocusPanel } from "./wallboard/AircraftFocusPanel";
+import { CampusDiningMap } from "./wallboard/CampusDiningMap";
 import { SatelliteSkyPanel } from "./wallboard/SatelliteSkyPanel";
 import { WALLBOARD_CHANNELS } from "./wallboardChannelModel";
 import type { WallboardFocusChannel } from "./wallboardChannelModel";
@@ -291,123 +293,6 @@ function FocusEmpty({ title, hint }: { title: string; hint?: string }) {
 
 // 16-point compass rose → bearing in degrees clockwise from due north. Used to
 // aim the sky-compass needle from the satellite pass's rise direction label.
-const COMPASS_BEARINGS: Record<string, number> = {
-  N: 0, NNE: 22.5, NE: 45, ENE: 67.5,
-  E: 90, ESE: 112.5, SE: 135, SSE: 157.5,
-  S: 180, SSW: 202.5, SW: 225, WSW: 247.5,
-  W: 270, WNW: 292.5, NW: 315, NNW: 337.5,
-};
-
-function bearingForDirection(direction: string): number | null {
-  const key = direction.trim().toUpperCase();
-  return key in COMPASS_BEARINGS ? COMPASS_BEARINGS[key] : null;
-}
-
-/**
- * A clean SVG compass rose with cardinal ticks and a needle aimed at the
- * satellite's rise direction. Degrades to a centred dot (no needle) when the
- * direction label isn't a recognised compass point.
- */
-function SkyCompass({ direction }: { direction: string }) {
-  const bearing = bearingForDirection(direction);
-  const cardinals: Array<{ label: string; x: number; y: number }> = [
-    { label: "N", x: 100, y: 22 },
-    { label: "E", x: 180, y: 106 },
-    { label: "S", x: 100, y: 188 },
-    { label: "W", x: 20, y: 106 },
-  ];
-  return (
-    <svg
-      className="sky-compass"
-      viewBox="0 0 200 200"
-      role="img"
-      aria-label={
-        bearing === null
-          ? "Rise direction unavailable"
-          : `Rises to the ${direction}`
-      }
-      data-testid="sky-compass"
-    >
-      <circle className="sky-compass__ring" cx="100" cy="100" r="82" />
-      <circle className="sky-compass__ring sky-compass__ring--inner" cx="100" cy="100" r="58" />
-      {Array.from({ length: 16 }).map((_, index) => {
-        const angle = (index * 22.5 * Math.PI) / 180;
-        const isMajor = index % 4 === 0;
-        const outer = 82;
-        const inner = isMajor ? 68 : 74;
-        return (
-          <line
-            key={index}
-            className={`sky-compass__tick${isMajor ? " sky-compass__tick--major" : ""}`}
-            x1={100 + outer * Math.sin(angle)}
-            y1={100 - outer * Math.cos(angle)}
-            x2={100 + inner * Math.sin(angle)}
-            y2={100 - inner * Math.cos(angle)}
-          />
-        );
-      })}
-      {cardinals.map((point) => (
-        <text
-          key={point.label}
-          className="sky-compass__cardinal"
-          x={point.x}
-          y={point.y}
-          textAnchor="middle"
-          dominantBaseline="middle"
-        >
-          {point.label}
-        </text>
-      ))}
-      {bearing === null ? (
-        <circle className="sky-compass__center" cx="100" cy="100" r="7" />
-      ) : (
-        <g transform={`rotate(${bearing} 100 100)`}>
-          <polygon className="sky-compass__needle" points="100,26 111,104 100,92 89,104" />
-          <circle className="sky-compass__center" cx="100" cy="100" r="7" />
-        </g>
-      )}
-    </svg>
-  );
-}
-
-function SatelliteFocusPanel({ payload }: { payload: AmbientSatellitePassPayload }) {
-  const riseTime = new Date(payload.rise_at).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  const maxElevation = Number.isFinite(payload.max_elevation_deg)
-    ? Math.round(payload.max_elevation_deg)
-    : null;
-  return (
-    <div className="satellite-focus" data-testid="satellite-focus">
-      <header className="satellite-focus__head">
-        <p className="surface-eyebrow">Next visible pass</p>
-        <strong className="satellite-focus__name">{payload.satellite}</strong>
-        <p className="satellite-focus__meta">
-          {payload.direction} · {maxElevation ?? payload.max_elevation_deg}° max
-        </p>
-        <StatusBadge label={payload.visible ? "available" : "unknown"} />
-      </header>
-      <div className="satellite-focus__body">
-        <SkyCompass direction={payload.direction} />
-        <dl className="satellite-focus__stats">
-          <div className="satellite-focus__stat satellite-focus__stat--hero">
-            <dt>Rise time</dt>
-            <dd>{riseTime}</dd>
-          </div>
-          <div className="satellite-focus__stat">
-            <dt>Direction</dt>
-            <dd>{payload.direction}</dd>
-          </div>
-          <div className="satellite-focus__stat">
-            <dt>Max elevation</dt>
-            <dd>{maxElevation ?? payload.max_elevation_deg}°</dd>
-          </div>
-        </dl>
-      </div>
-    </div>
-  );
-}
 
 function PollFocusPanel({
   poll,
@@ -416,45 +301,12 @@ function PollFocusPanel({
   poll: Poll;
   pollResults: PollResultRow[] | null;
 }) {
-  const votesFor = (optionId: string) =>
-    pollResults?.find((row) => row.option_id === optionId)?.votes ?? 0;
-  const tallies = poll.options.map((option) => votesFor(option.id));
-  const totalVotes = tallies.reduce((sum, votes) => sum + votes, 0);
-  const maxVotes = tallies.length > 0 ? Math.max(...tallies) : 0;
+  const totalVotes = pollTotalVotes(poll, pollResults);
 
   return (
     <div className="poll-focus" data-testid="poll-focus">
       <h2 className="poll-focus__question">{poll.question}</h2>
-      <div className="poll-focus__options">
-        {poll.options.map((option) => {
-          const votes = votesFor(option.id);
-          const pct = totalVotes > 0 ? (votes / totalVotes) * 100 : 0;
-          const isLeader = totalVotes > 0 && votes === maxVotes;
-          return (
-            <div
-              className={`poll-focus__row${isLeader ? " poll-focus__row--leader" : ""}`}
-              key={option.id}
-            >
-              <div className="poll-focus__row-head">
-                <span className="poll-focus__option">{option.text}</span>
-                <span className="poll-focus__count">
-                  <strong>{votes}</strong> {votes === 1 ? "vote" : "votes"} · {pct.toFixed(0)}%
-                </span>
-              </div>
-              <div
-                className="poll-focus__bar"
-                role="progressbar"
-                aria-valuenow={Math.round(pct)}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-label={option.text}
-              >
-                <span style={{ width: `${pct}%` }} />
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      <PollResultBars poll={poll} pollResults={pollResults} />
       <p className="poll-focus__total">
         {totalVotes} total {totalVotes === 1 ? "vote" : "votes"}
       </p>
@@ -555,10 +407,18 @@ function renderFocusContent(
       );
     case "food":
       return ambient.food ? (
-        <div className="focus-hero-stat">
-          <p className="surface-eyebrow">{focusSafeText(ambient.food.provider, 40)}</p>
-          <strong>{focusSafeText(ambient.food.title)}</strong>
-          <span>{focusSafeText(ambient.food.detail, 160)}</span>
+        <div className="focus-food">
+          <div className="focus-hero-stat">
+            <p className="surface-eyebrow">{focusSafeText(ambient.food.provider, 40)}</p>
+            <strong>{focusSafeText(ambient.food.title)}</strong>
+            <span>{focusSafeText(ambient.food.detail, 160)}</span>
+          </div>
+          {/* Where it is. The text names a hall; the map answers "how far is that". */}
+          <CampusDiningMap
+            hall={ambient.food.hall}
+            title={ambient.food.title}
+            backupHall={ambient.food.backup_hall}
+          />
         </div>
       ) : (
         <FocusEmpty title="No food recommendation yet." hint="Today's pick will appear here." />
@@ -595,6 +455,6 @@ function renderFocusContent(
     case "about":
       // The only channel with no data source: it explains the door itself, so it never
       // has an empty state and is always safe to focus.
-      return <AboutDoorboard className="about-doorboard--focus" />;
+      return <AboutDoorboard className="about-doorboard--focus" showFacts />;
   }
 }

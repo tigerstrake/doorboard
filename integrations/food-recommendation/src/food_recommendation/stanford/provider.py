@@ -111,4 +111,10 @@ class StanfordDiningProvider(FoodRecommendationProvider):
             title=f"{internal.best_hall} — {internal.meal}",
             detail=" · ".join(parts),
             provider="stanford-ai" if internal.ai_generated else "stanford",
+            hall=internal.best_hall,
+            backup_hall=(
+                internal.backup_hall
+                if internal.backup_hall and internal.backup_hall != internal.best_hall
+                else None
+            ),
         )

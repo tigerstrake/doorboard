@@ -65,6 +65,47 @@ class TestPresence:
 
         assert await router.recognition_snapshot() is None
 
+    @pytest.mark.anyio
+    async def test_a_cold_camera_is_waited_for_not_declared_missing(self, tmp_path: Path) -> None:
+        """The flapping bug, from door-media's side.
+
+        `request()` starts the reader and returns immediately, so a cold rpicam-vid has no
+        frame for ~1-2 s. door-visiond polls every 100 ms and degrades its backend after
+        three consecutive failures — 300 ms — so answering "nothing" straight away meant it
+        killed the camera it had just started. The route now gives the reader a bounded
+        chance to produce its first frame.
+        """
+        cfg = _cfg(tmp_path, RECOGNITION_CAM_INDEX=1, DOOR_MEDIA_RECOGNITION_FIRST_FRAME_WAIT_S=2.0)
+        router = MediaMTXRouter(cfg)
+        frame = _jpeg(b"warmed-up")
+        calls = 0
+
+        def slow_first_frame() -> bytes | None:
+            nonlocal calls
+            calls += 1
+            # Nothing for the first few polls, exactly like a sensor opening.
+            return frame if calls > 3 else None
+
+        assert router._recognition_reader is not None
+        router._recognition_reader.request = slow_first_frame  # type: ignore[method-assign]
+
+        assert await router.recognition_snapshot() == frame
+        assert calls > 3, "it must have polled again rather than giving up on the first None"
+        assert router.recognition_cold_starts == 1
+
+    @pytest.mark.anyio
+    async def test_the_wait_is_bounded(self, tmp_path: Path) -> None:
+        # A camera that never produces must not hang the route: door-visiond polls this on
+        # an interval and the face path may never block for long.
+        cfg = _cfg(tmp_path, RECOGNITION_CAM_INDEX=1, DOOR_MEDIA_RECOGNITION_FIRST_FRAME_WAIT_S=0.3)
+        router = MediaMTXRouter(cfg)
+        assert router._recognition_reader is not None
+        router._recognition_reader.request = lambda: None  # type: ignore[method-assign]
+
+        started = time.monotonic()
+        assert await router.recognition_snapshot() is None
+        assert time.monotonic() - started < 2.0
+
 
 class TestArgv:
     def test_it_reads_the_other_sensor(self, tmp_path: Path) -> None:

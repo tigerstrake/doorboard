@@ -919,8 +919,8 @@ body {
 .db-crossfade__layer {
   position: absolute;
   inset: 0;
-  transition-property: opacity;
-  transition-timing-function: ease-in-out;
+  transition-property: opacity, transform, filter;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
   opacity: 1;
 }
 
@@ -931,6 +931,55 @@ body {
 
 .db-crossfade__layer--in {
   opacity: 1;
+}
+
+/*
+ * The zoom variant: the outgoing view recedes and softens while the incoming one comes
+ * forward, so opening a channel reads as moving into it rather than as one picture being
+ * replaced by another.
+ *
+ * transform and opacity only (plus a small blur on the way out, which the compositor also
+ * handles) — nothing here triggers layout, which is what keeps a 1920x1080 swap smooth on a
+ * Pi that is simultaneously running face recognition.
+ */
+.db-crossfade--zoom .db-crossfade__layer--out {
+  transform: scale(1.06);
+  filter: blur(6px);
+}
+
+.db-crossfade--zoom .db-crossfade__layer--in {
+  animation: db-crossfade-zoom-in var(--db-crossfade-duration, 400ms)
+    cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes db-crossfade-zoom-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/*
+ * A 24/7 wallboard must honour this, and so must a door: motion is decoration here, the
+ * information is the content underneath it.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .db-crossfade__layer {
+    transition-property: opacity;
+  }
+
+  .db-crossfade--zoom .db-crossfade__layer--out {
+    transform: none;
+    filter: none;
+  }
+
+  .db-crossfade--zoom .db-crossfade__layer--in {
+    animation: none;
+  }
 }
 
 @keyframes db-pulse {

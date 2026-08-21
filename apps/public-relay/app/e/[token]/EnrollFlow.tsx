@@ -308,7 +308,10 @@ export default function EnrollFlow({ token }: { token: string }) {
       setError("Could not encrypt and send the photos. Please try again.");
       setStep("details");
     }
-  }, [doorKey, displayName, invite, photos, profileId, retakeAll, stopCamera, token]);
+    // accentColor belongs here: without it `submit` closes over the colour as it was
+    // when the callback was last created, so a visitor who adjusts the picker and sends
+    // immediately would enrol with the previous colour (ADR-0021).
+  }, [accentColor, doorKey, displayName, invite, photos, profileId, retakeAll, stopCamera, token]);
 
   const stepIndex = useMemo(() => {
     const order: Step[] = ["consent", "capture", "details", "sending", "waiting", "done"];

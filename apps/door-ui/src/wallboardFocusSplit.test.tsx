@@ -49,6 +49,12 @@ const SATELLITE: AmbientSatellitePassPayload = {
   max_elevation_deg: 72,
   direction: "NW",
   visible: true,
+  set_at: "2026-07-20T21:22:00Z",
+  track: [
+    { t_offset_s: 0, azimuth_deg: 315, elevation_deg: 0 },
+    { t_offset_s: 240, azimuth_deg: 45, elevation_deg: 72 },
+    { t_offset_s: 480, azimuth_deg: 135, elevation_deg: 0 },
+  ],
 };
 
 const POLL: Poll = {

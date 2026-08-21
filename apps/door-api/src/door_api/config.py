@@ -179,6 +179,10 @@ class SessionConfig:
     # sit in memory. `interaction` is re-armed by every doorpad action, so the identity
     # lasts as long as the interaction and no longer. Bound to session state instead,
     # the name vanished ten seconds after the greeting and Check In refused to offer it.
+    # How long a remembered ambient event stays worth replaying to a reconnecting kiosk.
+    # Just over the daily food job's interval, so a normal cadence survives a reload but a
+    # dead producer stops being quoted as current (ADR-0027).
+    ambient_cache_max_age_s: float = 26 * 3600.0
     recognised_identity_idle_ttl_s: float = 12.0
     recognised_identity_interaction_ttl_s: float = 120.0
     # How often to notice that the window above has run out. Expiry is lazy, so without
@@ -304,6 +308,7 @@ class SessionConfig:
             sync_retry_base_s=_env_float("DOOR_API_SYNC_RETRY_BASE_S", 0.5),
             sync_retry_max_s=_env_float("DOOR_API_SYNC_RETRY_MAX_S", 30.0),
             internal_event_token=os.environ.get("DOOR_API_INTERNAL_EVENT_TOKEN", ""),
+            ambient_cache_max_age_s=_env_float("DOOR_API_AMBIENT_CACHE_MAX_AGE_S", 26 * 3600.0),
             recognised_identity_idle_ttl_s=_env_float("DOOR_API_IDENTITY_IDLE_TTL_S", 12.0),
             recognised_identity_interaction_ttl_s=_env_float(
                 "DOOR_API_IDENTITY_INTERACTION_TTL_S", 120.0

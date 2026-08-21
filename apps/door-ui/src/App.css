@@ -2490,6 +2490,68 @@ input:focus-visible {
   font-size: clamp(1.05rem, 1.8vw, 1.5rem);
 }
 
+/*
+ * A doorpad vote button that is also its own bar.
+ *
+ * The fill sits behind the label rather than below it, so showing the standing costs no
+ * vertical space — the constraint that killed a separate chart on a 600px screen.
+ */
+.poll-choice {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  margin: 4px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--db-spacing-md);
+}
+
+.poll-choice__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 0;
+  background: linear-gradient(90deg, rgba(53, 214, 255, 0.28), rgba(53, 214, 255, 0.1));
+  transition: width 480ms cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+
+.poll-choice--leader .poll-choice__fill {
+  background: linear-gradient(90deg, rgba(53, 214, 255, 0.42), rgba(255, 196, 84, 0.22));
+}
+
+/* Above the fill, or the label sits behind its own bar. */
+.poll-choice__text,
+.poll-choice__count {
+  position: relative;
+  z-index: 1;
+}
+
+.poll-choice__count {
+  font-family: var(--db-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8em;
+  color: var(--db-text-secondary);
+  white-space: nowrap;
+}
+
+.poll-choice--leader .poll-choice__count {
+  color: var(--db-accent);
+}
+
+.poll-focus__row--mine {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.poll-focus__mine-tag {
+  margin-left: 6px;
+  font-family: var(--db-font-mono);
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--db-accent);
+}
+
 /* ── Guestbook focus: readable single-column stack of approved notes ──────── */
 .guestbook-focus {
   max-width: 1100px;
@@ -3137,20 +3199,37 @@ input:focus-visible {
     min-height: 0;
   }
 
+  /*
+   * Type scaled to the box the tiles became.
+   *
+   * The rules above grow each tile to fill the panel, which is right — on a touchscreen
+   * that space should be touch target. But the type was left at the old small sizes, so a
+   * 242x259 px tile held three short lines of 15 px text adrift in the middle of it: the
+   * box was increased and the layout inside it was not. Content now spans the tile, with
+   * the label dominant and the hint clearly subordinate.
+   */
   .doorpad-grid .db-big-button {
     min-height: 0;
     height: 100%;
-    padding: 0.6rem 0.7rem;
-    font-size: 0.92rem;
+    padding: 1rem 0.9rem;
+    font-size: 1.5rem;
+    gap: 0.45rem;
+    /* Content pushed apart rather than clustered: icon at the top, label and hint at the
+       bottom, so the tile reads as a designed block instead of a small thing in a big box. */
+    justify-content: space-between;
+    align-items: flex-start;
+    text-align: left;
   }
 
   .doorpad-grid .db-big-button__icon {
-    font-size: 1.1rem;
+    font-size: 2.6rem;
+    line-height: 1;
   }
 
   .doorpad-grid .db-big-button__hint {
-    font-size: 0.7rem;
+    font-size: 0.58em;
     max-width: none;
+    opacity: 0.72;
   }
 }
 
@@ -3317,4 +3396,431 @@ input:focus-visible {
 .satellite-sky__note {
   margin-top: 0.5rem;
   text-align: center;
+}
+
+/* ── Campus dining map: the recommended hall, placed ──────────────────────── */
+/*
+ * Same visual language as the sky dome: dark field, cool blue outlines, the accent spent
+ * only on the one thing being pointed at. Everything else is deliberately low-contrast —
+ * the other halls exist to give the pick a sense of distance, not to compete with it.
+ */
+.focus-food {
+  display: grid;
+  gap: var(--db-spacing-lg);
+  justify-items: center;
+}
+
+.campus-map {
+  display: grid;
+  gap: var(--db-spacing-sm);
+  justify-items: center;
+  width: 100%;
+  max-width: 760px;
+}
+
+.campus-map__svg {
+  width: 100%;
+  height: auto;
+  background: rgba(12, 24, 44, 0.55);
+  border: 1px solid rgba(140, 190, 255, 0.22);
+  border-radius: var(--db-radius-md);
+}
+
+.campus-map__water {
+  fill: rgba(40, 120, 190, 0.22);
+  stroke: rgba(120, 200, 255, 0.5);
+  stroke-width: 0.8px;
+  vector-effect: non-scaling-stroke;
+  /* Several rings in one path (the lake plus two ponds) — evenodd keeps them distinct. */
+  fill-rule: evenodd;
+}
+
+.campus-map__block {
+  fill: rgba(140, 190, 255, 0.06);
+  stroke: rgba(140, 190, 255, 0.35);
+  stroke-width: 1;
+}
+
+.campus-map__walk {
+  stroke: rgba(140, 190, 255, 0.4);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+
+.campus-map__dot {
+  fill: rgba(160, 200, 255, 0.45);
+}
+
+.campus-map__hall--pick .campus-map__dot {
+  fill: var(--db-accent);
+}
+
+.campus-map__hall--backup .campus-map__dot {
+  fill: rgba(255, 200, 120, 0.8);
+}
+
+.campus-map__pick-glow {
+  fill: var(--db-accent);
+  opacity: 0.22;
+  animation: campus-map-pulse 2.4s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.campus-map__hall-label {
+  fill: var(--db-text-primary);
+  font-size: 13px;
+  text-anchor: middle;
+  /*
+   * A halo in the map's own background colour, so the label stays legible wherever the pick
+   * lands. Which labels collide depends on which hall is recommended — Florence Moore sits
+   * on the lake's caption — so this is a general fix rather than eight special cases.
+   */
+  paint-order: stroke;
+  stroke: rgba(12, 24, 44, 0.9);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.campus-map__hall--backup .campus-map__hall-label {
+  fill: var(--db-text-secondary);
+  font-size: 11px;
+}
+
+.campus-map__here-dot {
+  fill: none;
+  stroke: var(--db-text-primary);
+  stroke-width: 1.5;
+}
+
+.campus-map__here-label,
+.campus-map__landmark-label {
+  fill: var(--db-text-secondary);
+  font-family: var(--db-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.campus-map__here-label {
+  text-anchor: middle;
+}
+
+.campus-map__note {
+  margin: 0;
+  color: var(--db-text-secondary);
+  font-size: clamp(0.95rem, 1.5vw, 1.2rem);
+  text-align: center;
+}
+
+@keyframes campus-map-pulse {
+  0%, 100% { opacity: 0.14; }
+  50% { opacity: 0.34; }
+}
+
+/* The pulse is decoration; the position is the information. */
+@media (prefers-reduced-motion: reduce) {
+  .campus-map__pick-glow {
+    animation: none;
+  }
+}
+
+.campus-map__landmark-label {
+  text-anchor: middle;
+}
+
+/* After the base rule, not before it — same specificity, so source order decides. */
+.campus-map__landmark-label--start {
+  text-anchor: start;
+}
+
+.campus-map__tower-dot {
+  fill: rgba(160, 200, 255, 0.55);
+}
+
+/*
+ * Real streets, weighted by road class.
+ *
+ * The trick that makes a few thousand lines read as a map rather than a mesh: footpaths as
+ * near-invisible hairlines that only register as texture, then service roads, then the
+ * through-roads brightest and thickest. Uniform strokes look like a circuit board.
+ *
+ * vector-effect keeps the weights honest — the SVG scales to its container, and without it a
+ * hairline layer would fatten on the 27" wallboard and vanish on the 7" touchscreen.
+ */
+.campus-map__street {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.campus-map__street--path {
+  stroke: rgba(120, 170, 235, 0.22);
+  stroke-width: 0.4px;
+}
+
+.campus-map__street--service {
+  stroke: rgba(130, 185, 245, 0.4);
+  stroke-width: 0.6px;
+}
+
+.campus-map__street--minor {
+  stroke: rgba(150, 205, 255, 0.62);
+  stroke-width: 1px;
+}
+
+.campus-map__street--major {
+  stroke: rgba(90, 220, 255, 0.9);
+  stroke-width: 1.7px;
+}
+
+.campus-map__attribution {
+  fill: rgba(160, 200, 255, 0.35);
+  font-family: var(--db-font-mono);
+  font-size: 8px;
+}
+
+/*
+ * The wallboard's poll *tile* (the always-visible grid one, not the focus panel).
+ *
+ * It had no base rule at all — only a `.wallboard-focus-panel .poll-option-row` variant — so
+ * in the grid the label and the count were two bare inline spans butted together and rendered
+ * as "marnarmena0 votes". Now it lays out, and carries the same bar as the other two surfaces.
+ */
+.poll-option-row {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.poll-option-row__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--db-spacing-sm);
+}
+
+.poll-option-row__count {
+  white-space: nowrap;
+  color: var(--db-text-secondary);
+  font-family: var(--db-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85em;
+}
+
+.poll-option-row--leader .poll-option-row__count strong {
+  color: var(--db-accent);
+}
+
+.poll-option-row__bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.poll-option-row__bar > span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(53, 214, 255, 0.55), rgba(53, 214, 255, 0.85));
+  transition: width 480ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.poll-option-row--leader .poll-option-row__bar > span {
+  background: linear-gradient(90deg, var(--db-accent), var(--db-gold));
+}
+
+/*
+ * The map inside the ambient grid tile, under the text.
+ *
+ * Not the focus map shrunk: at a third of the width its 10px labels would render around 7px.
+ * The compact variant drops the legend, the Hoover reference and the "you are here" caption
+ * and keeps what still reads at this size — streets, water, every hall, and the pick.
+ */
+.campus-map--compact {
+  max-width: none;
+  gap: 0;
+  margin-top: auto;
+}
+
+.campus-map--compact .campus-map__svg {
+  border-radius: var(--db-radius-sm);
+}
+
+/* Bigger in viewBox units so it survives the downscale to tile width. */
+.campus-map--compact .campus-map__hall-label {
+  font-size: 20px;
+  stroke-width: 4px;
+}
+
+.campus-map--compact .campus-map__attribution {
+  font-size: 11px;
+}
+
+.campus-map--compact .campus-map__street--path {
+  /* The hairline layer becomes noise once the whole frame is a third of the size. */
+  display: none;
+}
+
+.food-tile-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/*
+ * No scrollbar chrome on the kiosk surfaces.
+ *
+ * Chrome on the Pi paints classic (space-taking) scrollbars, so any container that can
+ * scroll shows a grey gutter down the side of the map or the tile grid. Nobody drags a
+ * scrollbar on a 7" touchscreen or a wall-mounted 27" panel — the doorpad is touched
+ * (swipe still works with the chrome hidden) and the wallboard is not touched at all.
+ *
+ * Deliberately scoped to the kiosk views rather than applied globally: /admin is a real
+ * page used from a laptop, where a scrollbar is information about how much more there is.
+ */
+.doorpad-view,
+.ambient-grid,
+.wallboard-focus-panel,
+.campus-map,
+.poll-focus__options--doorpad,
+.doorpad-sub-content {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* old Edge */
+}
+
+.doorpad-view::-webkit-scrollbar,
+.ambient-grid::-webkit-scrollbar,
+.wallboard-focus-panel::-webkit-scrollbar,
+.campus-map::-webkit-scrollbar,
+.poll-focus__options--doorpad::-webkit-scrollbar,
+.doorpad-sub-content::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* The map is a fixed-aspect SVG; it should never have been able to scroll at all. */
+.campus-map,
+.campus-map__svg {
+  overflow: hidden;
+}
+
+/*
+ * Doorpad screen transitions — drilling in and backing out.
+ *
+ * Replaces a generic 8px `fade-in` that only ever played on the first step away from home,
+ * because the sub-screen wrapper stays mounted between sub-screens. The wrapper is keyed on
+ * the screen name now, so every move animates.
+ *
+ * Forward (home -> a tile's screen) comes toward you; back (-> home) recedes. Opposite
+ * directions on the same axis is what makes the two feel like a hierarchy rather than two
+ * unrelated fades.
+ *
+ * transform and opacity only. This runs on a Pi that is also decoding H.264 and running face
+ * recognition, and those are the two properties a compositor animates without touching
+ * layout.
+ */
+.doorpad-enter {
+  animation: doorpad-drill-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.doorpad-enter--back {
+  animation-name: doorpad-drill-out;
+}
+
+@keyframes doorpad-drill-in {
+  from {
+    opacity: 0;
+    transform: scale(0.965) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes doorpad-drill-out {
+  from {
+    opacity: 0;
+    transform: scale(1.035);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/*
+ * The door has to stay usable for someone who has asked the system to stop moving things.
+ * The animation is decoration; which screen you are on is the information.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .doorpad-enter,
+  .doorpad-enter--back {
+    animation: none;
+  }
+}
+
+/*
+ * The numbers, in the focused About channel.
+ *
+ * The grid tile carried five stat chips and the focused view — the one you get by choosing
+ * to open About and read it — carried none, so looking closer showed less. These are laid
+ * out big because the wallboard is read from across a hallway.
+ */
+.about-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--db-spacing-md);
+  margin: var(--db-spacing-md) 0 0;
+}
+
+.about-facts__item {
+  padding: var(--db-spacing-md);
+  border-radius: var(--db-radius-md);
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(140, 190, 255, 0.18);
+}
+
+.about-facts__value {
+  margin: 0;
+  font-family: var(--db-font-display);
+  font-size: clamp(1.7rem, 3vw, 2.9rem);
+  line-height: 1;
+  color: var(--db-accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.about-facts__label {
+  margin: 0.35rem 0 0;
+  color: var(--db-text-secondary);
+  font-size: clamp(0.9rem, 1.2vw, 1.15rem);
+  line-height: 1.25;
+}
+
+.about-facts__asof {
+  margin: var(--db-spacing-md) 0 0;
+  color: var(--db-text-secondary);
+  font-family: var(--db-font-mono);
+  font-size: clamp(0.75rem, 1vw, 0.95rem);
+}
+
+.about-tech-facts {
+  margin: var(--db-spacing-sm) 0 0;
+  padding-left: 1.1em;
+  display: grid;
+  gap: var(--db-spacing-sm);
+}
+
+.about-tech-facts__item {
+  color: var(--db-text-primary);
+  font-size: clamp(1rem, 1.4vw, 1.35rem);
+  line-height: 1.5;
+}
+
+.about-tech-facts__item::marker {
+  color: var(--db-accent);
 }

@@ -33,11 +33,33 @@ class AircraftConfig(BaseModel):
     poll_cooldown_seconds: int = 30
 
 
+class AircraftDataUnavailable(RuntimeError):
+    """Raised when there is no aircraft data to report — not even stale.
+
+    Distinct from an empty list, which is a real observation: "the sky over the bay is
+    clear". Returning the empty cache on a failed fetch conflated the two, and the wallboard
+    published it as the confident claim "No nearby aircraft" while OpenSky was in fact
+    answering 429 to every poll. An empty sky and a rate-limited API must not look the same.
+    """
+
+
 class AircraftProvider(abc.ABC):
     @abc.abstractmethod
     def get_nearby_aircraft(self, now: datetime) -> list[dict[str, Any]]:
-        """Calculate and return a list of nearby aircraft detail dicts."""
+        """Nearby aircraft, or raise :class:`AircraftDataUnavailable` if none are known.
+
+        An empty list means the sky is clear. It does not mean "the lookup failed".
+        """
         pass
+
+    @property
+    def last_successful_time(self) -> datetime | None:
+        """When the returned data was actually observed, if known.
+
+        The caller stamps the payload with this rather than with "now", so cached data
+        cannot present itself as current.
+        """
+        return None
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -115,7 +137,7 @@ class OpenSkyAircraftProvider(AircraftProvider):
         # If we are cooling down, serve cache directly without making request
         if time_since_last is not None and time_since_last < self.config.poll_cooldown_seconds:
             logger.debug("Request within cooldown period. Serving cached aircraft data.")
-            return self._cached_aircraft
+            return self._serve_cache("cooldown")
 
         # Bounding box coordinates
         lamin = self.config.observer_lat - self.config.bbox_half_size_lat
@@ -213,6 +235,23 @@ class OpenSkyAircraftProvider(AircraftProvider):
         except Exception as e:
             logger.warning(f"Error fetching from OpenSky API: {e}. Serving cached aircraft data.")
 
+        return self._serve_cache("fetch failed")
+
+    @property
+    def last_successful_time(self) -> datetime | None:
+        return self._last_successful_time
+
+    def _serve_cache(self, why: str) -> list[dict[str, Any]]:
+        """The cache, or an explicit "unknown" when there has never been a successful fetch.
+
+        `self._cached_aircraft` starts empty, so before the first success this used to hand
+        back `[]` — which the wallboard renders as "No nearby aircraft." OpenSky answering
+        429 to every request is not an empty sky.
+        """
+        if self._last_successful_time is None:
+            raise AircraftDataUnavailable(
+                f"no aircraft data has been retrieved successfully yet ({why})"
+            )
         return self._cached_aircraft
 
 

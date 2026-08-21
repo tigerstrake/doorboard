@@ -24,6 +24,8 @@ import type {
   PresenceLabel,
 } from "@doorboard/contracts";
 import { AboutDoorboard } from "./AboutDoorboard";
+import { pollShares } from "./PollResultBars";
+import { CampusDiningMap } from "./wallboard/CampusDiningMap";
 import { ApproachGreeting } from "./ApproachGreeting";
 import { AttributionNotice } from "./AttributionNotice";
 import { WallboardVisitorMode } from "./wallboard/WallboardVisitorMode";
@@ -261,6 +263,8 @@ interface DoorApiSnapshot {
     /** Recognised person whose name writes will carry (ADR-0018 E-23). */
     attributed_to?: string | null;
     profile_id?: string | null;
+    /** The colour this person chose at enrollment (ADR-0021), not the profile default. */
+    accent_color?: string | null;
   };
   config?: { max_recording_s?: number };
 }
@@ -618,6 +622,11 @@ export function App() {
               max_elevation_deg: satelliteFixture.max_elevation_deg,
               direction: satelliteFixture.direction,
               visible: satelliteFixture.visible,
+              set_at: satelliteFixture.set_at,
+              rise_azimuth_deg: satelliteFixture.rise_azimuth_deg,
+              culmination_azimuth_deg: satelliteFixture.culmination_azimuth_deg,
+              set_azimuth_deg: satelliteFixture.set_azimuth_deg,
+              track: satelliteFixture.track,
             },
           }
         : null
@@ -647,6 +656,8 @@ export function App() {
             title: foodFixture.title,
             detail: foodFixture.detail,
             provider: foodFixture.provider,
+            hall: foodFixture.hall,
+            backup_hall: foodFixture.backup_hall,
           },
         }
         : null
@@ -1741,6 +1752,14 @@ export function App() {
                 <>
                   <h4>{foodRecommendation.payload.title}</h4>
                   <p>{foodRecommendation.payload.detail}</p>
+                  {/* The map under the text, at tile density — the hall's name answers
+                      "where" only if you already know campus. */}
+                  <CampusDiningMap
+                    compact
+                    hall={foodRecommendation.payload.hall}
+                    title={foodRecommendation.payload.title}
+                    backupHall={foodRecommendation.payload.backup_hall}
+                  />
                 </>
               ) : <p>Food recommendation unavailable.</p>}
             </div>
@@ -1791,11 +1810,13 @@ export function App() {
               {currentPoll && (
                 <>
                   <p className="poll-q"><strong>{currentPoll.question}</strong></p>
-                  {currentPoll.options.map((opt) => (
+                  {pollShares(currentPoll, pollResults).map((share) => (
                     <PollOptionRow
-                      key={opt.id}
-                      text={opt.text}
-                      votes={pollResults?.find((r) => r.option_id === opt.id)?.votes ?? 0}
+                      key={share.optionId}
+                      text={share.text}
+                      votes={share.votes}
+                      pct={share.pct}
+                      isLeader={share.isLeader}
                     />
                   ))}
                 </>
@@ -1858,7 +1879,10 @@ export function App() {
         displayName={activeDisplayName}
         profileId={activeProfile}
       />
-      <CrossfadeSwitch activeKey={isVisitorMode ? "visitor" : focusedChannel ?? "ambient"}>
+      <CrossfadeSwitch
+        activeKey={isVisitorMode ? "visitor" : focusedChannel ?? "ambient"}
+        variant="zoom"
+      >
         {isVisitorMode ? (
           <WallboardVisitorMode
             sessionState={sessionState}
@@ -2461,7 +2485,7 @@ export function App() {
     if (doorPadScreen === "home") {
       return (
         <div
-          className="doorpad-view db-app-theme"
+          className="doorpad-view db-app-theme doorpad-enter doorpad-enter--back"
           ref={doorPadFocusRef}
           tabIndex={-1}
           aria-label="DoorPad home"
@@ -2615,7 +2639,12 @@ export function App() {
         }
       >
         <div
-          className="doorpad-view db-app-theme fade-in"
+          className="doorpad-view db-app-theme doorpad-enter"
+          // Keyed on the screen so moving between sub-screens replays the transition. The
+          // wrapper stays mounted across them, so a mount-only animation covered just the
+          // first step in. Photo/video sub-steps keep the same key, which matters: those
+          // hold a live preview element that a remount would restart.
+          key={doorPadScreen}
           ref={doorPadFocusRef}
           tabIndex={-1}
           aria-label="DoorPad visitor workflow"
@@ -3050,27 +3079,51 @@ export function App() {
                   <AttributionNotice attributedTo={attributedTo} verb="vote on" />
                   <p className="poll-q"><strong>{currentPoll.question}</strong></p>
                   {pollVoteError && <p className="poll-error">{pollVoteError}</p>}
+                  {/*
+                    Each option is its own bar: the button's fill *is* the graph. A separate
+                    chart below the buttons was the obvious way to do this and measured 741px
+                    of a 600px screen on a six-option poll, pushing "Submit Vote" off the
+                    touchscreen — the cut-off-controls complaint this was not allowed to
+                    reintroduce. This costs no extra height at all.
+
+                    Shown before voting too. The wallboard a metre away already publishes the
+                    same tallies live, so withholding them here protected nothing.
+                  */}
                   <div className="poll-choices">
-                    {currentPoll.options.map((opt) => {
-                      const result = pollResults?.find((r) => r.option_id === opt.id);
-                      return (
-                        <button
-                          key={opt.id}
-                          className="phrase-btn"
-                          style={{ width: "100%", margin: "4px 0" }}
-                          disabled={doorPadVotedOptionId !== null}
-                          aria-pressed={
-                            doorPadVotedOptionId === opt.id || selectedPollOptionId === opt.id
-                          }
-                          onClick={() => setSelectedPollOptionId(opt.id)}
-                        >
-                          {opt.text}
-                          {doorPadVotedOptionId && result !== undefined && (
-                            <span className="poll-vote-count"> — {result.votes} votes</span>
+                    {pollShares(currentPoll, pollResults).map((share) => (
+                      <button
+                        key={share.optionId}
+                        className={`phrase-btn poll-choice${share.isLeader ? " poll-choice--leader" : ""}`}
+                        disabled={doorPadVotedOptionId !== null}
+                        aria-pressed={
+                          doorPadVotedOptionId === share.optionId ||
+                          selectedPollOptionId === share.optionId
+                        }
+                        onClick={() => setSelectedPollOptionId(share.optionId)}
+                      >
+                        <span
+                          className="poll-choice__fill"
+                          style={{ width: `${share.pct}%` }}
+                          aria-hidden="true"
+                        />
+                        <span className="poll-choice__text">
+                          {share.text}
+                          {doorPadVotedOptionId === share.optionId && (
+                            <span className="poll-focus__mine-tag"> your vote</span>
                           )}
-                        </button>
-                      );
-                    })}
+                        </span>
+                        <span
+                          className="poll-choice__count"
+                          role="progressbar"
+                          aria-valuenow={Math.round(share.pct)}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-label={share.text}
+                        >
+                          {share.votes} · {share.pct.toFixed(0)}%
+                        </span>
+                      </button>
+                    ))}
                   </div>
                 </>
               )}
