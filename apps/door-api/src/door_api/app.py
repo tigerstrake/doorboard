@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -17,6 +18,11 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
+from doorboard_contracts.enrollment_relay import (
+    VisitorActionOutcome,
+    VisitorQueuedAction,
+    VisitorSessionSnapshot,
+)
 from doorboard_contracts.events import (
     DoorboardEvent,
     HealthPayload,
@@ -40,6 +46,12 @@ from door_api.social.config import SocialConfig
 from door_api.social.routes import build_social_router
 from door_api.social.service import SocialService
 from door_api.social.store import SocialStore
+from door_api.visitor_relay import (
+    HttpVisitorRelayTransport,
+    VisitorRelayTransport,
+    VisitorRelayWorker,
+)
+from door_api.visitor_relay import build_snapshot as build_visitor_snapshot
 from door_api.visitor_tokens import (
     VisitorTokenClaims,
     VisitorTokenError,
@@ -47,11 +59,32 @@ from door_api.visitor_tokens import (
     encode_visitor_token,
 )
 
+logger = logging.getLogger("door_api.app")
+
+
+def _visitor_reject_reason(exc: Exception) -> str:
+    """Map a social-service failure to a bounded, machine-readable reason.
+
+    Deliberately does not include the exception text: these strings travel back
+    through the relay to a public page, and an exception message can quote the
+    offending input.
+    """
+    name = type(exc).__name__
+    return {
+        "RateLimitedError": "rate_limited",
+        "ValidationError": "rejected_content",
+        "SanitizationError": "rejected_content",
+        "NotFoundError": "not_found",
+        "PollClosedError": "poll_closed",
+        "DuplicateVoteError": "already_voted",
+        "UnsupportedDeletionTargetError": "not_deletable",
+    }.get(name, "door_error")
+
 
 class DoorApiState:
     """State container for the FastAPI app."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, visitor_relay_transport: VisitorRelayTransport | None = None) -> None:
         self.broadcast = DisplayBroadcast()
         self.config = SessionConfig.from_env()
         self.store = SessionStore(
@@ -72,10 +105,27 @@ class DoorApiState:
         self.mqtt_bridge: MqttBridge | None = None
         self._mqtt_bridge_task: asyncio.Task[None] | None = None
 
+        # Visitor relay (ADR-0017). All optional: with no relay configured the QR
+        # behaves exactly as before and no worker or egress exists.
+        self.visitor_relay_worker: VisitorRelayWorker | None = None
+        self._visitor_relay_transport: VisitorRelayTransport | None = visitor_relay_transport
+        self._visitor_relay_task: asyncio.Task[None] | None = None
+        self._visitor_relay_token: str | None = None
+        self._visitor_relay_applied: dict[str, VisitorActionOutcome] = {}
+
         def on_event(event: dict[str, Any]) -> None:
             self.broadcast.send_delta(event)
             if event["type"] in ("session.state_changed", "session.started", "session.ended"):
                 self.broadcast.update_snapshot(self.machine.snapshot().to_dict())
+            # Republish the public snapshot so a phone sees ring status change.
+            # A flag, never a network call: the transition path must not block.
+            if self.visitor_relay_worker is not None:
+                self.visitor_relay_worker.request_push()
+            if event["type"] == "session.ended":
+                # Stop advertising a finished session, and drop the applied-action
+                # memo so the next visitor starts clean.
+                self._visitor_relay_token = None
+                self._visitor_relay_applied.clear()
 
         self.machine = SessionMachine(config=self.config, store=self.store, on_event=on_event)
 
@@ -102,6 +152,7 @@ class DoorApiState:
         self.start_media_forwarder()
         self.start_sync_forwarder()
         self.start_mqtt_bridge()
+        self.start_visitor_relay()
 
     def shutdown(self) -> None:
         """Close resources."""
@@ -113,6 +164,13 @@ class DoorApiState:
             self._sync_forward_task.cancel()
         if self._mqtt_bridge_task is not None:
             self._mqtt_bridge_task.cancel()
+        if self._visitor_relay_task is not None:
+            self._visitor_relay_task.cancel()
+        if self.visitor_relay_worker is not None:
+            with contextlib.suppress(RuntimeError):
+                asyncio.get_running_loop().create_task(
+                    self.visitor_relay_worker.stop(), name="door-api-visitor-relay-stop"
+                )
         self.machine.close()
         self.social_store.close()
 
@@ -346,8 +404,236 @@ class DoorApiState:
             session_id=snapshot.session_id,
             expires_at=expires_at,
         )
-        url = f"{self.config.visitor_public_base_url.rstrip('/')}/visitor?token={token}"
-        return {"token": token, "url": url, "expires_at": expires_at}
+
+        # The QR must work for a phone on cellular, which cannot resolve the LAN
+        # host — but it must also keep working with the internet down (E-19). So
+        # advertise the relay only when we have *observed* it reachable recently,
+        # and fall back to the LAN URL otherwise. Failure direction is toward the
+        # thing that works offline.
+        if self._visitor_relay_is_fresh():
+            base = (
+                self.config.visitor_relay_public_url or self.config.visitor_relay_base_url
+            ).rstrip("/")
+            url = f"{base}/v/{token}"
+            via = "relay"
+        else:
+            url = f"{self.config.visitor_public_base_url.rstrip('/')}/visitor?token={token}"
+            via = "lan"
+
+        # Push immediately so the snapshot is there before the visitor can scan.
+        self._push_visitor_snapshot_soon(token)
+        return {"token": token, "url": url, "expires_at": expires_at, "via": via}
+
+    # -- visitor relay (ADR-0017) ------------------------------------------
+
+    def _visitor_relay_is_fresh(self) -> bool:
+        """True when a relay exchange succeeded inside the freshness window."""
+        if self.visitor_relay_worker is None:
+            return False
+        last = self.visitor_relay_worker.stats.last_success_monotonic
+        if last is None:
+            return False
+        try:
+            now = asyncio.get_running_loop().time()
+        except RuntimeError:
+            return False
+        return (now - last) <= self.config.visitor_relay_freshness_s
+
+    def _push_visitor_snapshot_soon(self, token: str) -> None:
+        """Remember the live token and ask the worker to publish on its next tick."""
+        self._visitor_relay_token = token
+        if self.visitor_relay_worker is not None:
+            self.visitor_relay_worker.request_push()
+
+    def visitor_relay_snapshot(self) -> VisitorSessionSnapshot | None:
+        """Project public session state for the relay (ADR-0017 §2 allow-list).
+
+        Returns None when there is no live session or no token has been issued —
+        there is nothing public to publish, and publishing a stale session would
+        let an old QR keep working.
+        """
+        token = self._visitor_relay_token
+        if token is None:
+            return None
+        snapshot = self.machine.snapshot()
+        if snapshot.session_id is None:
+            return None
+        try:
+            claims = decode_visitor_token(token, secret=self.config.visitor_token_secret)
+        except VisitorTokenError:
+            # The token expired; stop publishing rather than advertising a session
+            # a phone can no longer act on.
+            self._visitor_relay_token = None
+            return None
+        if claims.session_id != snapshot.session_id:
+            self._visitor_relay_token = None
+            return None
+
+        poll = self.social_service.get_current_poll()
+        poll_payload: dict[str, Any] | None = None
+        results: list[dict[str, Any]] | None = None
+        if poll is not None:
+            poll_payload = {
+                "id": poll.id,
+                "question": poll.question,
+                "options": [{"id": option.id, "label": option.text} for option in poll.options],
+            }
+            with contextlib.suppress(Exception):
+                results = self.social_service.poll_results(poll.id)
+
+        return build_visitor_snapshot(
+            session_token=token,
+            session_id=str(snapshot.session_id),
+            state=snapshot.state.value,
+            expires_at=datetime.fromtimestamp(claims.expires_at, tz=UTC),
+            poll=poll_payload,
+            poll_results=results,
+            # Every outcome applied for this session. A push replaces the relay's
+            # snapshot, so leaving these out would wipe the receipt the visitor's
+            # phone is polling for — `_visitor_relay_applied` is cleared on
+            # session end, so it holds only this session's results.
+            outcomes=list(self._visitor_relay_applied.values()),
+        )
+
+    def visitor_relay_apply(self, action: VisitorQueuedAction) -> VisitorActionOutcome:
+        """Apply one relay-collected visitor write through the normal social path.
+
+        Content authority stays with ``SocialService`` (E-18): same sanitiser, same
+        rate limits as the LAN path. This method only translates and reports.
+
+        Never raises — a bad action becomes a `rejected` outcome so one visitor
+        cannot stall the queue for the next.
+        """
+        kind: str = "note"
+        try:
+            token = self._visitor_relay_token
+            if token is None:
+                return VisitorActionOutcome(
+                    action_id=action.action_id,
+                    kind="note",
+                    status="rejected",
+                    reason="session_mismatch",
+                )
+            # Applying the same action_id twice (a duplicate delivery after a
+            # missed ack) must not double-post; the relay leases rather than
+            # deletes, so this is a real case, not a theoretical one.
+            if action.action_id in self._visitor_relay_applied:
+                return self._visitor_relay_applied[action.action_id]
+
+            # Bucket rate limits per session rather than per real IP: the relay
+            # deliberately does not forward visitor IP addresses, and we would
+            # rather not collect them anyway.
+            pseudo_ip = f"relay:{action.session_id}"
+
+            if action.note is not None:
+                kind = "note"
+                entry = self.social_service.create_guestbook_entry(
+                    text=action.note.text,
+                    author_label="Left via phone",
+                    ip=pseudo_ip,
+                    session_token=token,
+                    trace_id=str(uuid4()),
+                )
+                outcome = VisitorActionOutcome(
+                    action_id=action.action_id, kind=kind, status="applied", entry_id=entry.id
+                )
+            elif action.vote is not None:
+                kind = "vote"
+                self.social_service.cast_vote(
+                    poll_id=action.vote.poll_id,
+                    option_id=action.vote.option_id,
+                    ip=pseudo_ip,
+                    session_token=token,
+                    trace_id=str(uuid4()),
+                )
+                outcome = VisitorActionOutcome(
+                    action_id=action.action_id, kind=kind, status="applied"
+                )
+            elif action.deletion_request is not None:
+                kind = "deletion_request"
+                self.social_service.request_deletion(
+                    target_kind=action.deletion_request.target_kind,
+                    target_id=action.deletion_request.target_id,
+                    ip=pseudo_ip,
+                    session_token=token,
+                    trace_id=str(uuid4()),
+                )
+                outcome = VisitorActionOutcome(
+                    action_id=action.action_id, kind=kind, status="applied"
+                )
+            else:
+                return VisitorActionOutcome(
+                    action_id=action.action_id,
+                    kind=kind,
+                    status="rejected",
+                    reason="empty_action",
+                )
+        except Exception as exc:
+            reason = _visitor_reject_reason(exc)
+            logger.warning(
+                "visitor_relay_action_rejected",
+                extra={"action_id": action.action_id, "kind": kind, "reason": reason},
+            )
+            outcome = VisitorActionOutcome(
+                action_id=action.action_id, kind=kind, status="rejected", reason=reason
+            )
+
+        self._visitor_relay_applied[action.action_id] = outcome
+        # Bounded: one door session cannot accumulate more than the relay's own cap.
+        if len(self._visitor_relay_applied) > 256:
+            for stale in list(self._visitor_relay_applied)[:128]:
+                del self._visitor_relay_applied[stale]
+        return outcome
+
+    def visitor_relay_status(self) -> dict[str, Any]:
+        if not self.config.visitor_relay_base_url or not self.config.visitor_relay_device_token:
+            return {"configured": False, "status": "disabled"}
+        worker = self.visitor_relay_worker
+        if worker is None:
+            return {"configured": True, "status": "stopped"}
+        stats = worker.stats
+        return {
+            "configured": True,
+            "status": "ok" if self._visitor_relay_is_fresh() else "degraded",
+            "pushes_ok": stats.pushes_ok,
+            "polls_ok": stats.polls_ok,
+            "polls_failed": stats.polls_failed,
+            "actions_applied": stats.actions_applied,
+            "actions_rejected": stats.actions_rejected,
+            "consecutive_failures": stats.consecutive_failures,
+            "last_error": stats.last_error,
+            "qr_target": "relay" if self._visitor_relay_is_fresh() else "lan",
+        }
+
+    def start_visitor_relay(self) -> None:
+        """Start the visitor relay worker, if one is configured.
+
+        Nothing here may prevent door-api from serving: the visitor QR working
+        remotely is a convenience, and the session state machine must not depend
+        on it.
+        """
+        if not self.config.visitor_relay_base_url or not self.config.visitor_relay_device_token:
+            return
+        transport = self._visitor_relay_transport or HttpVisitorRelayTransport(
+            base_url=self.config.visitor_relay_base_url,
+            device_token=self.config.visitor_relay_device_token,
+            timeout_s=self.config.visitor_relay_timeout_s,
+        )
+        self.visitor_relay_worker = VisitorRelayWorker(
+            transport=transport,
+            handler=self,
+            poll_interval_s=self.config.visitor_relay_poll_interval_s,
+            backoff_max_s=self.config.visitor_relay_backoff_max_s,
+        )
+        # startup() is also called from synchronous contexts (tests, and any future
+        # non-ASGI entry point), where there is no loop to attach to. Same pattern
+        # as the MQTT bridge: build the object, start the loop only if there is one.
+        # A worker that never starts simply leaves the QR on its LAN fallback.
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+            self._visitor_relay_task = loop.create_task(
+                self.visitor_relay_worker.start(), name="door-api-visitor-relay-start"
+            )
 
     def verify_visitor_token(self, token: str) -> VisitorTokenClaims:
         try:
@@ -719,6 +1005,15 @@ async def photo_booth_discard(recording_id: str, body: PhotoBoothSessionBody) ->
 @app.get("/visitor-token")
 async def visitor_token() -> dict[str, str | int]:
     return state.visitor_token()
+
+
+@app.get("/visitor-relay-status")
+async def visitor_relay_status() -> dict[str, Any]:
+    """Whether the visitor QR is currently pointing at the relay or the LAN.
+
+    Public: it reports reachability and counters, never visitor content.
+    """
+    return state.visitor_relay_status()
 
 
 @app.get("/visitor-session")

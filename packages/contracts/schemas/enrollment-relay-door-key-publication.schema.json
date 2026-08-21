@@ -1,0 +1,64 @@
+{
+  "$defs": {
+    "Base64Url": {
+      "maxLength": 1400000,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "OpaqueId": {
+      "pattern": "^[a-z]{3,6}_[A-Za-z0-9]{16,32}$",
+      "type": "string"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Pushed by the Pi (outbound) so phones can seal to it.\n\nCarries the consent statement because ADR-0009 E-7 makes the Pi's copy the\nsingle source enrollees must see verbatim; the relay only relays it.",
+  "properties": {
+    "consent_text": {
+      "maxLength": 32000,
+      "minLength": 1,
+      "title": "Consent Text",
+      "type": "string"
+    },
+    "consent_version": {
+      "maxLength": 16,
+      "minLength": 1,
+      "title": "Consent Version",
+      "type": "string"
+    },
+    "door_key_id": {
+      "$ref": "#/$defs/OpaqueId"
+    },
+    "fingerprint": {
+      "$ref": "#/$defs/Base64Url",
+      "description": "First 16 bytes of SHA-256 over the public key, base64url. The QR fragment carries this so a substituted key is detectable (E-10)."
+    },
+    "public_key": {
+      "$ref": "#/$defs/Base64Url",
+      "description": "Uncompressed SEC1 P-256 point"
+    },
+    "published_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "suite": {
+      "const": "ecies-p256-hkdf-sha256-aes256gcm",
+      "default": "ecies-p256-hkdf-sha256-aes256gcm",
+      "title": "Suite",
+      "type": "string"
+    }
+  },
+  "required": [
+    "door_key_id",
+    "public_key",
+    "fingerprint",
+    "consent_version",
+    "consent_text",
+    "published_at"
+  ],
+  "title": "DoorKeyPublication",
+  "type": "object"
+}

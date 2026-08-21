@@ -1,0 +1,44 @@
+{
+  "$defs": {
+    "OpaqueId": {
+      "pattern": "^[a-z]{3,6}_[A-Za-z0-9]{16,32}$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The Pi's verdict. Deletes the ciphertext and updates the phone's status.",
+  "properties": {
+    "bundle_id": {
+      "$ref": "#/$defs/OpaqueId"
+    },
+    "outcome": {
+      "enum": [
+        "enrolled",
+        "failed",
+        "rejected"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Machine-readable only \u2014 never a display name or quality vector",
+      "title": "Reason"
+    }
+  },
+  "required": [
+    "bundle_id",
+    "outcome"
+  ],
+  "title": "PickupAck",
+  "type": "object"
+}

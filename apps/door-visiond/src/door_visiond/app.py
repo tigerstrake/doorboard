@@ -7,6 +7,11 @@ Routes:
   POST /enroll           — admin-auth, multipart images (ADR-0009 §5)
   POST /unenroll         — admin-auth, delete a person (E-5 semantics)
   POST /privacy-mode     — admin-auth, capture-layer kill switch (E-6)
+  POST /invites          — admin-auth, mint a remote-enrollment invite (ADR-0016 §4)
+  GET  /invites          — admin-auth, list invites and their state
+  POST /invites/{id}/revoke — admin-auth, revoke an unconsumed invite
+  GET  /relay-status     — admin-auth, remote-enrollment relay reachability
+  POST /relay-key/rotate — admin-auth, mint a fresh sealing keypair
 
 Auth: ``DOOR_VISIOND_ADMIN_TOKEN``. Empty closes protected routes.
 None of these routes sit in the door button path.
@@ -32,7 +37,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from door_visiond.consent import ConsentStatementUnavailable, load_consent_statement
 from door_visiond.enrollment import ProfileSpec
@@ -230,6 +235,69 @@ async def list_people(_auth: AdminAuth, request: Request) -> list[dict[str, Any]
             detail="encrypted enrollment storage is locked",
         )
     return svc._store.list_people()
+
+
+class _InviteBody(BaseModel):
+    """``label`` is the admin's own note (e.g. "Tiger's phone").
+
+    It stays on the door device — the relay is never told it (ADR-0016 §1).
+    """
+
+    label: str | None = Field(default=None, max_length=64)
+
+
+@app.post("/invites", status_code=status.HTTP_201_CREATED)
+async def create_invite(_auth: AdminAuth, request: Request, body: _InviteBody) -> dict[str, object]:
+    """Mint a single-use remote-enrollment invite (ADR-0016 §4).
+
+    The response contains the one and only copy of the invite secret, inside the
+    URL. It is never stored or logged, so a lost URL means minting a new invite.
+    """
+    try:
+        return _svc(request).create_invite(label=body.label)
+    except PrivacyModeActiveError:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="privacy_mode") from None
+    except EnrollmentLockedError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="encrypted enrollment storage is locked",
+        ) from None
+    except ConsentStatementUnavailable:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="canonical consent statement unavailable",
+        ) from None
+
+
+@app.get("/invites")
+async def list_invites(
+    _auth: AdminAuth,
+    request: Request,
+    include_closed: bool = False,
+) -> list[dict[str, object]]:
+    return _svc(request).list_invites(include_closed=include_closed)
+
+
+@app.post("/invites/{invite_id}/revoke")
+async def revoke_invite(_auth: AdminAuth, request: Request, invite_id: str) -> dict[str, object]:
+    return _svc(request).revoke_invite(invite_id)
+
+
+@app.get("/relay-status")
+async def relay_status(_auth: AdminAuth, request: Request) -> dict[str, object]:
+    return _svc(request).relay_status()
+
+
+@app.post("/relay-key/rotate")
+async def rotate_relay_key(_auth: AdminAuth, request: Request) -> dict[str, object]:
+    """Mint a fresh sealing keypair. Outstanding QR codes stop verifying (E-10)."""
+    try:
+        return _svc(request).rotate_relay_key()
+    except EnrollmentLockedError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="encrypted enrollment storage is locked",
+        ) from None
 
 
 @app.get("/consent")

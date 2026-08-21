@@ -10,6 +10,9 @@ dependencies = [
     "uvicorn",
     "pydantic-settings>=2.6",
     "python-multipart>=0.0.9",
+    # P-256 ECDH + HKDF + AES-GCM for opening sealed remote-enrollment bundles
+    # (ADR-0016 §2). Extends ADR-0003's stack list.
+    "cryptography>=43.0",
 ]
 
 [build-system]

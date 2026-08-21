@@ -20,7 +20,7 @@ from door_visiond.service import (
 )
 from door_visiond.settings import Settings
 
-from .conftest import TEST_DIM, face
+from .conftest import CONSENT_VERSION, TEST_DIM, face
 
 
 class _RaisingEmbedder:
@@ -61,7 +61,7 @@ def test_enroll_tmp_is_empty_after_success(ssd_settings: Settings) -> None:
     svc = _svc(ssd_settings)
     result = svc.enroll(
         display_name="Alex",
-        consent_version="v1",
+        consent_version=CONSENT_VERSION,
         consent_confirmed=True,
         images=[b"alex-photo-bytes"],
         profile=_profile(),
@@ -87,7 +87,7 @@ def test_required_encrypted_storage_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(EnrollmentLockedError):
         svc.enroll(
             display_name="Alex",
-            consent_version="v1",
+            consent_version=CONSENT_VERSION,
             consent_confirmed=True,
             images=[b"alex-photo-bytes"],
             profile=_profile(),
@@ -100,7 +100,7 @@ def test_enroll_tmp_is_empty_after_failure(ssd_settings: Settings) -> None:
     with pytest.raises(RuntimeError):
         svc.enroll(
             display_name="Alex",
-            consent_version="v1",
+            consent_version=CONSENT_VERSION,
             consent_confirmed=True,
             images=[b"alex-photo-bytes"],
             profile=_profile(),
@@ -147,7 +147,7 @@ def test_enroll_rejects_stale_consent(ssd_settings: Settings) -> None:
             images=[b"alex-photo-bytes"],
             profile=_profile(),
         )
-    assert exc.value.current_version == "v1"
+    assert exc.value.current_version == CONSENT_VERSION
 
 
 def test_enroll_rejects_unconfirmed_consent(ssd_settings: Settings) -> None:
@@ -155,7 +155,7 @@ def test_enroll_rejects_unconfirmed_consent(ssd_settings: Settings) -> None:
     with pytest.raises(StaleConsentError):
         svc.enroll(
             display_name="Alex",
-            consent_version="v1",
+            consent_version=CONSENT_VERSION,
             consent_confirmed=False,
             images=[b"alex-photo-bytes"],
             profile=_profile(),
@@ -167,7 +167,7 @@ def test_enroll_rejects_low_quality(ssd_settings: Settings) -> None:
     with pytest.raises(QualityTooLowError):
         svc.enroll(
             display_name="Alex",
-            consent_version="v1",
+            consent_version=CONSENT_VERSION,
             consent_confirmed=True,
             images=[b"aa"],  # too small → quality below threshold
             profile=_profile(),
@@ -180,7 +180,7 @@ def test_enroll_blocked_during_privacy_mode(ssd_settings: Settings) -> None:
     with pytest.raises(PrivacyModeActiveError):
         svc.enroll(
             display_name="Alex",
-            consent_version="v1",
+            consent_version=CONSENT_VERSION,
             consent_confirmed=True,
             images=[b"alex-photo-bytes"],
             profile=_profile(),
@@ -191,7 +191,7 @@ def test_recognition_populates_current_visitor(ssd_settings: Settings) -> None:
     svc = _svc(ssd_settings)
     svc.enroll(
         display_name="Alex",
-        consent_version="v1",
+        consent_version=CONSENT_VERSION,
         consent_confirmed=True,
         images=[b"alex-photo-bytes"],
         profile=_profile(),
@@ -214,7 +214,7 @@ def test_enroll_unenroll_churn_prunes_identity_state(ssd_settings: Settings) -> 
         seed = f"person-{n}-face-photo".encode()
         result = svc.enroll(
             display_name=f"Person{n}",
-            consent_version="v1",
+            consent_version=CONSENT_VERSION,
             consent_confirmed=True,
             images=[seed],
             profile=ProfileSpec(profile_id=f"prof{n}", color="#00f", sound=None),
@@ -233,7 +233,7 @@ def test_unenroll_flushes_current_visitor(ssd_settings: Settings) -> None:
     svc = _svc(ssd_settings)
     result = svc.enroll(
         display_name="Alex",
-        consent_version="v1",
+        consent_version=CONSENT_VERSION,
         consent_confirmed=True,
         images=[b"alex-photo-bytes"],
         profile=_profile(),

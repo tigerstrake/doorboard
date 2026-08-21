@@ -16,14 +16,14 @@ from door_visiond.matcher import Matcher
 from door_visiond.settings import Settings
 from doorboard_observability.redaction import REDACTED
 
-from .conftest import TEST_DIM, capture_logs, face, scan_tree_for, sentinel
+from .conftest import CONSENT_VERSION, TEST_DIM, capture_logs, face, scan_tree_for, sentinel
 
 
 def _enroll_known(store: EnrollmentStore, *, seed: bytes = b"alex") -> None:
     emb, _q = MockEmbedder(dim=TEST_DIM).embed(seed)
     store.enroll(
         display_name="Alex",
-        consent_version="v1",
+        consent_version=CONSENT_VERSION,
         consent_at=datetime.now(UTC),
         embeddings=[(emb, "mock", 0.9)],
         profile=ProfileSpec(profile_id="blue_wave", color="#0000ff", sound=None),

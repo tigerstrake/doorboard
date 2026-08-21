@@ -12,9 +12,15 @@ import contextlib
 import shutil
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from doorboard_contracts.enrollment_relay import (
+    DoorKeyPublication,
+    InviteRegistration,
+    PickupAck,
+    SealedBundle,
+)
 from doorboard_contracts.events import DoorboardEvent
 from doorboard_esp32_link import Esp32Transport, wire_message_from_event
 
@@ -24,7 +30,13 @@ from door_visiond.compat import CompatResult, check_compatibility
 from door_visiond.consent import load_consent_statement
 from door_visiond.embedder import Embedder, HailoEmbedder, MockEmbedder
 from door_visiond.embedding import Embedding
-from door_visiond.enrollment import EnrollmentStore, ProfileSpec
+from door_visiond.enrollment import (
+    EnrollmentStore,
+    InviteConsumption,
+    InviteUnusableError,
+    ProfileSpec,
+    hash_invite_secret,
+)
 from door_visiond.events import (
     EventEmitter,
     make_door_profile_clear,
@@ -45,6 +57,12 @@ from door_visiond.pipeline import (
 )
 from door_visiond.privacy_store import PrivacyStore
 from door_visiond.purge_outbox import PurgeOutbox
+from door_visiond.relay_client import (
+    HttpRelayTransport,
+    RelayTransport,
+    RelayWorker,
+)
+from door_visiond.relay_seal import RelayKeyring, SealError
 from door_visiond.settings import Settings
 from door_visiond.storage_security import is_luks_backed
 
@@ -102,6 +120,7 @@ class VisiondService:
         backend: VisionBackend | None = None,
         emitter: EventEmitter | None = None,
         esp32_transport: Esp32Transport | None = None,
+        relay_transport: RelayTransport | None = None,
     ) -> None:
         self._settings = settings
         self._clock: Clock = clock or SystemClock()
@@ -132,6 +151,15 @@ class VisiondService:
         self._pipeline_errors = 0
         self._pipeline_consecutive_errors = 0
         self._runtime_degraded_detail: str | None = None
+
+        # Remote enrollment (ADR-0016). All optional: with no relay configured
+        # none of this starts and the at-door flow is untouched. The keyring is
+        # opened lazily so a locked enrollment volume never causes a keypair to be
+        # written to the unencrypted parent filesystem.
+        self._relay_keyring: RelayKeyring | None = None
+        self._relay_transport: RelayTransport | None = relay_transport
+        self._relay_worker: RelayWorker | None = None
+        self._relay_tasks: set[asyncio.Task[None]] = set()
         # Shared Hailo face pipeline (built once, lazily, for hardware modes so
         # the VDevice + models are reused by both the embedder and the backend).
         self._hailo_pipeline: HailoFacePipeline | None = None
@@ -255,6 +283,38 @@ class VisiondService:
         self._running = True
         self._run_task = asyncio.create_task(self._run_loop(), name="visiond-run-loop")
         self._purge_task = asyncio.create_task(self._purge_loop(), name="visiond-purge-outbox")
+        await self._start_relay_worker()
+
+    async def _start_relay_worker(self) -> None:
+        """Start the remote-enrollment poller, if a relay is configured.
+
+        Nothing here is allowed to prevent the service from coming up: remote
+        enrollment is a convenience, and the door path must not depend on it.
+        """
+        if self._relay_transport is None:
+            if not self._settings.relay_enabled:
+                return
+            self._relay_transport = HttpRelayTransport(
+                base_url=self._settings.relay_base_url,
+                device_token=self._settings.relay_device_token,
+                timeout_s=self._settings.relay_timeout_s,
+            )
+        if self._enrollment_locked:
+            logger.warning("relay_worker_not_started_storage_locked")
+            return
+        try:
+            # Prune sealing keys retired longer ago than the relay's own TTL (E-12).
+            self._keyring().prune_retired(older_than_s=self._settings.relay_retired_key_ttl_s)
+        except (SealError, EnrollmentLockedError) as exc:
+            logger.error("relay_keyring_unavailable", extra={"error_class": type(exc).__name__})
+            return
+        self._relay_worker = RelayWorker(
+            transport=self._relay_transport,
+            handler=self,
+            poll_interval_s=self._settings.relay_poll_interval_s,
+            backoff_max_s=self._settings.relay_backoff_max_s,
+        )
+        await self._relay_worker.start()
 
     async def stop(self) -> None:
         self._running = False
@@ -266,6 +326,10 @@ class VisiondService:
             self._purge_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._purge_task
+        if self._relay_worker is not None:
+            await self._relay_worker.stop()
+        if self._relay_tasks:
+            await asyncio.gather(*self._relay_tasks, return_exceptions=True)
         if self._esp32_tasks:
             await asyncio.gather(*self._esp32_tasks, return_exceptions=True)
         await self._backend.close()
@@ -392,7 +456,15 @@ class VisiondService:
         consent_confirmed: bool,
         images: list[bytes],
         profile: ProfileSpec,
+        invite: InviteConsumption | None = None,
     ) -> EnrollResult:
+        """Embed and store one person.
+
+        ``invite`` is set only on the remote path (ADR-0016): it is validated and
+        consumed in the same transaction as the insert, so this method is the one
+        place both enrollment paths converge — and therefore the one place the
+        transient-image guarantee (§1) has to hold.
+        """
         if self._enrollment_locked:
             raise EnrollmentLockedError
         if self._privacy_enabled:
@@ -428,6 +500,7 @@ class VisiondService:
                 consent_at=self._clock.utc_now(),
                 embeddings=embeddings,
                 profile=profile,
+                invite=invite,
             )
         finally:
             # E-1/§1: raw enrollment images never survive the request.
@@ -465,6 +538,227 @@ class VisiondService:
             extra={"person_id": person_id, "newly_queued": newly_queued},
         )
         return {"deleted": existed, "archive_purge": "queued"}
+
+    # -- remote enrollment relay (ADR-0016) --------------------------------
+
+    def _keyring(self) -> RelayKeyring:
+        """Lazily open the door sealing keyring.
+
+        Lazy because the key lives on the encrypted volume: constructing it during
+        __init__ would generate a keypair on the unencrypted parent filesystem
+        whenever the volume happens to be locked at boot.
+        """
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        if self._relay_keyring is None:
+            self._relay_keyring = RelayKeyring(self._settings.relay_key_path)
+        return self._relay_keyring
+
+    def create_invite(self, *, label: str | None = None) -> dict[str, object]:
+        """Mint a single-use invite and return the URL a phone can open.
+
+        The secret appears in the returned URL and is never stored or logged; the
+        fragment carries the key fingerprint so the client can detect a relay that
+        substituted its own key (E-10). Fragments are not sent to servers.
+        """
+        if self._privacy_enabled:
+            raise PrivacyModeActiveError
+        keyring = self._keyring()
+        # Invite expiry is wall-clock UTC, not the injectable/monotonic clock: the
+        # phone, the relay, and the Pi are three different hosts comparing the same
+        # instant, so a monotonic value would be meaningless between them. Same
+        # reasoning as door-api's visitor tokens.
+        expires_at = datetime.now(UTC) + timedelta(seconds=self._settings.relay_invite_ttl_s)
+        invite_id, secret = self._store.create_invite(
+            expires_at=expires_at,
+            label=label,
+            max_images=self._settings.relay_max_images,
+        )
+        base = self._settings.relay_invite_base_url
+        url = f"{base}/e/{invite_id}.{secret}#k={keyring.fingerprint}"
+        registration = InviteRegistration(
+            invite_id=invite_id,
+            secret_sha256=hash_invite_secret(secret),
+            expires_at=expires_at,
+            max_images=self._settings.relay_max_images,
+        )
+        # Register outbound so the relay can reject junk before it reaches us. A
+        # failure here is not fatal: the worker's resync re-registers open invites,
+        # and the QR stays valid because the Pi's own table is authoritative.
+        if self._relay_worker is not None:
+            self._submit_relay_registration(registration)
+        logger.info("relay_invite_minted", extra={"invite_id": invite_id})
+        return {
+            "invite_id": invite_id,
+            "url": url,
+            "expires_at": expires_at.isoformat(),
+            "max_images": self._settings.relay_max_images,
+            "relay_configured": self._settings.relay_enabled,
+            "door_key_fingerprint": keyring.fingerprint,
+        }
+
+    def _submit_relay_registration(self, registration: InviteRegistration) -> None:
+        async def _send() -> None:
+            try:
+                await asyncio.to_thread(self._relay_transport_register, registration)
+            except Exception as exc:
+                logger.warning(
+                    "relay_invite_registration_failed",
+                    extra={"invite_id": registration.invite_id, "error_class": type(exc).__name__},
+                )
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(_send(), name="visiond-relay-invite-register")
+        self._relay_tasks.add(task)
+        task.add_done_callback(self._relay_tasks.discard)
+
+    def _relay_transport_register(self, registration: InviteRegistration) -> None:
+        if self._relay_transport is not None:
+            self._relay_transport.register_invite(registration)
+
+    def revoke_invite(self, invite_id: str) -> dict[str, object]:
+        revoked = self._store.revoke_invite(invite_id)
+        if revoked and self._relay_transport is not None:
+            # Best-effort: the Pi's table already refuses the invite, so a failed
+            # relay call cannot authorize anything.
+            with contextlib.suppress(Exception):
+                self._relay_transport.revoke_invite(invite_id)
+        return {"revoked": revoked}
+
+    def list_invites(self, *, include_closed: bool = False) -> list[dict[str, object]]:
+        return self._store.list_invites(include_closed=include_closed)
+
+    def rotate_relay_key(self) -> dict[str, object]:
+        keyring = self._keyring()
+        key_id = keyring.rotate()
+        if self._relay_worker is not None:
+            self._relay_worker.request_resync()
+        return {"door_key_id": key_id, "fingerprint": keyring.fingerprint}
+
+    # -- RelayHandler protocol (called by RelayWorker) ---------------------
+
+    def relay_collection_allowed(self) -> bool:
+        return not self._privacy_enabled and not self._enrollment_locked
+
+    def relay_door_key_publication(self) -> DoorKeyPublication:
+        statement = load_consent_statement(self._settings.consent_statement_path)
+        return self._keyring().publication(
+            consent_version=statement.version,
+            consent_text=statement.text,
+        )
+
+    def relay_invite_registrations(self) -> list[InviteRegistration]:
+        return [
+            InviteRegistration(
+                invite_id=invite_id,
+                secret_sha256=secret_sha256,
+                expires_at=datetime.fromisoformat(expires_at),
+                max_images=max_images,
+            )
+            for invite_id, secret_sha256, expires_at, max_images in (
+                self._store.open_invite_registrations()
+            )
+        ]
+
+    def relay_handle_bundle(self, bundle: SealedBundle) -> PickupAck:
+        """Open a sealed bundle and enroll the person inside it.
+
+        Never raises: every failure becomes an ack with a machine-readable reason,
+        so one bad bundle cannot stall the queue or kill the worker. Reasons never
+        contain user data (P-19).
+        """
+        try:
+            opened = self._keyring().open_bundle(bundle)
+        except SealError as exc:
+            logger.warning(
+                "relay_bundle_unsealable",
+                extra={"bundle_id": bundle.bundle_id, "reason": exc.reason},
+            )
+            return PickupAck(bundle_id=bundle.bundle_id, outcome="rejected", reason=exc.reason)
+        except EnrollmentLockedError:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="failed", reason="enrollment_storage_locked"
+            )
+
+        manifest = opened.manifest
+        # The relay's copy of invite_id is untrusted; the sealed manifest holds the
+        # secret only a genuine invite holder could know (E-11).
+        invite = InviteConsumption(
+            invite_id=bundle.invite_id,
+            secret_sha256=hash_invite_secret(manifest.invite_secret),
+        )
+        max_images = self._store.invite_max_images(bundle.invite_id)
+        if max_images is None:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="rejected", reason="unknown_invite"
+            )
+        if len(opened.images) > max_images:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="rejected", reason="too_many_images"
+            )
+
+        try:
+            result = self.enroll(
+                display_name=manifest.display_name,
+                consent_version=manifest.consent_version,
+                consent_confirmed=manifest.consent_confirmed,
+                images=list(opened.images),
+                profile=ProfileSpec(
+                    profile_id=manifest.profile.profile_id,
+                    color=manifest.profile.color,
+                    sound=manifest.profile.sound,
+                ),
+                invite=invite,
+            )
+        except InviteUnusableError as exc:
+            return PickupAck(bundle_id=bundle.bundle_id, outcome="rejected", reason=exc.reason)
+        except StaleConsentError:
+            return PickupAck(bundle_id=bundle.bundle_id, outcome="rejected", reason="stale_consent")
+        except QualityTooLowError:
+            return PickupAck(bundle_id=bundle.bundle_id, outcome="failed", reason="quality_too_low")
+        except PrivacyModeActiveError:
+            return PickupAck(bundle_id=bundle.bundle_id, outcome="failed", reason="privacy_mode")
+        except EnrollmentLockedError:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="failed", reason="enrollment_storage_locked"
+            )
+        except Exception as exc:
+            logger.error(
+                "relay_enroll_failed",
+                extra={"bundle_id": bundle.bundle_id, "error_class": type(exc).__name__},
+            )
+            return PickupAck(bundle_id=bundle.bundle_id, outcome="failed", reason="internal_error")
+
+        logger.info(
+            "relay_enrollment_completed",
+            extra={
+                "bundle_id": bundle.bundle_id,
+                "person_id": result.person_id,
+                "embeddings": result.embeddings_created,
+            },
+        )
+        return PickupAck(bundle_id=bundle.bundle_id, outcome="enrolled")
+
+    def relay_status(self) -> dict[str, object]:
+        if not self._settings.relay_enabled:
+            return {"configured": False, "status": "disabled"}
+        stats = self._relay_worker.stats if self._relay_worker is not None else None
+        if stats is None:
+            return {"configured": True, "status": "stopped"}
+        return {
+            "configured": True,
+            "status": "degraded" if stats.degraded else "ok",
+            "polls_ok": stats.polls_ok,
+            "polls_failed": stats.polls_failed,
+            "bundles_enrolled": stats.bundles_enrolled,
+            "bundles_rejected": stats.bundles_rejected,
+            "consecutive_failures": stats.consecutive_failures,
+            "last_error": stats.last_error,
+            "last_success_at": stats.last_success_at,
+        }
 
     # -- privacy mode ------------------------------------------------------
 
@@ -604,6 +898,7 @@ class VisiondService:
             and self._runtime_degraded_detail is None
             and not self._enrollment_locked
         )
+        relay = self.relay_status()
         return {
             "service": "door-visiond",
             "status": "ok" if healthy else "degraded",
@@ -621,6 +916,10 @@ class VisiondService:
             "esp32_profile_warning": esp32_profile_warning,
             "privacy_state_status": "invalid_fail_closed" if self._privacy_state_degraded else "ok",
             "archive_purge_queue_depth": self._purge_outbox.depth(),
+            # Deliberately NOT part of `healthy`: an unreachable relay must not
+            # make the door service look broken (ADR-0016 §6).
+            "relay_status": relay["status"],
+            "relay_configured": relay["configured"],
         }
 
     def metrics_snapshot(self) -> dict[str, float]:
@@ -634,6 +933,15 @@ class VisiondService:
         snap["archive_purges_delivered"] = float(self._purges_delivered)
         snap["archive_purges_failed"] = float(self._purges_failed)
         snap["pipeline_errors"] = float(self._pipeline_errors)
+        relay_stats = self._relay_worker.stats if self._relay_worker is not None else None
+        snap["relay_enabled"] = 1.0 if self._settings.relay_enabled else 0.0
+        snap["relay_polls_ok"] = float(relay_stats.polls_ok if relay_stats else 0)
+        snap["relay_polls_failed"] = float(relay_stats.polls_failed if relay_stats else 0)
+        snap["relay_bundles_enrolled"] = float(relay_stats.bundles_enrolled if relay_stats else 0)
+        snap["relay_bundles_rejected"] = float(relay_stats.bundles_rejected if relay_stats else 0)
+        snap["relay_consecutive_failures"] = float(
+            relay_stats.consecutive_failures if relay_stats else 0
+        )
         return snap
 
     def now_utc(self) -> datetime:

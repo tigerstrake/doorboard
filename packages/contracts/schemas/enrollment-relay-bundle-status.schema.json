@@ -1,0 +1,54 @@
+{
+  "$defs": {
+    "OpaqueId": {
+      "pattern": "^[a-z]{3,6}_[A-Za-z0-9]{16,32}$",
+      "type": "string"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Progress for the phone to poll. No name, no biometric data (ADR-0016 \u00a75).",
+  "properties": {
+    "bundle_id": {
+      "$ref": "#/$defs/OpaqueId"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Machine-readable failure cause; never contains user data",
+      "title": "Reason"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "collected",
+        "enrolled",
+        "failed",
+        "expired"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "updated_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    }
+  },
+  "required": [
+    "bundle_id",
+    "status",
+    "updated_at"
+  ],
+  "title": "BundleStatus",
+  "type": "object"
+}

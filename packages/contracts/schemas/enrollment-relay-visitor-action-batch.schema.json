@@ -1,0 +1,164 @@
+{
+  "$defs": {
+    "OpaqueId": {
+      "pattern": "^[a-z]{3,6}_[A-Za-z0-9]{16,32}$",
+      "type": "string"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "VisitorDeletionAction": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "deletion_request",
+          "default": "deletion_request",
+          "title": "Kind",
+          "type": "string"
+        },
+        "target_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Target Id",
+          "type": "string"
+        },
+        "target_kind": {
+          "enum": [
+            "guestbook",
+            "checkin",
+            "photo",
+            "video_message"
+          ],
+          "title": "Target Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_kind",
+        "target_id"
+      ],
+      "title": "VisitorDeletionAction",
+      "type": "object"
+    },
+    "VisitorNoteAction": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "note",
+          "default": "note",
+          "title": "Kind",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "VisitorNoteAction",
+      "type": "object"
+    },
+    "VisitorQueuedAction": {
+      "additionalProperties": false,
+      "description": "One visitor write, waiting for door-api to collect it.",
+      "properties": {
+        "action_id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "deletion_request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VisitorDeletionAction"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "note": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VisitorNoteAction"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "session_id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "submitted_at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "vote": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VisitorVoteAction"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "action_id",
+        "session_id",
+        "submitted_at"
+      ],
+      "title": "VisitorQueuedAction",
+      "type": "object"
+    },
+    "VisitorVoteAction": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "vote",
+          "default": "vote",
+          "title": "Kind",
+          "type": "string"
+        },
+        "option_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Option Id",
+          "type": "string"
+        },
+        "poll_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Poll Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "poll_id",
+        "option_id"
+      ],
+      "title": "VisitorVoteAction",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "$ref": "#/$defs/VisitorQueuedAction"
+      },
+      "maxItems": 16,
+      "title": "Items",
+      "type": "array"
+    }
+  },
+  "title": "VisitorActionBatch",
+  "type": "object"
+}
