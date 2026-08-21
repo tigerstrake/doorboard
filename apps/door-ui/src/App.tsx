@@ -525,6 +525,8 @@ export function App() {
   const [checkinPhoto, setCheckinPhoto] = useState<PhotoReview | null>(null);
   const [checkinPhotoStatus, setCheckinPhotoStatus] = useState<PhotoCaptureStatus>("idle");
   const [checkinPendingLabel, setCheckinPendingLabel] = useState<string | null>(null);
+  const [guestbookPhoto, setGuestbookPhoto] = useState<PhotoReview | null>(null);
+  const [guestbookPhotoStatus, setGuestbookPhotoStatus] = useState<PhotoCaptureStatus>("idle");
   const [visitorQrUrl, setVisitorQrUrl] = useState<string | null>(null);
   // Self-service enrollment (ADR-0019). "closed" carries the reason door-visiond
   // gave, because a visitor who is refused deserves a sentence, not a spinner that
@@ -1426,15 +1428,73 @@ export function App() {
     });
   };
 
+  // ADR-0033: a note MAY carry a photo. Opt-in, unlike the check-in screen where
+  // the photo is always offered — the owner asked for the two to differ.
+  const captureGuestbookPhoto = async () => {
+    if (!FEATURE_PHOTOBOOTH || guestbookPhotoStatus === "capturing") return;
+    setGuestbookPhotoStatus("capturing");
+    try {
+      const response = await fetch(`${API_BASE}/doorpad/photo-booth/capture`, { method: "POST" });
+      if (!response.ok) {
+        setGuestbookPhotoStatus("unavailable");
+        return;
+      }
+      const data = (await response.json()) as { photo: PhotoReview };
+      setGuestbookPhoto(data.photo);
+      setGuestbookPhotoStatus("ready");
+    } catch {
+      setGuestbookPhotoStatus("unavailable");
+    }
+  };
+
+  const removeGuestbookPhoto = async (): Promise<void> => {
+    const photo = guestbookPhoto;
+    setGuestbookPhoto(null);
+    setGuestbookPhotoStatus("idle");
+    if (!photo) return;
+    try {
+      await fetch(`${API_BASE}/doorpad/photo-booth/${photo.recording_id}/discard`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: photo.session_id }),
+      });
+    } catch {
+      // Still private in the photo-booth pipeline and owner-deletable, so a
+      // failed discard never exposes anything.
+    }
+  };
+
   const handleGuestbookSubmit = async (text: string) => {
     if (guestbookSubmitting) return;
     setGuestbookSubmitting(true);
     try {
-      const entry = await socialApi.createGuestbookEntry(text, null);
+      let photoRecordingId: string | null = null;
+      const photo = guestbookPhoto;
+      if (photo) {
+        // Persist through the photo-booth pipeline first (privately, for owner
+        // review) so the note never references a recording that isn't saved.
+        const saved = await fetch(
+          `${API_BASE}/doorpad/photo-booth/${photo.recording_id}/save`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: photo.session_id }),
+          }
+        );
+        if (!saved.ok) {
+          // Keep the note and the photo so a retry loses neither.
+          triggerToast("Couldn't save your photo — try again, or remove it.");
+          return;
+        }
+        photoRecordingId = photo.recording_id;
+      }
+      const entry = await socialApi.createGuestbookEntry(text, null, photoRecordingId);
       rememberMyContent({ kind: "guestbook", id: entry.id, label: text.slice(0, 40) });
       triggerToast("Note submitted! It'll show up once approved.");
       setGuestbookText("");
       setSelectedGuestbookPhrase(null);
+      setGuestbookPhoto(null);
+      setGuestbookPhotoStatus("idle");
       returnDoorPadToContext();
     } catch (err) {
       triggerToast(apiErrorMessage(err, "Couldn't submit your note — try again."));
@@ -2434,6 +2494,15 @@ export function App() {
     }
   };
 
+  // Same for an unsent guestbook photo: leaving without submitting discards it.
+  useEffect(() => {
+    if (doorPadScreen === "guestbook") return undefined;
+    if (!guestbookPhoto) return undefined;
+    void removeGuestbookPhoto();
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doorPadScreen]);
+
   // Navigating away from the Check In screen mid-confirm discards the still
   // private capture, so declining by walking off leaves nothing behind.
   useEffect(() => {
@@ -3121,6 +3190,40 @@ export function App() {
               <p className="placeholder-subtext">Pick a phrase or write a short note (280 chars max)</p>
               {/* Above the composer, so it is read before anything is written (E-23). */}
               <AttributionNotice attributedTo={attributedTo} />
+              {FEATURE_PHOTOBOOTH && (
+                <div className="doorpad-guestbook-photo" id="guestbook-photo">
+                  {guestbookPhotoStatus === "ready" && guestbookPhoto ? (
+                    <>
+                      <img
+                        className="review-photo"
+                        src={guestbookPhoto.review_url}
+                        alt="Photo for your note"
+                      />
+                      <BigButton
+                        id="guestbook-photo-remove"
+                        disabled={guestbookSubmitting}
+                        onClick={removeGuestbookPhoto}
+                      >
+                        Remove photo
+                      </BigButton>
+                    </>
+                  ) : guestbookPhotoStatus === "unavailable" ? (
+                    <p className="placeholder-subtext">
+                      Camera unavailable right now — you can still send your note.
+                    </p>
+                  ) : (
+                    <BigButton
+                      id="guestbook-photo-add"
+                      disabled={guestbookSubmitting || guestbookPhotoStatus === "capturing"}
+                      onClick={captureGuestbookPhoto}
+                    >
+                      {guestbookPhotoStatus === "capturing"
+                        ? "Taking your photo…"
+                        : "Add a photo (optional)"}
+                    </BigButton>
+                  )}
+                </div>
+              )}
               <div className="phrase-grid">
                 {CANNED_GUESTBOOK_PHRASES.map((phrase) => (
                   <button

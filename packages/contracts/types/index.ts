@@ -174,6 +174,7 @@ export interface SocialGuestbookEntryCreatedPayload {
   entry_id: string;
   text: string;
   author_label: string | null;
+  photo_recording_id?: string | null;
 }
 
 export interface SocialPollVoteCastPayload {

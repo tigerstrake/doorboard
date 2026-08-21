@@ -377,6 +377,13 @@ class SocialGuestbookEntryCreatedPayload(StrictModel):
     entry_id: UUID
     text: str
     author_label: str | None
+    # Optional reference to a visitor-captured photo_booth recording, mirroring
+    # SocialCheckinCreatedPayload (ADR-0033). Only the reference travels — the
+    # image stays private in the photo-booth pipeline until the owner approves
+    # it. Additive to the schema but NOT backward compatible at runtime
+    # (StrictModel forbids extras), so deploy the NUC at or before the door:
+    # see ADR-0033's "Deployment ordering" and ADR-0031.
+    photo_recording_id: str | None = None
 
 
 class SocialPollVoteCastPayload(StrictModel):

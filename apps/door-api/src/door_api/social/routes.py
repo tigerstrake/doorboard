@@ -76,6 +76,11 @@ def _raise_for_domain_error(exc: Exception, trace_id: str) -> None:
 class GuestbookCreateRequest(BaseModel):
     text: str
     author_label: str | None = None
+    # Optional reference to a visitor-captured photo_booth recording (ADR-0033).
+    # Optional here but mandatory-offer on check-ins, which is the owner's
+    # intent: a note may carry a photo, a check-in always offers one. The photo
+    # stays private in the photo-booth pipeline; this is only the reference.
+    photo_recording_id: str | None = None
     session_token: str = Field(min_length=1, max_length=200)
 
 
@@ -131,6 +136,12 @@ def _guestbook_to_public_dict(entry: GuestbookEntry, *, display_name: str | None
 def _guestbook_to_admin_dict(entry: GuestbookEntry) -> dict:
     return {
         **_guestbook_to_public_dict(entry),
+        # ADR-0033: owner-facing only, deliberately absent from the public shape
+        # above. The guestbook renders on a wallboard facing a shared hallway,
+        # and a photo stays private until the owner approves it — handing the
+        # reference to a public route would leak which entries carry a face
+        # before that decision is made.
+        "photo_recording_id": entry.photo_recording_id,
         "status": entry.status,
         "deleted_at": entry.deleted_at,
     }
@@ -252,6 +263,7 @@ def build_social_router(
                 # Derived from the door's own recognition, never from client
                 # input, and only when consent covers it (ADR-0018 §2).
                 person_id=get_current_person_id(),
+                photo_recording_id=body.photo_recording_id,
             )
         except (RateLimitedError, SanitizationError) as exc:
             _raise_for_domain_error(exc, trace_id)

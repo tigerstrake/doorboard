@@ -411,3 +411,113 @@ describe("Check In screen photo confirm step", () => {
     ).toBe(false);
   });
 });
+
+// ADR-0033: a note MAY carry a photo — opt-in, unlike the check-in screen where
+// the photo is always offered.
+async function openGuestbookScreen() {
+  await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
+  const button = document.querySelector("#btn-guestbook") as HTMLElement | null;
+  expect(button).toBeTruthy();
+  fireEvent.click(button as HTMLElement);
+  await waitFor(() => expect(screen.getByText("Leave a Guestbook Note")).toBeTruthy());
+}
+
+function guestbookBody(fetchMock: ReturnType<typeof vi.fn>): Record<string, unknown> | null {
+  const call = fetchMock.mock.calls.find(
+    ([url, init]) =>
+      String(url).includes("/guestbook") && (init as RequestInit | undefined)?.method === "POST"
+  );
+  if (!call) return null;
+  const init = call[1] as RequestInit | undefined;
+  return init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null;
+}
+
+describe("Guestbook optional photo", () => {
+  it("offers a photo but does not require one", async () => {
+    vi.stubEnv("VITE_FEATURE_PHOTOBOOTH", "true");
+    window.history.pushState(null, "", "/doorpad");
+    const fetchMock = stubCheckinFetch();
+
+    const App = await loadApp();
+    render(<App />);
+    await openGuestbookScreen();
+
+    expect(screen.getByText(/Add a photo \(optional\)/)).toBeTruthy();
+
+    // Sending without touching the photo works and carries no reference.
+    fireEvent.click(screen.getByText('"Hey, stopped by!"'));
+    fireEvent.click(screen.getByText("Send Selected Phrase"));
+
+    await waitFor(() => expect(guestbookBody(fetchMock)).toBeTruthy());
+    expect(guestbookBody(fetchMock)?.photo_recording_id).toBeUndefined();
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes("/photo-booth/capture"))
+    ).toBe(false);
+  });
+
+  it("attaches the photo to the note when one was added", async () => {
+    vi.stubEnv("VITE_FEATURE_PHOTOBOOTH", "true");
+    window.history.pushState(null, "", "/doorpad");
+    const fetchMock = stubCheckinFetch();
+
+    const App = await loadApp();
+    render(<App />);
+    await openGuestbookScreen();
+
+    fireEvent.click(screen.getByText(/Add a photo \(optional\)/));
+    await waitFor(() => expect(screen.getByAltText("Photo for your note")).toBeTruthy());
+
+    fireEvent.click(screen.getByText('"Hey, stopped by!"'));
+    fireEvent.click(screen.getByText("Send Selected Phrase"));
+
+    // Saved through the photo-booth pipeline BEFORE the note references it.
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).includes("/photo-booth/rec-photo-9/save")
+        )
+      ).toBe(true)
+    );
+    await waitFor(() =>
+      expect(guestbookBody(fetchMock)?.photo_recording_id).toBe("rec-photo-9")
+    );
+  });
+
+  it("discards the photo when removed and sends the note without it", async () => {
+    vi.stubEnv("VITE_FEATURE_PHOTOBOOTH", "true");
+    window.history.pushState(null, "", "/doorpad");
+    const fetchMock = stubCheckinFetch();
+
+    const App = await loadApp();
+    render(<App />);
+    await openGuestbookScreen();
+
+    fireEvent.click(screen.getByText(/Add a photo \(optional\)/));
+    await waitFor(() => expect(screen.getByAltText("Photo for your note")).toBeTruthy());
+    fireEvent.click(screen.getByText("Remove photo"));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).includes("/photo-booth/rec-photo-9/discard")
+        )
+      ).toBe(true)
+    );
+    fireEvent.click(screen.getByText('"Hey, stopped by!"'));
+    fireEvent.click(screen.getByText("Send Selected Phrase"));
+    await waitFor(() => expect(guestbookBody(fetchMock)).toBeTruthy());
+    expect(guestbookBody(fetchMock)?.photo_recording_id).toBeUndefined();
+  });
+
+  it("shows no photo control at all when the flag is off", async () => {
+    window.history.pushState(null, "", "/doorpad");
+    stubCheckinFetch();
+
+    const App = await loadApp();
+    render(<App />);
+    await openGuestbookScreen();
+
+    expect(document.querySelector("#guestbook-photo")).toBeNull();
+    expect(screen.queryByText(/Add a photo/)).toBeNull();
+  });
+});

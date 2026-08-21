@@ -162,11 +162,25 @@ export const socialApi = {
     return request<VisitorSession>(`/visitor-session?token=${encodeURIComponent(token)}`);
   },
 
-  async createGuestbookEntry(text: string, authorLabel: string | null): Promise<GuestbookEntry> {
+  // photoRecordingId optionally links the note to a photo saved through the
+  // photo-booth pipeline (ADR-0033). Optional on a note, unlike a check-in where
+  // the photo is always offered. The recording stays private until the owner
+  // approves it, so passing an id never bypasses review/consent, and the
+  // reference is owner-only — it is absent from the public guestbook shape.
+  async createGuestbookEntry(
+    text: string,
+    authorLabel: string | null,
+    photoRecordingId?: string | null
+  ): Promise<GuestbookEntry> {
     const sessionToken = await getSessionToken();
     return request<GuestbookEntry>("/guestbook", {
       method: "POST",
-      body: { text, author_label: authorLabel, session_token: sessionToken },
+      body: {
+        text,
+        author_label: authorLabel,
+        session_token: sessionToken,
+        ...(photoRecordingId ? { photo_recording_id: photoRecordingId } : {}),
+      },
     });
   },
 

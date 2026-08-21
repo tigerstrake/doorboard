@@ -553,3 +553,51 @@ def test_frequency_ranking_is_off_by_default(client: TestClient) -> None:
     client.post("/checkins", json={"label": "Tiger", "session_token": _visitor_token(client)})
 
     assert client.get("/checkins/stats/most-frequent").json()["stat"] is None
+
+
+def test_guestbook_photo_reference_is_owner_only(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0033: a note may carry a photo reference, but only the owner sees it.
+
+    The public guestbook renders on a wallboard facing a shared hallway and a
+    photo stays private until the owner approves it, so exposing the reference
+    publicly would reveal which entries carry a face before that decision.
+    """
+    monkeypatch.setenv("DOOR_API_SOCIAL_ADMIN_TOKEN", "correct-token")
+    state.__init__()
+    state.startup()
+    auth = {"Authorization": "Bearer correct-token"}
+
+    photo_id = "b7e4c318-2a51-4f0d-9c22-6d3f1e8a4402"
+    create_resp = client.post(
+        "/guestbook",
+        json={
+            "text": "left a picture too",
+            "session_token": _visitor_token(client),
+            "photo_recording_id": photo_id,
+        },
+    )
+    assert create_resp.status_code == 201
+    entry_id = create_resp.json()["id"]
+    # Absent from the response the visitor gets back.
+    assert "photo_recording_id" not in create_resp.json()
+
+    # Present for the owner.
+    pending = client.get("/admin/guestbook?status=pending", headers=auth).json()["entries"]
+    entry = next(e for e in pending if e["id"] == entry_id)
+    assert entry["photo_recording_id"] == photo_id
+
+    # Still absent once public.
+    assert client.post(f"/admin/guestbook/{entry_id}/approve", headers=auth).status_code == 200
+    public = client.get("/guestbook").json()["entries"]
+    assert public[0]["id"] == entry_id
+    assert "photo_recording_id" not in public[0]
+
+
+def test_guestbook_without_a_photo_still_works(client: TestClient) -> None:
+    """The photo is optional on a note — unlike a check-in, which always offers one."""
+    resp = client.post(
+        "/guestbook", json={"text": "just a note", "session_token": _visitor_token(client)}
+    )
+    assert resp.status_code == 201

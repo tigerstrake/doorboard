@@ -2229,6 +2229,18 @@
           "title": "Entry Id",
           "type": "string"
         },
+        "photo_recording_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Photo Recording Id"
+        },
         "text": {
           "title": "Text",
           "type": "string"
