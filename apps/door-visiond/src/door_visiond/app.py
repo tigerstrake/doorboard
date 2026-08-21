@@ -12,6 +12,9 @@ Routes:
   POST /invites/{id}/revoke — admin-auth, revoke an unconsumed invite
   GET  /relay-status     — admin-auth, remote-enrollment relay reachability
   POST /relay-key/rotate — admin-auth, mint a fresh sealing keypair
+  GET  /visits           — admin-auth, arrival history (ADR-0018; never public)
+  GET  /visits/counts    — admin-auth, per-person visit totals
+  POST /visits/purge     — admin-auth, forget arrival history
 
 Auth: ``DOOR_VISIOND_ADMIN_TOKEN``. Empty closes protected routes.
 None of these routes sit in the door button path.
@@ -192,6 +195,8 @@ async def enroll(
         "person_id": result.person_id,
         "embeddings_created": result.embeddings_created,
         "quality": result.quality,
+        "profile_id": result.profile_id,
+        "profile_reassigned": result.profile_reassigned,
     }
 
 
@@ -293,6 +298,53 @@ async def rotate_relay_key(_auth: AdminAuth, request: Request) -> dict[str, obje
     """Mint a fresh sealing keypair. Outstanding QR codes stop verifying (E-10)."""
     try:
         return _svc(request).rotate_relay_key()
+    except EnrollmentLockedError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="encrypted enrollment storage is locked",
+        ) from None
+
+
+@app.get("/visits")
+async def list_visits(
+    _auth: AdminAuth,
+    request: Request,
+    limit: int = 200,
+    person_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Arrival history (ADR-0018 §1).
+
+    Admin-only, and deliberately so: this is presence data, and ADR-0005 §5 keeps
+    visitor logs off public routes (E-24). There is no public counterpart.
+    """
+    try:
+        return _svc(request).list_visits(limit=max(1, min(limit, 1000)), person_id=person_id)
+    except EnrollmentLockedError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="encrypted enrollment storage is locked",
+        ) from None
+
+
+@app.get("/visits/counts")
+async def visit_counts(_auth: AdminAuth, request: Request) -> list[dict[str, Any]]:
+    """Per-person totals for the admin panel. Never a public payload (E-24)."""
+    try:
+        return _svc(request).visit_counts()
+    except EnrollmentLockedError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="encrypted enrollment storage is locked",
+        ) from None
+
+
+@app.post("/visits/purge")
+async def purge_visits(
+    _auth: AdminAuth, request: Request, person_id: str | None = None
+) -> dict[str, object]:
+    """Forget arrival history, for one person or everyone, keeping enrollment."""
+    try:
+        return _svc(request).purge_visits(person_id=person_id)
     except EnrollmentLockedError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

@@ -184,7 +184,14 @@ class SocialService:
         ip: str,
         session_token: str,
         trace_id: str,
+        person_id: str | None = None,
     ) -> GuestbookEntry:
+        """Store a note, attributed to ``person_id`` when the door recognised them.
+
+        ``person_id`` defaults to None so every existing caller keeps writing
+        anonymously: recognition adds attribution, it never gates the write
+        (ADR-0018 E-25).
+        """
         try:
             self._check_rate_limit(ip=ip, session_token=session_token)
         except RateLimitedError:
@@ -214,6 +221,7 @@ class SocialService:
             ip_hash=hash_ip(ip),
             session_key_hash=hash_session_key(session_token),
             created_at=created_at,
+            person_id=person_id,
         )
         self.metrics.guestbook_created += 1
         self._log_moderation(
@@ -308,6 +316,7 @@ class SocialService:
         ip: str,
         session_token: str,
         trace_id: str,
+        person_id: str | None = None,
     ) -> None:
         try:
             self._check_rate_limit(ip=ip, session_token=session_token)
@@ -331,6 +340,7 @@ class SocialService:
             session_token=hash_session_key(session_token),
             option_id=option_id,
             created_at=_utcnow_iso(),
+            person_id=person_id,
         )
         if not inserted:
             self.metrics.poll_votes_rejected += 1

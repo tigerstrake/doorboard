@@ -155,6 +155,19 @@
   "additionalProperties": false,
   "description": "What door-api pushes and a phone may read (ADR-0017 \u00a72 \u2014 binding allow-list).\n\nDeliberately *not* derived from the session machine's own object: every field\nis named here, so adding one is a visible, reviewable act rather than a\nside effect of a refactor upstream.",
   "properties": {
+    "attributed_to": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Attributed To"
+    },
     "expires_at": {
       "$ref": "#/$defs/UTCDateTime"
     },

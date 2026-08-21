@@ -27,6 +27,7 @@ class MatchResult:
     color: str
     sound: str | None
     score: float
+    consent_version: str = ""
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class _EnrolledVector:
     profile_id: str
     color: str
     sound: str | None
+    consent_version: str
     unit: tuple[float, ...]  # L2-normalized enrolled vector
 
 
@@ -71,6 +73,7 @@ class Matcher:
                         profile_id=person.profile_id,
                         color=person.color,
                         sound=person.sound,
+                        consent_version=person.consent_version,
                         unit=unit,
                     )
                 )
@@ -103,4 +106,5 @@ class Matcher:
             color=best.color,
             sound=best.sound,
             score=best_score,
+            consent_version=best.consent_version,
         )

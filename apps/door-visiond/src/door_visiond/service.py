@@ -21,7 +21,10 @@ from doorboard_contracts.enrollment_relay import (
     PickupAck,
     SealedBundle,
 )
-from doorboard_contracts.events import DoorboardEvent
+from doorboard_contracts.events import (
+    DoorboardEvent,
+    consent_covers_extended_personalisation,
+)
 from doorboard_esp32_link import Esp32Transport, wire_message_from_event
 
 from door_visiond._uuid7 import uuid7
@@ -34,6 +37,7 @@ from door_visiond.enrollment import (
     EnrollmentStore,
     InviteConsumption,
     InviteUnusableError,
+    NoProfileAvailableError,
     ProfileSpec,
     hash_invite_secret,
 )
@@ -108,6 +112,12 @@ class EnrollResult:
     person_id: str
     embeddings_created: int
     quality: list[float]
+    # The profile actually assigned, and whether it differs from what was asked
+    # for. Two people wanting the same colour is ordinary: the second gets the
+    # next free catalogue entry, and the enrollee is told rather than left to
+    # discover it (ADR-0009 §1 keeps profile_id unique per person).
+    profile_id: str = ""
+    profile_reassigned: bool = False
 
 
 class VisiondService:
@@ -160,6 +170,10 @@ class VisiondService:
         self._relay_transport: RelayTransport | None = relay_transport
         self._relay_worker: RelayWorker | None = None
         self._relay_tasks: set[asyncio.Task[None]] = set()
+
+        # Arrival log (ADR-0018). Per-person throttle so the recognition path does
+        # not touch SQLite on every cache refresh.
+        self._visit_write_ms: dict[str, int] = {}
         # Shared Hailo face pipeline (built once, lazily, for hardware modes so
         # the VDevice + models are reused by both the embedder and the backend).
         self._hailo_pipeline: HailoFacePipeline | None = None
@@ -511,6 +525,8 @@ class VisiondService:
             person_id=person_id,
             embeddings_created=len(embeddings),
             quality=qualities,
+            profile_id=self._store.last_assigned_profile,
+            profile_reassigned=self._store.last_profile_was_reassigned,
         )
 
     def unenroll(self, person_id: str) -> dict[str, object]:
@@ -713,6 +729,10 @@ class VisiondService:
                 ),
                 invite=invite,
             )
+        except NoProfileAvailableError:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="failed", reason="no_profile_available"
+            )
         except InviteUnusableError as exc:
             return PickupAck(bundle_id=bundle.bundle_id, outcome="rejected", reason=exc.reason)
         except StaleConsentError:
@@ -740,7 +760,13 @@ class VisiondService:
                 "embeddings": result.embeddings_created,
             },
         )
-        return PickupAck(bundle_id=bundle.bundle_id, outcome="enrolled")
+        return PickupAck(
+            bundle_id=bundle.bundle_id,
+            outcome="enrolled",
+            # Tells the phone their colour was taken so it can say so, rather than
+            # letting them find out from the doorboard later.
+            reason=f"profile_reassigned:{result.profile_id}" if result.profile_reassigned else None,
+        )
 
     def relay_status(self) -> dict[str, object]:
         if not self._settings.relay_enabled:
@@ -759,6 +785,36 @@ class VisiondService:
             "last_error": stats.last_error,
             "last_success_at": stats.last_success_at,
         }
+
+    # -- arrival log reads (ADR-0018 §1, admin-only per E-24) ---------------
+
+    def list_visits(
+        self, *, limit: int = 200, person_id: str | None = None
+    ) -> list[dict[str, object]]:
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        return self._store.list_visits(limit=limit, person_id=person_id)
+
+    def visit_counts(self) -> list[dict[str, object]]:
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        return self._store.visit_counts()
+
+    def purge_visits(self, *, person_id: str | None = None) -> dict[str, object]:
+        """Forget arrival history while keeping the person enrolled.
+
+        Unenroll already cascades visits away; this is the narrower control.
+        """
+        if self._enrollment_locked:
+            raise EnrollmentLockedError
+        deleted = self._store.purge_visits(person_id=person_id)
+        # Drop the throttle memo so the next sighting opens a fresh visit rather
+        # than being suppressed by a timestamp whose row no longer exists.
+        if person_id is None:
+            self._visit_write_ms.clear()
+        else:
+            self._visit_write_ms.pop(person_id, None)
+        return {"deleted": deleted}
 
     # -- privacy mode ------------------------------------------------------
 
@@ -802,7 +858,39 @@ class VisiondService:
 
     # -- ESP32 profile mirroring ------------------------------------------
 
+    def _record_visit_sighting(self, person_id: str, consent_version: str = "") -> None:
+        """Log that a recognised person is at the door (ADR-0018 §1).
+
+        Throttled per person: the identity cache refreshes every couple of seconds
+        while someone stands there, and this runs on the recognition path. A visit
+        log needs no better resolution than the greeting cooldown, so writing at
+        most that often keeps SQLite off the hot path while still extending an open
+        visit for as long as the person is present.
+        """
+        if self._enrollment_locked:
+            return
+        # Withhold the arrival log from anyone whose consent predates v3: they
+        # agreed to a greeting, not to being logged (ADR-0018). Fails closed, so an
+        # unparseable version logs nothing.
+        if not consent_covers_extended_personalisation(consent_version):
+            return
+        now_ms = self._clock.monotonic_ms()
+        last_ms = self._visit_write_ms.get(person_id)
+        if last_ms is not None and (now_ms - last_ms) < self._settings.visit_write_interval_ms:
+            return
+        self._visit_write_ms[person_id] = now_ms
+        try:
+            self._store.record_sighting(
+                person_id,
+                now=self._clock.utc_now(),
+                merge_window_s=self._settings.visit_merge_window_s,
+            )
+        except Exception as exc:
+            # A visit-log failure must never disturb recognition or the door.
+            logger.warning("visit_record_failed", extra={"error_class": type(exc).__name__})
+
     def _on_cache_refresh(self, visitor: CurrentVisitor, priority: str, trace_id) -> None:
+        self._record_visit_sighting(visitor.person_id, visitor.consent_version)
         event = make_door_profile_update(
             clock=self._clock,
             door_id=self._settings.door_id,

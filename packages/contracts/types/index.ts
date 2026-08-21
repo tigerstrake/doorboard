@@ -67,6 +67,7 @@ export interface VisionFaceVisiblePayload {
 export interface VisionIdentityStablePayload {
   person_id: string;
   display_name: string;
+  consent_version?: string | null;
   confidence: number;
   expires_at: string;
   expires_at_monotonic_ms: number;
@@ -94,6 +95,7 @@ export interface SessionStateChangedPayload {
   from_state: SessionState;
   to_state: SessionState;
   trigger: string;
+  display_name?: string | null;
   recipients?: Array<string> | null;
 }
 
@@ -409,6 +411,7 @@ export interface VisitorSessionSnapshot {
   poll?: VisitorPoll | null;
   poll_results?: Array<VisitorPollResult> | null;
   outcomes: Array<VisitorActionOutcome>;
+  attributed_to?: string | null;
   pushed_at: string;
 }
 
@@ -419,6 +422,7 @@ export interface VisitorPublicSnapshot {
   poll?: VisitorPoll | null;
   poll_results?: Array<VisitorPollResult> | null;
   outcomes: Array<VisitorActionOutcome>;
+  attributed_to?: string | null;
   pushed_at: string;
 }
 

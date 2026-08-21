@@ -22,6 +22,9 @@ class CurrentVisitor:
     profile_id: str
     expires_at_monotonic_ms: int
     expires_at_utc: datetime
+    # Which consent statement this person enrolled under (ADR-0018). Gates the
+    # arrival log here and attribution downstream; the greeting needs no gate.
+    consent_version: str = ""
 
 
 class IdentityCache:

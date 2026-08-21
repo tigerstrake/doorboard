@@ -53,6 +53,7 @@ export default function EnrollFlow({ token }: { token: string }) {
   const [consentChecked, setConsentChecked] = useState(false);
   const [photos, setPhotos] = useState<Uint8Array[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
+  const [cameraReady, setCameraReady] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [profileId, setProfileId] = useState(PROFILES[0]!.id);
   const [statusReason, setStatusReason] = useState<string | null>(null);
@@ -145,26 +146,61 @@ export default function EnrollFlow({ token }: { token: string }) {
 
   const startCamera = useCallback(async () => {
     setError(null);
+    setCameraReady(false);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      // Release any previous stream first: re-entering this step (via "Back to
+      // photos") would otherwise open a second camera track, which some phones
+      // refuse outright and others answer with a black frame.
+      stopCamera();
+      streamRef.current = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 1280 } },
         audio: false,
       });
-      streamRef.current = stream;
+      // Attaching the stream happens in an effect, not here: the <video> does not
+      // exist until React has committed this step, and there is no reliable way to
+      // wait for that commit from inside an async handler.
       setStep("capture");
-      // The <video> only exists once the capture step has rendered.
-      requestAnimationFrame(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          void videoRef.current.play();
-        }
-      });
-    } catch {
+    } catch (caught) {
+      const denied = caught instanceof DOMException && caught.name === "NotAllowedError";
       setError(
-        "Could not open the camera. Allow camera access for this site, or enrol at the door instead.",
+        denied
+          ? "Camera access was blocked. Allow it for this site in your browser settings, then tap again — or enrol at the door instead."
+          : "Could not open the camera. It may be in use by another app. Close that and tap again, or enrol at the door instead.",
       );
     }
-  }, []);
+  }, [stopCamera]);
+
+  /**
+   * Attach the live stream once the capture step is actually on screen.
+   *
+   * This must be an effect rather than a callback after `setStep`: effects run
+   * after the DOM commit, so `videoRef.current` is guaranteed to exist. Doing it
+   * in a `requestAnimationFrame` raced React's commit and left the preview black
+   * with the stream never attached.
+   */
+  useEffect(() => {
+    if (step !== "capture") return;
+    const video = videoRef.current;
+    const stream = streamRef.current;
+    if (!video || !stream) return;
+
+    video.srcObject = stream;
+    const markReady = () => {
+      // videoWidth is only trustworthy once metadata has arrived.
+      if (video.videoWidth > 0) setCameraReady(true);
+    };
+    video.addEventListener("loadedmetadata", markReady);
+    video.addEventListener("canplay", markReady);
+    void video.play().catch(() => {
+      setError("The camera preview could not start. Tap 'Back to photos' to try again.");
+    });
+    markReady();
+
+    return () => {
+      video.removeEventListener("loadedmetadata", markReady);
+      video.removeEventListener("canplay", markReady);
+    };
+  }, [step]);
 
   const capture = useCallback(async () => {
     const video = videoRef.current;
@@ -352,9 +388,11 @@ export default function EnrollFlow({ token }: { token: string }) {
           <div className="viewfinder">
             <video ref={videoRef} playsInline muted autoPlay />
             <div className="pose">
-              {photos.length >= targetPhotos
-                ? "That's all of them."
-                : (POSES[photos.length] ?? "One more, straight on.")}
+              {!cameraReady
+                ? "Starting the camera…"
+                : photos.length >= targetPhotos
+                  ? "That's all of them."
+                  : (POSES[photos.length] ?? "One more, straight on.")}
             </div>
           </div>
           <div className="thumbs">
@@ -370,8 +408,10 @@ export default function EnrollFlow({ token }: { token: string }) {
           </div>
           <div className="button-row">
             {photos.length < targetPhotos ? (
-              <button className="primary" onClick={() => void capture()}>
-                Take photo {photos.length + 1} of {targetPhotos}
+              <button className="primary" onClick={() => void capture()} disabled={!cameraReady}>
+                {cameraReady
+                  ? `Take photo ${photos.length + 1} of ${targetPhotos}`
+                  : "Starting the camera…"}
               </button>
             ) : (
               <button className="primary" onClick={() => setStep("details")}>
@@ -456,7 +496,7 @@ export default function EnrollFlow({ token }: { token: string }) {
       {step === "done" ? (
         <>
           <h1>{statusReason ? "Not quite" : "You're enrolled"}</h1>
-          {statusReason ? (
+          {statusReason && !statusReason.startsWith("profile_reassigned") ? (
             <div className="notice warn">
               <p>{outcomeMessage(statusReason)}</p>
             </div>
@@ -466,6 +506,13 @@ export default function EnrollFlow({ token }: { token: string }) {
                 The door has your face templates and will greet you by name. Your photos were deleted
                 after processing.
               </p>
+              {statusReason?.startsWith("profile_reassigned") ? (
+                <p style={{ marginBottom: 0 }}>
+                  Someone already had the colour you picked, so the door gave you{" "}
+                  <strong>{reassignedColourName(statusReason)}</strong> instead — each person needs a
+                  different light so the door can tell you apart.
+                </p>
+              ) : null}
             </div>
           )}
           <p className="footnote">
@@ -493,7 +540,9 @@ async function pollUntilSettled(
       const body = (await resp.json()) as { status: string; reason: string | null };
 
       if (body.status === "enrolled") {
-        setStatusReason(null);
+        // A reason on success means something worth telling them (a reassigned
+        // colour), not a failure — the done screen decides which box to show.
+        setStatusReason(body.reason ?? null);
         setStep("done");
         return;
       }
@@ -511,7 +560,14 @@ async function pollUntilSettled(
   setStep("done");
 }
 
-function uploadErrorMessage(code: string | undefined): string {
+/**
+ * Relay-side rejection codes, as returned by `/api/enroll/[token]/submit`.
+ *
+ * Exported for `tests/enrollFlow.test.tsx`, which reads the route's `jsonError`
+ * codes off disk and asserts each one lands somewhere useful. That check is only
+ * possible if the mapping is reachable from a test.
+ */
+export function uploadErrorMessage(code: string | undefined): string {
   switch (code) {
     case "invite_already_used":
       return "This invitation has already been used. Ask for a fresh QR code.";
@@ -525,12 +581,36 @@ function uploadErrorMessage(code: string | undefined): string {
       return "That is more photos than this invitation allows. Start the photos again.";
     case "storage_not_configured":
       return "The enrolment service is not fully set up yet. Ask the household admin.";
+    case "invalid_bundle":
+    case "malformed_json":
+    case "invite_mismatch":
+      // Only reachable if this page itself sent something wrong, so retrying is
+      // pointless; the code is what an admin needs to see.
+      return `This page sent something the service could not accept (${code}). Reload and start again, and tell the household admin if it happens twice.`;
     default:
-      return "The service would not accept the upload. Please try again.";
+      // The reason is echoed rather than swallowed: an unmapped code used to
+      // reach the phone as advice to "please try again", which sent people round
+      // the same loop and told whoever they asked for help nothing at all.
+      return `The service would not accept the upload (${code ?? "no reason given"}). Please try again.`;
   }
 }
 
-function outcomeMessage(reason: string): string {
+/** "profile_reassigned:green_pulse" -> "Green". */
+function reassignedColourName(reason: string): string {
+  const id = reason.split(":", 2)[1] ?? "";
+  return PROFILES.find((entry) => entry.id === id)?.name ?? "another colour";
+}
+
+/**
+ * Pi-side outcomes, as returned in the pickup ack.
+ *
+ * Exported for `tests/enrollFlow.test.tsx`, which scrapes every `reason=` the Pi
+ * can send out of `door_visiond/{service,enrollment}.py` and asserts none of them
+ * falls through to the default. `internal_error` was missing here once and a
+ * colour clash reached a real phone as "Ask the household admin to check the
+ * doorboard" — true, and useless to both of them.
+ */
+export function outcomeMessage(reason: string): string {
   switch (reason) {
     case "quality_too_low":
       return "The door could not get a clear enough read of your face. Try again in brighter, even light.";
@@ -538,6 +618,8 @@ function outcomeMessage(reason: string): string {
     case "unknown_invite":
     case "invite_secret_mismatch":
       return "The door would not accept this invitation. Ask for a fresh QR code.";
+    case "invite_revoked":
+      return "This invitation was cancelled before the door collected your photos. Ask the household admin for a new one.";
     case "invite_expired":
       return "The invitation expired before the door collected your photos. Ask for a fresh QR code.";
     case "stale_consent":
@@ -550,7 +632,15 @@ function outcomeMessage(reason: string): string {
       return "The door did not collect your photos in time. It may be offline — the encrypted copy is deleted automatically. Try again later.";
     case "bundle_expired":
       return "The encrypted copy expired before the door collected it. Try again while the door is online.";
+    case "no_profile_available":
+      return "Every light colour is already taken by someone enrolled. Ask the household admin to free one up.";
+    case "too_many_images":
+      return "That was more photos than this invitation allows. Ask for a fresh QR code.";
+    case "internal_error":
+      return "The door hit an unexpected error saving your enrolment. Nothing was saved — ask the household admin to check the doorboard logs, then try again.";
     default:
-      return "Enrolment did not complete. Ask the household admin to check the doorboard, then try again.";
+      // Same rule as uploadErrorMessage: echo the raw reason so an unmapped one
+      // is at least diagnosable from a screenshot.
+      return `Enrolment did not complete (${reason}). Nothing was saved. Show this to the household admin.`;
   }
 }

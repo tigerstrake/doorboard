@@ -115,6 +115,9 @@ describe("P-21 the relay never holds a usable visitor token", () => {
     ).json()) as Record<string, unknown>;
 
     expect(Object.keys(body).sort()).toEqual([
+      // attributed_to is the recognised person's own name, added by ADR-0018 §2 so
+      // the page can disclose attribution before a write (E-23).
+      "attributed_to",
       "expires_at",
       "outcomes",
       "poll",

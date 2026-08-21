@@ -37,6 +37,39 @@ type UTCDateTime = Annotated[AwareDatetime, AfterValidator(_ensure_utc)]
 type UUIDv7 = Annotated[UUID, AfterValidator(_ensure_uuid7)]
 
 
+# Consent policy shared by every service that acts on a recognised identity
+# (ADR-0018). Lives here rather than in one service because door-visiond gates the
+# arrival log and door-api gates attribution, and the two must not drift into
+# disagreeing about what a given enrollee agreed to.
+#
+# v1/v2 scoped recognition to "greeting, lights, and sounds". v3 added the arrival
+# log, attribution of interactions, and the name in notifications. Someone enrolled
+# under an older statement consented to the greeting only, so the extended
+# behaviours must be withheld from them until they re-enroll under current text.
+CONSENT_VERSION_FOR_EXTENDED_PERSONALISATION = "v3"
+
+
+def _consent_ordinal(version: str | None) -> int:
+    """Parse a 'vN' consent tag to N. Unparseable or missing sorts lowest."""
+    if not version:
+        return -1
+    try:
+        return int(version.lstrip("vV"))
+    except ValueError:
+        return -1
+
+
+def consent_covers_extended_personalisation(version: str | None) -> bool:
+    """True when this enrollee's consent covers the arrival log and attribution.
+
+    Fails closed: an unknown or unparseable version is treated as not covering it,
+    so a malformed record cannot silently opt someone in.
+    """
+    return _consent_ordinal(version) >= _consent_ordinal(
+        CONSENT_VERSION_FOR_EXTENDED_PERSONALISATION
+    )
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -198,6 +231,10 @@ class VisionFaceVisiblePayload(StrictModel):
 class VisionIdentityStablePayload(StrictModel):
     person_id: str
     display_name: str
+    # Which consent statement this person enrolled under (ADR-0018). door-api needs
+    # it to decide whether attribution is permitted for them; the greeting is
+    # covered by every version, so this gates only the extended behaviours.
+    consent_version: str | None = None
     confidence: float
     expires_at: UTCDateTime
     expires_at_monotonic_ms: int
@@ -225,6 +262,12 @@ class SessionStateChangedPayload(StrictModel):
     from_state: SessionState
     to_state: SessionState
     trigger: str
+    # Recognised visitor's display name, or None when nobody is recognised
+    # (ADR-0018 §4). The control plane evaluates notification rules from this
+    # event and has no other route to the name, so "Tiger is here" needs it here.
+    # Deliberately the name alone -- never person_id alongside it in a message
+    # that leaves the house -- and None keeps the generic notification path intact.
+    display_name: str | None = None
     # Chosen recipient KEYS for per-recipient video-message routing (ADR-0014).
     # Only populated on the VIDEO_MESSAGE_SAVED transition, when the visitor
     # picked who the clip should go to (e.g. ["tiger"], ["adam"], or both). Keys

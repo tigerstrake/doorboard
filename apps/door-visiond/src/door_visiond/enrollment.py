@@ -29,6 +29,26 @@ logger = get_logger("door_visiond.enrollment")
 
 _BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
+# The effects catalogue (T-103), mirroring the choices the enrollment surfaces
+# offer. `profile.profile_id` is UNIQUE (ADR-0009 §1) so each person gets a
+# distinguishable light — but two people picking the same colour must not be an
+# error, so a taken choice is reassigned to the next free entry rather than
+# rejected. Ids stay inside this catalogue so the ESP32 and UI always receive one
+# they recognise; inventing `blue_wave_2` would produce an unknown effect id.
+PROFILE_CATALOG: tuple[tuple[str, str], ...] = (
+    ("warm_amber", "#ffb300"),
+    ("blue_wave", "#3a86ff"),
+    ("green_pulse", "#3ddc84"),
+    ("violet_dusk", "#9b5de5"),
+    ("coral_glow", "#ff6b5e"),
+    ("cool_white", "#e8eef5"),
+)
+
+
+class NoProfileAvailableError(Exception):
+    """Every entry in the effects catalogue is already assigned."""
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS person (
     person_id        TEXT PRIMARY KEY,
@@ -77,7 +97,29 @@ CREATE TABLE IF NOT EXISTS relay_invite (
     person_id        TEXT                -- set on consumption: the enrollment it produced
 );
 
+-- Arrival log (ADR-0018 §1). This lives HERE, in the enrollment database, rather
+-- than beside check-ins in door-api's social DB, and that placement is
+-- load-bearing rather than convenient:
+--
+--   * ON DELETE CASCADE means unenrolling destroys a person's arrival history in
+--     the same transaction as their embeddings (E-21). Retention is unbounded by
+--     owner decision, so a copy in the social DB would outlive revoked consent
+--     forever, silently — the failure mode ADR-0005 §6 exists to prevent.
+--   * This file is on the LUKS volume (ADR-0009 §6), which is where unbounded
+--     presence history belongs given the stolen-Pi threat model.
+--   * secure_delete=ON applies, so purged visit rows are zeroed like vectors.
+--
+-- One row per *visit*, not per sighting: sightings within the merge window extend
+-- last_seen_at on the open visit (E-22).
+CREATE TABLE IF NOT EXISTS visit (
+    visit_id         TEXT PRIMARY KEY,   -- 'vst_' + base62
+    person_id        TEXT NOT NULL REFERENCES person(person_id) ON DELETE CASCADE,
+    arrived_at       TEXT NOT NULL,      -- UTC ISO-8601
+    last_seen_at     TEXT NOT NULL       -- extended while they remain visible
+);
+
 CREATE INDEX IF NOT EXISTS idx_embedding_person ON embedding(person_id);
+CREATE INDEX IF NOT EXISTS idx_visit_person_seen ON visit(person_id, last_seen_at DESC);
 """
 
 
@@ -95,6 +137,10 @@ def new_embedding_id() -> str:
 
 def new_invite_id() -> str:
     return "inv_" + _base62()
+
+
+def new_visit_id() -> str:
+    return "vst_" + _base62()
 
 
 def new_invite_secret() -> str:
@@ -137,6 +183,9 @@ class EnrolledPerson:
     color: str
     sound: str | None
     vectors: tuple[Embedding, ...]
+    # Which statement they enrolled under. Carried all the way to the identity
+    # event so door-api can gate attribution on it (ADR-0018).
+    consent_version: str = ""
 
 
 @dataclass(frozen=True)
@@ -158,6 +207,9 @@ class EnrollmentStore:
         self._configure(self._conn)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        # Set by enroll() so callers can tell the enrollee their colour changed.
+        self.last_assigned_profile: str = ""
+        self.last_profile_was_reassigned: bool = False
         logger.info("enrollment_db_opened", extra={"path": str(db_path)})
 
     @staticmethod
@@ -226,10 +278,12 @@ class EnrollmentStore:
                             now,
                         ),
                     )
+                assigned = self._allocate_profile_locked(profile)
                 self._conn.execute(
                     "INSERT INTO profile (person_id, profile_id, color, sound) VALUES (?, ?, ?, ?)",
-                    (person_id, profile.profile_id, profile.color, profile.sound),
+                    (person_id, assigned.profile_id, assigned.color, assigned.sound),
                 )
+                reassigned = assigned.profile_id != profile.profile_id
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
@@ -237,9 +291,149 @@ class EnrollmentStore:
 
         logger.info(
             "person_enrolled",
-            extra={"person_id": person_id, "embeddings": len(embeddings)},
+            extra={
+                "person_id": person_id,
+                "embeddings": len(embeddings),
+                "profile_id": assigned.profile_id,
+                "profile_reassigned": reassigned,
+            },
         )
+        self.last_assigned_profile = assigned.profile_id
+        self.last_profile_was_reassigned = reassigned
         return person_id
+
+    def _allocate_profile_locked(self, preferred: ProfileSpec) -> ProfileSpec:
+        """Resolve a free profile id. Caller holds the lock and an open transaction.
+
+        Two people wanting the same colour is ordinary, not exceptional: the second
+        one gets the next free entry instead of an IntegrityError. Resolved inside
+        the caller's transaction so a concurrent enrollment cannot claim the same id
+        between the check and the insert.
+        """
+        taken = {row[0] for row in self._conn.execute("SELECT profile_id FROM profile").fetchall()}
+        if preferred.profile_id not in taken:
+            return preferred
+        for profile_id, color in PROFILE_CATALOG:
+            if profile_id not in taken:
+                return ProfileSpec(profile_id=profile_id, color=color, sound=preferred.sound)
+        raise NoProfileAvailableError(f"all {len(PROFILE_CATALOG)} catalogue profiles are assigned")
+
+    # ------------------------------------------------------------------
+    # Arrival log (ADR-0018 §1)
+    # ------------------------------------------------------------------
+
+    def record_sighting(
+        self,
+        person_id: str,
+        *,
+        now: datetime,
+        merge_window_s: float,
+    ) -> tuple[str, bool]:
+        """Log that a person is at the door. Returns ``(visit_id, opened_new)``.
+
+        Sightings inside ``merge_window_s`` of this person's most recent one extend
+        that visit rather than starting another (E-22) — someone lingering in the
+        hallway is one visit, not one per recognition cycle.
+
+        Silently does nothing if the person is not enrolled (the FK would reject
+        it anyway); a visit for a non-existent person is a bug elsewhere, and
+        raising here would be on the recognition path.
+        """
+        now_iso = now.astimezone(UTC).isoformat()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT visit_id, last_seen_at FROM visit WHERE person_id=? "
+                "ORDER BY last_seen_at DESC LIMIT 1",
+                (person_id,),
+            ).fetchone()
+
+            if row is not None:
+                visit_id, last_seen_at = row
+                gap_s = (now - datetime.fromisoformat(last_seen_at)).total_seconds()
+                if 0 <= gap_s <= merge_window_s:
+                    self._conn.execute(
+                        "UPDATE visit SET last_seen_at=? WHERE visit_id=?",
+                        (now_iso, visit_id),
+                    )
+                    self._conn.commit()
+                    return str(visit_id), False
+
+            if (
+                self._conn.execute(
+                    "SELECT 1 FROM person WHERE person_id=?", (person_id,)
+                ).fetchone()
+                is None
+            ):
+                return "", False
+
+            visit_id = new_visit_id()
+            self._conn.execute(
+                "INSERT INTO visit (visit_id, person_id, arrived_at, last_seen_at) "
+                "VALUES (?, ?, ?, ?)",
+                (visit_id, person_id, now_iso, now_iso),
+            )
+            self._conn.commit()
+        logger.info("visit_opened", extra={"person_id": person_id, "visit_id": visit_id})
+        return visit_id, True
+
+    def list_visits(
+        self, *, limit: int = 200, person_id: str | None = None
+    ) -> list[dict[str, object]]:
+        """Most recent visits first, joined to the display name for admin views."""
+        query = (
+            "SELECT v.visit_id, v.person_id, p.display_name, v.arrived_at, "
+            "       v.last_seen_at "
+            "FROM visit v JOIN person p ON p.person_id = v.person_id"
+        )
+        params: list[object] = []
+        if person_id is not None:
+            query += " WHERE v.person_id=?"
+            params.append(person_id)
+        query += " ORDER BY v.last_seen_at DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        return [
+            {
+                "visit_id": r[0],
+                "person_id": r[1],
+                "display_name": r[2],
+                "arrived_at": r[3],
+                "last_seen_at": r[4],
+            }
+            for r in rows
+        ]
+
+    def visit_counts(self) -> list[dict[str, object]]:
+        """Per-person visit totals. Admin-only — never a public payload (E-24)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT v.person_id, p.display_name, COUNT(*), MAX(v.last_seen_at) "
+                "FROM visit v JOIN person p ON p.person_id = v.person_id "
+                "GROUP BY v.person_id ORDER BY COUNT(*) DESC"
+            ).fetchall()
+        return [
+            {"person_id": r[0], "display_name": r[1], "visits": int(r[2]), "last_seen_at": r[3]}
+            for r in rows
+        ]
+
+    def purge_visits(self, *, person_id: str | None = None) -> int:
+        """Delete arrival history, for one person or all of it.
+
+        Unenroll already cascades; this is the separate 'forget where I've been but
+        keep recognising me' control the owner can offer.
+        """
+        with self._lock:
+            if person_id is None:
+                cursor = self._conn.execute("DELETE FROM visit")
+            else:
+                cursor = self._conn.execute("DELETE FROM visit WHERE person_id=?", (person_id,))
+            self._conn.commit()
+            # Zero the freed pages, same reasoning as unenroll (E-5).
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self._conn.commit()
+        logger.info("visits_purged", extra={"person_id": person_id, "deleted": cursor.rowcount})
+        return cursor.rowcount
 
     # ------------------------------------------------------------------
     # Remote-enrollment invites (ADR-0016 §4)
@@ -419,11 +613,12 @@ class EnrollmentStore:
         """Load every enrolled person with their vectors (for the in-memory matcher)."""
         with self._lock:
             people = self._conn.execute(
-                "SELECT p.person_id, p.display_name, pr.profile_id, pr.color, pr.sound "
+                "SELECT p.person_id, p.display_name, pr.profile_id, pr.color, pr.sound, "
+                "       p.consent_version "
                 "FROM person p JOIN profile pr ON pr.person_id = p.person_id"
             ).fetchall()
             result: list[EnrolledPerson] = []
-            for person_id, display_name, profile_id, color, sound in people:
+            for person_id, display_name, profile_id, color, sound, consent_version in people:
                 vectors = [
                     Embedding.from_le_float32_bytes(blob)
                     for (blob,) in self._conn.execute(
@@ -438,6 +633,7 @@ class EnrollmentStore:
                         color=color,
                         sound=sound,
                         vectors=tuple(vectors),
+                        consent_version=consent_version,
                     )
                 )
         return result

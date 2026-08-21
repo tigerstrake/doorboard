@@ -58,7 +58,10 @@ expires_at             UTC
 poll                   {id, question, options:[{id,label}]} | null
 poll_results           [{option_id, votes}] | null
 note_accepted          {action_id, entry_id} | null   — outcome echo for the phone
+attributed_to          str | null       — added by ADR-0018 §2 (see below)
 ```
+
+**Amended by ADR-0018 §2:** `attributed_to` carries the recognised person's display name so the page can disclose whose name a write will carry *before* they write it (E-23). It is that person's own name shown back to them — not a disclosure about anyone else — and is null unless their consent covers attribution.
 
 Nothing else. No visitor name, no recognition, no media, no counts of anything private.
 

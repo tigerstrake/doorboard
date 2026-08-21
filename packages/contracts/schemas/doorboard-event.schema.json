@@ -1809,6 +1809,18 @@
     "SessionStateChangedPayload": {
       "additionalProperties": false,
       "properties": {
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        },
         "from_state": {
           "$ref": "#/$defs/SessionState"
         },
@@ -3058,6 +3070,18 @@
         "confidence": {
           "title": "Confidence",
           "type": "number"
+        },
+        "consent_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Version"
         },
         "display_name": {
           "title": "Display Name",

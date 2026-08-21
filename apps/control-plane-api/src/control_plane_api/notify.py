@@ -63,10 +63,14 @@ def evaluate_rules(
         and event.type == "session.state_changed"
         and str(event.payload.to_state) == "RINGING"
     ):
+        # Name the visitor when the door recognised them (ADR-0018 §4). An
+        # unrecognised ring keeps the original wording, so this reads as an
+        # upgrade rather than a behaviour change when nobody is enrolled.
+        recognised = getattr(event.payload, "display_name", None)
         return Notification(
             rule_key=f"doorbell_rang:{event.door_id}:{event.payload.session_id}",
             title="🔔 Doorbell",
-            message="Someone's at the door.",
+            message=f"{recognised} is here." if recognised else "Someone's at the door.",
         )
     if event.type == "session.ended" and event.payload.outcome == "unanswered_timeout":
         return Notification(

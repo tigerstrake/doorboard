@@ -5,6 +5,7 @@
   "occurred_at": "2026-07-04T12:34:56.123000Z",
   "payload": {
     "confidence": 0.93,
+    "consent_version": null,
     "display_name": "Alex",
     "expires_at": "2026-07-04T12:34:58.623000Z",
     "expires_at_monotonic_ms": 123459280,
