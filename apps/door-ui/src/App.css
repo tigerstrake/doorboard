@@ -320,6 +320,42 @@
   margin: 0;
 }
 
+/* Academic countdown: one big number, readable across a room. */
+.academic-countdown {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 100%;
+  gap: 2px;
+}
+
+.academic-countdown__days {
+  margin: 0;
+  line-height: 1;
+}
+
+.academic-countdown__days strong {
+  font-size: 3rem;
+  font-weight: 700;
+  color: var(--db-presence-class);
+}
+
+.academic-countdown__days span {
+  font-size: 1rem;
+  color: var(--db-text-secondary);
+}
+
+.academic-countdown__label {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.academic-countdown__then {
+  margin: var(--db-spacing-xs) 0 0 0;
+  font-size: 0.8rem;
+  color: var(--db-text-muted);
+}
+
 .moments-tile-content {
   display: flex;
   flex-direction: column;

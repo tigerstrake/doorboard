@@ -1,0 +1,123 @@
+{
+  "$defs": {
+    "AcademicMilestone": {
+      "additionalProperties": false,
+      "description": "One dated thing on the academic calendar.",
+      "properties": {
+        "date": {
+          "format": "date",
+          "title": "Date",
+          "type": "string"
+        },
+        "days_until": {
+          "title": "Days Until",
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "term_start",
+            "classes_end",
+            "finals",
+            "break",
+            "commencement"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "date",
+        "days_until",
+        "kind"
+      ],
+      "title": "AcademicMilestone",
+      "type": "object"
+    },
+    "AmbientAcademicCountdownPayload": {
+      "additionalProperties": false,
+      "description": "Days until the next few academic milestones (ADR-0039).\n\nRead from a configured date table rather than fetched: the university publishes\nthe calendar as a web page with no iCalendar feed, and a scraper for something\nthat changes three times a year would be the most fragile part of the system.\nA table also means this job makes no outbound request at all.",
+      "properties": {
+        "next": {
+          "$ref": "#/$defs/AcademicMilestone"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "upcoming": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AcademicMilestone"
+          },
+          "title": "Upcoming",
+          "type": "array"
+        }
+      },
+      "required": [
+        "next",
+        "source"
+      ],
+      "title": "AmbientAcademicCountdownPayload",
+      "type": "object"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UUIDv7": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "door_id": {
+      "title": "Door Id",
+      "type": "string"
+    },
+    "event_id": {
+      "$ref": "#/$defs/UUIDv7"
+    },
+    "monotonic_ms": {
+      "title": "Monotonic Ms",
+      "type": "integer"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "payload": {
+      "$ref": "#/$defs/AmbientAcademicCountdownPayload"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "ambient.academic_countdown",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "source",
+    "occurred_at",
+    "monotonic_ms",
+    "door_id",
+    "trace_id",
+    "type",
+    "payload"
+  ],
+  "title": "AmbientAcademicCountdownEvent",
+  "type": "object"
+}

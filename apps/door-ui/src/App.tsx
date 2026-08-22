@@ -580,6 +580,14 @@ export function App() {
   const [checkinSubmitting, setCheckinSubmitting] = useState<boolean>(false);
   const [myContent, setMyContent] = useState<MyContentRef[]>([]);
   const [approvedGuestbook, setApprovedGuestbook] = useState<GuestbookEntry[]>([]);
+  const [academicCountdown, setAcademicCountdown] = useState<{
+    payload: {
+      next: { label: string; date: string; days_until: number; kind: string };
+      upcoming: Array<{ label: string; days_until: number }>;
+      source: string;
+    };
+    occurredAt: string;
+  } | null>(null);
   const [guestbookAmbientState, setGuestbookAmbientState] = useState<
     "idle" | "ready" | "unavailable"
   >("idle");
@@ -1011,6 +1019,14 @@ export function App() {
       setFoodRecommendation({ payload: event.payload, occurredAt: event.occurred_at });
     });
 
+    const unsubscribeAcademic = client.subscribe(
+      "ambient.academic_countdown",
+      (event: DoorboardEvent) => {
+        if (event.type !== "ambient.academic_countdown") return;
+        setAcademicCountdown({ payload: event.payload, occurredAt: event.occurred_at });
+      }
+    );
+
     const unsubscribeScoreboard = client.subscribe(
       "social.scoreboard_updated",
       (event: DoorboardEvent) => {
@@ -1063,6 +1079,7 @@ export function App() {
       unsubscribeSatellite();
       unsubscribePrinter();
       unsubscribeFood();
+      unsubscribeAcademic();
       unsubscribeScoreboard();
       unsubscribeWallboardFocus();
       client.close();
@@ -2001,6 +2018,37 @@ export function App() {
           </Tile>
         ),
       },
+      ...(academicCountdown
+        ? [
+            {
+              key: "academic" as const,
+              // No focus channel: a countdown is one number, so there is nothing
+              // to expand into. Tiles with a channel get a larger view.
+              channel: null,
+              node: (
+                <Tile title="Academic Calendar" asOf={academicCountdown.occurredAt}>
+                  <div className="academic-countdown">
+                    <p className="academic-countdown__days">
+                      <strong>{academicCountdown.payload.next.days_until}</strong>
+                      <span>
+                        {academicCountdown.payload.next.days_until === 1 ? " day" : " days"}
+                      </span>
+                    </p>
+                    <p className="academic-countdown__label">
+                      until {academicCountdown.payload.next.label}
+                    </p>
+                    {academicCountdown.payload.upcoming.length > 0 && (
+                      <p className="academic-countdown__then">
+                        then {academicCountdown.payload.upcoming[0].label} in{" "}
+                        {academicCountdown.payload.upcoming[0].days_until} days
+                      </p>
+                    )}
+                  </div>
+                </Tile>
+              ),
+            },
+          ]
+        : []),
       {
         key: "guestbook",
         channel: "guestbook",

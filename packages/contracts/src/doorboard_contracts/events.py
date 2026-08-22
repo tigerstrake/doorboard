@@ -548,6 +548,33 @@ class AmbientFoodRecommendationPayload(StrictModel):
     backup_hall: str | None = None
 
 
+class AcademicMilestone(StrictModel):
+    """One dated thing on the academic calendar."""
+
+    label: str
+    date: date
+    days_until: int
+    """Whole days from today, local. Negative is not published — see the worker."""
+    kind: Literal["term_start", "classes_end", "finals", "break", "commencement"]
+
+
+class AmbientAcademicCountdownPayload(StrictModel):
+    """Days until the next few academic milestones (ADR-0039).
+
+    Read from a configured date table rather than fetched: the university publishes
+    the calendar as a web page with no iCalendar feed, and a scraper for something
+    that changes three times a year would be the most fragile part of the system.
+    A table also means this job makes no outbound request at all.
+    """
+
+    next: AcademicMilestone
+    """The one to lead with. Absent-if-none is expressed by not publishing at all."""
+    upcoming: list[AcademicMilestone] = []
+    """The following few, so a subtitle can say what comes after."""
+    source: str
+    """Which table this came from, so a stale one is identifiable on screen."""
+
+
 class SystemServiceHealthPayload(HealthPayload):
     pass
 
@@ -742,6 +769,11 @@ class AmbientFoodRecommendationEvent(BaseEvent):
     payload: AmbientFoodRecommendationPayload
 
 
+class AmbientAcademicCountdownEvent(BaseEvent):
+    type: Literal["ambient.academic_countdown"]
+    payload: AmbientAcademicCountdownPayload
+
+
 class SystemServiceHealthEvent(BaseEvent):
     type: Literal["system.service_health"]
     payload: SystemServiceHealthPayload
@@ -793,6 +825,7 @@ EVENT_MODELS: tuple[type[BaseEvent], ...] = (
     AmbientAircraftSummaryEvent,
     AmbientPrinterStatusEvent,
     AmbientFoodRecommendationEvent,
+    AmbientAcademicCountdownEvent,
     SystemServiceHealthEvent,
     SystemStorageAlertEvent,
     SystemLatencySampleEvent,
@@ -847,6 +880,7 @@ type DoorboardEvent = Annotated[
     | AmbientAircraftSummaryEvent
     | AmbientPrinterStatusEvent
     | AmbientFoodRecommendationEvent
+    | AmbientAcademicCountdownEvent
     | SystemServiceHealthEvent
     | SystemStorageAlertEvent
     | SystemLatencySampleEvent,

@@ -286,6 +286,19 @@ export interface AmbientFoodRecommendationPayload {
   backup_hall?: string | null;
 }
 
+export interface AcademicMilestone {
+  label: string;
+  date: string;
+  days_until: number;
+  kind: "term_start" | "classes_end" | "finals" | "break" | "commencement";
+}
+
+export interface AmbientAcademicCountdownPayload {
+  next: AcademicMilestone;
+  upcoming: Array<AcademicMilestone>;
+  source: string;
+}
+
 export interface SystemServiceHealthPayload {
   service: string;
   status: HealthStatus;
@@ -869,6 +882,17 @@ export interface AmbientFoodRecommendationEvent {
   payload: AmbientFoodRecommendationPayload;
 }
 
+export interface AmbientAcademicCountdownEvent {
+  event_id: string;
+  type: "ambient.academic_countdown";
+  source: string;
+  occurred_at: string;
+  monotonic_ms: number;
+  door_id: string;
+  trace_id: string;
+  payload: AmbientAcademicCountdownPayload;
+}
+
 export interface SystemServiceHealthEvent {
   event_id: string;
   type: "system.service_health";
@@ -902,6 +926,6 @@ export interface SystemLatencySampleEvent {
   payload: SystemLatencySamplePayload;
 }
 
-export type DoorboardEvent = DoorButtonPressedEvent | DoorKnockDetectedEvent | DoorContactChangedEvent | DoorProfileUpdateEvent | DoorProfileClearEvent | DoorEffectPlayEvent | DoorControllerHealthEvent | VisionFaceVisibleEvent | VisionIdentityStableEvent | VisionIdentityExpiredEvent | VisionPrivacyModeChangedEvent | VisionPipelineStatusEvent | SessionStateChangedEvent | SessionStartedEvent | SessionEndedEvent | MediaRecordingStartedEvent | MediaRecordingFinalizedEvent | MediaThumbnailReadyEvent | MediaRetentionDeletedEvent | MediaStorageStatusEvent | SyncUploadQueuedEvent | SyncUploadCompletedEvent | SyncUploadFailedEvent | StatusPresenceChangedEvent | SocialGuestbookEntryCreatedEvent | SocialPollVoteCastEvent | SocialCheckinCreatedEvent | SocialMoodUpdatedEvent | SocialScoreboardUpdatedEvent | SocialDeletionRequestedEvent | AmbientBirdSummaryEvent | AmbientSatellitePassEvent | AmbientAircraftSummaryEvent | AmbientPrinterStatusEvent | AmbientFoodRecommendationEvent | SystemServiceHealthEvent | SystemStorageAlertEvent | SystemLatencySampleEvent;
+export type DoorboardEvent = DoorButtonPressedEvent | DoorKnockDetectedEvent | DoorContactChangedEvent | DoorProfileUpdateEvent | DoorProfileClearEvent | DoorEffectPlayEvent | DoorControllerHealthEvent | VisionFaceVisibleEvent | VisionIdentityStableEvent | VisionIdentityExpiredEvent | VisionPrivacyModeChangedEvent | VisionPipelineStatusEvent | SessionStateChangedEvent | SessionStartedEvent | SessionEndedEvent | MediaRecordingStartedEvent | MediaRecordingFinalizedEvent | MediaThumbnailReadyEvent | MediaRetentionDeletedEvent | MediaStorageStatusEvent | SyncUploadQueuedEvent | SyncUploadCompletedEvent | SyncUploadFailedEvent | StatusPresenceChangedEvent | SocialGuestbookEntryCreatedEvent | SocialPollVoteCastEvent | SocialCheckinCreatedEvent | SocialMoodUpdatedEvent | SocialScoreboardUpdatedEvent | SocialDeletionRequestedEvent | AmbientBirdSummaryEvent | AmbientSatellitePassEvent | AmbientAircraftSummaryEvent | AmbientPrinterStatusEvent | AmbientFoodRecommendationEvent | AmbientAcademicCountdownEvent | SystemServiceHealthEvent | SystemStorageAlertEvent | SystemLatencySampleEvent;
 
-export type DoorboardEventType = "door.button_pressed" | "door.knock_detected" | "door.contact_changed" | "door.profile_update" | "door.profile_clear" | "door.effect_play" | "door.controller_health" | "vision.face_visible" | "vision.identity_stable" | "vision.identity_expired" | "vision.privacy_mode_changed" | "vision.pipeline_status" | "session.state_changed" | "session.started" | "session.ended" | "media.recording_started" | "media.recording_finalized" | "media.thumbnail_ready" | "media.retention_deleted" | "media.storage_status" | "sync.upload_queued" | "sync.upload_completed" | "sync.upload_failed" | "status.presence_changed" | "social.guestbook_entry_created" | "social.poll_vote_cast" | "social.checkin_created" | "social.mood_updated" | "social.scoreboard_updated" | "social.deletion_requested" | "ambient.bird_summary" | "ambient.satellite_pass" | "ambient.aircraft_summary" | "ambient.printer_status" | "ambient.food_recommendation" | "system.service_health" | "system.storage_alert" | "system.latency_sample";
+export type DoorboardEventType = "door.button_pressed" | "door.knock_detected" | "door.contact_changed" | "door.profile_update" | "door.profile_clear" | "door.effect_play" | "door.controller_health" | "vision.face_visible" | "vision.identity_stable" | "vision.identity_expired" | "vision.privacy_mode_changed" | "vision.pipeline_status" | "session.state_changed" | "session.started" | "session.ended" | "media.recording_started" | "media.recording_finalized" | "media.thumbnail_ready" | "media.retention_deleted" | "media.storage_status" | "sync.upload_queued" | "sync.upload_completed" | "sync.upload_failed" | "status.presence_changed" | "social.guestbook_entry_created" | "social.poll_vote_cast" | "social.checkin_created" | "social.mood_updated" | "social.scoreboard_updated" | "social.deletion_requested" | "ambient.bird_summary" | "ambient.satellite_pass" | "ambient.aircraft_summary" | "ambient.printer_status" | "ambient.food_recommendation" | "ambient.academic_countdown" | "system.service_health" | "system.storage_alert" | "system.latency_sample";

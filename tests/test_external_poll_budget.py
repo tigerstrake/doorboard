@@ -101,6 +101,16 @@ POLLERS: tuple[Poller, ...] = (
         note="Daily.",
     ),
     Poller(
+        setting="WALLBOARD_ACADEMIC_INTERVAL_S",
+        target="a local JSON date table — no network at all (ADR-0039)",
+        metered=False,
+        demand_gated=True,
+        note=(
+            "Reads a file. There is no remote service to rate-limit, which is most "
+            "of why the academic calendar is a table rather than a scraper."
+        ),
+    ),
+    Poller(
         setting="DOOR_VISIOND_PURGE_WORKER_INTERVAL_S",
         target="door-sync on 127.0.0.1:8083",
         metered=False,
