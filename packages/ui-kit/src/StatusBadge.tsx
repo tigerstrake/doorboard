@@ -75,13 +75,21 @@ const labelIcons: Record<PresenceLabel, React.ReactNode> = {
 const labelDisplayNames: Record<PresenceLabel, string> = {
   social: "Come In",
   available: "Available",
-  busy: "Busy",
+  // "Working", not "Busy" (ADR-0035): `busy` is the calendar-driven label — the source
+  // that expires a "busy until 15:00" on schedule — so a calendar event reading "Working"
+  // is exactly right. It also absorbs the middle ground: working, so knock if it matters.
+  busy: "Working",
+  // Unused by the four-point scale — "Working" carries this meaning now. Kept because
+  // presence_history already holds a row with this value, and PresenceLabel(row.label)
+  // raises on an unknown one, so removing it would break the history endpoint.
   knock_if_urgent: "Knock if urgent",
   // "Locked In" rather than "DND" (ADR-0035): the household's own vocabulary, and the
   // visitors here are dorm-mates rather than strangers. A retext, not a new label —
   // adding a third don't-bother-me state would make the board less readable, not more.
   do_not_disturb: "Locked In",
-  sleeping: "Sleeping",
+  // "Recovery" rather than "Sleeping": covers a nap, being ill, or just being done for
+  // the day, without any of them having to be stated on a corridor-facing screen.
+  sleeping: "Recovery",
   at_class: "At Class",
   at_library: "At Library",
   away: "Away",

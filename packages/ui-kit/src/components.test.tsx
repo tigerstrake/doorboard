@@ -262,17 +262,31 @@ describe("StatusBadge presence labels (ADR-0035)", () => {
     expect(available.textContent).toBe("Available");
   });
 
-  it("gives busy and knock_if_urgent different text", () => {
-    // `busy` used to carry both meanings ambiguously: don't knock, or knock anyway?
-    const { container: busy } = render(<StatusBadge label="busy" />);
-    const { container: knock } = render(<StatusBadge label="knock_if_urgent" />);
-    expect(busy.textContent).toBe("Busy");
-    expect(knock.textContent).toBe("Knock if urgent");
+  it("renders the owner's four-point scale", () => {
+    // The set the household actually uses. Everything else is either a where-am-I label
+    // or, in knock_if_urgent's case, retained only so stored history still parses.
+    const scale: Array<[PresenceLabel, string]> = [
+      ["social", "Come In"],
+      ["busy", "Working"],
+      ["do_not_disturb", "Locked In"],
+      ["sleeping", "Recovery"],
+    ];
+    for (const [label, text] of scale) {
+      cleanup();
+      const { container } = render(<StatusBadge label={label} />);
+      expect(container.textContent).toBe(text);
+    }
   });
 
-  it("shows do_not_disturb as Locked In", () => {
-    // A retext, not a new label — a third don't-bother-me state would read worse.
-    const { container } = render(<StatusBadge label="do_not_disturb" />);
-    expect(container.textContent).toBe("Locked In");
+  it("keeps every scale label visually distinct", () => {
+    // Four states that read the same colour would defeat the point of a glanceable badge.
+    const classes = (["social", "busy", "do_not_disturb", "sleeping"] as PresenceLabel[]).map(
+      (label) => {
+        cleanup();
+        const { container } = render(<StatusBadge label={label} />);
+        return container.querySelector(".db-status-badge")?.className;
+      }
+    );
+    expect(new Set(classes).size).toBe(4);
   });
 });

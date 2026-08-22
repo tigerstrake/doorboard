@@ -32,16 +32,27 @@ Add two labels:
 - **`knock_if_urgent`**, displayed **"Knock if urgent"** — the middle ground between `busy` and
   `do_not_disturb`.
 
-Retext `do_not_disturb` to **"Locked In"** rather than adding a label for it. That is the
-household's actual vocabulary, and it costs no contract change and no deployment ordering. The
-tradeoff is deliberate: "DND" reads to any stranger, "Locked In" reads to dorm-mates, and the
-visitors here are dorm-mates.
+Three labels are **retexted** rather than added, because display copy costs no contract change
+and no deployment ordering:
 
-The result is a scale that reads at a glance rather than seven overlapping states:
+| Value | Displays as | Why |
+| --- | --- | --- |
+| `do_not_disturb` | **Locked In** | The household's own vocabulary. "DND" reads to a stranger; "Locked In" reads to a dorm-mate, and the visitors here are dorm-mates. |
+| `busy` | **Working** | `busy` is the calendar-driven label — the source that expires "busy until 15:00" on schedule — so a calendar event reading "Working" is exactly right. |
+| `sleeping` | **Recovery** | Covers a nap, being ill, or just being done for the day, without any of them having to be stated on a corridor-facing screen. |
 
-> Come In → Available → Knock if urgent → Locked In → Sleeping
+The settled scale is four points, not five:
+
+> Come In → Working → Locked In → Recovery
 
 plus the orthogonal where-am-I labels (`at_class`, `at_library`, `away`).
+
+`knock_if_urgent` was added in the first pass and is **retained but unused**: "Working" absorbed
+its meaning (working, so knock if it matters), which made a fifth point redundant. It is not
+removed because `presence_history` already holds a row carrying that value and
+`PresenceLabel(row.label)` raises on an unknown one — deleting the enum member would break the
+history endpoint for the sake of tidiness. `available` likewise stays as the neutral resting
+state the `default` source falls back to.
 
 ### Rejected: health and guest states
 
