@@ -419,11 +419,21 @@ def get_subject_status(
     source_rows = list_source_rows(session, subject_id)
     subject_row = get_or_create_subject(session, subject_id, now=now)
 
+    # `stored` is derived from STORED_VALUE_SOURCES rather than special-cased by
+    # name. This used to test `source == "calendar"`, so adding `schedule` — also
+    # live — reported it as stored=True with a label of None, which reads as "set
+    # and empty" instead of "computed on demand". Deriving it means the next live
+    # source cannot inherit the same bug.
+    live_providers: dict[str, CalendarProvider | ScheduleProvider | None] = {
+        "calendar": calendar_provider,
+        "schedule": schedule_provider,
+    }
     sources: list[SourceStatus] = []
     for source in SOURCE_PRECEDENCE:
         row = source_rows.get(source)
-        if source == "calendar":
-            live_entry = calendar_provider.get_label(subject_id, now=now)
+        if source not in STORED_VALUE_SOURCES:
+            provider = live_providers.get(source)
+            live_entry = provider.get_label(subject_id, now=now) if provider is not None else None
             sources.append(
                 SourceStatus(
                     source=source,
