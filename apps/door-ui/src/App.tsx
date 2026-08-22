@@ -26,6 +26,7 @@ import type {
 import { AboutDoorboard } from "./AboutDoorboard";
 import { pollShares } from "./PollResultBars";
 import { CampusDiningMap } from "./wallboard/CampusDiningMap";
+import { GuestbookSlideshow } from "./wallboard/GuestbookSlideshow";
 import { ApproachGreeting } from "./ApproachGreeting";
 import { AttributionNotice } from "./AttributionNotice";
 import { WallboardVisitorMode } from "./wallboard/WallboardVisitorMode";
@@ -47,7 +48,7 @@ import { AdminEnrollmentPanel } from "./AdminEnrollmentPanel";
 import { AdminAboutPanel } from "./AdminAboutPanel";
 import { VisitorPage } from "./VisitorPage";
 import { RevealPage } from "./RevealPage";
-import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
+import { PollOptionRow } from "./SocialRenderers";
 import { WallboardFocusSplit, WallboardLauncher } from "./wallboardChannels";
 import { OnScreenKeyboard } from "./OnScreenKeyboard";
 import { safeRandomUUID } from "./uuid";
@@ -2009,12 +2010,13 @@ export function App() {
             asOf={approvedGuestbook[0]?.created_at ?? null}
           >
             <div className="guestbook-tile-content">
-              {guestbookAmbientState === "unavailable" && <p>Guestbook unavailable; approved notes below may be stale.</p>}
+              {guestbookAmbientState === "unavailable" && <p>Guestbook unavailable; the note below may be stale.</p>}
               {guestbookAmbientState === "idle" && <p>Loading approved notes…</p>}
-              {guestbookAmbientState === "ready" && approvedGuestbook.length === 0 && <p>No guestbook notes yet — be the first!</p>}
-              {approvedGuestbook.map((e) => (
-                <GuestbookQuote key={e.id} text={e.text} authorLabel={e.author_label} />
-              ))}
+              {guestbookAmbientState !== "idle" && (
+                // One at a time rather than a stacked list: notes were being
+                // collected, moderated, and then not really read.
+                <GuestbookSlideshow entries={approvedGuestbook} />
+              )}
             </div>
           </Tile>
         ),
