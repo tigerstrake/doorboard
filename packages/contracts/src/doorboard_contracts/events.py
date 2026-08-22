@@ -382,7 +382,11 @@ class SyncUploadFailedPayload(StrictModel):
 class StatusPresenceChangedPayload(StrictModel):
     subject_id: str
     label: PresenceLabel
-    source: Literal["manual", "focus_shortcut", "geofence_label", "calendar", "default"]
+    # Must match SOURCE_PRECEDENCE in control-plane-api's presence.py. Adding a
+    # source there without adding it here does not fail at startup — it fails when
+    # that source first WINS, as a 500 out of presence resolution. That is exactly
+    # how `schedule` shipped broken on 2026-08-22.
+    source: Literal["manual", "focus_shortcut", "geofence_label", "calendar", "schedule", "default"]
     until: UTCDateTime | None
 
 

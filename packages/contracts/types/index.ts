@@ -166,7 +166,7 @@ export interface SyncUploadFailedPayload {
 export interface StatusPresenceChangedPayload {
   subject_id: string;
   label: PresenceLabel;
-  source: "manual" | "focus_shortcut" | "geofence_label" | "calendar" | "default";
+  source: "manual" | "focus_shortcut" | "geofence_label" | "calendar" | "schedule" | "default";
   until: string | null;
 }
 

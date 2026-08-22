@@ -2524,6 +2524,7 @@
             "focus_shortcut",
             "geofence_label",
             "calendar",
+            "schedule",
             "default"
           ],
           "title": "Source",

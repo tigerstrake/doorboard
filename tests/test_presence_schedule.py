@@ -206,3 +206,58 @@ def test_an_expired_focus_falls_through_to_recovery():
     )
     assert resolved.source == "schedule"
     assert resolved.label == PresenceLabel.SLEEPING
+
+
+# --- the cross-check that was missing --------------------------------------
+
+
+def test_every_precedence_source_is_accepted_by_the_contract():
+    """SOURCE_PRECEDENCE and the event contract's Literal must agree.
+
+    This is the test that should have existed before `schedule` was added. Adding a
+    source to the engine without adding it to StatusPresenceChangedPayload does not
+    fail at startup, and does not fail while a higher source keeps winning — it
+    fails the first time the new source WINS, as a 500 out of presence resolution,
+    because sync_presence builds the outbound event from the resolved source.
+
+    Shipped exactly that way on 2026-08-22: 28 tests passed because every one of
+    them called resolve_presence directly and none exercised the publish path.
+    """
+    import typing
+
+    from doorboard_contracts.events import StatusPresenceChangedPayload
+
+    allowed = set(typing.get_args(StatusPresenceChangedPayload.model_fields["source"].annotation))
+    missing = set(SOURCE_PRECEDENCE) - allowed
+    assert not missing, (
+        "these presence sources can win resolution but cannot be published, so the "
+        f"first time one does it is a 500: {sorted(missing)}"
+    )
+
+
+def test_the_contract_declares_no_source_the_engine_cannot_produce():
+    """The other direction: a Literal member nothing resolves to is dead weight."""
+    import typing
+
+    from doorboard_contracts.events import StatusPresenceChangedPayload
+
+    allowed = set(typing.get_args(StatusPresenceChangedPayload.model_fields["source"].annotation))
+    assert not (allowed - set(SOURCE_PRECEDENCE))
+
+
+def test_a_resolved_schedule_can_actually_be_published():
+    """End to end through the payload model, not just the resolver."""
+    from doorboard_contracts.events import StatusPresenceChangedPayload
+
+    now = _local(2, 0)
+    resolved = resolve_presence({"schedule": _provider().get_label("owner", now=now)}, now=now)
+    assert resolved.source == "schedule"
+    payload = StatusPresenceChangedPayload(
+        subject_id="owner",
+        label=resolved.label,
+        source=resolved.source,
+        until=resolved.until,
+    )
+    assert payload.source == "schedule"
+    assert payload.label == PresenceLabel.SLEEPING
+    assert payload.until == resolved.until
