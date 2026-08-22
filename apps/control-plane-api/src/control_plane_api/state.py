@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from doorboard_contracts import PresenceLabel
 
@@ -135,12 +136,19 @@ class AppState:
                 label=PresenceLabel(cfg.presence_schedule_label),
                 subject_ids=subjects or None,
             )
+            # The resolved zone is logged because the window is expressed in LOCAL
+            # time and the container's zone comes from TZ. Without TZ passed in,
+            # this silently runs in UTC — a 23:00 window starting at 16:00 local.
+            # Found exactly that way on 2026-08-22.
+            local_now = datetime.now().astimezone()
             logger.info(
                 "presence_schedule_enabled",
                 extra={
                     "window": cfg.presence_schedule_window,
                     "label": cfg.presence_schedule_label,
                     "subjects": subjects or ["*"],
+                    "timezone": str(local_now.tzinfo),
+                    "utc_offset": local_now.strftime("%z"),
                 },
             )
 

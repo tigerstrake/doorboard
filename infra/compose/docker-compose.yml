@@ -78,6 +78,9 @@ services:
       DOORBOARD_DOOR_ID: ${DOORBOARD_DOOR_ID:-primary}
       CONTROL_PLANE_BIND: 0.0.0.0:8090
       POSTGRES_DSN: postgresql+psycopg://doorboard:${POSTGRES_PASSWORD}@postgres:5432/doorboard
+      # Time-of-day logic (ADR-0037's nightly window) reads the container's
+      # local zone. Without this it silently runs in UTC.
+      TZ: ${TZ:-UTC}
       MQTT_URL: mqtt://mosquitto:1883
       MQTT_USERNAME: control-plane-api
       MQTT_PASSWORD: ${MQTT_CP_PASSWORD}
