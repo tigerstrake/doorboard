@@ -15,6 +15,10 @@ dependencies = [
     "alembic>=1.13",
     "psycopg[binary]>=3.2",
     "paho-mqtt>=2.1",
+    # Class schedules are RRULE-based, with EXDATE for cancelled classes and
+    # RECURRENCE-ID for moved ones. This resolves "what is happening at time T"
+    # including all of that; hand-rolling recurrence would get those wrong.
+    "recurring-ical-events>=3.0",
     "httpx>=0.28",
 ]
 

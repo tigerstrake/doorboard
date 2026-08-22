@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+
+from control_plane_api.calendar_ics import IcsCalendarProvider, parse_subject_urls
 from control_plane_api.db import make_engine, make_session_factory
 from control_plane_api.mqtt import MqttPublisher, build_publisher
 from control_plane_api.notify import NotifyEngine, build_notifier
@@ -14,6 +17,8 @@ from control_plane_api.telegram import (
     build_thumbnail_source,
     build_video_source,
 )
+
+logger = logging.getLogger("control_plane_api.state")
 
 
 class AppState:
@@ -91,10 +96,25 @@ class AppState:
                 door_api_admin_token=cfg.door_api_admin_token,
             ),
         )
-        # Real calendar wiring is a later brief (T-504) — `MockCalendarProvider`
-        # always returns "no signal", so calendar simply never wins precedence
-        # until a real provider is injected.
-        self.calendar_provider: CalendarProvider = calendar_provider or MockCalendarProvider()
+        # An injected provider always wins (tests). Otherwise: a real .ics provider
+        # when feeds are configured, else the mock, which always answers "no signal"
+        # so the calendar source simply never wins precedence (ADR-0036).
+        if calendar_provider is not None:
+            self.calendar_provider: CalendarProvider = calendar_provider
+        else:
+            subject_urls = parse_subject_urls(cfg.presence_calendar_ics_urls)
+            if subject_urls:
+                self.calendar_provider = IcsCalendarProvider(
+                    subject_urls,
+                    refresh_s=cfg.presence_calendar_refresh_s,
+                    timeout_s=cfg.presence_calendar_timeout_s,
+                )
+                logger.info(
+                    "calendar_source_enabled",
+                    extra={"subjects": sorted(subject_urls)},  # names only, never the URLs
+                )
+            else:
+                self.calendar_provider = MockCalendarProvider()
 
     def dispose(self) -> None:
         self.engine.dispose()

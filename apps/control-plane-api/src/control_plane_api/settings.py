@@ -176,6 +176,22 @@ class Settings(BaseSettings):
     enrollment_key_token: str = Field(default="", alias="CONTROL_PLANE_ENROLLMENT_KEY_TOKEN")
 
     # ── presence engine (T-504) ──────────────────────────────────────────
+    # Published .ics feeds per subject, as `owner=https://...,roommate=https://...`
+    # (ADR-0036). Empty means no calendar source, which is the default: presence
+    # then resolves from manual/Focus/geofence only, exactly as before.
+    #
+    # These are "secret address in iCal format" URLs — bearer credentials in a URL —
+    # so they are never logged, not even on a fetch failure.
+    presence_calendar_ics_urls: str = Field(default="", alias="PRESENCE_CALENDAR_ICS_URLS")
+    # A class schedule changes at most a few times a term; 15 minutes is generous.
+    # It matters that this is cached at all: presence resolves on every request.
+    presence_calendar_refresh_s: float = Field(
+        default=900.0, alias="PRESENCE_CALENDAR_REFRESH_S", gt=0
+    )
+    presence_calendar_timeout_s: float = Field(
+        default=10.0, alias="PRESENCE_CALENDAR_TIMEOUT_S", gt=0
+    )
+
     # How many `presence_history` rows to retain per subject_id — an
     # append-only label-change log grows forever otherwise. 500 rows is
     # generous for a change-only log (years, at plausible change rates)
