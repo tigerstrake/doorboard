@@ -22,9 +22,10 @@ both writes and reads).
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from datetime import time as dtime
 from typing import Any, Protocol
 
 from doorboard_contracts import PresenceLabel
@@ -38,6 +39,10 @@ SOURCE_PRECEDENCE: tuple[str, ...] = (
     "focus_shortcut",
     "geofence_label",
     "calendar",
+    # A recurring local-time window (ADR-0037). Deliberately the weakest real
+    # signal: it is a standing assumption about a time of day, so anything that
+    # actually knows something — a Focus, a location, a class — outranks it.
+    "schedule",
     "default",
 )
 
@@ -46,7 +51,9 @@ SOURCE_PRECEDENCE: tuple[str, ...] = (
 # per subject" the brief scopes roommate consent down to) — "manual" is
 # always available because it's the subject (or an admin on their behalf)
 # directly stating their own status, not inference about them.
-INFERRED_SOURCES: frozenset[str] = frozenset({"focus_shortcut", "geofence_label", "calendar"})
+INFERRED_SOURCES: frozenset[str] = frozenset(
+    {"focus_shortcut", "geofence_label", "calendar", "schedule"}
+)
 
 DEFAULT_LABEL = PresenceLabel.UNKNOWN
 
@@ -117,6 +124,82 @@ class MockCalendarProvider:
     def get_label(self, subject_id: str, *, now: datetime) -> SourceEntry | None:
         del now
         return self._canned.get(subject_id)
+
+
+# ---------------------------------------------------------------------------
+# Nightly schedule inference (ADR-0037). Same shape as CalendarProvider and
+# likewise NOT a stored source: it is computed live from the clock, which is what
+# makes it reappear the instant a higher source is cleared. A stored row would
+# have to be re-triggered, and could get stuck.
+# ---------------------------------------------------------------------------
+
+
+class ScheduleProvider(Protocol):
+    def get_label(self, subject_id: str, *, now: datetime) -> SourceEntry | None: ...
+
+
+def parse_window(raw: str) -> tuple[dtime, dtime] | None:
+    """Parse ``"23:00-07:00"`` in LOCAL time. Empty disables the schedule.
+
+    An unparseable value raises rather than silently disabling: the safe failure
+    for "is the door meant to say Recovery at night" is a loud one, not a door
+    that quietly never does.
+    """
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        start_text, end_text = text.split("-", 1)
+        return dtime.fromisoformat(start_text.strip()), dtime.fromisoformat(end_text.strip())
+    except ValueError as exc:
+        msg = f"PRESENCE_SCHEDULE_WINDOW must look like '23:00-07:00', got {raw!r}"
+        raise ValueError(msg) from exc
+
+
+class NightlyScheduleProvider:
+    """Reports a label inside a recurring local-time window.
+
+    Returns `until` = the window's end, so the engine expires it on schedule with
+    no background task — the same mechanism that makes "busy until 15:00" revert.
+    """
+
+    def __init__(
+        self,
+        window: tuple[dtime, dtime],
+        *,
+        label: PresenceLabel,
+        subject_ids: Sequence[str] | None = None,
+    ) -> None:
+        self._start, self._end = window
+        self._label = label
+        # None = every subject. A window is a household-level habit, but the
+        # roommate should not inherit it just because they share the door.
+        self._subject_ids = frozenset(subject_ids) if subject_ids else None
+
+    def get_label(self, subject_id: str, *, now: datetime) -> SourceEntry | None:
+        if self._subject_ids is not None and subject_id not in self._subject_ids:
+            return None
+        local = now.astimezone()
+        if not self._inside(local.time()):
+            return None
+        return SourceEntry(label=self._label, until=self._window_end_after(local))
+
+    def _inside(self, moment: dtime) -> bool:
+        if self._start == self._end:
+            # A zero-width window would read as "never"; the defensible reading of
+            # start == end is "always", matching how quiet hours behave elsewhere.
+            return True
+        if self._start < self._end:
+            return self._start <= moment < self._end
+        return moment >= self._start or moment < self._end  # wraps midnight
+
+    def _window_end_after(self, local: datetime) -> datetime:
+        end_today = local.replace(
+            hour=self._end.hour, minute=self._end.minute, second=0, microsecond=0
+        )
+        if end_today <= local:
+            end_today += timedelta(days=1)
+        return end_today.astimezone(UTC)
 
 
 # ---------------------------------------------------------------------------

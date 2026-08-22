@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import logging
 
+from doorboard_contracts import PresenceLabel
+
 from control_plane_api.calendar_ics import IcsCalendarProvider, parse_subject_urls
 from control_plane_api.db import make_engine, make_session_factory
 from control_plane_api.mqtt import MqttPublisher, build_publisher
 from control_plane_api.notify import NotifyEngine, build_notifier
-from control_plane_api.presence import CalendarProvider, MockCalendarProvider
+from control_plane_api.presence import (
+    CalendarProvider,
+    MockCalendarProvider,
+    NightlyScheduleProvider,
+    ScheduleProvider,
+    parse_window,
+)
 from control_plane_api.settings import Settings
 from control_plane_api.telegram import (
     RingPhotoDelivery,
@@ -115,6 +123,26 @@ class AppState:
                 )
             else:
                 self.calendar_provider = MockCalendarProvider()
+
+        # Nightly schedule (ADR-0037). None when unconfigured, which the engine
+        # reads as "no schedule source", so presence resolves exactly as before.
+        self.schedule_provider: ScheduleProvider | None = None
+        window = parse_window(cfg.presence_schedule_window)
+        if window is not None:
+            subjects = [s.strip() for s in cfg.presence_schedule_subjects.split(",") if s.strip()]
+            self.schedule_provider = NightlyScheduleProvider(
+                window,
+                label=PresenceLabel(cfg.presence_schedule_label),
+                subject_ids=subjects or None,
+            )
+            logger.info(
+                "presence_schedule_enabled",
+                extra={
+                    "window": cfg.presence_schedule_window,
+                    "label": cfg.presence_schedule_label,
+                    "subjects": subjects or ["*"],
+                },
+            )
 
     def dispose(self) -> None:
         self.engine.dispose()

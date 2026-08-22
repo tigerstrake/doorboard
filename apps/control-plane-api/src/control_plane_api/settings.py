@@ -176,6 +176,19 @@ class Settings(BaseSettings):
     enrollment_key_token: str = Field(default="", alias="CONTROL_PLANE_ENROLLMENT_KEY_TOKEN")
 
     # ── presence engine (T-504) ──────────────────────────────────────────
+    # A recurring LOCAL-time window that reports a standing label (ADR-0037), e.g.
+    # "23:00-07:00". Empty (the default) means no schedule source at all.
+    #
+    # It sits below focus_shortcut, so any Focus overrides it — and because it is
+    # computed live rather than stored, it reappears the moment that Focus is
+    # cleared. That last part needs the Focus-off shortcut to CLEAR the source
+    # (label: null) rather than set "available", which would outrank it.
+    presence_schedule_window: str = Field(default="", alias="PRESENCE_SCHEDULE_WINDOW")
+    presence_schedule_label: str = Field(default="sleeping", alias="PRESENCE_SCHEDULE_LABEL")
+    # Blank = every subject. A window is one person's habit; the roommate should
+    # not inherit it just because they share a door.
+    presence_schedule_subjects: str = Field(default="", alias="PRESENCE_SCHEDULE_SUBJECTS")
+
     # Published .ics feeds per subject, as `owner=https://...,roommate=https://...`
     # (ADR-0036). Empty means no calendar source, which is the default: presence
     # then resolves from manual/Focus/geofence only, exactly as before.
