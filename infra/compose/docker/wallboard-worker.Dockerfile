@@ -28,6 +28,12 @@ RUN groupadd --system doorboard && useradd --system --gid doorboard --create-hom
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/apps/wallboard-worker /app/apps/wallboard-worker
 
+# The academic-calendar date table (ADR-0039). `COPY integrations` above is in the
+# BUILDER stage only, so without this the runtime image has no table and the job
+# logs "table not found" and publishes nothing — which is the correct degradation,
+# and exactly how this was found on the first deploy.
+COPY --from=builder /app/integrations/academic-calendar /app/integrations/academic-calendar
+
 # Bundle the JPL ephemeris (~16 MB) at the default SATELLITES_EPHEMERIS_DIR so the
 # satellite job never has to download de421.bsp at runtime. skyfield's Loader
 # reads it from this worker-owned, writable dir (avoids the CWD [Errno 13] crash).
