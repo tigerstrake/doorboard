@@ -128,7 +128,12 @@ class Settings(BaseSettings):
     # Public origin used to build invite URLs for the QR code; defaults to the
     # API base when unset (they are normally the same deployment).
     relay_public_url: str = Field(default="", alias="VISIOND_RELAY_PUBLIC_URL")
+    # Only applies while an invite is open (ADR-0038); an idle door does not poll,
+    # so this can stay short without costing anything.
     relay_poll_interval_s: float = Field(default=5.0, alias="VISIOND_RELAY_POLL_INTERVAL_S", gt=0)
+    # How long to keep polling after the last invite closes, so a bundle submitted
+    # moments before consumption or expiry is still collected.
+    relay_idle_grace_s: float = Field(default=300.0, alias="VISIOND_RELAY_IDLE_GRACE_S", gt=0)
     relay_timeout_s: float = Field(default=5.0, alias="VISIOND_RELAY_TIMEOUT_S", gt=0)
     relay_backoff_max_s: float = Field(default=300.0, alias="VISIOND_RELAY_BACKOFF_MAX_S", ge=1)
     relay_invite_ttl_s: float = Field(default=3600.0, alias="VISIOND_RELAY_INVITE_TTL_S", gt=0)
