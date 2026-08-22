@@ -6,6 +6,7 @@ import { Tile } from "./Tile";
 import { CrossfadeSwitch } from "./CrossfadeSwitch";
 import { GreetingBanner } from "./GreetingBanner";
 import { StatusBadge } from "./StatusBadge";
+import type { PresenceLabel } from "@doorboard/contracts";
 import { CountdownAutoReset } from "./CountdownAutoReset";
 import { Gauge } from "./Gauge";
 import { PollPrompt } from "./PollPrompt";
@@ -222,5 +223,56 @@ describe("CrossfadeSwitch variants", () => {
     const layer = screen.getByTestId("crossfade-switch").firstElementChild as HTMLElement;
     expect(layer.style.getPropertyValue("--db-crossfade-duration")).toBe("250ms");
     expect(layer.style.transitionDuration).toBe("250ms");
+  });
+});
+
+describe("StatusBadge presence labels (ADR-0035)", () => {
+  // Every label the contract can carry must render. labelDisplayNames and labelIcons are
+  // both Record<PresenceLabel, ...>, so a half-added label is a compile error rather than
+  // a badge that silently falls back to "Unknown" — this pins the runtime half.
+  const allLabels: PresenceLabel[] = [
+    "social",
+    "available",
+    "busy",
+    "knock_if_urgent",
+    "do_not_disturb",
+    "sleeping",
+    "at_class",
+    "at_library",
+    "away",
+    "unknown",
+  ];
+
+  it.each(allLabels)("renders %s with its own text and class", (label) => {
+    const { container } = render(<StatusBadge label={label} />);
+    const badge = container.querySelector(`.db-status-badge--${label}`);
+    expect(badge).toBeTruthy();
+    // Not falling through to the unknown icon/text.
+    if (label !== "unknown") {
+      expect(badge?.textContent).not.toBe("Unknown");
+    }
+    expect(badge?.textContent?.trim()).toBeTruthy();
+  });
+
+  it("distinguishes the active invitation from passive presence", () => {
+    // The whole reason `social` exists: `available` means "I exist", not "come in".
+    const { container: social } = render(<StatusBadge label="social" />);
+    const { container: available } = render(<StatusBadge label="available" />);
+    expect(social.textContent).toBe("Come In");
+    expect(available.textContent).toBe("Available");
+  });
+
+  it("gives busy and knock_if_urgent different text", () => {
+    // `busy` used to carry both meanings ambiguously: don't knock, or knock anyway?
+    const { container: busy } = render(<StatusBadge label="busy" />);
+    const { container: knock } = render(<StatusBadge label="knock_if_urgent" />);
+    expect(busy.textContent).toBe("Busy");
+    expect(knock.textContent).toBe("Knock if urgent");
+  });
+
+  it("shows do_not_disturb as Locked In", () => {
+    // A retext, not a new label — a third don't-bother-me state would read worse.
+    const { container } = render(<StatusBadge label="do_not_disturb" />);
+    expect(container.textContent).toBe("Locked In");
   });
 });

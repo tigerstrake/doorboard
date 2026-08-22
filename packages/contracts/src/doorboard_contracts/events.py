@@ -75,8 +75,21 @@ class StrictModel(BaseModel):
 
 
 class PresenceLabel(StrEnum):
+    """Ordered as the scale a visitor reads, not alphabetically (ADR-0035).
+
+    `SOCIAL` is an active invitation; `AVAILABLE` is passive presence. `KNOCK_IF_URGENT`
+    is the middle ground `BUSY` used to have to carry ambiguously — a visitor could not
+    tell whether `BUSY` meant "don't knock" or "knock anyway".
+
+    Adding a value here is NOT backward compatible at runtime: a consumer built before it
+    rejects the event rather than ignoring the unknown value. Deploy the NUC before the
+    door (ADR-0035, ADR-0031).
+    """
+
+    SOCIAL = "social"
     AVAILABLE = "available"
     BUSY = "busy"
+    KNOCK_IF_URGENT = "knock_if_urgent"
     DO_NOT_DISTURB = "do_not_disturb"
     SLEEPING = "sleeping"
     AT_CLASS = "at_class"

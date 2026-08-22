@@ -1,9 +1,12 @@
 {
   "$defs": {
     "PresenceLabel": {
+      "description": "Ordered as the scale a visitor reads, not alphabetically (ADR-0035).\n\n`SOCIAL` is an active invitation; `AVAILABLE` is passive presence. `KNOCK_IF_URGENT`\nis the middle ground `BUSY` used to have to carry ambiguously \u2014 a visitor could not\ntell whether `BUSY` meant \"don't knock\" or \"knock anyway\".\n\nAdding a value here is NOT backward compatible at runtime: a consumer built before it\nrejects the event rather than ignoring the unknown value. Deploy the NUC before the\ndoor (ADR-0035, ADR-0031).",
       "enum": [
+        "social",
         "available",
         "busy",
+        "knock_if_urgent",
         "do_not_disturb",
         "sleeping",
         "at_class",
