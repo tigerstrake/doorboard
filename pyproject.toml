@@ -15,6 +15,7 @@ dev = [
     "doorboard-door-media",
     "doorboard-door-sync",
     "doorboard-door-visiond",
+    "doorboard-door-voice",
     "doorboard-esp32-link",
     "doorboard-media-client",
     "doorboard-observability",
@@ -22,6 +23,12 @@ dev = [
     "doorboard-wallboard-worker",
     "hatchling>=1.27.0",
     "pyright>=1.1.403",
+    # Test-only: tests/test_home_assistant_presence_config.py parses HA config,
+    # which carries custom tags (!env_var, !include) that regex cannot handle.
+    "pyyaml>=6.0",
+    # Test-only: renders the HA zone->label template, which is how the folded
+    # block scalar emitting " available " instead of "available" gets caught.
+    "jinja2>=3.1",
     "pytest>=8.4.1",
     "ruff>=0.12.1",
 ]
@@ -41,6 +48,7 @@ members = [
     "apps/door-visiond",
     "apps/door-media",
     "apps/door-sync",
+    "apps/door-voice",
     "apps/control-plane-api",
     "apps/wallboard-worker",
     "apps/simulator",
@@ -60,6 +68,7 @@ doorboard-door-api = { workspace = true }
 doorboard-door-media = { workspace = true }
 doorboard-door-sync = { workspace = true }
 doorboard-door-visiond = { workspace = true }
+doorboard-door-voice = { workspace = true }
 doorboard-esp32-link = { workspace = true }
 doorboard-media-client = { workspace = true }
 doorboard-observability = { workspace = true }

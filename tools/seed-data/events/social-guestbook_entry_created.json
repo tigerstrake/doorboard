@@ -6,6 +6,7 @@
   "payload": {
     "author_label": "Taylor",
     "entry_id": "9f3a02d5-6442-4478-a5bb-0b84f5e915db",
+    "photo_recording_id": "b7e4c318-2a51-4f0d-9c22-6d3f1e8a4402",
     "text": "Hello from the hallway."
   },
   "source": "doorboard-contracts-test",

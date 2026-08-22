@@ -340,7 +340,12 @@ class PresenceWebhookRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     subject_id: str
-    label: PresenceLabel
+    # Nullable, but REQUIRED — you have to say what you mean. `null` CLEARS this
+    # source, which is what lets a lower-precedence source show through again
+    # (ADR-0037): a Focus-off that wrote "available" would outrank the nightly
+    # schedule and pin the door to Available all night. Making it optional
+    # instead would mean a client that forgot the field silently wiped presence.
+    label: PresenceLabel | None
     until: AwareDatetime | None = None
 
     @field_validator("until")
@@ -359,6 +364,7 @@ async def list_presence(request: Request, _auth: AdminAuth) -> dict:
             now=now,
             door_id=state.settings.door_id,
             calendar_provider=state.calendar_provider,
+            schedule_provider=state.schedule_provider,
             mqtt_publisher=state.mqtt_publisher,
             history_max_rows=state.settings.presence_history_max_rows,
         )
@@ -378,6 +384,7 @@ async def get_presence_bundle(
             now=now,
             door_id=token.door_id,
             calendar_provider=state.calendar_provider,
+            schedule_provider=state.schedule_provider,
             mqtt_publisher=state.mqtt_publisher,
             history_max_rows=state.settings.presence_history_max_rows,
         )
@@ -406,6 +413,7 @@ async def get_presence(subject_id: str, request: Request, _auth: AdminAuth) -> d
             now=datetime.now(UTC),
             door_id=state.settings.door_id,
             calendar_provider=state.calendar_provider,
+            schedule_provider=state.schedule_provider,
             mqtt_publisher=state.mqtt_publisher,
             history_max_rows=state.settings.presence_history_max_rows,
         )
@@ -449,6 +457,7 @@ async def patch_presence_subject(
             now=now,
             door_id=state.settings.door_id,
             calendar_provider=state.calendar_provider,
+            schedule_provider=state.schedule_provider,
             mqtt_publisher=state.mqtt_publisher,
             history_max_rows=state.settings.presence_history_max_rows,
         )
@@ -472,6 +481,7 @@ async def set_presence_override(
             now=now,
             door_id=state.settings.door_id,
             calendar_provider=state.calendar_provider,
+            schedule_provider=state.schedule_provider,
             mqtt_publisher=state.mqtt_publisher,
             history_max_rows=state.settings.presence_history_max_rows,
         )
@@ -490,6 +500,7 @@ async def clear_presence_override(subject_id: str, request: Request, _auth: Admi
             now=now,
             door_id=state.settings.door_id,
             calendar_provider=state.calendar_provider,
+            schedule_provider=state.schedule_provider,
             mqtt_publisher=state.mqtt_publisher,
             history_max_rows=state.settings.presence_history_max_rows,
         )
@@ -517,6 +528,7 @@ async def patch_presence_source(
                 now=now,
                 door_id=state.settings.door_id,
                 calendar_provider=state.calendar_provider,
+                schedule_provider=state.schedule_provider,
                 mqtt_publisher=state.mqtt_publisher,
                 history_max_rows=state.settings.presence_history_max_rows,
             )
@@ -552,6 +564,7 @@ def _handle_presence_webhook(request: Request, raw: dict, *, source: str) -> dic
             now=now,
             door_id=state.settings.door_id,
             calendar_provider=state.calendar_provider,
+            schedule_provider=state.schedule_provider,
             mqtt_publisher=state.mqtt_publisher,
             history_max_rows=state.settings.presence_history_max_rows,
         )

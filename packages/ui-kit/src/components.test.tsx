@@ -6,6 +6,7 @@ import { Tile } from "./Tile";
 import { CrossfadeSwitch } from "./CrossfadeSwitch";
 import { GreetingBanner } from "./GreetingBanner";
 import { StatusBadge } from "./StatusBadge";
+import type { PresenceLabel } from "@doorboard/contracts";
 import { CountdownAutoReset } from "./CountdownAutoReset";
 import { Gauge } from "./Gauge";
 import { PollPrompt } from "./PollPrompt";
@@ -222,5 +223,70 @@ describe("CrossfadeSwitch variants", () => {
     const layer = screen.getByTestId("crossfade-switch").firstElementChild as HTMLElement;
     expect(layer.style.getPropertyValue("--db-crossfade-duration")).toBe("250ms");
     expect(layer.style.transitionDuration).toBe("250ms");
+  });
+});
+
+describe("StatusBadge presence labels (ADR-0035)", () => {
+  // Every label the contract can carry must render. labelDisplayNames and labelIcons are
+  // both Record<PresenceLabel, ...>, so a half-added label is a compile error rather than
+  // a badge that silently falls back to "Unknown" — this pins the runtime half.
+  const allLabels: PresenceLabel[] = [
+    "social",
+    "available",
+    "busy",
+    "knock_if_urgent",
+    "do_not_disturb",
+    "sleeping",
+    "at_class",
+    "at_library",
+    "away",
+    "unknown",
+  ];
+
+  it.each(allLabels)("renders %s with its own text and class", (label) => {
+    const { container } = render(<StatusBadge label={label} />);
+    const badge = container.querySelector(`.db-status-badge--${label}`);
+    expect(badge).toBeTruthy();
+    // Not falling through to the unknown icon/text.
+    if (label !== "unknown") {
+      expect(badge?.textContent).not.toBe("Unknown");
+    }
+    expect(badge?.textContent?.trim()).toBeTruthy();
+  });
+
+  it("distinguishes the active invitation from passive presence", () => {
+    // The whole reason `social` exists: `available` means "I exist", not "come in".
+    const { container: social } = render(<StatusBadge label="social" />);
+    const { container: available } = render(<StatusBadge label="available" />);
+    expect(social.textContent).toBe("Come In");
+    expect(available.textContent).toBe("Available");
+  });
+
+  it("renders the owner's four-point scale", () => {
+    // The set the household actually uses. Everything else is either a where-am-I label
+    // or, in knock_if_urgent's case, retained only so stored history still parses.
+    const scale: Array<[PresenceLabel, string]> = [
+      ["social", "Come In"],
+      ["busy", "Working"],
+      ["do_not_disturb", "Locked In"],
+      ["sleeping", "Recovery"],
+    ];
+    for (const [label, text] of scale) {
+      cleanup();
+      const { container } = render(<StatusBadge label={label} />);
+      expect(container.textContent).toBe(text);
+    }
+  });
+
+  it("keeps every scale label visually distinct", () => {
+    // Four states that read the same colour would defeat the point of a glanceable badge.
+    const classes = (["social", "busy", "do_not_disturb", "sleeping"] as PresenceLabel[]).map(
+      (label) => {
+        cleanup();
+        const { container } = render(<StatusBadge label={label} />);
+        return container.querySelector(".db-status-badge")?.className;
+      }
+    );
+    expect(new Set(classes).size).toBe(4);
   });
 });

@@ -127,6 +127,7 @@ ExecStart=/bin/bash -c 'set -a; . $env_file; set +a; exec $service_venv/bin/pyth
 python_service door-api.service "$venv" door_api
 python_service door-media.service "$venv" door_media
 python_service door-sync.service "$venv" door_sync
+python_service door-voice.service "$venv" door_voice
 python_service door-visiond.service "$visiond_venv" door_visiond
 
 write_dropin doorboard-storage-ready.service "ExecStart=

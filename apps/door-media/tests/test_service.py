@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from uuid import uuid4
 
 import pytest
@@ -296,4 +297,69 @@ async def test_retention_respects_size_caps(service_env):
     assert db.get(rid1).sync_status == "deleted"
     assert db.get(rid2).sync_status == "synced"
 
+    await svc.stop()
+
+
+@pytest.mark.anyio
+async def test_concurrent_finalize_cuts_the_clip_once(service_env, monkeypatch):
+    """Overlapping finalize calls must produce one cut, one hash, one event.
+
+    Regression: the ``_pending_finalized`` reuse check straddles an await, so
+    three concurrent callers all ran the router against the same out_path and
+    each emitted its own finalized event with a different sha256. door-sync
+    archived the first hash while the last writer won on disk, so every clip
+    dead-lettered as "local checksum mismatch" and nothing reached the NAS.
+    """
+    svc, db, cfg = service_env
+    await svc.start()
+    recording_id = await svc.start_recording(
+        session_id=uuid4(),
+        kind="video_message",
+        trace_id=uuid4(),
+    )
+    assert recording_id is not None
+    await asyncio.sleep(0.1)
+
+    router_finalize = svc._router.finalize_recording
+    router_calls = 0
+
+    async def slow_router(*args, **kwargs):
+        # A real finalize is a concat + remux (~1s). That window is the bug:
+        # without serialisation every caller gets past the reuse check.
+        nonlocal router_calls
+        router_calls += 1
+        await asyncio.sleep(0.15)
+        return await router_finalize(*args, **kwargs)
+
+    svc._router.finalize_recording = slow_router
+    emitted: list[dict] = []
+    monkeypatch.setattr(
+        "door_media.service.emit_recording_finalized",
+        lambda **kwargs: emitted.append(kwargs),
+    )
+
+    results = await asyncio.gather(
+        *[
+            svc.finalize_recording(
+                recording_id,
+                consent_context="visitor_initiated",
+                trace_id=uuid4(),
+            )
+            for _ in range(3)
+        ]
+    )
+
+    assert results == [True, True, True]
+    assert router_calls == 1, f"clip was cut {router_calls} times"
+    assert len(emitted) == 1, f"{len(emitted)} finalized events for one recording"
+
+    row = db.get(recording_id)
+    assert row.sha256 == emitted[0]["sha256"]
+
+    # The whole point: what door-sync was told matches what is on disk.
+    clip = cfg.ssd_data_root / row.path
+    assert clip.exists()
+    assert hashlib.sha256(clip.read_bytes()).hexdigest() == row.sha256
+
+    assert recording_id not in svc._active_handles
     await svc.stop()

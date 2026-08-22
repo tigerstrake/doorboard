@@ -187,6 +187,23 @@ PAYLOADS: dict[str, dict[str, Any]] = {
         "detail": "Good between classes.",
         "provider": "manual",
     },
+    "ambient.academic_countdown": {
+        "next": {
+            "label": "Autumn finals begin",
+            "date": date(2026, 12, 7),
+            "days_until": 12,
+            "kind": "finals",
+        },
+        "upcoming": [
+            {
+                "label": "Autumn finals end",
+                "date": date(2026, 12, 11),
+                "days_until": 16,
+                "kind": "finals",
+            }
+        ],
+        "source": "Stanford academic calendar 2026-2027 (undergraduate)",
+    },
     "system.service_health": {
         "service": "door-api",
         "status": "ok",

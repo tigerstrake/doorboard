@@ -22,6 +22,7 @@ from printer.provider import MockPrinterProvider, OctoPrintProvider, PrinterConf
 from satellites.provider import MockSatelliteProvider, SatelliteConfig, SkyfieldSatelliteProvider
 
 from wallboard_worker.jobs import (
+    run_academic_countdown,
     run_aircraft_summary,
     run_bird_summary,
     run_daily_collage,
@@ -199,6 +200,15 @@ def build_jobs(settings: Settings, *, force_mock: bool = False) -> list[Schedule
                 "printer-status",
                 settings.printer_interval_s,
                 lambda: run_printer_status(settings, printer),
+            )
+        )
+
+    if settings.feature_academic_countdown:
+        jobs.append(
+            ScheduledJob(
+                "academic-countdown",
+                settings.academic_countdown_interval_s,
+                lambda: run_academic_countdown(settings),
             )
         )
 

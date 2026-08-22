@@ -59,6 +59,11 @@ logger = logging.getLogger("door_media.service")
 _WARN_FREE_RATIO = 0.10  # warn when <10% free
 _CRIT_FREE_RATIO = 0.05  # critical when <5% free
 
+# Finalize is idempotent per recording. The memo bounds how long a completed
+# recording_id is remembered; the lock map is pruned to settled entries only.
+_FINALIZED_MEMO_MAX = 512
+_FINALIZE_LOCKS_MAX = 256
+
 
 @dataclass(frozen=True)
 class PhotoReview:
@@ -85,6 +90,8 @@ class RecordingService:
         self._settings = settings
         self._active_handles: dict[UUID, object] = {}  # recording_id → handle
         self._pending_finalized: dict[UUID, FinalizedRecording] = {}
+        self._finalize_locks: dict[UUID, asyncio.Lock] = {}
+        self._finalized_ok: dict[UUID, None] = {}  # recording_ids already finalized
         self._review_photos: dict[UUID, CapturedPhoto] = {}
         self._retention_task: asyncio.Task[None] | None = None
         self._storage_task: asyncio.Task[None] | None = None
@@ -238,7 +245,78 @@ class RecordingService:
         trace_id: UUID,
         thumbnail_stub: bool = True,
     ) -> bool:
-        """Finalize a recording window.
+        """Finalize a recording window, at most once per ``recording_id``.
+
+        Callers are serialised per recording and a completed finalize is
+        remembered, so an overlapping or repeated call is a no-op rather than a
+        second cut of the same clip.
+
+        This has to be enforced here because the ``_pending_finalized`` reuse
+        below straddles an ``await``: concurrent callers all read it as empty,
+        all ran the router against the *same* ``out_path``, and all emitted
+        their own ``media.recording_finalized``. door-sync recorded the first
+        event's hash while the last writer won on disk, so every clip
+        dead-lettered as "local checksum mismatch" and nothing ever archived.
+
+        Retry semantics are unchanged: a *failed* finalize is not memoised, so
+        the handle stays and a later call retries (reusing a completed router
+        result via ``_pending_finalized``).
+
+        Returns True on success — including for a duplicate call whose original
+        succeeded.  Never raises.
+        """
+        lock = self._finalize_locks.setdefault(recording_id, asyncio.Lock())
+        async with lock:
+            if recording_id in self._finalized_ok:
+                logger.info(
+                    "finalize_duplicate_ignored",
+                    extra={"recording_id": str(recording_id)},
+                )
+                return True
+            ok = await self._finalize_recording_locked(
+                recording_id,
+                consent_context=consent_context,
+                trace_id=trace_id,
+                thumbnail_stub=thumbnail_stub,
+            )
+            # Memoise inside the lock: a waiter resuming between release and
+            # this line would otherwise re-run the whole finalize.
+            if ok:
+                self._remember_finalized(recording_id)
+        self._prune_finalize_locks()
+        return ok
+
+    def _remember_finalized(self, recording_id: UUID) -> None:
+        """Record that a recording finalized, evicting the oldest ids past the cap."""
+        self._finalized_ok[recording_id] = None
+        while len(self._finalized_ok) > _FINALIZED_MEMO_MAX:
+            self._finalized_ok.pop(next(iter(self._finalized_ok)))
+
+    def _prune_finalize_locks(self) -> None:
+        """Drop per-recording locks that can no longer gate anything.
+
+        Only *settled* recordings are dropped: their id is memoised, so a caller
+        that races in on a freshly created lock still short-circuits on the memo.
+        """
+        if len(self._finalize_locks) <= _FINALIZE_LOCKS_MAX:
+            return
+        stale = [
+            rid
+            for rid, lk in self._finalize_locks.items()
+            if not lk.locked() and rid in self._finalized_ok
+        ]
+        for rid in stale:
+            self._finalize_locks.pop(rid, None)
+
+    async def _finalize_recording_locked(
+        self,
+        recording_id: UUID,
+        *,
+        consent_context: ConsentContext,
+        trace_id: UUID,
+        thumbnail_stub: bool = True,
+    ) -> bool:
+        """Do the finalize. Caller holds this recording's lock.
 
         Steps:
           1. Call the router to remux/cut the clip.

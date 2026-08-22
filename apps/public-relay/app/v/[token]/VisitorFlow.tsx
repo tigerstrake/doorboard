@@ -15,7 +15,26 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
+/**
+ * Polling cadence (ADR-0038).
+ *
+ * This used to be a flat 2s `setInterval` with no stop condition, so a page left
+ * open polled forever — 30 requests a minute, ~43,000 a day, each one a metered
+ * serverless invocation. Worse, an EXPIRED link kept polling indefinitely, because
+ * nothing checked. One forgotten tab cost more than the door did.
+ *
+ * Fast only while an action is actually in flight; that is the only moment a
+ * visitor is waiting on the door. Otherwise slow, and stopped outright when the
+ * tab is hidden, when the link is dead, or after a long quiet spell.
+ */
 const POLL_INTERVAL_MS = 2000;
+// 5s, not 20s: with the visibility pause and the idle stop below doing the actual
+// cost work, this only has to be slow enough to matter and fast enough that
+// "Session ended" does not appear long after the fact. A visible, untouched tab
+// costs ~120 requests before it stops entirely.
+const IDLE_POLL_INTERVAL_MS = 5000;
+/** Give up after this much quiet. Resumes on tab focus or the next submission. */
+const IDLE_STOP_AFTER_MS = 10 * 60 * 1000;
 const NOTE_MAX = 500;
 
 type Access = "checking" | "valid" | "invalid" | "expired";
@@ -112,11 +131,64 @@ export default function VisitorFlow({ token }: { token: string }) {
     }
   }, []);
 
+  // Any submitted action whose outcome has not settled yet — the only state where
+  // a visitor is actually waiting on the door.
+  const pendingActionIds = [noteActionId, voteActionId, deletionActionId].filter(
+    (id): id is string => id !== null && !settled[id]
+  );
+  const hasPendingAction = pendingActionIds.length > 0;
+
+  const lastActivityRef = useRef<number>(Date.now());
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+    if (hasPendingAction) lastActivityRef.current = Date.now();
+  }, [hasPendingAction]);
+
+  useEffect(() => {
+    // A dead link cannot become alive again; polling it is pure waste.
+    if (access === "expired" || access === "invalid") return undefined;
+
+    let timer: number | undefined;
+    let stopped = false;
+
+    const tick = async () => {
+      if (stopped) return;
+      // A hidden tab has nobody watching. Browsers throttle background timers but
+      // do not stop them, so this has to be explicit.
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        timer = window.setTimeout(() => void tick(), IDLE_POLL_INTERVAL_MS);
+        return;
+      }
+      const quietFor = Date.now() - lastActivityRef.current;
+      if (!hasPendingAction && quietFor > IDLE_STOP_AFTER_MS) {
+        // Fully stopped. The visibility listener below restarts it, and any
+        // submission resets the activity clock.
+        return;
+      }
+      await refresh();
+      if (stopped) return;
+      timer = window.setTimeout(
+        () => void tick(),
+        hasPendingAction ? POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS
+      );
+    };
+
+    void tick();
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        lastActivityRef.current = Date.now();
+        if (timer !== undefined) window.clearTimeout(timer);
+        void tick();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refresh, access, hasPendingAction]);
 
   const submit = useCallback(
     async (body: Record<string, unknown>): Promise<string | null> => {

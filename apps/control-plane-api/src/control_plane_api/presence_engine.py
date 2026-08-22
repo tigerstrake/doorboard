@@ -49,6 +49,7 @@ from control_plane_api.presence import (
     SOURCE_PRECEDENCE,
     CalendarProvider,
     ResolvedPresence,
+    ScheduleProvider,
     SourceEntry,
     resolve_presence,
 )
@@ -213,6 +214,7 @@ def _build_entries(
     subject_id: str,
     now: datetime,
     calendar_provider: CalendarProvider,
+    schedule_provider: ScheduleProvider | None = None,
 ) -> tuple[dict[str, SourceEntry | None], bool]:
     source_rows = list_source_rows(session, subject_id)
     subject_row = session.get(PresenceSubjectRow, subject_id)
@@ -227,6 +229,20 @@ def _build_entries(
             else:
                 entries[source] = calendar_provider.get_label(subject_id, now=now)
             continue
+        if source == "schedule":
+            # Live like calendar, and for the same reason: computed from the clock
+            # on every resolution, so it reappears the moment a higher source is
+            # cleared rather than needing to be re-triggered (ADR-0037).
+            sched_row = source_rows.get("schedule")
+            if (
+                schedule_provider is None
+                or not tracking_enabled
+                or (sched_row is not None and not sched_row.enabled)
+            ):
+                entries[source] = None
+            else:
+                entries[source] = schedule_provider.get_label(subject_id, now=now)
+            continue
         if source in ("focus_shortcut", "geofence_label") and not tracking_enabled:
             entries[source] = None
             continue
@@ -239,10 +255,19 @@ def _build_entries(
 
 
 def resolve_current(
-    session: Session, *, subject_id: str, now: datetime, calendar_provider: CalendarProvider
+    session: Session,
+    *,
+    subject_id: str,
+    now: datetime,
+    calendar_provider: CalendarProvider,
+    schedule_provider: ScheduleProvider | None = None,
 ) -> ResolvedPresence:
     entries, _tracking_enabled = _build_entries(
-        session, subject_id=subject_id, now=now, calendar_provider=calendar_provider
+        session,
+        subject_id=subject_id,
+        now=now,
+        calendar_provider=calendar_provider,
+        schedule_provider=schedule_provider,
     )
     return resolve_presence(entries, now=now)
 
@@ -303,13 +328,18 @@ def sync_presence(
     now: datetime,
     door_id: str,
     calendar_provider: CalendarProvider,
+    schedule_provider: ScheduleProvider | None = None,
     mqtt_publisher: MqttPublisher,
     history_max_rows: int,
 ) -> ResolvedPresence:
     """Resolve `subject_id` at `now`; emit iff changed. Always returns the resolution."""
     get_or_create_subject(session, subject_id, now=now)
     resolved = resolve_current(
-        session, subject_id=subject_id, now=now, calendar_provider=calendar_provider
+        session,
+        subject_id=subject_id,
+        now=now,
+        calendar_provider=calendar_provider,
+        schedule_provider=schedule_provider,
     )
 
     last = _latest_history_row(session, subject_id)
@@ -372,6 +402,7 @@ def get_subject_status(
     now: datetime,
     door_id: str,
     calendar_provider: CalendarProvider,
+    schedule_provider: ScheduleProvider | None = None,
     mqtt_publisher: MqttPublisher,
     history_max_rows: int,
 ) -> SubjectStatus:
@@ -381,17 +412,28 @@ def get_subject_status(
         now=now,
         door_id=door_id,
         calendar_provider=calendar_provider,
+        schedule_provider=schedule_provider,
         mqtt_publisher=mqtt_publisher,
         history_max_rows=history_max_rows,
     )
     source_rows = list_source_rows(session, subject_id)
     subject_row = get_or_create_subject(session, subject_id, now=now)
 
+    # `stored` is derived from STORED_VALUE_SOURCES rather than special-cased by
+    # name. This used to test `source == "calendar"`, so adding `schedule` — also
+    # live — reported it as stored=True with a label of None, which reads as "set
+    # and empty" instead of "computed on demand". Deriving it means the next live
+    # source cannot inherit the same bug.
+    live_providers: dict[str, CalendarProvider | ScheduleProvider | None] = {
+        "calendar": calendar_provider,
+        "schedule": schedule_provider,
+    }
     sources: list[SourceStatus] = []
     for source in SOURCE_PRECEDENCE:
         row = source_rows.get(source)
-        if source == "calendar":
-            live_entry = calendar_provider.get_label(subject_id, now=now)
+        if source not in STORED_VALUE_SOURCES:
+            provider = live_providers.get(source)
+            live_entry = provider.get_label(subject_id, now=now) if provider is not None else None
             sources.append(
                 SourceStatus(
                     source=source,
@@ -430,6 +472,7 @@ def list_subject_statuses(
     now: datetime,
     door_id: str,
     calendar_provider: CalendarProvider,
+    schedule_provider: ScheduleProvider | None = None,
     mqtt_publisher: MqttPublisher,
     history_max_rows: int,
 ) -> list[SubjectStatus]:
@@ -440,6 +483,7 @@ def list_subject_statuses(
             now=now,
             door_id=door_id,
             calendar_provider=calendar_provider,
+            schedule_provider=schedule_provider,
             mqtt_publisher=mqtt_publisher,
             history_max_rows=history_max_rows,
         )

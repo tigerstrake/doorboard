@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -141,6 +142,10 @@ class RelayHandler(Protocol):
 
     def relay_invite_registrations(self) -> list[InviteRegistration]: ...
 
+    def relay_has_open_invites(self) -> bool:
+        """False when no invite could be redeemed, so a pickup poll is pointless."""
+        ...
+
     def relay_handle_bundle(self, bundle: SealedBundle) -> PickupAck:
         """Open, verify, enroll. Must not raise; returns the ack to send."""
         ...
@@ -157,6 +162,7 @@ class RelayStats:
     last_error: str | None = None
     last_success_at: str | None = None
     resyncs: int = 0
+    polls_skipped_idle: int = 0
     _degraded: bool = field(default=False, repr=False)
 
     @property
@@ -174,13 +180,21 @@ class RelayWorker:
         handler: RelayHandler,
         poll_interval_s: float,
         backoff_max_s: float,
-        resync_interval_s: float = 300.0,
+        # 1 hour, not 5 minutes. request_resync() already fires on a real change
+        # (key rotation, new invite), so the periodic pass is belt-and-braces —
+        # at 300s it was 288 needless relay calls a day, forever (ADR-0038).
+        resync_interval_s: float = 3600.0,
+        # Keep polling briefly after the last invite closes, so a bundle submitted
+        # moments before expiry or consumption is still collected.
+        idle_grace_s: float = 300.0,
     ) -> None:
         self._transport = transport
         self._handler = handler
         self._poll_interval = poll_interval_s
         self._backoff_max = backoff_max_s
         self._resync_interval = resync_interval_s
+        self._idle_grace_s = idle_grace_s
+        self._last_invite_seen: float | None = None
         self._stats = RelayStats()
         self._running = False
         self._task: asyncio.Task[None] | None = None
@@ -229,6 +243,15 @@ class RelayWorker:
             self._since_resync += self._poll_interval
             return
 
+        if not self._should_poll():
+            # ADR-0038: no open invite and past the grace window, so nothing could
+            # be waiting. Skipping this is the difference between ~17,000 relay
+            # calls a day and roughly none — every one of them a metered
+            # serverless invocation, and 74,187 of them had produced 0 enrollments.
+            self._stats.polls_skipped_idle += 1
+            self._since_resync += self._poll_interval
+            return
+
         batch = await asyncio.to_thread(self._transport.poll_pickup)
         self._register_success()
         self._since_resync += self._poll_interval
@@ -245,6 +268,20 @@ class RelayWorker:
                 "relay_bundle_acknowledged",
                 extra={"bundle_id": ack.bundle_id, "outcome": ack.outcome, "reason": ack.reason},
             )
+
+    def _should_poll(self) -> bool:
+        """Is a pickup even possible right now?
+
+        True while an invite is open, and for `idle_grace_s` afterwards. The grace
+        matters: an invite is consumed the moment a bundle is claimed, so stopping
+        dead on consumption could strand a bundle that arrived in the same breath.
+        """
+        if self._handler.relay_has_open_invites():
+            self._last_invite_seen = time.monotonic()
+            return True
+        if self._last_invite_seen is None:
+            return False
+        return (time.monotonic() - self._last_invite_seen) < self._idle_grace_s
 
     async def _resync(self) -> None:
         """Republish the door key and open invites. Idempotent, safe to repeat."""

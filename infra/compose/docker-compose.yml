@@ -78,6 +78,23 @@ services:
       DOORBOARD_DOOR_ID: ${DOORBOARD_DOOR_ID:-primary}
       CONTROL_PLANE_BIND: 0.0.0.0:8090
       POSTGRES_DSN: postgresql+psycopg://doorboard:${POSTGRES_PASSWORD}@postgres:5432/doorboard
+      # Time-of-day logic (ADR-0037's nightly window) reads the container's
+      # local zone. Without this it silently runs in UTC.
+      TZ: ${TZ:-UTC}
+      # Presence calendar + nightly window (ADR-0036, ADR-0037). Listed here
+      # because a setting only in .env never reaches the container.
+      PRESENCE_CALENDAR_ICS_URLS: ${PRESENCE_CALENDAR_ICS_URLS:-}
+      PRESENCE_CALENDAR_REFRESH_S: ${PRESENCE_CALENDAR_REFRESH_S:-900}
+      PRESENCE_CALENDAR_TIMEOUT_S: ${PRESENCE_CALENDAR_TIMEOUT_S:-10}
+      PRESENCE_SCHEDULE_WINDOW: ${PRESENCE_SCHEDULE_WINDOW:-}
+      PRESENCE_SCHEDULE_LABEL: ${PRESENCE_SCHEDULE_LABEL:-sleeping}
+      PRESENCE_SCHEDULE_SUBJECTS: ${PRESENCE_SCHEDULE_SUBJECTS:-}
+      # Also never forwarded until 2026-08-22 — found by the generalised
+      # every-setting-reaches-the-container guard, not by anyone noticing.
+      DOORBELL_NOTIFY_ENABLED: ${DOORBELL_NOTIFY_ENABLED:-true}
+      RING_PHOTO_ENABLED: ${RING_PHOTO_ENABLED:-true}
+      CONTROL_PLANE_PRESENCE_HISTORY_MAX_ROWS: ${CONTROL_PLANE_PRESENCE_HISTORY_MAX_ROWS:-500}
+      CONTROL_PLANE_PRESENCE_STALE_AFTER_S: ${CONTROL_PLANE_PRESENCE_STALE_AFTER_S:-1800}
       MQTT_URL: mqtt://mosquitto:1883
       MQTT_USERNAME: control-plane-api
       MQTT_PASSWORD: ${MQTT_CP_PASSWORD}
@@ -152,11 +169,18 @@ services:
       # In-network service name, not the Pi-facing CONTROL_PLANE_URL from
       # .env (that one points at the NUC's LAN hostname for door-sync).
       CONTROL_PLANE_URL: http://control-plane-api:8090
+      # The presence webhooks are admin-authenticated, so the rest_commands in
+      # integrations/home-assistant/config/rest_commands.yaml need this. Read
+      # there via !env_var, never written into that file.
+      # Pre-formatted as a full header value: HA's !env_var substitutes a value
+      # verbatim and cannot concatenate, so "Bearer " has to live here.
+      CONTROL_PLANE_ADMIN_TOKEN_HEADER: Bearer ${CONTROL_PLANE_ADMIN_TOKEN:?CONTROL_PLANE_ADMIN_TOKEN must be set in .env}
     volumes:
       - ha_data:/config
       - ./../../integrations/home-assistant/config/configuration.yaml:/config/configuration.yaml:ro
       - ./../../integrations/home-assistant/config/automations.yaml:/config/automations.yaml:ro
       - ./../../integrations/home-assistant/config/rest_commands.yaml:/config/rest_commands.yaml:ro
+      - ./../../integrations/home-assistant/config/doorboard-dashboard.yaml:/config/doorboard-dashboard.yaml:ro
     # Never exposed beyond the LAN (handoff §16); the door plane never talks
     # to HA directly (ADR-0002) — this port is for the owner's browser/app
     # and for the Caddy profile below.
@@ -247,6 +271,9 @@ services:
       OCTOPRINT_API_KEY: ${OCTOPRINT_API_KEY:-}
       PRINTER_CAMERA_STREAM_URL: ${PRINTER_CAMERA_STREAM_URL:-}
       WALLBOARD_FOOD_INTERVAL_S: ${WALLBOARD_FOOD_INTERVAL_S:-86400.0}
+      FEATURE_ACADEMIC_COUNTDOWN: ${FEATURE_ACADEMIC_COUNTDOWN:-false}
+      WALLBOARD_ACADEMIC_INTERVAL_S: ${WALLBOARD_ACADEMIC_INTERVAL_S:-3600}
+      WALLBOARD_ACADEMIC_CALENDAR_PATH: ${WALLBOARD_ACADEMIC_CALENDAR_PATH:-integrations/academic-calendar/stanford-2026-2027.json}
       WALLBOARD_COLLAGE_INTERVAL_S: ${WALLBOARD_COLLAGE_INTERVAL_S:-86400.0}
       FOOD_PREFERENCES_PATH: ${FOOD_PREFERENCES_PATH:-}
       FOOD_RECOMMENDATION_CACHE_PATH: ${FOOD_RECOMMENDATION_CACHE_PATH:-/tmp/doorboard_food_recommendation_cache.json}

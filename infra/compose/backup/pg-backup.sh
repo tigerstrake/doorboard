@@ -14,6 +14,7 @@ set -eu
 : "${BACKUP_RETAIN_COUNT:=14}"        # keep the last N dumps on the NAS path
 : "${BACKUP_DEST:?BACKUP_DEST (NAS-mounted path) must be set}"
 : "${POSTGRES_DSN:?POSTGRES_DSN must be set}"
+: "${BACKUP_MARKER:=.doorboard-nas}"    # must exist ON the share, never created here
 
 log() {
   # Structured JSON, per CONTRIBUTING.md's logging convention.
@@ -21,9 +22,24 @@ log() {
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2"
 }
 
-mkdir -p "$BACKUP_DEST"
+# ADR-0007: dumps go *to* the NAS; the NUC never becomes the archive. BACKUP_DEST
+# is a host bind mount, and a host path whose mount is absent is indistinguishable
+# from an ordinary empty directory — so a NAS that is unreachable at boot would
+# silently redirect every dump onto the NUC's own disk, the one disk a backup
+# exists to survive. It failed exactly that way until 2026-08-21: a duplicate
+# NAS_BACKUP_PATH in the NUC's .env won (compose --env-file keeps the last
+# occurrence) and pointed at local disk. Require a marker that only lives on the
+# share, and never create it here — creating it is what would defeat the check.
+require_nas_mounted() {
+  if [ ! -e "$BACKUP_DEST/$BACKUP_MARKER" ]; then
+    log error "backup_dest_not_mounted dest=$BACKUP_DEST marker=$BACKUP_MARKER"
+    return 1
+  fi
+  return 0
+}
 
 run_backup() {
+  mkdir -p "$BACKUP_DEST"
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   dump_path="$BACKUP_DEST/doorboard-$ts.sql.gz"
   tmp_path="$dump_path.partial"
@@ -32,7 +48,13 @@ run_backup() {
   if pg_dump --dbname="$POSTGRES_DSN" --format=plain --no-owner --no-privileges \
       | gzip -9 > "$tmp_path"; then
     mv "$tmp_path" "$dump_path"
-    sha256sum "$dump_path" > "$dump_path.sha256"
+    # Record a BARE filename, not $dump_path: the path here is the container's
+    # (/mnt/nas-backups), so an absolute entry makes `sha256sum -c` fail for
+    # anyone verifying from the host or after a restore — which is precisely
+    # when it gets run. docs/runbooks/nas-backup-restore.md step 3 does
+    # `cd "$NAS_BACKUP_PATH" && sha256sum -c ...` and could never have passed.
+    dump_name="$(basename "$dump_path")"
+    (cd "$BACKUP_DEST" && sha256sum "$dump_name" > "$dump_name.sha256")
     size=$(wc -c < "$dump_path")
     log info "backup_completed path=$dump_path size_bytes=$size"
   else
@@ -53,6 +75,10 @@ run_backup() {
 
 log info "postgres-backup loop starting interval_s=$BACKUP_INTERVAL_S dest=$BACKUP_DEST"
 while true; do
-  run_backup || log error "backup_iteration_failed"
+  # Retry rather than exit: an unreachable NAS is transient (and expected while
+  # the door moves networks), so the loop keeps logging until the share is back.
+  if require_nas_mounted; then
+    run_backup || log error "backup_iteration_failed"
+  fi
   sleep "$BACKUP_INTERVAL_S"
 done

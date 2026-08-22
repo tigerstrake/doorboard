@@ -26,6 +26,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ENV_EXAMPLE = REPO_ROOT / ".env.example"
 COMPOSE_FILES = (
@@ -117,18 +119,42 @@ def _compose_env_keys() -> set[str]:
     return keys
 
 
-def test_the_worker_settings_module_is_where_we_think() -> None:
+# control-plane-api has the same exposure, and it bit on 2026-08-22: six PRESENCE_*
+# settings for the calendar source and the nightly window were added to .env and read
+# by the service, but never listed in compose. Both features were inert in production
+# while looking configured. Same failure as the 22 worker settings above, so the guard
+# is generalised rather than duplicated.
+CONTROL_PLANE_SETTINGS = REPO_ROOT / "apps/control-plane-api/src/control_plane_api/settings.py"
+
+SETTINGS_MODULES: dict[str, Path] = {
+    "wallboard-worker": WORKER_SETTINGS,
+    "control-plane-api": CONTROL_PLANE_SETTINGS,
+}
+
+
+def _aliases(path: Path) -> set[str]:
+    return set(re.findall(r'alias="([A-Z0-9_]+)"', path.read_text()))
+
+
+def test_the_settings_modules_are_where_we_think() -> None:
     # Guards the guard: a moved file must fail loudly, not check an empty set forever.
-    assert WORKER_SETTINGS.exists()
-    assert len(_worker_aliases()) > 30
+    for service, path in SETTINGS_MODULES.items():
+        assert path.exists(), f"{service} settings module moved: {path}"
+        assert len(_aliases(path)) > 10, f"{service} settings module parsed as near-empty"
 
 
-def test_every_worker_setting_reaches_the_container() -> None:
-    missing = sorted(_worker_aliases() - _compose_env_keys())
+@pytest.mark.parametrize("service", sorted(SETTINGS_MODULES))
+def test_every_setting_reaches_the_container(service: str) -> None:
+    missing = sorted(_aliases(SETTINGS_MODULES[service]) - _compose_env_keys())
     assert not missing, (
-        "wallboard-worker reads these, and the compose stack never passes them — so setting "
+        f"{service} reads these, and the compose stack never passes them — so setting "
         "them in .env does nothing:\n  " + "\n  ".join(missing)
     )
+
+
+def test_worker_settings_module_is_where_we_think() -> None:
+    """Kept as its own assertion: the worker's count is the higher bar."""
+    assert len(_worker_aliases()) > 30
 
 
 def test_the_worker_starts_with_every_compose_default_applied() -> None:

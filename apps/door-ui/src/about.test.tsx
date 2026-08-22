@@ -74,3 +74,14 @@ describe("the focused About view carries the numbers too", () => {
     expect(text.indexOf("not identified")).toBeLessThan(text.indexOf("By the numbers"));
   });
 });
+
+it("discloses that a name can be spoken aloud, not just shown", () => {
+  // ADR-0034: a screen at arm's length shows a name to the person; a speaker
+  // tells the hallway. Without this section the About text's "changes a greeting
+  // and a colour" would be the whole story, and it isn't.
+  render(<AboutDoorboard showFacts />);
+  expect(screen.getByText("If the door speaks your name")).toBeTruthy();
+  expect(screen.getByText(/tells everyone in the hallway/)).toBeTruthy();
+  expect(screen.getByText(/separate choice from enrolling/)).toBeTruthy();
+  expect(screen.getByText(/stays quiet overnight/)).toBeTruthy();
+});

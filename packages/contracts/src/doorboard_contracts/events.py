@@ -75,8 +75,21 @@ class StrictModel(BaseModel):
 
 
 class PresenceLabel(StrEnum):
+    """Ordered as the scale a visitor reads, not alphabetically (ADR-0035).
+
+    `SOCIAL` is an active invitation; `AVAILABLE` is passive presence. `KNOCK_IF_URGENT`
+    is the middle ground `BUSY` used to have to carry ambiguously — a visitor could not
+    tell whether `BUSY` meant "don't knock" or "knock anyway".
+
+    Adding a value here is NOT backward compatible at runtime: a consumer built before it
+    rejects the event rather than ignoring the unknown value. Deploy the NUC before the
+    door (ADR-0035, ADR-0031).
+    """
+
+    SOCIAL = "social"
     AVAILABLE = "available"
     BUSY = "busy"
+    KNOCK_IF_URGENT = "knock_if_urgent"
     DO_NOT_DISTURB = "do_not_disturb"
     SLEEPING = "sleeping"
     AT_CLASS = "at_class"
@@ -369,7 +382,11 @@ class SyncUploadFailedPayload(StrictModel):
 class StatusPresenceChangedPayload(StrictModel):
     subject_id: str
     label: PresenceLabel
-    source: Literal["manual", "focus_shortcut", "geofence_label", "calendar", "default"]
+    # Must match SOURCE_PRECEDENCE in control-plane-api's presence.py. Adding a
+    # source there without adding it here does not fail at startup — it fails when
+    # that source first WINS, as a 500 out of presence resolution. That is exactly
+    # how `schedule` shipped broken on 2026-08-22.
+    source: Literal["manual", "focus_shortcut", "geofence_label", "calendar", "schedule", "default"]
     until: UTCDateTime | None
 
 
@@ -377,6 +394,13 @@ class SocialGuestbookEntryCreatedPayload(StrictModel):
     entry_id: UUID
     text: str
     author_label: str | None
+    # Optional reference to a visitor-captured photo_booth recording, mirroring
+    # SocialCheckinCreatedPayload (ADR-0033). Only the reference travels — the
+    # image stays private in the photo-booth pipeline until the owner approves
+    # it. Additive to the schema but NOT backward compatible at runtime
+    # (StrictModel forbids extras), so deploy the NUC at or before the door:
+    # see ADR-0033's "Deployment ordering" and ADR-0031.
+    photo_recording_id: str | None = None
 
 
 class SocialPollVoteCastPayload(StrictModel):
@@ -522,6 +546,33 @@ class AmbientFoodRecommendationPayload(StrictModel):
     # than guessing one.
     hall: str | None = None
     backup_hall: str | None = None
+
+
+class AcademicMilestone(StrictModel):
+    """One dated thing on the academic calendar."""
+
+    label: str
+    date: date
+    days_until: int
+    """Whole days from today, local. Negative is not published — see the worker."""
+    kind: Literal["term_start", "classes_end", "finals", "break", "commencement"]
+
+
+class AmbientAcademicCountdownPayload(StrictModel):
+    """Days until the next few academic milestones (ADR-0039).
+
+    Read from a configured date table rather than fetched: the university publishes
+    the calendar as a web page with no iCalendar feed, and a scraper for something
+    that changes three times a year would be the most fragile part of the system.
+    A table also means this job makes no outbound request at all.
+    """
+
+    next: AcademicMilestone
+    """The one to lead with. Absent-if-none is expressed by not publishing at all."""
+    upcoming: list[AcademicMilestone] = []
+    """The following few, so a subtitle can say what comes after."""
+    source: str
+    """Which table this came from, so a stale one is identifiable on screen."""
 
 
 class SystemServiceHealthPayload(HealthPayload):
@@ -718,6 +769,11 @@ class AmbientFoodRecommendationEvent(BaseEvent):
     payload: AmbientFoodRecommendationPayload
 
 
+class AmbientAcademicCountdownEvent(BaseEvent):
+    type: Literal["ambient.academic_countdown"]
+    payload: AmbientAcademicCountdownPayload
+
+
 class SystemServiceHealthEvent(BaseEvent):
     type: Literal["system.service_health"]
     payload: SystemServiceHealthPayload
@@ -769,6 +825,7 @@ EVENT_MODELS: tuple[type[BaseEvent], ...] = (
     AmbientAircraftSummaryEvent,
     AmbientPrinterStatusEvent,
     AmbientFoodRecommendationEvent,
+    AmbientAcademicCountdownEvent,
     SystemServiceHealthEvent,
     SystemStorageAlertEvent,
     SystemLatencySampleEvent,
@@ -823,6 +880,7 @@ type DoorboardEvent = Annotated[
     | AmbientAircraftSummaryEvent
     | AmbientPrinterStatusEvent
     | AmbientFoodRecommendationEvent
+    | AmbientAcademicCountdownEvent
     | SystemServiceHealthEvent
     | SystemStorageAlertEvent
     | SystemLatencySampleEvent,

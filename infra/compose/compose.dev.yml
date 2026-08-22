@@ -74,6 +74,23 @@ services:
       DOORBOARD_DOOR_ID: primary
       CONTROL_PLANE_BIND: 0.0.0.0:8090
       POSTGRES_DSN: postgresql+psycopg://doorboard:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/doorboard
+      # Time-of-day logic (ADR-0037's nightly window) reads the container's
+      # local zone. Without this it silently runs in UTC.
+      TZ: ${TZ:-UTC}
+      # Presence calendar + nightly window (ADR-0036, ADR-0037). Listed here
+      # because a setting only in .env never reaches the container.
+      PRESENCE_CALENDAR_ICS_URLS: ${PRESENCE_CALENDAR_ICS_URLS:-}
+      PRESENCE_CALENDAR_REFRESH_S: ${PRESENCE_CALENDAR_REFRESH_S:-900}
+      PRESENCE_CALENDAR_TIMEOUT_S: ${PRESENCE_CALENDAR_TIMEOUT_S:-10}
+      PRESENCE_SCHEDULE_WINDOW: ${PRESENCE_SCHEDULE_WINDOW:-}
+      PRESENCE_SCHEDULE_LABEL: ${PRESENCE_SCHEDULE_LABEL:-sleeping}
+      PRESENCE_SCHEDULE_SUBJECTS: ${PRESENCE_SCHEDULE_SUBJECTS:-}
+      # Also never forwarded until 2026-08-22 — found by the generalised
+      # every-setting-reaches-the-container guard, not by anyone noticing.
+      DOORBELL_NOTIFY_ENABLED: ${DOORBELL_NOTIFY_ENABLED:-true}
+      RING_PHOTO_ENABLED: ${RING_PHOTO_ENABLED:-true}
+      CONTROL_PLANE_PRESENCE_HISTORY_MAX_ROWS: ${CONTROL_PLANE_PRESENCE_HISTORY_MAX_ROWS:-500}
+      CONTROL_PLANE_PRESENCE_STALE_AFTER_S: ${CONTROL_PLANE_PRESENCE_STALE_AFTER_S:-1800}
       MQTT_URL: mqtt://mosquitto:1883
       MQTT_USERNAME: control-plane-api
       MQTT_PASSWORD: ${MQTT_CP_PASSWORD:-devpassword}
@@ -118,10 +135,15 @@ services:
       MQTT_HA_USERNAME: home-assistant
       MQTT_HA_PASSWORD: ${MQTT_HA_PASSWORD:-devpassword}
       CONTROL_PLANE_URL: http://control-plane-api:8090
+      # Presence webhooks are admin-authenticated; rest_commands.yaml reads this
+      # via !env_var so the token never lands in a config file.
+      # Pre-formatted: HA's !env_var cannot concatenate a "Bearer " prefix.
+      CONTROL_PLANE_ADMIN_TOKEN_HEADER: Bearer ${CONTROL_PLANE_ADMIN_TOKEN:-dev-admin-token}
     volumes:
       - ./../../integrations/home-assistant/config/configuration.yaml:/config/configuration.yaml:ro
       - ./../../integrations/home-assistant/config/automations.yaml:/config/automations.yaml:ro
       - ./../../integrations/home-assistant/config/rest_commands.yaml:/config/rest_commands.yaml:ro
+      - ./../../integrations/home-assistant/config/doorboard-dashboard.yaml:/config/doorboard-dashboard.yaml:ro
     ports:
       - "127.0.0.1:8123:8123"
 
@@ -161,6 +183,9 @@ services:
       WALLBOARD_AIRCRAFT_INTERVAL_S: 30
       WALLBOARD_PRINTER_INTERVAL_S: 30
       WALLBOARD_FOOD_INTERVAL_S: 60
+      FEATURE_ACADEMIC_COUNTDOWN: ${FEATURE_ACADEMIC_COUNTDOWN:-false}
+      WALLBOARD_ACADEMIC_INTERVAL_S: ${WALLBOARD_ACADEMIC_INTERVAL_S:-3600}
+      WALLBOARD_ACADEMIC_CALENDAR_PATH: ${WALLBOARD_ACADEMIC_CALENDAR_PATH:-integrations/academic-calendar/stanford-2026-2027.json}
 
   simulator:
     build:

@@ -268,6 +268,94 @@
   color: var(--db-text-muted);
 }
 
+/* Guestbook slideshow: one note at a time, so it can be read from across a room.
+   The stage is a fixed height because CrossfadeSwitch keeps both layers mounted
+   during a fade — without it the tile would jump as notes of different lengths
+   swap. Overflow is bounded rather than scrolling: a wallboard has no scrollbar
+   and nobody is going to reach up and drag one. */
+.guestbook-slideshow {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 100%;
+  min-height: 0;
+}
+
+.guestbook-slideshow__stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+}
+
+.guestbook-slideshow .guestbook-quote p {
+  font-size: 1.35rem;
+  line-height: 1.4;
+  /* A 280-character note at this size fits; anything longer is clipped with an
+     ellipsis rather than being allowed to push the counter out of the tile. */
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.guestbook-slideshow__position {
+  flex: 0 0 auto;
+  margin: var(--db-spacing-xs) 0 0 0;
+  font-size: 0.75rem;
+  color: var(--db-text-muted);
+  text-align: right;
+}
+
+.guestbook-slideshow--empty {
+  justify-content: center;
+}
+
+.guestbook-slideshow__invite {
+  text-align: center;
+  color: var(--db-text-secondary);
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+/* Academic countdown: one big number, readable across a room. */
+.academic-countdown {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 100%;
+  gap: 2px;
+}
+
+.academic-countdown__days {
+  margin: 0;
+  line-height: 1;
+}
+
+.academic-countdown__days strong {
+  font-size: 3rem;
+  font-weight: 700;
+  color: var(--db-presence-class);
+}
+
+.academic-countdown__days span {
+  font-size: 1rem;
+  color: var(--db-text-secondary);
+}
+
+.academic-countdown__label {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.academic-countdown__then {
+  margin: var(--db-spacing-xs) 0 0 0;
+  font-size: 0.8rem;
+  color: var(--db-text-muted);
+}
+
 .moments-tile-content {
   display: flex;
   flex-direction: column;

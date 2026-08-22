@@ -121,9 +121,16 @@ async function advance(ms = 0) {
   });
 }
 
-/** Let the page's 2s poll fire once and settle. */
+/**
+ * Let the page's poll fire once and settle.
+ *
+ * Advances past the IDLE interval (5s), not the in-flight one (2s): since
+ * ADR-0038 the page only polls every 2s while an action is awaiting settlement,
+ * and idles slower the rest of the time. Advancing 2.1s no longer guarantees a
+ * poll, which is what this helper is for.
+ */
 async function nextPoll() {
-  await advance(2100);
+  await advance(5100);
 }
 
 beforeEach(() => {
@@ -471,5 +478,104 @@ describe("every rejection reason lands somewhere useful", () => {
   it("echoes an unrecognised reason rather than swallowing it", () => {
     expect(outcomeMessage("something_new")).toContain("something_new");
     expect(outcomeMessage(null)).toContain("no reason given");
+  });
+});
+
+/**
+ * ADR-0038. Every poll here is a metered serverless invocation.
+ *
+ * This page used to poll every 2s with no stop condition, so one forgotten tab
+ * cost ~43,000 requests a day — more than the door itself did, and enough on its
+ * own to consume a 1,000,000/month free tier. An EXPIRED link kept polling too,
+ * because nothing checked.
+ */
+describe("polling cost", () => {
+  function readCount(): number {
+    const fetchMock = globalThis.fetch as unknown as { mock: { calls: unknown[][] } };
+    return fetchMock.mock.calls.filter(([url]) => !String(url).endsWith("/action")).length;
+  }
+
+  it("stops entirely once the link is dead", async () => {
+    // A 404 from the start: the link never worked and never will.
+    mockVisitorApi({ readStatus: 404 });
+    render(<VisitorFlow token={TOKEN} />);
+    await advance();
+    const after1 = readCount();
+
+    await advance(60_000);
+    expect(readCount()).toBe(after1);
+  });
+
+  it("stops after a session ends, rather than polling a dead session forever", async () => {
+    const { live } = mockVisitorApi();
+    render(<VisitorFlow token={TOKEN} />);
+    await advance();
+    live.readStatus = 404;
+    await nextPoll();
+    const settledCount = readCount();
+
+    await advance(60_000);
+    expect(readCount()).toBe(settledCount);
+  });
+
+  it("pauses while the tab is hidden", async () => {
+    mockVisitorApi();
+    render(<VisitorFlow token={TOKEN} />);
+    await advance();
+    const before = readCount();
+
+    // Override on the INSTANCE, and delete the instance property afterwards so the
+    // prototype's getter is visible again. Restoring Document.prototype instead
+    // leaves this override in place and every later test's poll pauses forever.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    try {
+      await advance(60_000);
+      // A hidden tab has nobody watching it; browsers throttle background timers
+      // but do not stop them, so this has to be explicit.
+      expect(readCount()).toBe(before);
+    } finally {
+      Reflect.deleteProperty(document, "visibilityState");
+    }
+  });
+
+  it("gives up after a long quiet spell with nothing pending", async () => {
+    mockVisitorApi();
+    render(<VisitorFlow token={TOKEN} />);
+    await advance();
+
+    // Past the 10-minute idle stop.
+    await advance(11 * 60 * 1000);
+    const afterStop = readCount();
+    await advance(60_000);
+    expect(readCount()).toBe(afterStop);
+  });
+
+  it("polls faster while a note is awaiting the door than when idle", async () => {
+    mockVisitorApi();
+    render(<VisitorFlow token={TOKEN} />);
+    await advance();
+    expect(screen.getByText("At the door")).toBeTruthy();
+
+    // Idle: one poll every 5s, so under 4s there should be at most one.
+    const idleStart = readCount();
+    await advance(4_000);
+    const idlePolls = readCount() - idleStart;
+
+    // Submit a note: now the visitor is actually waiting on the door, and the
+    // page should tighten to 2s until the outcome settles.
+    fireEvent.change(screen.getByLabelText("Your message"), {
+      target: { value: "Sorry I missed you" },
+    });
+    fireEvent.click(screen.getByText("Send note"));
+    await advance();
+
+    const pendingStart = readCount();
+    await advance(4_000);
+    const pendingPolls = readCount() - pendingStart;
+
+    expect(pendingPolls).toBeGreaterThan(idlePolls);
   });
 });

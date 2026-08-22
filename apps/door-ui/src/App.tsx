@@ -26,6 +26,7 @@ import type {
 import { AboutDoorboard } from "./AboutDoorboard";
 import { pollShares } from "./PollResultBars";
 import { CampusDiningMap } from "./wallboard/CampusDiningMap";
+import { GuestbookSlideshow } from "./wallboard/GuestbookSlideshow";
 import { ApproachGreeting } from "./ApproachGreeting";
 import { AttributionNotice } from "./AttributionNotice";
 import { WallboardVisitorMode } from "./wallboard/WallboardVisitorMode";
@@ -47,7 +48,7 @@ import { AdminEnrollmentPanel } from "./AdminEnrollmentPanel";
 import { AdminAboutPanel } from "./AdminAboutPanel";
 import { VisitorPage } from "./VisitorPage";
 import { RevealPage } from "./RevealPage";
-import { GuestbookQuote, PollOptionRow } from "./SocialRenderers";
+import { PollOptionRow } from "./SocialRenderers";
 import { WallboardFocusSplit, WallboardLauncher } from "./wallboardChannels";
 import { OnScreenKeyboard } from "./OnScreenKeyboard";
 import { safeRandomUUID } from "./uuid";
@@ -242,7 +243,7 @@ type PhotoStep = "offer" | "countdown" | "review" | "saved";
 // idle -> capturing -> ready -> (saving -> saved | cleared). "cleared" is a
 // terminal state used for both "No thanks" and discard-on-abandon so the
 // auto-capture effect (which only fires from "idle") never re-triggers.
-type PostRingPhotoStatus =
+type PhotoCaptureStatus =
   | "idle"
   | "capturing"
   | "ready"
@@ -519,9 +520,14 @@ export function App() {
   // separate from the manual photo-booth `currentPhoto` so the two flows never
   // clobber each other's save/discard bookkeeping.
   const [postRingPhoto, setPostRingPhoto] = useState<PhotoReview | null>(null);
-  const [postRingPhotoStatus, setPostRingPhotoStatus] = useState<PostRingPhotoStatus>("idle");
+  const [postRingPhotoStatus, setPostRingPhotoStatus] = useState<PhotoCaptureStatus>("idle");
   const [postRingName, setPostRingName] = useState<string>("");
   const [postRingCheckinPending, setPostRingCheckinPending] = useState<boolean>(false);
+  const [checkinPhoto, setCheckinPhoto] = useState<PhotoReview | null>(null);
+  const [checkinPhotoStatus, setCheckinPhotoStatus] = useState<PhotoCaptureStatus>("idle");
+  const [checkinPendingLabel, setCheckinPendingLabel] = useState<string | null>(null);
+  const [guestbookPhoto, setGuestbookPhoto] = useState<PhotoReview | null>(null);
+  const [guestbookPhotoStatus, setGuestbookPhotoStatus] = useState<PhotoCaptureStatus>("idle");
   const [visitorQrUrl, setVisitorQrUrl] = useState<string | null>(null);
   // Self-service enrollment (ADR-0019). "closed" carries the reason door-visiond
   // gave, because a visitor who is refused deserves a sentence, not a spinner that
@@ -574,6 +580,14 @@ export function App() {
   const [checkinSubmitting, setCheckinSubmitting] = useState<boolean>(false);
   const [myContent, setMyContent] = useState<MyContentRef[]>([]);
   const [approvedGuestbook, setApprovedGuestbook] = useState<GuestbookEntry[]>([]);
+  const [academicCountdown, setAcademicCountdown] = useState<{
+    payload: {
+      next: { label: string; date: string; days_until: number; kind: string };
+      upcoming: Array<{ label: string; days_until: number }>;
+      source: string;
+    };
+    occurredAt: string;
+  } | null>(null);
   const [guestbookAmbientState, setGuestbookAmbientState] = useState<
     "idle" | "ready" | "unavailable"
   >("idle");
@@ -1005,6 +1019,14 @@ export function App() {
       setFoodRecommendation({ payload: event.payload, occurredAt: event.occurred_at });
     });
 
+    const unsubscribeAcademic = client.subscribe(
+      "ambient.academic_countdown",
+      (event: DoorboardEvent) => {
+        if (event.type !== "ambient.academic_countdown") return;
+        setAcademicCountdown({ payload: event.payload, occurredAt: event.occurred_at });
+      }
+    );
+
     const unsubscribeScoreboard = client.subscribe(
       "social.scoreboard_updated",
       (event: DoorboardEvent) => {
@@ -1057,6 +1079,7 @@ export function App() {
       unsubscribeSatellite();
       unsubscribePrinter();
       unsubscribeFood();
+      unsubscribeAcademic();
       unsubscribeScoreboard();
       unsubscribeWallboardFocus();
       client.close();
@@ -1423,15 +1446,73 @@ export function App() {
     });
   };
 
+  // ADR-0033: a note MAY carry a photo. Opt-in, unlike the check-in screen where
+  // the photo is always offered — the owner asked for the two to differ.
+  const captureGuestbookPhoto = async () => {
+    if (!FEATURE_PHOTOBOOTH || guestbookPhotoStatus === "capturing") return;
+    setGuestbookPhotoStatus("capturing");
+    try {
+      const response = await fetch(`${API_BASE}/doorpad/photo-booth/capture`, { method: "POST" });
+      if (!response.ok) {
+        setGuestbookPhotoStatus("unavailable");
+        return;
+      }
+      const data = (await response.json()) as { photo: PhotoReview };
+      setGuestbookPhoto(data.photo);
+      setGuestbookPhotoStatus("ready");
+    } catch {
+      setGuestbookPhotoStatus("unavailable");
+    }
+  };
+
+  const removeGuestbookPhoto = async (): Promise<void> => {
+    const photo = guestbookPhoto;
+    setGuestbookPhoto(null);
+    setGuestbookPhotoStatus("idle");
+    if (!photo) return;
+    try {
+      await fetch(`${API_BASE}/doorpad/photo-booth/${photo.recording_id}/discard`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: photo.session_id }),
+      });
+    } catch {
+      // Still private in the photo-booth pipeline and owner-deletable, so a
+      // failed discard never exposes anything.
+    }
+  };
+
   const handleGuestbookSubmit = async (text: string) => {
     if (guestbookSubmitting) return;
     setGuestbookSubmitting(true);
     try {
-      const entry = await socialApi.createGuestbookEntry(text, null);
+      let photoRecordingId: string | null = null;
+      const photo = guestbookPhoto;
+      if (photo) {
+        // Persist through the photo-booth pipeline first (privately, for owner
+        // review) so the note never references a recording that isn't saved.
+        const saved = await fetch(
+          `${API_BASE}/doorpad/photo-booth/${photo.recording_id}/save`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: photo.session_id }),
+          }
+        );
+        if (!saved.ok) {
+          // Keep the note and the photo so a retry loses neither.
+          triggerToast("Couldn't save your photo — try again, or remove it.");
+          return;
+        }
+        photoRecordingId = photo.recording_id;
+      }
+      const entry = await socialApi.createGuestbookEntry(text, null, photoRecordingId);
       rememberMyContent({ kind: "guestbook", id: entry.id, label: text.slice(0, 40) });
       triggerToast("Note submitted! It'll show up once approved.");
       setGuestbookText("");
       setSelectedGuestbookPhrase(null);
+      setGuestbookPhoto(null);
+      setGuestbookPhotoStatus("idle");
       returnDoorPadToContext();
     } catch (err) {
       triggerToast(apiErrorMessage(err, "Couldn't submit your note — try again."));
@@ -1454,26 +1535,123 @@ export function App() {
     }
   };
 
-  const handleCheckin = async (kind: "enrolled" | "guest") => {
-    if (checkinSubmitting) return;
+  const resetCheckinPhotoState = () => {
+    setCheckinPhoto(null);
+    setCheckinPhotoStatus("idle");
+    setCheckinPendingLabel(null);
+  };
+
+  // Actually record the check-in. `photoRecordingId` is null both when the
+  // camera was unavailable and when the visitor declined the photo — the
+  // check-in itself never depends on it.
+  const finishCheckin = async (label: string, photoRecordingId: string | null) => {
     setCheckinSubmitting(true);
     try {
-      const label = kind === "enrolled" && activeDisplayName ? activeDisplayName : "Guest";
       // door-api derives attribution server-side from the session's cached
       // identity — this client never asserts a person_id.
-      const checkin = await socialApi.createCheckin(label);
+      const checkin = await socialApi.createCheckin(label, photoRecordingId);
       rememberMyContent({ kind: "checkin", id: checkin.id, label });
       triggerToast(
         checkin.person_id
           ? "Recognized check-in saved."
           : `Checked in as ${label}`
       );
+      resetCheckinPhotoState();
       returnDoorPadToContext();
     } catch (err) {
       triggerToast(apiErrorMessage(err, "Couldn't check in — try again."));
+      // Stay on the confirm step so the photo isn't silently lost on a retry.
+      setCheckinPhotoStatus(photoRecordingId ? "ready" : "unavailable");
     } finally {
       setCheckinSubmitting(false);
     }
+  };
+
+  // Tapping a check-in button takes the photo first and shows it; nothing is
+  // recorded until the visitor confirms. With the photo booth off this stays
+  // exactly the old one-tap behaviour.
+  const handleCheckin = async (kind: "enrolled" | "guest") => {
+    if (checkinSubmitting || checkinPhotoStatus === "capturing") return;
+    const label = kind === "enrolled" && activeDisplayName ? activeDisplayName : "Guest";
+    setCheckinPendingLabel(label);
+    if (!FEATURE_PHOTOBOOTH) {
+      await finishCheckin(label, null);
+      return;
+    }
+    setCheckinPhotoStatus("capturing");
+    try {
+      const response = await fetch(`${API_BASE}/doorpad/photo-booth/capture`, { method: "POST" });
+      if (!response.ok) {
+        setCheckinPhotoStatus("unavailable");
+        return;
+      }
+      const data = (await response.json()) as { photo: PhotoReview };
+      setCheckinPhoto(data.photo);
+      setCheckinPhotoStatus("ready");
+    } catch {
+      setCheckinPhotoStatus("unavailable");
+    }
+  };
+
+  // Best-effort discard of a still-private capture. Used for "Skip the photo"
+  // and for walking away mid-confirm, so a declined photo doesn't linger.
+  const discardCheckinPhoto = async (): Promise<void> => {
+    const photo = checkinPhoto;
+    setCheckinPhoto(null);
+    if (!photo) return;
+    try {
+      await fetch(`${API_BASE}/doorpad/photo-booth/${photo.recording_id}/discard`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: photo.session_id }),
+      });
+    } catch {
+      // The capture is still private to the photo-booth pipeline and remains
+      // owner-deletable, so a failed discard never exposes anything.
+    }
+  };
+
+  const confirmCheckinWithPhoto = async () => {
+    const photo = checkinPhoto;
+    const label = checkinPendingLabel ?? "Guest";
+    if (!photo) {
+      await finishCheckin(label, null);
+      return;
+    }
+    setCheckinPhotoStatus("saving");
+    try {
+      // Save through the photo-booth pipeline first so the recording is
+      // persisted (privately, for owner review) before the check-in links it.
+      const response = await fetch(
+        `${API_BASE}/doorpad/photo-booth/${photo.recording_id}/save`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: photo.session_id }),
+        }
+      );
+      if (!response.ok) {
+        triggerToast("Couldn't save your photo — try again.");
+        setCheckinPhotoStatus("ready");
+        return;
+      }
+    } catch {
+      triggerToast("Couldn't save your photo — try again.");
+      setCheckinPhotoStatus("ready");
+      return;
+    }
+    await finishCheckin(label, photo.recording_id);
+  };
+
+  const skipCheckinPhoto = async () => {
+    const label = checkinPendingLabel ?? "Guest";
+    await discardCheckinPhoto();
+    await finishCheckin(label, null);
+  };
+
+  const cancelCheckinPhoto = async () => {
+    await discardCheckinPhoto();
+    resetCheckinPhotoState();
   };
 
   const handleDeletionRequest = async (item: MyContentRef) => {
@@ -1840,6 +2018,37 @@ export function App() {
           </Tile>
         ),
       },
+      ...(academicCountdown
+        ? [
+            {
+              key: "academic" as const,
+              // No focus channel: a countdown is one number, so there is nothing
+              // to expand into. Tiles with a channel get a larger view.
+              channel: null,
+              node: (
+                <Tile title="Academic Calendar" asOf={academicCountdown.occurredAt}>
+                  <div className="academic-countdown">
+                    <p className="academic-countdown__days">
+                      <strong>{academicCountdown.payload.next.days_until}</strong>
+                      <span>
+                        {academicCountdown.payload.next.days_until === 1 ? " day" : " days"}
+                      </span>
+                    </p>
+                    <p className="academic-countdown__label">
+                      until {academicCountdown.payload.next.label}
+                    </p>
+                    {academicCountdown.payload.upcoming.length > 0 && (
+                      <p className="academic-countdown__then">
+                        then {academicCountdown.payload.upcoming[0].label} in{" "}
+                        {academicCountdown.payload.upcoming[0].days_until} days
+                      </p>
+                    )}
+                  </div>
+                </Tile>
+              ),
+            },
+          ]
+        : []),
       {
         key: "guestbook",
         channel: "guestbook",
@@ -1849,12 +2058,13 @@ export function App() {
             asOf={approvedGuestbook[0]?.created_at ?? null}
           >
             <div className="guestbook-tile-content">
-              {guestbookAmbientState === "unavailable" && <p>Guestbook unavailable; approved notes below may be stale.</p>}
+              {guestbookAmbientState === "unavailable" && <p>Guestbook unavailable; the note below may be stale.</p>}
               {guestbookAmbientState === "idle" && <p>Loading approved notes…</p>}
-              {guestbookAmbientState === "ready" && approvedGuestbook.length === 0 && <p>No guestbook notes yet — be the first!</p>}
-              {approvedGuestbook.map((e) => (
-                <GuestbookQuote key={e.id} text={e.text} authorLabel={e.author_label} />
-              ))}
+              {guestbookAmbientState !== "idle" && (
+                // One at a time rather than a stacked list: notes were being
+                // collected, moderated, and then not really read.
+                <GuestbookSlideshow entries={approvedGuestbook} />
+              )}
             </div>
           </Tile>
         ),
@@ -2333,6 +2543,30 @@ export function App() {
       setPostRingCheckinPending(false);
     }
   };
+
+  // Same for an unsent guestbook photo: leaving without submitting discards it.
+  useEffect(() => {
+    if (doorPadScreen === "guestbook") return undefined;
+    if (!guestbookPhoto) return undefined;
+    void removeGuestbookPhoto();
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doorPadScreen]);
+
+  // Navigating away from the Check In screen mid-confirm discards the still
+  // private capture, so declining by walking off leaves nothing behind.
+  useEffect(() => {
+    if (doorPadScreen === "checkin") return undefined;
+    if (!checkinPhoto && checkinPhotoStatus === "idle") return undefined;
+    void (async () => {
+      await discardCheckinPhoto();
+      resetCheckinPhotoState();
+    })();
+    return undefined;
+    // discardCheckinPhoto/resetCheckinPhotoState are stable enough for this
+    // guard; re-running on their identity would fight the state reset below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doorPadScreen]);
 
   // Fire the single auto-capture shortly after the ringing screen appears.
   useEffect(() => {
@@ -3006,6 +3240,40 @@ export function App() {
               <p className="placeholder-subtext">Pick a phrase or write a short note (280 chars max)</p>
               {/* Above the composer, so it is read before anything is written (E-23). */}
               <AttributionNotice attributedTo={attributedTo} />
+              {FEATURE_PHOTOBOOTH && (
+                <div className="doorpad-guestbook-photo" id="guestbook-photo">
+                  {guestbookPhotoStatus === "ready" && guestbookPhoto ? (
+                    <>
+                      <img
+                        className="review-photo"
+                        src={guestbookPhoto.review_url}
+                        alt="Photo for your note"
+                      />
+                      <BigButton
+                        id="guestbook-photo-remove"
+                        disabled={guestbookSubmitting}
+                        onClick={removeGuestbookPhoto}
+                      >
+                        Remove photo
+                      </BigButton>
+                    </>
+                  ) : guestbookPhotoStatus === "unavailable" ? (
+                    <p className="placeholder-subtext">
+                      Camera unavailable right now — you can still send your note.
+                    </p>
+                  ) : (
+                    <BigButton
+                      id="guestbook-photo-add"
+                      disabled={guestbookSubmitting || guestbookPhotoStatus === "capturing"}
+                      onClick={captureGuestbookPhoto}
+                    >
+                      {guestbookPhotoStatus === "capturing"
+                        ? "Taking your photo…"
+                        : "Add a photo (optional)"}
+                    </BigButton>
+                  )}
+                </div>
+              )}
               <div className="phrase-grid">
                 {CANNED_GUESTBOOK_PHRASES.map((phrase) => (
                   <button
@@ -3164,33 +3432,96 @@ export function App() {
           {doorPadScreen === "checkin" && (
             <div className="doorpad-sub-content">
               <h2>Check In</h2>
-              <p>Voluntarily mark yourself as a visitor to increment stats!</p>
-              <div className="phrase-grid">
-                {activeDisplayName && (
-                  <button
-                    className="phrase-btn"
-                    disabled={checkinSubmitting}
-                    onClick={() => handleCheckin("enrolled")}
-                  >
-                    Check in as {activeDisplayName}
-                  </button>
-                )}
-                <button
-                  className="phrase-btn"
-                  disabled={checkinSubmitting}
-                  onClick={() => handleCheckin("guest")}
+              {checkinPhotoStatus === "idle" ? (
+                <>
+                  <p>Voluntarily mark yourself as a visitor to increment stats!</p>
+                  <div className="phrase-grid">
+                    {activeDisplayName && (
+                      <button
+                        className="phrase-btn"
+                        disabled={checkinSubmitting}
+                        onClick={() => handleCheckin("enrolled")}
+                      >
+                        Check in as {activeDisplayName}
+                      </button>
+                    )}
+                    <button
+                      className="phrase-btn"
+                      disabled={checkinSubmitting}
+                      onClick={() => handleCheckin("guest")}
+                    >
+                      Check in as Guest
+                    </button>
+                  </div>
+                  {!activeDisplayName && (
+                    <p className="placeholder-subtext">
+                      Named check-in is available only when an enrolled, consenting visitor is recognized.
+                    </p>
+                  )}
+                  <div className="action-button-group">
+                    <BigButton onClick={returnDoorPadToContext}>Back</BigButton>
+                  </div>
+                </>
+              ) : (
+                <div
+                  id="checkin-photo-confirm"
+                  className="doorpad-photo-checkin"
+                  role="group"
+                  aria-label="Check-in photo"
                 >
-                  Check in as Guest
-                </button>
-              </div>
-              {!activeDisplayName && (
-                <p className="placeholder-subtext">
-                  Named check-in is available only when an enrolled, consenting visitor is recognized.
-                </p>
+                  <div className="doorpad-photo-checkin__header">
+                    <h3>Checking in as {checkinPendingLabel ?? "Guest"}</h3>
+                    <p className="placeholder-subtext">
+                      Keep the photo with your check-in, or skip it — either way the check-in
+                      counts. Photos are saved privately for owner review.
+                    </p>
+                  </div>
+                  {checkinPhotoStatus === "ready" && checkinPhoto ? (
+                    <img
+                      className="review-photo"
+                      src={checkinPhoto.review_url}
+                      alt="Your check-in photo"
+                    />
+                  ) : checkinPhotoStatus === "unavailable" ? (
+                    <p className="placeholder-subtext">
+                      Camera unavailable right now — you can still check in without a photo.
+                    </p>
+                  ) : (
+                    <div className="video-preview-frame video-preview-frame--unavailable">
+                      Taking your photo…
+                    </div>
+                  )}
+                  <div className="action-button-group">
+                    {checkinPhotoStatus === "ready" && (
+                      <BigButton
+                        id="checkin-photo-keep"
+                        variant="primary"
+                        disabled={checkinSubmitting}
+                        onClick={confirmCheckinWithPhoto}
+                      >
+                        Keep photo &amp; check in
+                      </BigButton>
+                    )}
+                    <BigButton
+                      id="checkin-photo-skip"
+                      variant={checkinPhotoStatus === "unavailable" ? "primary" : undefined}
+                      disabled={checkinSubmitting || checkinPhotoStatus === "capturing"}
+                      onClick={skipCheckinPhoto}
+                    >
+                      {checkinPhotoStatus === "unavailable"
+                        ? "Check in without a photo"
+                        : "Skip the photo"}
+                    </BigButton>
+                    <BigButton
+                      id="checkin-photo-cancel"
+                      disabled={checkinSubmitting}
+                      onClick={cancelCheckinPhoto}
+                    >
+                      Cancel
+                    </BigButton>
+                  </div>
+                </div>
               )}
-              <div className="action-button-group">
-                <BigButton onClick={returnDoorPadToContext}>Back</BigButton>
-              </div>
             </div>
           )}
 

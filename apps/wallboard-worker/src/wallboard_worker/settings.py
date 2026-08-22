@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     aircraft_interval_s: float = Field(default=30.0, alias="WALLBOARD_AIRCRAFT_INTERVAL_S", gt=0)
     printer_interval_s: float = Field(default=30.0, alias="WALLBOARD_PRINTER_INTERVAL_S", gt=0)
     food_interval_s: float = Field(default=86400.0, alias="WALLBOARD_FOOD_INTERVAL_S", gt=0)
+    # Daily. Reading a local table, so the interval is about when the day rolls
+    # over, not about a remote service (ADR-0039).
+    academic_countdown_interval_s: float = Field(
+        default=3600.0, alias="WALLBOARD_ACADEMIC_INTERVAL_S", gt=0
+    )
+    academic_calendar_path: str = Field(
+        default="integrations/academic-calendar/stanford-2026-2027.json",
+        alias="WALLBOARD_ACADEMIC_CALENDAR_PATH",
+    )
+    feature_academic_countdown: bool = Field(default=False, alias="FEATURE_ACADEMIC_COUNTDOWN")
     collage_interval_s: float = Field(default=86400.0, alias="WALLBOARD_COLLAGE_INTERVAL_S", gt=0)
 
     feature_birdnet: bool = Field(default=False, alias="FEATURE_BIRDNET")

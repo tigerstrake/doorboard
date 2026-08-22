@@ -388,6 +388,7 @@ class VisiondService:
             transport=self._relay_transport,
             handler=self,
             poll_interval_s=self._settings.relay_poll_interval_s,
+            idle_grace_s=self._settings.relay_idle_grace_s,
             backoff_max_s=self._settings.relay_backoff_max_s,
         )
         await self._relay_worker.start()
@@ -836,6 +837,10 @@ class VisiondService:
             consent_text=statement.text,
         )
 
+    def relay_has_open_invites(self) -> bool:
+        """Gate for relay pickup polling (ADR-0038)."""
+        return self._store.has_open_invite()
+
     def relay_invite_registrations(self) -> list[InviteRegistration]:
         return [
             InviteRegistration(
@@ -1247,6 +1252,11 @@ class VisiondService:
         snap["relay_enabled"] = 1.0 if self._settings.relay_enabled else 0.0
         snap["relay_polls_ok"] = float(relay_stats.polls_ok if relay_stats else 0)
         snap["relay_polls_failed"] = float(relay_stats.polls_failed if relay_stats else 0)
+        # Visible on purpose: this counter rising while polls_ok stays flat is the
+        # gate working, and the number that would have been billed (ADR-0038).
+        snap["relay_polls_skipped_idle"] = float(
+            relay_stats.polls_skipped_idle if relay_stats else 0
+        )
         snap["relay_bundles_enrolled"] = float(relay_stats.bundles_enrolled if relay_stats else 0)
         snap["relay_bundles_rejected"] = float(relay_stats.bundles_rejected if relay_stats else 0)
         snap["relay_consecutive_failures"] = float(

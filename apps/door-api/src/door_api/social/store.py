@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS guestbook_entries (
     ip_hash TEXT,
     session_key_hash TEXT,
     created_at TEXT NOT NULL,
-    deleted_at TEXT
+    deleted_at TEXT,
+    -- ADR-0033: optional photo-booth reference, mirroring checkins.
+    photo_recording_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS polls (
@@ -98,6 +100,7 @@ class GuestbookEntry:
     deleted_at: str | None
     # Recognised author, or None for an anonymous visitor (ADR-0018 §2).
     person_id: str | None = None
+    photo_recording_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -176,6 +179,8 @@ class SocialStore:
             # person. Existing rows stay NULL, i.e. anonymous, which is the honest
             # reading -- they were written before attribution existed.
             self._ensure_column("guestbook_entries", "person_id", "TEXT")
+            # ADR-0033: optional photo reference, same shape as checkins.
+            self._ensure_column("guestbook_entries", "photo_recording_id", "TEXT")
             self._ensure_column("poll_votes", "person_id", "TEXT")
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_guestbook_person ON guestbook_entries(person_id)"
@@ -202,13 +207,14 @@ class SocialStore:
         session_key_hash: str,
         created_at: str,
         person_id: str | None = None,
+        photo_recording_id: str | None = None,
     ) -> None:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO guestbook_entries "
                 "(id, text, author_label, status, ip_hash, session_key_hash, created_at, "
-                " person_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " person_id, photo_recording_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     entry_id,
                     text,
@@ -218,6 +224,7 @@ class SocialStore:
                     session_key_hash,
                     created_at,
                     person_id,
+                    photo_recording_id,
                 ),
             )
             self._conn.commit()
@@ -225,7 +232,8 @@ class SocialStore:
     def get_guestbook_entry(self, entry_id: str) -> GuestbookEntry | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, text, author_label, status, created_at, deleted_at, person_id "
+                "SELECT id, text, author_label, status, created_at, deleted_at, person_id, "
+                "photo_recording_id "
                 "FROM guestbook_entries WHERE id = ?",
                 (entry_id,),
             ).fetchone()
@@ -237,14 +245,16 @@ class SocialStore:
         with self._lock:
             if cursor_created_at is None:
                 rows = self._conn.execute(
-                    "SELECT id, text, author_label, status, created_at, deleted_at, person_id "
+                    "SELECT id, text, author_label, status, created_at, deleted_at, person_id, "
+                    "photo_recording_id "
                     "FROM guestbook_entries WHERE status = ? "
                     "ORDER BY created_at DESC LIMIT ?",
                     (status, limit),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    "SELECT id, text, author_label, status, created_at, deleted_at, person_id "
+                    "SELECT id, text, author_label, status, created_at, deleted_at, person_id, "
+                    "photo_recording_id "
                     "FROM guestbook_entries WHERE status = ? AND created_at < ? "
                     "ORDER BY created_at DESC LIMIT ?",
                     (status, cursor_created_at, limit),
@@ -292,6 +302,8 @@ class SocialStore:
             deleted_at=row[5],
             # Older rows predate attribution and select as NULL, i.e. anonymous.
             person_id=row[6] if len(row) > 6 else None,
+            # ADR-0033. Same len() guard: a row selected by older code is shorter.
+            photo_recording_id=row[7] if len(row) > 7 else None,
         )
 
     # ------------------------------------------------------------------

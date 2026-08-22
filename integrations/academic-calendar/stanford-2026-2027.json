@@ -1,0 +1,18 @@
+{
+  "source": "Stanford academic calendar 2026-2027 (undergraduate)",
+  "retrieved": "2026-08-22",
+  "note": "Hand-curated from studentservices.stanford.edu. Undergraduate dates only, and only the ones a dorm resident plans around — not grade deadlines, not degree conferral, not Final Recommending Lists. The university publishes this as a web page with no iCalendar feed, so this is a table rather than a fetch: see ADR-0039.",
+  "milestones": [
+    { "label": "Autumn quarter begins", "date": "2026-09-22", "kind": "term_start" },
+    { "label": "Thanksgiving recess", "date": "2026-11-23", "kind": "break" },
+    { "label": "Last day of autumn classes", "date": "2026-12-04", "kind": "classes_end" },
+    { "label": "Autumn finals begin", "date": "2026-12-07", "kind": "finals" },
+    { "label": "Autumn finals end", "date": "2026-12-11", "kind": "finals" },
+    { "label": "Winter quarter begins", "date": "2027-01-04", "kind": "term_start" },
+    { "label": "Last day of winter classes", "date": "2027-03-12", "kind": "classes_end" },
+    { "label": "Spring break begins", "date": "2027-03-20", "kind": "break" },
+    { "label": "Spring quarter begins", "date": "2027-03-29", "kind": "term_start" },
+    { "label": "Last day of spring classes", "date": "2027-06-02", "kind": "classes_end" },
+    { "label": "Commencement", "date": "2027-06-13", "kind": "commencement" }
+  ]
+}

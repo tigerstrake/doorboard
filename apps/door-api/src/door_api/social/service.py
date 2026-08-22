@@ -185,6 +185,7 @@ class SocialService:
         session_token: str,
         trace_id: str,
         person_id: str | None = None,
+        photo_recording_id: str | None = None,
     ) -> GuestbookEntry:
         """Store a note, attributed to ``person_id`` when the door recognised them.
 
@@ -222,6 +223,7 @@ class SocialService:
             session_key_hash=hash_session_key(session_token),
             created_at=created_at,
             person_id=person_id,
+            photo_recording_id=photo_recording_id,
         )
         self.metrics.guestbook_created += 1
         self._log_moderation(
@@ -230,7 +232,10 @@ class SocialService:
         self._emit(
             "social.guestbook_entry_created",
             SocialGuestbookEntryCreatedPayload(
-                entry_id=entry_uuid, text=clean_text, author_label=clean_author
+                entry_id=entry_uuid,
+                text=clean_text,
+                author_label=clean_author,
+                photo_recording_id=photo_recording_id,
             ),
             trace_id=trace_id,
         )

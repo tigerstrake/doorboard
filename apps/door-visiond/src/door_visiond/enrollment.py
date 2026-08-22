@@ -646,6 +646,23 @@ class EnrollmentStore:
             )
         return invites
 
+    def has_open_invite(self) -> bool:
+        """Is any invite still usable? Cheap COUNT, called on every relay tick.
+
+        The gate for relay polling (ADR-0038): with no open invite, nobody can
+        submit a bundle, so a pickup poll cannot return anything. Deliberately a
+        COUNT rather than reusing open_invite_registrations(), which builds full
+        rows including hashes for republication.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM relay_invite "
+                "WHERE consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ? "
+                "LIMIT 1",
+                (datetime.now(UTC).isoformat(),),
+            ).fetchone()
+        return row is not None
+
     def open_invite_registrations(self) -> list[tuple[str, str, str, int]]:
         """``(invite_id, secret_sha256, expires_at, max_images)`` for still-usable invites.
 

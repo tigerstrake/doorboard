@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import httpx
 from aircraft.enrichment import AircraftEnricher, EnrichmentConfig
 from aircraft.provider import AircraftDataUnavailable, AircraftProvider
 from birdnet.provider import BirdProvider
 from doorboard_contracts.events import (
+    AcademicMilestone,
     AircraftObserver,
+    AmbientAcademicCountdownEvent,
+    AmbientAcademicCountdownPayload,
     AmbientAircraftNearby,
     AmbientAircraftSummaryEvent,
     AmbientAircraftSummaryPayload,
@@ -398,6 +403,115 @@ def run_printer_status(
         logger.error(f"Failed to post printer status event: {exc}")
 
     return None
+
+
+ACADEMIC_LOOKAHEAD = 3
+"""How many milestones to carry past the leading one. Enough for a subtitle."""
+
+
+def load_academic_milestones(path: Path, *, today: date) -> tuple[list[dict], str] | None:
+    """Read the date table and return the still-future milestones, soonest first.
+
+    Returns None when the table is missing, unreadable, or entirely in the past —
+    all of which mean "publish nothing" rather than "publish something wrong". A
+    countdown to a date that has passed is worse than no countdown.
+    """
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logger.warning(f"Academic calendar table not found: {path}")
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(f"Academic calendar table unreadable ({path}): {exc}")
+        return None
+
+    source = str(raw.get("source") or path.name)
+    future: list[dict] = []
+    for entry in raw.get("milestones") or []:
+        try:
+            when = date.fromisoformat(str(entry["date"]))
+            label = str(entry["label"])
+            kind = str(entry["kind"])
+        except (KeyError, TypeError, ValueError) as exc:
+            # One malformed row must not discard the rest of the year.
+            logger.warning(f"Skipping malformed academic milestone {entry!r}: {exc}")
+            continue
+        days = (when - today).days
+        if days < 0:
+            continue
+        future.append({"label": label, "date": when, "days_until": days, "kind": kind})
+
+    if not future:
+        # A table that has run out is a stale table, and saying so beats counting
+        # down to nothing. Refresh it when the next year is published.
+        logger.warning(f"Academic calendar table has no future dates: {path}")
+        return None
+    future.sort(key=lambda m: m["date"])
+    return future, source
+
+
+def run_academic_countdown(
+    settings: Settings,
+    now: datetime | None = None,
+) -> dict | None:
+    """Publish days-until for the next academic milestones (ADR-0039).
+
+    Makes NO outbound request: the university publishes its calendar as a web page
+    with no iCalendar feed, and a scraper for something that changes three times a
+    year would be the most fragile part of the system. Reading a table costs
+    nothing and cannot rate-limit, so this job is absent from the external-poll
+    budget by construction.
+    """
+    if now is None:
+        now = datetime.now(UTC)
+    # Local date, not UTC: "days until finals" is counted in the calendar the
+    # person is living in. On a UTC-configured container these differ for hours a
+    # day, which is exactly the sort of off-by-one nobody notices until it matters.
+    today = now.astimezone().date()
+
+    loaded = load_academic_milestones(Path(settings.academic_calendar_path), today=today)
+    if loaded is None:
+        return None
+    milestones, source = loaded
+
+    payload = AmbientAcademicCountdownPayload(
+        next=AcademicMilestone(**milestones[0]),
+        upcoming=[AcademicMilestone(**m) for m in milestones[1 : 1 + ACADEMIC_LOOKAHEAD]],
+        source=source,
+    )
+
+    event = AmbientAcademicCountdownEvent(
+        event_id=uuid7(),
+        type="ambient.academic_countdown",
+        source="wallboard-worker",
+        occurred_at=now,
+        monotonic_ms=int(time.monotonic() * 1000),
+        door_id=settings.door_id,
+        trace_id=uuid.uuid4(),
+        payload=payload,
+    )
+
+    url = f"{settings.control_plane_url.rstrip('/')}/ingest"
+    token = get_ingest_token(settings)
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    batch = {
+        "batch_id": f"worker-academic-{int(time.time())}",
+        "events": [event.model_dump(mode="json")],
+    }
+    try:
+        resp = httpx.post(url, json=batch, headers=headers, timeout=5.0)
+        if resp.status_code != 200:
+            logger.error(
+                f"Academic countdown ingest rejected: {resp.status_code} {resp.text[:200]}"
+            )
+            return None
+    except Exception as exc:
+        logger.error(f"Academic countdown ingest failed: {exc}")
+        return None
+    logger.info(f"Academic countdown: {payload.next.label} in {payload.next.days_until} day(s)")
+    return event.model_dump(mode="json")
 
 
 def run_food_recommendation(

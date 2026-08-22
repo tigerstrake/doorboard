@@ -1,28 +1,41 @@
-# Inbound webhook -> control-plane-api bridge (T-503 deliverable: "inbound
-# webhook config for Focus shortcuts/geofence labels -> control-plane-api").
+# Phone -> presence bridge (T-503/T-504).
 #
-# HA's native `webhook` trigger creates the inbound endpoint automatically —
-# no extra HA config needed beyond this automation. Point a phone Shortcuts
-# automation (iOS Focus change / Android geofence/Tasker equivalent) at:
+# Two inputs, one destination:
 #
+#   Focus    -> an iOS Shortcuts personal automation POSTs to this webhook when
+#               your Focus changes. HA cannot see Focus itself, so the phone has
+#               to tell it.
+#   Location -> the HA companion app already reports zones, so no Shortcut is
+#               needed; the zone automation below reacts to them directly.
+#
+# Both send a LABEL, never coordinates. control-plane-api rejects any
+# coordinate-shaped field at any depth (reject_coordinate_payload), so this
+# cannot quietly become a location history. The source is fixed by which
+# endpoint is called, not by the body, so a caller cannot promote itself up the
+# precedence order (manual > focus_shortcut > geofence_label > calendar >
+# default).
+#
+# Presence is display-only. ARCHITECTURE.md 9: personalization is never
+# authorization — this changes what the wallboard says, and nothing else. ADR-0002
+# also holds: if HA is down the door is unaffected, presence just goes stale and
+# the tile says so.
+#
+# Point an iOS Shortcuts automation at:
 #   http://<nuc-lan-host>:8123/api/webhook/doorboard-presence-label
+# with body: {"subject_id": "owner", "label": "busy"}
 #
-# with a JSON POST body: {"subject_id": "...", "source": "focus_shortcut",
-# "label": "available|busy|do_not_disturb|sleeping|at_class|at_library|away"}
-# — the broad-label set from ARCHITECTURE.md §9 / docs/protocols/events.md
-# `status.presence_changed`. `source` should be `"focus_shortcut"` or
-# `"geofence_label"` per the precedence order (manual > focus_shortcut >
-# geofence_label > calendar > default); control-plane-api enforces that
-# precedence once T-504 implements the receiving endpoint.
-#
-# DISABLED by default (`initial_state: false`): the target endpoint doesn't
-# exist until T-504. Flip to `true` once it does — no other change needed
-# here. Firing this against T-503-era control-plane-api just produces a
-# harmless 404 in the HA log (HA is an integration surface, never a
-# dependency of the door path — ADR-0002).
+# Valid labels: available, busy, do_not_disturb, sleeping, at_class, at_library,
+# away, unknown. Anything else is a 422 rather than a silent default.
 - id: doorboard_presence_label_webhook
-  alias: "Doorboard: forward presence label webhook to control-plane-api"
-  initial_state: false
+  alias: "Doorboard: forward a Focus change to control-plane-api"
+  # Explicitly true, not just omitted. This automation previously shipped
+  # `initial_state: false`, and HA keys an automation's registry entry on its
+  # `id` — so with the key absent it RESTORES the last known state, which was
+  # off. Removing the false was not enough: it loaded fine, logged nothing, and
+  # silently never triggered.
+  initial_state: true
+  mode: queued
+  max: 10
   triggers:
     - trigger: webhook
       webhook_id: doorboard-presence-label
@@ -30,8 +43,99 @@
         - POST
       local_only: true
   actions:
-    - action: rest_command.presence_label_update
+    - action: rest_command.presence_focus_update
       data:
         subject_id: "{{ trigger.json.subject_id }}"
-        source: "{{ trigger.json.source }}"
         label: "{{ trigger.json.label }}"
+
+# Location -> presence, straight from the companion app's zones.
+#
+# `zone.home` and a `zone.campus` you create in HA (Settings -> Areas & Zones).
+# Deliberately coarse: the label says "away" or "available", never where. Add
+# more zones by extending the mapping below — keep them to labels the contract
+# already has.
+- id: doorboard_presence_from_zone
+  alias: "Doorboard: forward a location change to control-plane-api"
+  # Explicitly true, not just omitted. This automation previously shipped
+  # `initial_state: false`, and HA keys an automation's registry entry on its
+  # `id` — so with the key absent it RESTORES the last known state, which was
+  # off. Removing the false was not enough: it loaded fine, logged nothing, and
+  # silently never triggered.
+  initial_state: true
+  mode: queued
+  max: 10
+  triggers:
+    - trigger: state
+      # Verified against the live entity registry on 2026-08-21. HA derives this
+      # from the name in Settings -> People, so it changes if the person is
+      # renamed — and a wrong id fails SILENTLY, by simply never triggering.
+      entity_id: person.tiger_strake
+  conditions:
+    # Ignore the momentary unknown/unavailable flaps the app produces on
+    # restart, which would otherwise publish "away" while you are sitting there.
+    - condition: template
+      value_template: >-
+        {{ trigger.to_state.state not in ['unknown', 'unavailable', 'none']
+           and trigger.to_state.state != trigger.from_state.state }}
+  actions:
+    - action: rest_command.presence_geofence_update
+      data:
+        subject_id: "owner"
+        # One expression, not an {% if %} ladder: a folded block scalar turns
+        # each newline into a space, so the ladder would have rendered
+        # " available " and been rejected as an invalid label.
+        label: >-
+          {{ {'home': 'available',
+              'Campus': 'at_class', 'campus': 'at_class',
+              'Library': 'at_library', 'library': 'at_library'}
+             .get(trigger.to_state.state, 'away') }}
+
+- id: doorboard_bell_push
+  alias: "Doorboard: notify when the bell rings"
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.doorboard_doorboard_bell
+      to: "on"
+  actions:
+    - action: notify.notify
+      data:
+        title: "Someone's at the door"
+        message: "The doorbell just rang."
+        data:
+          # iOS companion app: bypass Focus for a doorbell, it's time-critical.
+          push:
+            interruption-level: time-sensitive
+
+- id: doorboard_archive_stalled_push
+  alias: "Doorboard: notify when clips stop reaching the NAS"
+  mode: single
+  triggers:
+    # `for` avoids firing on the normal sawtooth as a clip waits its turn.
+    - trigger: numeric_state
+      entity_id: sensor.doorboard_doorboard_sync_status
+      above: 86400
+      for: "01:00:00"
+  actions:
+    - action: notify.notify
+      data:
+        title: "Doorboard archive has stalled"
+        message: >-
+          The oldest clip has been waiting
+          {{ states('sensor.doorboard_sync_backlog') }}h to reach the NAS.
+          Check door-sync on the Pi and that /mnt/nas is still mounted.
+
+- id: doorboard_storage_critical_push
+  alias: "Doorboard: notify when the door's disk is critical"
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: sensor.doorboard_doorboard_storage_alert
+      to: "critical"
+  actions:
+    - action: notify.notify
+      data:
+        title: "Doorboard storage critical"
+        message: >-
+          The door Pi is nearly out of disk — recording is about to be
+          affected. Retention should be pruning; check door-media's logs.

@@ -30,8 +30,10 @@
   --db-font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 
   /* ── Presence: retuned to live inside the HUD palette (no stock Tailwind) ── */
+  --db-presence-social: #7bf05b;
   --db-presence-available: #2fe0b6;
   --db-presence-busy: #ffb347;
+  --db-presence-knock: #ff8c42;
   --db-presence-dnd: #ff5d73;
   --db-presence-sleeping: #9b8cff;
   --db-presence-class: #35c2ff;
@@ -200,10 +202,23 @@ body {
   box-shadow: var(--db-shadow-sm);
 }
 
+/* Colour ramp reads as a scale (ADR-0035): lime -> teal -> amber -> orange -> red. */
+.db-status-badge--social {
+  background-color: rgba(123, 240, 91, 0.15);
+  color: var(--db-presence-social);
+  border-color: rgba(123, 240, 91, 0.3);
+}
+
 .db-status-badge--available {
   background-color: rgba(16, 185, 129, 0.15);
   color: var(--db-presence-available);
   border-color: rgba(16, 185, 129, 0.3);
+}
+
+.db-status-badge--knock_if_urgent {
+  background-color: rgba(255, 140, 66, 0.15);
+  color: var(--db-presence-knock);
+  border-color: rgba(255, 140, 66, 0.3);
 }
 
 .db-status-badge--busy {

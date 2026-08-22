@@ -8,6 +8,21 @@ export interface StatusBadgeProps {
 }
 
 const labelIcons: Record<PresenceLabel, React.ReactNode> = {
+  social: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  ),
+  knock_if_urgent: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  ),
   available: (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="20 6 9 17 4 12" />
@@ -58,10 +73,23 @@ const labelIcons: Record<PresenceLabel, React.ReactNode> = {
 };
 
 const labelDisplayNames: Record<PresenceLabel, string> = {
+  social: "Come In",
   available: "Available",
-  busy: "Busy",
-  do_not_disturb: "DND",
-  sleeping: "Sleeping",
+  // "Working", not "Busy" (ADR-0035): `busy` is the calendar-driven label — the source
+  // that expires a "busy until 15:00" on schedule — so a calendar event reading "Working"
+  // is exactly right. It also absorbs the middle ground: working, so knock if it matters.
+  busy: "Working",
+  // Unused by the four-point scale — "Working" carries this meaning now. Kept because
+  // presence_history already holds a row with this value, and PresenceLabel(row.label)
+  // raises on an unknown one, so removing it would break the history endpoint.
+  knock_if_urgent: "Knock if urgent",
+  // "Locked In" rather than "DND" (ADR-0035): the household's own vocabulary, and the
+  // visitors here are dorm-mates rather than strangers. A retext, not a new label —
+  // adding a third don't-bother-me state would make the board less readable, not more.
+  do_not_disturb: "Locked In",
+  // "Recovery" rather than "Sleeping": covers a nap, being ill, or just being done for
+  // the day, without any of them having to be stated on a corridor-facing screen.
+  sleeping: "Recovery",
   at_class: "At Class",
   at_library: "At Library",
   away: "Away",
