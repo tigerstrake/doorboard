@@ -114,8 +114,16 @@ class Matcher:
             # from "no face was ever looked at": the door greeted nobody for a day
             # with an enrolled person in front of it, and nothing recorded whether
             # the score was 0.61 (raise-the-lid territory) or 0.03 (the templates
-            # are unusable). Only the scalar score and the candidate's person_id go
-            # out — never the embedding, which ADR-0009 E-3 forbids logging.
+            # are unusable). The scalar best score is that diagnostic and is all
+            # that is needed for it.
+            #
+            # The closest enrollee's person_id is deliberately NOT logged. On a
+            # no-match the face at the door is, by definition, not a consenting
+            # enrollee; recording which enrolled person a stranger most resembles
+            # is a biometric measurement of a non-consenting passer-by tied to a
+            # named identity — exactly what ADR-0009 E-1 excludes (a no-match may
+            # emit only counts, face size, and counters). The bare score carries
+            # no identity and is safe; the embedding is never logged (E-3).
             logger.info(
                 "match_below_threshold",
                 extra={
@@ -123,7 +131,6 @@ class Matcher:
                     "threshold": self._threshold,
                     "candidates": len(self._vectors),
                     "comparable_candidates": comparable,
-                    "best_person_id": best.person_id if best is not None else None,
                 },
             )
             return None

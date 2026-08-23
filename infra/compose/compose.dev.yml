@@ -173,6 +173,10 @@ services:
       DOORBOARD_DOOR_ID: primary
       CONTROL_PLANE_URL: http://control-plane-api:8090
       CONTROL_PLANE_ADMIN_TOKEN: ${CONTROL_PLANE_ADMIN_TOKEN:-dev-admin-token}
+      # The academic countdown job (ADR-0039) reads the container's local zone
+      # for "today". Without this it silently runs in UTC, which is wrong for
+      # hours a day (see control-plane-api's TZ above for the same pattern).
+      TZ: ${TZ:-UTC}
       FEATURE_BIRDNET: "true"
       FEATURE_SATELLITES: "true"
       FEATURE_AIRCRAFT: "true"
@@ -180,6 +184,7 @@ services:
       FEATURE_FOOD: "true"
       WALLBOARD_BIRD_INTERVAL_S: 30
       WALLBOARD_SATELLITE_INTERVAL_S: 60
+      WALLBOARD_SATELLITE_ORBITS_INTERVAL_S: 60
       WALLBOARD_AIRCRAFT_INTERVAL_S: 30
       WALLBOARD_PRINTER_INTERVAL_S: 30
       WALLBOARD_FOOD_INTERVAL_S: 60

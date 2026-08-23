@@ -45,7 +45,12 @@ from door_visiond.enrollment import (
     hash_invite_secret,
     normalize_accent_color,
 )
-from door_visiond.event_forwarder import EventForwarder, HttpEventTransport
+from door_visiond.event_forwarder import (
+    EventForwarder,
+    HttpEventTransport,
+    HttpProfileTransport,
+    ProfileTransport,
+)
 from door_visiond.events import (
     EventEmitter,
     make_door_profile_clear,
@@ -148,6 +153,7 @@ class VisiondService:
         backend: VisionBackend | None = None,
         emitter: EventEmitter | None = None,
         esp32_transport: Esp32Transport | None = None,
+        esp32_profile_relay: ProfileTransport | None = None,
         relay_transport: RelayTransport | None = None,
         event_forwarder: EventForwarder | None = None,
         backend_factory: Callable[[], VisionBackend] | None = None,
@@ -156,6 +162,11 @@ class VisiondService:
         self._clock: Clock = clock or SystemClock()
         self._emitter = emitter or EventEmitter(settings.door_id)
         self._esp32_transport = esp32_transport
+        # When no local ESP32 transport exists (the production case — door-api owns the
+        # single UART, ADR-0040), the proactive profile push is forwarded to door-api
+        # over loopback instead. Injectable so tests can drive it without an HTTP server.
+        self._esp32_profile_relay = esp32_profile_relay
+        self._last_profile_relay_ms = 0
         self._esp32_seq = 0
         self._esp32_profile_updates_acked = 0
         self._esp32_profile_clears_acked = 0
@@ -334,7 +345,30 @@ class VisiondService:
         self._run_task = asyncio.create_task(self._run_loop(), name="visiond-run-loop")
         self._purge_task = asyncio.create_task(self._purge_loop(), name="visiond-purge-outbox")
         await self._start_event_forwarder()
+        self._start_esp32_profile_relay()
         await self._start_relay_worker()
+
+    def _start_esp32_profile_relay(self) -> None:
+        """Wire the ESP32 profile push to door-api when there is no local transport.
+
+        door-api owns the single ESP32 UART, so in production door-visiond has no
+        transport of its own and the proactive ``door.profile_update``/``clear`` reach
+        the controller by being forwarded to door-api's relay (ADR-0040). Skipped when
+        a local transport is injected (tests) or forwarding is unconfigured (mock/CI);
+        in both cases the profile push keeps its existing behaviour.
+        """
+        if self._esp32_profile_relay is not None or self._esp32_transport is not None:
+            return
+        if not self._settings.event_forwarding_enabled:
+            return
+        self._esp32_profile_relay = HttpProfileTransport(
+            base_url=self._settings.door_api_base_url,
+            token=self._settings.door_api_internal_token,
+            timeout_s=self._settings.event_forward_timeout_s,
+        )
+        logger.info(
+            "esp32_profile_relay_started", extra={"target": self._settings.door_api_base_url}
+        )
 
     async def _start_event_forwarder(self) -> None:
         """Start the door-api event hop, if one is configured (ADR-0018 §3).
@@ -1080,6 +1114,8 @@ class VisiondService:
 
     def _on_cache_refresh(self, visitor: CurrentVisitor, priority: str, trace_id) -> None:
         self._record_visit_sighting(visitor.person_id, visitor.consent_version)
+        if not self._should_push_profile(priority):
+            return
         event = make_door_profile_update(
             clock=self._clock,
             door_id=self._settings.door_id,
@@ -1089,6 +1125,30 @@ class VisiondService:
             priority=priority,
         )
         self._submit_esp32_profile_event(event)
+
+    def _should_push_profile(self, priority: str) -> bool:
+        """Rate-limit the *relay* path; leave the direct-transport path untouched.
+
+        The cache refreshes on every stable-match frame, which is the right cadence
+        for a direct UART push (cheap, keeps the ESP32's ~2.5 s cache warm). When the
+        push instead goes to door-api over loopback (production), one POST per frame is
+        wasteful, so a ``normal`` refresh is throttled to at most one per
+        ``esp32_profile_relay_min_interval_ms``. A ``high`` refresh (a new or changed
+        profile) always goes immediately so the light appears promptly on recognition.
+        """
+        if self._esp32_transport is not None:
+            return True
+        if priority == "high":
+            self._last_profile_relay_ms = self._clock.monotonic_ms()
+            return True
+        now_ms = self._clock.monotonic_ms()
+        if (
+            now_ms - self._last_profile_relay_ms
+            < self._settings.esp32_profile_relay_min_interval_ms
+        ):
+            return False
+        self._last_profile_relay_ms = now_ms
+        return True
 
     def _on_cache_clear(self, _visitor: CurrentVisitor, reason: str, trace_id) -> None:
         event = make_door_profile_clear(
@@ -1100,21 +1160,44 @@ class VisiondService:
         self._submit_esp32_profile_event(event)
 
     def _submit_esp32_profile_event(self, event: DoorboardEvent) -> None:
-        if self._esp32_transport is None:
+        # A local transport (injected in tests) sends direct over its own wire; in
+        # production there is none and the push is relayed to door-api, which owns the
+        # UART (ADR-0040). With neither configured (mock/CI) the push is a no-op, as
+        # before. Either way this schedules an async send and never blocks the pipeline.
+        if self._esp32_transport is not None:
+            coro = self._send_esp32_profile_event(event)
+        elif self._esp32_profile_relay is not None:
+            coro = self._relay_esp32_profile_event(event)
+        else:
             return
-
-        async def _send() -> None:
-            await self._send_esp32_profile_event(event)
 
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            asyncio.run(_send())
+            asyncio.run(coro)
             return
 
-        task = loop.create_task(_send(), name=f"visiond-esp32-{event.type}")
+        task = loop.create_task(coro, name=f"visiond-esp32-{event.type}")
         self._esp32_tasks.add(task)
         task.add_done_callback(self._esp32_tasks.discard)
+
+    async def _relay_esp32_profile_event(self, event: DoorboardEvent) -> None:
+        assert self._esp32_profile_relay is not None
+        try:
+            await asyncio.to_thread(self._esp32_profile_relay.send, event)
+        except Exception as exc:
+            self._esp32_profile_send_failures += 1
+            self._esp32_profile_last_error = exc.__class__.__name__
+            logger.warning(
+                "esp32_profile_relay_failed",
+                extra={"event_type": event.type, "error_class": exc.__class__.__name__},
+            )
+            return
+        self._esp32_profile_last_error = None
+        if event.type == "door.profile_update":
+            self._esp32_profile_updates_acked += 1
+        elif event.type == "door.profile_clear":
+            self._esp32_profile_clears_acked += 1
 
     async def _send_esp32_profile_event(self, event: DoorboardEvent) -> None:
         assert self._esp32_transport is not None

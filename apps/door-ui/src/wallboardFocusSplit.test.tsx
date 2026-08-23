@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type {
   AmbientAircraftSummaryPayload,
+  AmbientSatelliteOrbitsPayload,
   AmbientSatellitePassPayload,
 } from "@doorboard/contracts";
 import type { Poll, PollResultRow } from "./socialApi";
@@ -74,11 +75,45 @@ const POLL_RESULTS: PollResultRow[] = [
   { option_id: "b", text: "Trail mix", votes: 3 },
 ];
 
+// Two satellites over a full period, with absolute sample times, so the panel can draw whole
+// loops and a live marker per satellite (ADR-0041).
+const ORBIT_EPOCH = Date.parse("2026-07-20T21:00:00Z");
+const ORBITS: AmbientSatelliteOrbitsPayload = {
+  as_of: "2026-07-20T21:00:00Z",
+  satellites: [
+    {
+      name: "ISS (ZARYA)",
+      norad_id: 25544,
+      sub_lat: 0,
+      sub_lng: -122,
+      track: [
+        { at: new Date(ORBIT_EPOCH).toISOString(), lat: 0, lng: -122 },
+        { at: new Date(ORBIT_EPOCH + 23 * 60000).toISOString(), lat: 45, lng: -80 },
+        { at: new Date(ORBIT_EPOCH + 46 * 60000).toISOString(), lat: 0, lng: -40 },
+        { at: new Date(ORBIT_EPOCH + 69 * 60000).toISOString(), lat: -45, lng: 0 },
+        { at: new Date(ORBIT_EPOCH + 92 * 60000).toISOString(), lat: 0, lng: 40 },
+      ],
+    },
+    {
+      name: "HST",
+      norad_id: 20580,
+      sub_lat: 10,
+      sub_lng: -100,
+      track: [
+        { at: new Date(ORBIT_EPOCH).toISOString(), lat: 10, lng: -100 },
+        { at: new Date(ORBIT_EPOCH + 48 * 60000).toISOString(), lat: -10, lng: 80 },
+        { at: new Date(ORBIT_EPOCH + 96 * 60000).toISOString(), lat: 10, lng: -100 },
+      ],
+    },
+  ],
+};
+
 const EMPTY_AMBIENT = {
   aircraft: null,
   birds: null,
   birdCollageUrl: "",
   satellite: null,
+  satelliteOrbits: null,
   printer: null,
   food: null,
   scoreboard: null,
@@ -151,6 +186,53 @@ describe("WallboardFocusSplit (focused-tile split layout)", () => {
     expect(within(panel).getByText("72°")).toBeTruthy();
   });
 
+  it("draws every tracked satellite's whole orbit, a live marker, and a colour legend", () => {
+    // The owner asked for all the interesting satellites, not just the single next pass, each
+    // with its full loop and where it is now (ADR-0041). Pin the clock to the start of the
+    // tracks so the live markers land at the first sample deterministically — both of which
+    // sit on the near hemisphere from the door, so both are drawn.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(ORBIT_EPOCH);
+    try {
+      renderSplit({
+        channel: "satellite",
+        ambient: { ...EMPTY_AMBIENT, satellite: SATELLITE, satelliteOrbits: ORBITS },
+      });
+      const panel = screen.getByTestId("wallboard-focus-panel");
+      // One orbit-path group, and a legend naming each satellite by its short name.
+      expect(within(panel).getByTestId("globe-orbits")).toBeTruthy();
+      const legend = within(panel).getByTestId("satellite-orbit-legend");
+      expect(within(legend).getByText("ISS")).toBeTruthy();
+      expect(within(legend).getByText("HST")).toBeTruthy();
+      // A live marker per satellite, both near-side at this instant.
+      expect(within(panel).getAllByTestId("globe-orbit-sat")).toHaveLength(2);
+      // The next-pass text the panel always carried is still present.
+      expect(within(panel).getByText("72°")).toBeTruthy();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("shows the orbits even when the next pass carries no ground track", () => {
+    // Orbits are their own event: an older/degraded pass without sub-points must not blank the
+    // globe when there are whole orbits to draw.
+    const noGround = {
+      ...SATELLITE,
+      track: SATELLITE.track.map((sample) => ({
+        t_offset_s: sample.t_offset_s,
+        azimuth_deg: sample.azimuth_deg,
+        elevation_deg: sample.elevation_deg,
+      })),
+    };
+    renderSplit({
+      channel: "satellite",
+      ambient: { ...EMPTY_AMBIENT, satellite: noGround, satelliteOrbits: ORBITS },
+    });
+    const panel = screen.getByTestId("wallboard-focus-panel");
+    expect(within(panel).getByTestId("globe-orbits")).toBeTruthy();
+    // The "cannot show where it is" note is about the pass alone — with orbits present it is gone.
+    expect(within(panel).queryByText(/cannot show where it is/i)).toBeNull();
+  });
+
   it("says so rather than guessing when a pass carries no ground track", () => {
     // A bearing cannot be turned into a position without the orbit, so an older pass gets
     // an honest empty globe instead of an invented dot.
@@ -205,5 +287,15 @@ describe("WallboardFocusSplit (focused-tile split layout)", () => {
     renderSplit({ secondary: undefined });
     expect(screen.queryByTestId("wallboard-focus-rail")).toBeNull();
     expect(screen.getByTestId("wallboard-focus-panel")).toBeTruthy();
+  });
+
+  it("expands the About channel into the panel — its prose plus the numbers", () => {
+    // About is now a selectable channel (moved off the doorpad). It has no data source,
+    // so it always renders; the focused view carries the facts the ambient tile omits.
+    renderSplit({ channel: "about" });
+    const panel = screen.getByTestId("wallboard-focus-panel");
+    expect(within(panel).getByTestId("about-doorboard")).toBeTruthy();
+    expect(within(panel).getByTestId("about-facts")).toBeTruthy();
+    expect(within(panel).getByText("If you are not enrolled")).toBeTruthy();
   });
 });

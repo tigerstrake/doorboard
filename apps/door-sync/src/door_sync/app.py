@@ -49,7 +49,9 @@ def build_engine(cfg: Settings, queue: UploadQueue) -> SyncEngine:
     if cfg.media_target == "mock":
         media_target: Any = MockMediaTarget()
     else:
-        media_target = FilesystemNasTarget(Path(cfg.nas_sync_target))
+        media_target = FilesystemNasTarget(
+            Path(cfg.nas_sync_target), mount_marker=cfg.nas_mount_marker
+        )
     nuc_target = HttpNucTarget(cfg.control_plane_url, ingest_token=cfg.ingest_token)
     media_client = HttpMediaClient(
         cfg.door_media_url,
@@ -76,6 +78,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             nas_root=Path(cfg.nas_sync_target),
             ssd_data_root=cfg.ssd_data_root,
             syncable_roots=cfg.syncable_roots,
+            mount_marker=cfg.nas_mount_marker,
         )
     source = MediaEventSource(
         engine,
@@ -161,11 +164,22 @@ _start_time = time.monotonic()
 async def health(request: Request) -> dict[str, Any]:
     cfg = _cfg(request)
     stats = _queue(request).stats(now_epoch=time.time())
-    degraded = stats.dead_letter > 0
+    # Dead-letters alone are not enough: an unreachable NAS/NUC only ever raises
+    # TransientError, which retries forever and never dead-letters, so a queue
+    # that has drained nothing for a week would still report "ok". Age the
+    # backlog too (threshold shared with the SyncQueueAging alert).
+    reasons: list[str] = []
+    if stats.dead_letter > 0:
+        reasons.append(f"{stats.dead_letter} dead-lettered")
+    if stats.oldest_pending_age_s > cfg.pending_age_degraded_s:
+        reasons.append(
+            f"oldest pending item is {stats.oldest_pending_age_s}s old "
+            f"(threshold {cfg.pending_age_degraded_s}s, {stats.pending} pending)"
+        )
     return {
         "service": "door-sync",
-        "status": "degraded" if degraded else "ok",
-        "detail": f"{stats.dead_letter} dead-lettered" if degraded else None,
+        "status": "degraded" if reasons else "ok",
+        "detail": "; ".join(reasons) if reasons else None,
         "door_id": cfg.door_id,
     }
 

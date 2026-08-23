@@ -130,6 +130,15 @@
   text-shadow: 0 0 16px rgba(53, 214, 255, 0.4);
 }
 
+/* Boot-window clock placeholder (no RTC): quieter than the live time, no glow. */
+.ambient-clock--syncing {
+  font-size: 1.4rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--db-text-muted);
+  text-shadow: none;
+}
+
 .ambient-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -1689,6 +1698,13 @@ input:focus-visible {
   border-radius: 999px;
   background: linear-gradient(180deg, var(--db-accent), var(--db-gold));
   box-shadow: 0 0 14px rgba(53, 214, 255, 0.4);
+}
+
+/* Calm secondary line when a ring was accepted but the physical bell chime didn't fire. */
+.doorpad-journey-status__aside {
+  margin-top: 6px !important;
+  font-size: 0.85rem;
+  color: var(--db-text-muted) !important;
 }
 
 .doorpad-next-actions {
@@ -3910,4 +3926,66 @@ input:focus-visible {
     animation: none;
     opacity: 0.28;
   }
+}
+
+/* ── Public-surface overlays: connection dot + camera notice (FIX 2c / FIX 3) ── */
+
+/* Wallboard corner dot: bottom-right, clear of the header clock, tiny and calm. */
+.wallboard-connection-dot {
+  position: fixed;
+  right: 14px;
+  bottom: 12px;
+  z-index: 60;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(4, 9, 18, 0.55);
+  border: 1px solid var(--db-border-color);
+  backdrop-filter: blur(4px);
+}
+
+/* Wallboard camera notice: a slim footer pinned bottom-left, translucent so it never
+   competes with the ambient tiles. */
+.wallboard-camera-notice {
+  position: fixed;
+  left: 14px;
+  bottom: 12px;
+  z-index: 60;
+  max-width: min(72ch, 62vw);
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: rgba(4, 9, 18, 0.55);
+  border: 1px solid var(--db-border-color);
+  backdrop-filter: blur(4px);
+}
+
+/* Doorpad surface: reserve a row for the notice so nothing overlaps a control. The view
+   (home) or the auto-reset wrapper (sub-screens) takes the remaining height; each element's
+   own min-height:100vh is neutralised so it fills the flex parent, keeping its inner
+   justify-content:center intact. */
+.doorpad-surface {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.doorpad-surface > .doorpad-view,
+.doorpad-surface > .db-auto-reset-wrapper {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.doorpad-surface > .db-auto-reset-wrapper {
+  display: flex;
+  flex-direction: column;
+}
+
+.doorpad-surface .doorpad-view {
+  min-height: 0;
+}
+
+.doorpad-camera-notice {
+  flex: none;
+  padding: 5px 14px;
+  border-top: 1px solid var(--db-border-color);
+  background: var(--db-bg-inset);
 }

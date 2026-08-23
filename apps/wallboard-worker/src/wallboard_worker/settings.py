@@ -6,6 +6,9 @@ from typing import Annotated
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+# ISS, Tiangong/CSS, Hubble, and two bright NOAA birds — the default full-orbit set (ADR-0041).
+DEFAULT_ORBIT_NORAD_IDS: tuple[int, ...] = (25544, 48274, 20580, 25338, 28654)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -26,6 +29,12 @@ class Settings(BaseSettings):
     bird_summary_interval_s: float = Field(default=300.0, alias="WALLBOARD_BIRD_INTERVAL_S", gt=0)
     satellite_interval_s: float = Field(
         default=3600.0, alias="WALLBOARD_SATELLITE_INTERVAL_S", gt=0
+    )
+    # Full-orbit tracks refresh (ADR-0041). Hourly is ample: the client animates the live
+    # markers itself off the absolute sample times, so this only re-samples the orbits as the
+    # TLEs drift, not to move the dots.
+    satellite_orbits_interval_s: float = Field(
+        default=3600.0, alias="WALLBOARD_SATELLITE_ORBITS_INTERVAL_S", gt=0
     )
     aircraft_interval_s: float = Field(default=30.0, alias="WALLBOARD_AIRCRAFT_INTERVAL_S", gt=0)
     printer_interval_s: float = Field(default=30.0, alias="WALLBOARD_PRINTER_INTERVAL_S", gt=0)
@@ -79,6 +88,25 @@ class Settings(BaseSettings):
         default="/tmp/skyfield",
         alias="SATELLITES_EPHEMERIS_DIR",
     )
+    # Full-orbit tracking (ADR-0041). The interesting satellites to draw whole ground tracks
+    # for, by NORAD id: ISS, Tiangong/CSS, Hubble, and two bright NOAA birds by default. Its
+    # TLE group is the "visual" (brightest-objects) catalogue. NoDecode for the same reason as
+    # the watchlist above — pydantic-settings JSON-decodes list env vars before validators run,
+    # so an empty env value would crash the worker; the validator takes the comma-separated
+    # form a human writes.
+    satellites_orbit_norad_ids: Annotated[list[int], NoDecode] = Field(
+        default_factory=lambda: list(DEFAULT_ORBIT_NORAD_IDS),
+        alias="SATELLITES_ORBIT_NORAD_IDS",
+    )
+    satellites_orbit_tle_url: str = Field(
+        default="https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=tle",
+        alias="SATELLITES_ORBIT_TLE_URL",
+    )
+    satellites_orbit_tle_cache_path: str = Field(
+        default="/tmp/orbit_tle_cache.txt",
+        alias="SATELLITES_ORBIT_TLE_CACHE_PATH",
+    )
+    satellites_orbit_samples: int = Field(default=120, alias="SATELLITES_ORBIT_SAMPLES", gt=0)
 
     feature_aircraft: bool = Field(default=False, alias="FEATURE_AIRCRAFT")
     # OpenSky OAuth2 client credentials (Basic auth is no longer accepted by
@@ -146,6 +174,18 @@ class Settings(BaseSettings):
         if isinstance(v, list):
             return [str(item) for item in v]
         return ["ISS (ZARYA)"]
+
+    @field_validator("satellites_orbit_norad_ids", mode="before")
+    @classmethod
+    def parse_orbit_ids(cls, v: object) -> list[int]:
+        default = list(DEFAULT_ORBIT_NORAD_IDS)
+        if isinstance(v, str):
+            if not v.strip():
+                return default
+            return [int(s.strip()) for s in v.split(",") if s.strip()]
+        if isinstance(v, list):
+            return [int(item) for item in v]
+        return default
 
     @model_validator(mode="after")
     def enabled_jobs_require_ingest_auth(self) -> Settings:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import logging
+import math
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -29,11 +30,35 @@ class SatelliteConfig(BaseModel):
     # ([Errno 13] on 'de421.bsp.download'); an explicit Loader dir fixes that.
     ephemeris_dir: str = "/tmp/skyfield"
 
+    # --- Full-orbit tracking (ADR-0041) ---
+    # The interesting satellites to draw whole ground tracks + live positions for, selected
+    # by NORAD catalog number (stable, unlike the CelesTrak name). Default: ISS, Tiangong/CSS,
+    # Hubble, and two bright NOAA birds. Both the id set and the TLE group are configurable.
+    orbit_norad_ids: list[int] = Field(default_factory=lambda: [25544, 48274, 20580, 25338, 28654])
+    # The "visual" group is CelesTrak's brightest-objects catalogue and contains the marquee
+    # ids above; an id that is not in the fetched set is skipped, not fatal. Cached like the
+    # pass TLEs (~24 h) so this never hammers CelesTrak.
+    orbit_tle_url: str = "https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=tle"
+    orbit_tle_cache_path: str = "/tmp/orbit_tle_cache.txt"
+    # Points per full orbital period. ~120 draws a smooth loop without bloating the event.
+    orbit_samples: int = 120
+
 
 class SatelliteProvider(abc.ABC):
     @abc.abstractmethod
     def get_next_pass(self, now: datetime) -> dict[str, Any] | None:
         """Calculate and return the next visible pass payload."""
+        pass
+
+    @abc.abstractmethod
+    def get_orbits(self, now: datetime) -> list[dict[str, Any]]:
+        """Full-period ground tracks + current sub-points for the tracked set (ADR-0041).
+
+        Each entry: ``{name, norad_id, sub_lat, sub_lng, track: [{at, lat, lng}, ...]}`` where
+        ``track`` covers roughly one orbital period with absolute UTC sample times, so a client
+        can wrap "now" into the period and interpolate a live marker without a re-publish.
+        Returns ``[]`` when nothing can be computed rather than raising for an empty result.
+        """
         pass
 
 
@@ -96,13 +121,18 @@ class SkyfieldSatelliteProvider(SatelliteProvider):
             self._eph = loader("de421.bsp")
         return self._eph
 
-    def _get_tles(self) -> dict[str, tuple[str, str]]:
-        cache_path = Path(self.config.tle_cache_path)
+    def _get_tles(
+        self, url: str | None = None, cache_path: str | None = None
+    ) -> dict[str, tuple[str, str]]:
+        # url/cache_path default to the pass (stations) source; get_orbits passes the orbit
+        # (visual) source so the two feeds cache independently and neither hammers CelesTrak.
+        tle_url = url or self.config.tle_url
+        cache_file = Path(cache_path or self.config.tle_cache_path)
         use_cache = False
 
         # Check if cache is fresh
-        if cache_path.exists():
-            age = time.time() - cache_path.stat().st_mtime
+        if cache_file.exists():
+            age = time.time() - cache_file.stat().st_mtime
             if age < 24 * 3600:
                 use_cache = True
             elif age < 7 * 24 * 3600:
@@ -115,12 +145,12 @@ class SkyfieldSatelliteProvider(SatelliteProvider):
         tle_text = ""
         if not use_cache:
             try:
-                resp = httpx.get(self.config.tle_url, timeout=10.0)
+                resp = httpx.get(tle_url, timeout=10.0)
                 if resp.status_code == 200:
                     tle_text = resp.text
                     # Write to cache
-                    cache_path.parent.mkdir(parents=True, exist_ok=True)
-                    cache_path.write_text(tle_text, encoding="utf-8")
+                    cache_file.parent.mkdir(parents=True, exist_ok=True)
+                    cache_file.write_text(tle_text, encoding="utf-8")
                 else:
                     logger.warning(
                         f"CelesTrak returned status {resp.status_code}. Using cache fallback."
@@ -128,12 +158,12 @@ class SkyfieldSatelliteProvider(SatelliteProvider):
             except Exception as e:
                 logger.warning(f"Failed to fetch TLEs: {e}. Using cache fallback.")
 
-        if not tle_text and cache_path.exists():
+        if not tle_text and cache_file.exists():
             # Fall back to cache (as long as it exists)
-            age = time.time() - cache_path.stat().st_mtime
+            age = time.time() - cache_file.stat().st_mtime
             if age > 7 * 24 * 3600:
                 raise RuntimeError("TLE data is older than 7 days and cannot be trusted.")
-            tle_text = cache_path.read_text(encoding="utf-8")
+            tle_text = cache_file.read_text(encoding="utf-8")
 
         if not tle_text:
             raise RuntimeError("No TLE data available (fetch failed and no cache exists).")
@@ -292,6 +322,72 @@ class SkyfieldSatelliteProvider(SatelliteProvider):
         visible_passes.sort(key=lambda x: x["rise_at"])
         return visible_passes[0]
 
+    @staticmethod
+    def _parse_norad_id(line1: str) -> int | None:
+        """Catalog number from TLE line 1 (columns 3-7). Selection is by number, not name,
+        because CelesTrak names vary ("ISS (ZARYA)", "HST", "CSS (TIANHE)")."""
+        try:
+            return int(line1[2:7])
+        except (ValueError, IndexError):
+            return None
+
+    def get_orbits(self, now: datetime) -> list[dict[str, Any]]:
+        """One full-period ground track + current sub-point per configured satellite (ADR-0041).
+
+        No ephemeris needed: the sub-satellite point comes from the satellite's own geocentric
+        position, not from the Sun/Earth ephemeris the pass-visibility check uses.
+        """
+        ts = load.timescale(builtin=True)
+        tles = self._get_tles(self.config.orbit_tle_url, self.config.orbit_tle_cache_path)
+
+        # Index the feed by NORAD id so we can select the configured set. First name wins on
+        # the rare duplicate.
+        by_norad: dict[int, tuple[str, str, str]] = {}
+        for name, (line1, line2) in tles.items():
+            norad = self._parse_norad_id(line1)
+            if norad is not None and norad not in by_norad:
+                by_norad[norad] = (name, line1, line2)
+
+        samples = max(8, self.config.orbit_samples)
+        orbits: list[dict[str, Any]] = []
+        for norad in self.config.orbit_norad_ids:
+            entry = by_norad.get(norad)
+            if entry is None:
+                logger.warning(f"Orbit satellite {norad} not in TLE feed; skipping.")
+                continue
+            name, line1, line2 = entry
+            satellite = EarthSatellite(line1, line2, name, ts)
+
+            # Mean motion (rad/min) → period (s). no_kozai is the SGP4 model's mean motion.
+            no_kozai = float(getattr(satellite.model, "no_kozai", 0.0) or 0.0)
+            if no_kozai <= 0.0:
+                logger.warning(f"Orbit satellite {norad} has no usable mean motion; skipping.")
+                continue
+            period_s = (2.0 * math.pi / no_kozai) * 60.0
+
+            track: list[dict[str, Any]] = []
+            for index in range(samples + 1):
+                when = now + timedelta(seconds=period_s * index / samples)
+                subpoint = wgs84.subpoint(satellite.at(ts.from_datetime(when)))
+                track.append(
+                    {
+                        "at": when,
+                        "lat": round(subpoint.latitude.degrees, 3),
+                        "lng": round(subpoint.longitude.degrees, 3),
+                    }
+                )
+            orbits.append(
+                {
+                    "name": name,
+                    "norad_id": norad,
+                    # The current sub-point is the first sample (index 0 == now).
+                    "sub_lat": track[0]["lat"],
+                    "sub_lng": track[0]["lng"],
+                    "track": track,
+                }
+            )
+        return orbits
+
 
 class MockSatelliteProvider(SatelliteProvider):
     def get_next_pass(self, now: datetime) -> dict[str, Any] | None:
@@ -303,3 +399,48 @@ class MockSatelliteProvider(SatelliteProvider):
             "direction": "NW",
             "visible": True,
         }
+
+    # (name, norad_id, inclination_deg, ascending-node longitude, period_min). A spread of
+    # inclinations so the mock globe shows visibly different loops, and the marquee ids the
+    # real provider tracks so mock mode looks like production, not a different feature.
+    _MOCK_ORBITS = (
+        ("ISS (ZARYA)", 25544, 51.6, -45.0, 92.9),
+        ("CSS (TIANHE)", 48274, 41.5, 100.0, 91.0),
+        ("HST", 20580, 28.5, 10.0, 95.4),
+        ("NOAA 15", 25338, 98.7, -120.0, 101.0),
+    )
+    _MOCK_SAMPLES = 90
+    # Earth's rotation period in minutes (sidereal day), for the ground-track westward drift.
+    _SIDEREAL_MIN = 1436.0
+
+    def get_orbits(self, now: datetime) -> list[dict[str, Any]]:
+        """Deterministic fake orbits so CI/dev works offline (ADR-0041, hardware-optional rule).
+
+        Each is an inclined great circle drifting westward as Earth turns beneath it — the
+        shape of a real ground track — computed from ``now`` alone, so a fixed ``now`` gives a
+        fixed result the tests can assert on.
+        """
+        orbits: list[dict[str, Any]] = []
+        for name, norad, incl_deg, node_lng, period_min in self._MOCK_ORBITS:
+            incl = math.radians(incl_deg)
+            track: list[dict[str, Any]] = []
+            for index in range(self._MOCK_SAMPLES + 1):
+                frac = index / self._MOCK_SAMPLES
+                u = 2.0 * math.pi * frac  # argument of latitude, once around
+                lat = math.degrees(math.asin(math.sin(incl) * math.sin(u)))
+                lon_orbit = math.degrees(math.atan2(math.cos(incl) * math.sin(u), math.cos(u)))
+                # Earth turns under the orbit over the elapsed fraction of a period.
+                rotation = 360.0 * frac * (period_min / self._SIDEREAL_MIN)
+                lng = ((node_lng + lon_orbit - rotation + 180.0) % 360.0) - 180.0
+                when = now + timedelta(minutes=period_min * frac)
+                track.append({"at": when, "lat": round(lat, 3), "lng": round(lng, 3)})
+            orbits.append(
+                {
+                    "name": name,
+                    "norad_id": norad,
+                    "sub_lat": track[0]["lat"],
+                    "sub_lng": track[0]["lng"],
+                    "track": track,
+                }
+            )
+        return orbits

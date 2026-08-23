@@ -90,7 +90,14 @@ def test_default_subjects_start_at_unknown_default(client: TestClient) -> None:
         assert subject["source"] == "default"
         assert subject["tracking_enabled"] is True
         source_names = {s["source"] for s in subject["sources"]}
-        assert source_names == {"manual", "focus_shortcut", "geofence_label", "calendar", "default"}
+        assert source_names == {
+            "manual",
+            "focus_shortcut",
+            "geofence_label",
+            "calendar",
+            "schedule",
+            "default",
+        }
 
 
 def test_override_rejects_a_label_outside_the_fixed_eight(client: TestClient) -> None:

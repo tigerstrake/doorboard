@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -17,6 +17,10 @@ OCCURRED_AT = datetime(2026, 7, 4, 12, 34, 56, 123000, tzinfo=UTC)
 EXPIRES_AT = datetime(2026, 7, 4, 12, 34, 58, 623000, tzinfo=UTC)
 SATELLITE_SET_AT = datetime(2026, 7, 4, 21, 17, 30, tzinfo=UTC)
 NEXT_RETRY_AT = datetime(2026, 7, 4, 12, 39, 56, 123000, tzinfo=UTC)
+# One ~92-minute orbit, sampled every 23 minutes (ADR-0041). Absolute times so the client
+# wraps "now" into the period for a live marker without the server re-publishing.
+ORBIT_EPOCH = datetime(2026, 7, 4, 12, 30, 0, tzinfo=UTC)
+ORBIT_TIMES = [ORBIT_EPOCH + timedelta(minutes=23 * i) for i in range(5)]
 
 
 PAYLOADS: dict[str, dict[str, Any]] = {
@@ -33,7 +37,7 @@ PAYLOADS: dict[str, dict[str, Any]] = {
         "priority": "normal",
     },
     "door.profile_clear": {"reason": "expired"},
-    "door.effect_play": {"effect_id": "generic_chime", "duration_ms": 1500},
+    "door.effect_play": {"effect_id": "generic_press", "duration_ms": 1500},
     "door.controller_health": {
         "uptime_s": 3600,
         "fw_version": "0.1.0",
@@ -148,6 +152,35 @@ PAYLOADS: dict[str, dict[str, Any]] = {
         "max_elevation_deg": 64.5,
         "direction": "NW",
         "visible": True,
+    },
+    "ambient.satellite_orbits": {
+        "satellites": [
+            {
+                "name": "ISS (ZARYA)",
+                "norad_id": 25544,
+                "sub_lat": 12.3,
+                "sub_lng": -45.6,
+                "track": [
+                    {"at": ORBIT_TIMES[0], "lat": 12.3, "lng": -45.6},
+                    {"at": ORBIT_TIMES[1], "lat": 45.9, "lng": -12.0},
+                    {"at": ORBIT_TIMES[2], "lat": 11.7, "lng": 24.8},
+                    {"at": ORBIT_TIMES[3], "lat": -45.9, "lng": 60.4},
+                    {"at": ORBIT_TIMES[4], "lat": 12.3, "lng": 94.0},
+                ],
+            },
+            {
+                "name": "CSS (TIANHE)",
+                "norad_id": 48274,
+                "sub_lat": -5.0,
+                "sub_lng": 100.0,
+                "track": [
+                    {"at": ORBIT_TIMES[0], "lat": -5.0, "lng": 100.0},
+                    {"at": ORBIT_TIMES[2], "lat": 33.0, "lng": 150.0},
+                    {"at": ORBIT_TIMES[4], "lat": -5.0, "lng": -160.0},
+                ],
+            },
+        ],
+        "as_of": OCCURRED_AT,
     },
     "ambient.aircraft_summary": {
         "nearby": [

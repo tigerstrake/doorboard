@@ -84,10 +84,17 @@
         # One expression, not an {% if %} ladder: a folded block scalar turns
         # each newline into a space, so the ladder would have rendered
         # " available " and been rejected as an invalid label.
+        # A zone the door does not know about resolves to 'away' — INCLUDING a
+        # "Germany"/"motherland" zone. That is deliberate, not a gap: the presence
+        # label is broad by design (ADR-0035) and never says WHERE you are, only
+        # that you are not here. A corridor-facing screen must not announce
+        # "in Germany". So being in the motherland shows "Away", which is correct;
+        # the entries below are the only ones that map to something more specific.
         label: >-
           {{ {'home': 'available',
               'Campus': 'at_class', 'campus': 'at_class',
-              'Library': 'at_library', 'library': 'at_library'}
+              'Library': 'at_library', 'library': 'at_library',
+              'Germany': 'away', 'motherland': 'away', 'Motherland': 'away'}
              .get(trigger.to_state.state, 'away') }}
 
 - id: doorboard_bell_push

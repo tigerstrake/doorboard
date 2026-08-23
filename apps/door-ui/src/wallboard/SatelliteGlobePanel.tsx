@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AmbientSatellitePassPayload } from "@doorboard/contracts";
+import type {
+  AmbientSatelliteOrbitsPayload,
+  AmbientSatellitePassPayload,
+} from "@doorboard/contracts";
 import { StatusBadge } from "@doorboard/ui-kit";
 import { DOORBOARD_AT } from "./campusMap";
 import {
@@ -9,6 +12,8 @@ import {
   greatCircleKm,
   groundAtFraction,
   groundTrack,
+  orbitAtTime,
+  orbitGroundTrack,
   projectToGlobeSvg,
 } from "./globe";
 import { humanizeSeconds, passProgress } from "./passTiming";
@@ -36,7 +41,27 @@ const SIZE = 340;
 const PADDING = 16;
 const GRATICULE_STEP = 30;
 
-export function SatelliteGlobePanel({ payload }: { payload: AmbientSatellitePassPayload }) {
+/**
+ * Per-satellite colours for the extra orbits (ADR-0041). Bright against the fixed dark-blue
+ * ocean and distinct from the gold used for the highlighted next-pass track, so every loop is
+ * legible at corridor distance in either theme. Assigned by index and reused if there are more
+ * satellites than colours.
+ */
+const ORBIT_COLORS = ["#7cc4ff", "#ff8fab", "#8ce99a", "#e599f7", "#ffa94d", "#63e6e2"] as const;
+
+/** "ISS (ZARYA)" → "ISS": the catalogue name minus its parenthetical, for a compact label. */
+function shortSatName(name: string): string {
+  const trimmed = name.split("(")[0]?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : name;
+}
+
+export function SatelliteGlobePanel({
+  payload,
+  orbits = null,
+}: {
+  payload: AmbientSatellitePassPayload;
+  orbits?: AmbientSatelliteOrbitsPayload | null;
+}) {
   const riseAtMs = useMemo(() => new Date(payload.rise_at).getTime(), [payload.rise_at]);
   const setAtMs = useMemo(
     () => (payload.set_at ? new Date(payload.set_at).getTime() : null),
@@ -88,6 +113,31 @@ export function SatelliteGlobePanel({ payload }: { payload: AmbientSatellitePass
     return parts.filter((d) => d.length > 0).join("");
   }, [centre]);
 
+  // Every tracked satellite's whole-orbit ground track (ADR-0041). The paths are static per
+  // payload; on an orthographic globe the antimeridian needs no special case — the seam that
+  // bites a flat map does not exist here, and globePath already breaks each loop at the limb.
+  const orbitRenders = useMemo(() => {
+    const list = orbits?.satellites ?? [];
+    return list.map((sat, index) => {
+      const ground = orbitGroundTrack(sat.track ?? []);
+      const color = ORBIT_COLORS[index % ORBIT_COLORS.length]!;
+      return {
+        name: shortSatName(sat.name),
+        color,
+        ground,
+        path: ground.length >= 2 ? globePath(ground, centre, SIZE, PADDING) : "",
+      };
+    });
+  }, [orbits, centre]);
+
+  // The live markers advance every second: `orbitAtTime` wraps the real clock into each orbit's
+  // period, so even an hour-old payload puts each dot where the satellite actually is now.
+  const orbitMarkers = orbitRenders.map((orbit) => {
+    const at = orbitAtTime(orbit.ground, nowMs);
+    const point = at ? project(at) : null;
+    return { name: orbit.name, color: orbit.color, point };
+  });
+
   const trackPath = hasGround ? globePath(track, centre, SIZE, PADDING) : "";
   const closest = hasGround ? closestApproach(track, centre) : null;
   const here = project(centre);
@@ -136,6 +186,28 @@ export function SatelliteGlobePanel({ payload }: { payload: AmbientSatellitePass
           />
           <path className="globe__graticule" d={graticule} />
           <path className="globe__coast" d={coastline} />
+
+          {/* Every other tracked satellite's full-orbit ground track, under the highlighted
+              next-pass track so the pass still reads as the primary one. */}
+          {orbitRenders.length > 0 ? (
+            <g data-testid="globe-orbits">
+              {orbitRenders.map((orbit) =>
+                orbit.path ? (
+                  <path
+                    key={orbit.name}
+                    d={orbit.path}
+                    fill="none"
+                    stroke={orbit.color}
+                    strokeWidth={1.4}
+                    strokeLinejoin="round"
+                    opacity={0.8}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ) : null
+              )}
+            </g>
+          ) : null}
+
           {trackPath ? <path className="globe__track" d={trackPath} /> : null}
 
           {/* Where the door is. The globe is centred here, so it is always visible. */}
@@ -150,6 +222,28 @@ export function SatelliteGlobePanel({ payload }: { payload: AmbientSatellitePass
               <circle className="globe__sat-dot" cx={markerAt.x} cy={markerAt.y} r={4} />
             </g>
           ) : null}
+
+          {/* Each tracked satellite's live position + colour-matched label, on top, and only
+              when on the near hemisphere (a far-side dot would be a lie about where it is). */}
+          {orbitMarkers.map((orbit) =>
+            orbit.point && orbit.point.visible ? (
+              <g key={orbit.name} data-testid="globe-orbit-sat">
+                <circle cx={orbit.point.x} cy={orbit.point.y} r={3.4} fill={orbit.color} />
+                <text
+                  x={orbit.point.x + 6}
+                  y={orbit.point.y + 3}
+                  fontSize={9}
+                  fontFamily="var(--db-font-mono)"
+                  fill={orbit.color}
+                  stroke="rgba(4, 12, 24, 0.75)"
+                  strokeWidth={0.7}
+                  paintOrder="stroke"
+                >
+                  {orbit.name}
+                </text>
+              </g>
+            ) : null
+          )}
         </svg>
 
         <dl className="satellite-focus__stats">
@@ -196,7 +290,45 @@ export function SatelliteGlobePanel({ payload }: { payload: AmbientSatellitePass
         </dl>
       </div>
 
-      {hasGround ? (
+      {orbitRenders.length > 0 ? (
+        <div
+          data-testid="satellite-orbit-legend"
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "0.4rem 0.9rem",
+            justifyContent: "center",
+          }}
+        >
+          {orbitRenders.map((orbit) => (
+            <span
+              key={orbit.name}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "0.35rem",
+                fontFamily: "var(--db-font-mono)",
+                fontSize: "0.74rem",
+                color: "var(--db-text-secondary)",
+              }}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 11,
+                  height: 11,
+                  borderRadius: 999,
+                  background: orbit.color,
+                  display: "inline-block",
+                }}
+              />
+              {orbit.name}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {hasGround || orbitRenders.length > 0 ? (
         <p className="satellite-globe__credit">Coastline: {COASTLINE_CREDIT}</p>
       ) : (
         <p className="satellite-globe__note placeholder-subtext">

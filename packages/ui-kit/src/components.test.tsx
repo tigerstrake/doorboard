@@ -13,6 +13,8 @@ import { PollPrompt } from "./PollPrompt";
 import { SessionEndBanner } from "./SessionEndBanner";
 import { RingStatus } from "./RingStatus";
 import { VideoMessageStatus } from "./VideoMessageStatus";
+import { CameraNotice } from "./CameraNotice";
+import { ConnectionDot } from "./ConnectionDot";
 
 describe("Component Security and Escaping", () => {
   const dangerousString = "<script>alert(1)</script>";
@@ -288,5 +290,64 @@ describe("StatusBadge presence labels (ADR-0035)", () => {
       }
     );
     expect(new Set(classes).size).toBe(4);
+  });
+});
+
+describe("ConnectionDot", () => {
+  afterEach(() => cleanup());
+
+  it("shows green/live only when live", () => {
+    const { container } = render(<ConnectionDot liveness="live" />);
+    const dot = container.querySelector(".db-connection-dot");
+    expect(dot?.getAttribute("data-liveness")).toBe("live");
+    expect(dot?.className).toContain("db-connection-dot--live");
+    expect(dot?.textContent).toContain("Live");
+  });
+
+  it("reads as reconnecting for both reconnecting and stale", () => {
+    for (const state of ["reconnecting", "stale"] as const) {
+      cleanup();
+      const { container } = render(<ConnectionDot liveness={state} />);
+      const dot = container.querySelector(".db-connection-dot");
+      expect(dot?.getAttribute("data-liveness")).toBe(state);
+      expect(dot?.textContent).toContain("Reconnecting");
+      // Amber for both states, so a passerby cannot mistake either for live.
+      expect(dot?.className).toContain(`db-connection-dot--${state}`);
+    }
+  });
+});
+
+describe("CameraNotice", () => {
+  afterEach(() => cleanup());
+
+  it("always states the honest privacy facts without overclaiming", () => {
+    const { container } = render(<CameraNotice surface="wallboard" />);
+    const text = container.textContent ?? "";
+    expect(text).toMatch(/camera/i);
+    expect(text).toMatch(/opt-in/i);
+    // Must NOT claim nothing is recorded — visitor video messages are recorded.
+    expect(text).not.toMatch(/nothing is recorded/i);
+    expect(text).toMatch(/video records only if you start a message/i);
+  });
+
+  it("gives the doorpad a tap-to-expand detail and no toggle on the wallboard", () => {
+    const wall = render(<CameraNotice surface="wallboard" />);
+    expect(wall.container.querySelector(".db-camera-notice__toggle")).toBeNull();
+    cleanup();
+
+    const pad = render(<CameraNotice surface="doorpad" />);
+    const toggle = pad.container.querySelector(".db-camera-notice__toggle") as HTMLButtonElement;
+    expect(toggle).not.toBeNull();
+    expect(pad.container.querySelector(".db-camera-notice__detail")).toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+    act(() => {
+      toggle.click();
+    });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const detail = pad.container.querySelector(".db-camera-notice__detail");
+    expect(detail).not.toBeNull();
+    // The fuller text must keep personalization distinct from access control.
+    expect(detail?.textContent).toMatch(/never controls access/i);
   });
 });

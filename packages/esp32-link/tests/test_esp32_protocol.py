@@ -223,7 +223,7 @@ def test_send_timeout_surfaces_offline_without_faking_success() -> None:
         await transport.start()
         msg = transport.make_message(
             "effect_play",
-            {"effect_id": "generic_chime", "duration_ms": 1000},
+            {"effect_id": "generic_press", "duration_ms": 1000},
         )
 
         try:

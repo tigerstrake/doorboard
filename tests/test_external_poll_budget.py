@@ -73,6 +73,15 @@ POLLERS: tuple[Poller, ...] = (
         note="Hourly. A pass prediction does not change faster than that.",
     ),
     Poller(
+        setting="WALLBOARD_SATELLITE_ORBITS_INTERVAL_S",
+        target="CelesTrak (visual TLE group, file-cached ~24h)",
+        metered=False,
+        demand_gated=False,
+        note="Hourly re-sample of full orbits (ADR-0041); the client animates the live "
+        "markers itself, so this is not per-second. TLEs are file-cached, so the actual "
+        "CelesTrak hit rate is ~1/day, not 1/hour.",
+    ),
+    Poller(
         setting="WALLBOARD_BIRD_INTERVAL_S",
         target="BirdNET Pi on the LAN",
         metered=False,

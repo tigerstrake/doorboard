@@ -1067,3 +1067,116 @@ body {
     transition: none !important;
   }
 }
+
+/* ── Connection liveness dot (wallboard corner) ─────────────────────────────
+   Ambient, not alarming: a small dot + tiny label. Green = live, amber =
+   reconnecting/stale. See ConnectionDot.tsx. */
+.db-connection-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--db-font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--db-text-muted);
+  user-select: none;
+}
+
+.db-connection-dot__mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--db-text-muted);
+  box-shadow: 0 0 0 0 transparent;
+  flex: none;
+}
+
+.db-connection-dot--live .db-connection-dot__mark {
+  background: var(--db-presence-available);
+  box-shadow: 0 0 6px rgba(47, 224, 182, 0.6);
+}
+
+.db-connection-dot--reconnecting .db-connection-dot__mark,
+.db-connection-dot--stale .db-connection-dot__mark {
+  background: var(--db-gold);
+  box-shadow: 0 0 6px rgba(255, 194, 71, 0.55);
+}
+
+/* Only the amber states pulse, and only gently, so a healthy board is perfectly still. */
+.db-connection-dot--reconnecting .db-connection-dot__mark,
+.db-connection-dot--stale .db-connection-dot__mark {
+  animation: db-connection-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes db-connection-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* ── Camera / privacy notice (wallboard footer + doorpad line) ───────────────
+   Persistent, unobtrusive consent text. See CameraNotice.tsx. */
+.db-camera-notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  font-family: var(--db-font-sans);
+  font-size: 0.72rem;
+  line-height: 1.3;
+  color: var(--db-text-muted);
+}
+
+.db-camera-notice__icon {
+  display: inline-flex;
+  color: var(--db-text-secondary);
+  flex: none;
+}
+
+.db-camera-notice__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.db-camera-notice__toggle {
+  flex: none;
+  background: transparent;
+  border: 1px solid var(--db-border-color);
+  border-radius: 999px;
+  color: var(--db-text-secondary);
+  font: inherit;
+  font-size: 0.68rem;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.db-camera-notice__toggle:hover,
+.db-camera-notice__toggle:focus-visible {
+  border-color: var(--db-border-hover);
+  color: var(--db-text-primary);
+}
+
+.db-camera-notice__detail {
+  flex: 1 0 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--db-bg-inset);
+  border: 1px solid var(--db-border-color);
+  color: var(--db-text-secondary);
+}
+
+.db-camera-notice__detail p {
+  margin: 0 0 6px;
+}
+
+.db-camera-notice__detail p:last-child {
+  margin-bottom: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .db-connection-dot--reconnecting .db-connection-dot__mark,
+  .db-connection-dot--stale .db-connection-dot__mark {
+    animation: none !important;
+  }
+}

@@ -199,3 +199,60 @@ export function shortestLngDelta(from: number, to: number): number {
   if (delta < -180) delta += 360;
   return delta;
 }
+
+export interface OrbitSample extends LatLng {
+  /** Absolute sample time, ms since epoch. */
+  atMs: number;
+}
+
+/**
+ * One full-period orbit's samples with absolute times, ready for the live-marker maths (ADR-0041).
+ *
+ * Unlike a pass track, an orbit sample carries an absolute UTC `at` rather than a `t_offset_s`,
+ * because the client shows where the satellite is *now* by wrapping the real clock into the
+ * period — an offset from a stale event would be meaningless.
+ */
+export function orbitGroundTrack(
+  track: readonly { at: string; lat: number; lng: number }[]
+): OrbitSample[] {
+  const out: OrbitSample[] = [];
+  for (const sample of track) {
+    const atMs = Date.parse(sample.at);
+    if (
+      Number.isFinite(atMs) &&
+      typeof sample.lat === "number" &&
+      typeof sample.lng === "number"
+    ) {
+      out.push({ atMs, lat: sample.lat, lng: sample.lng });
+    }
+  }
+  return out;
+}
+
+/**
+ * The live sub-point at real `nowMs`, by wrapping "now" into one orbital period.
+ *
+ * The track spans ~one revolution in absolute time, so the marker advances by real elapsed
+ * time without the server re-publishing — a payload an hour old still resolves to the right
+ * spot. Delegates the interpolation to {@link groundAtFraction}, so longitude is crossed the
+ * short way (the antimeridian is not swept backwards) there too.
+ */
+export function orbitAtTime(track: readonly OrbitSample[], nowMs: number): OrbitSample | null {
+  if (track.length === 0) return null;
+  if (track.length === 1) return track[0]!;
+  const firstMs = track[0]!.atMs;
+  const lastMs = track[track.length - 1]!.atMs;
+  const periodMs = lastMs - firstMs;
+  if (periodMs <= 0) return track[0]!;
+  // Wrap into [0, period). `% + %` keeps it non-negative for a now before the first sample.
+  const elapsed = (((nowMs - firstMs) % periodMs) + periodMs) % periodMs;
+  const fraction = elapsed / periodMs;
+  const ground = track.map((sample) => ({
+    t_offset_s: (sample.atMs - firstMs) / 1000,
+    lat: sample.lat,
+    lng: sample.lng,
+  }));
+  const at = groundAtFraction(ground, fraction);
+  if (at === null) return null;
+  return { atMs: firstMs + at.t_offset_s * 1000, lat: at.lat, lng: at.lng };
+}

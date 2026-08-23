@@ -13,6 +13,9 @@ export default [
       "**/.venv/**",
       "**/.next/**",
       "**/next-env.d.ts",
+      // Agent worktrees are separate checkouts nested inside the repo; their
+      // in-progress files are not part of this tree and must not fail its lint.
+      "**/.claude/worktrees/**",
     ],
   },
   js.configs.recommended,

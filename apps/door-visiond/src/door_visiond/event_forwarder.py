@@ -79,6 +79,44 @@ class HttpEventTransport:
                 raise RuntimeError(msg)
 
 
+class ProfileTransport(Protocol):
+    def send(self, event: DoorboardEvent) -> None:
+        """Deliver one profile push, blocking. Raise on any failure."""
+        ...
+
+
+class HttpProfileTransport:
+    """POST a recognition profile push to door-api's ESP32 relay, blocking.
+
+    door-api owns the single ESP32 UART, so door-visiond's ``door.profile_update`` /
+    ``door.profile_clear`` reach the controller by being forwarded here rather than
+    sent direct (ADR-0040). Same loopback, same best-effort semantics, and — unlike
+    the ESP32 wire — no seq or expiry conversion here: the raw contract event goes
+    over, and door-api does the conversion when it owns the wire.
+    """
+
+    def __init__(self, *, base_url: str, token: str, timeout_s: float = 1.0) -> None:
+        self._url = f"{base_url.rstrip('/')}/internal/esp32/profile"
+        self._token = token
+        self._timeout_s = timeout_s
+
+    def send(self, event: DoorboardEvent) -> None:
+        body = event.model_dump_json().encode("utf-8")
+        request = urllib.request.Request(  # noqa: S310 - fixed loopback URL from settings
+            self._url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._token}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self._timeout_s) as response:  # noqa: S310
+            if not 200 <= response.status < 300:
+                msg = f"door-api esp32 profile relay returned HTTP {response.status}"
+                raise RuntimeError(msg)
+
+
 class EventForwarder:
     """Drains the broadcast queue and ships identity events to door-api."""
 

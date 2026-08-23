@@ -8,6 +8,7 @@ from uuid import UUID
 
 from door_api.adapters import Esp32TransportStatus, WireMessage
 from doorboard_contracts import DoorboardEvent
+from doorboard_esp32_link import wire_message_from_event
 
 from doorboard_simulator.clock import SimClock
 from doorboard_simulator.events import EventFactory
@@ -80,6 +81,11 @@ class FakeEsp32Transport:
         return WireMessage(
             v=self.proto_v, seq=self._seq, message_type=message_type, ack=None, payload=payload
         )
+
+    async def send_event(self, event: DoorboardEvent) -> WireMessage:
+        self._seq += 1
+        msg = wire_message_from_event(event, seq=self._seq, now_mono_ms=self._clock.monotonic_ms)
+        return await self.send(msg)
 
     async def send(self, msg: WireMessage) -> WireMessage:
         for attempt in range(self.max_retries + 1):

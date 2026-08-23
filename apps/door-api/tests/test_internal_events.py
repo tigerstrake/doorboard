@@ -13,6 +13,7 @@ import os
 import time
 from collections.abc import Generator
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from doorboard_contracts import SessionState
@@ -308,3 +309,49 @@ def test_it_carries_nothing_personal_off_the_door() -> None:
     allowed = {"free_bytes", "queue_depth", "oldest_unsynced_s", "recording_allowed"}
     unexpected = set(queued.event["payload"]) - allowed
     assert not unexpected, f"new fields left the door unreviewed: {sorted(unexpected)}"
+
+
+def _drain(queue: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    while True:
+        try:
+            out.append(json.loads(queue.get_nowait()))
+        except Exception:
+            break
+    return out
+
+
+def test_a_pending_guestbook_entry_is_archived_but_not_broadcast_to_kiosks() -> None:
+    """Moderation is pointless if unmoderated text reaches the corridor wallboard the
+    instant it is written. A guestbook entry is created ``pending``; its created event
+    must still be archived upstream (the NUC moderation record) but must NOT fan out
+    over /ws — no kiosk consumes it, and the wallboard renders only the approved list
+    it polls. A checkin, which is public immediately, must still broadcast, so this
+    also proves the gate is specific rather than a blanket mute of social events.
+    """
+    queue = state.broadcast.make_client_queue()
+    _drain(queue)  # discard the initial snapshot the queue is seeded with
+    depth_before = state.store.sync_outbox_depth()
+
+    state.social_service.create_guestbook_entry(
+        text="UNMODERATED_SENTINEL",
+        author_label=None,
+        ip="test",
+        session_token="test-session",
+        trace_id=str(uuid4()),
+    )
+    state.social_service.create_checkin(
+        person_id=None,
+        label="here",
+        ip="test",
+        session_token="test-session",
+        trace_id=str(uuid4()),
+    )
+
+    broadcast_types = [d.get("event", {}).get("type") for d in _drain(queue)]
+    assert "social.guestbook_entry_created" not in broadcast_types, broadcast_types
+    assert "social.checkin_created" in broadcast_types, broadcast_types
+
+    # Both events were still queued for the NUC (archive + moderation record); the
+    # guestbook entry is archived, just not fanned out to the corridor screen.
+    assert state.store.sync_outbox_depth() == depth_before + 2

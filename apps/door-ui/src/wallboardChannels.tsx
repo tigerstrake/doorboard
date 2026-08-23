@@ -5,6 +5,7 @@ import type {
   AmbientBirdSummaryPayload,
   AmbientFoodRecommendationPayload,
   AmbientPrinterStatusPayload,
+  AmbientSatelliteOrbitsPayload,
   AmbientSatellitePassPayload,
 } from "@doorboard/contracts";
 import { AboutDoorboard } from "./AboutDoorboard";
@@ -198,6 +199,7 @@ interface WallboardFocusSplitProps {
     birds: AmbientBirdSummaryPayload | null;
     birdCollageUrl: string;
     satellite: AmbientSatellitePassPayload | null;
+    satelliteOrbits: AmbientSatelliteOrbitsPayload | null;
     printer: AmbientPrinterStatusPayload | null;
     food: AmbientFoodRecommendationPayload | null;
     scoreboard: Array<{ score: number; occurredAt: string }> | null;
@@ -331,7 +333,7 @@ function renderFocusContent(
       );
     case "satellite":
       return ambient.satellite ? (
-        <SatelliteGlobePanel payload={ambient.satellite} />
+        <SatelliteGlobePanel payload={ambient.satellite} orbits={ambient.satelliteOrbits} />
       ) : (
         <FocusEmpty
           title="Satellite pass data is unavailable."

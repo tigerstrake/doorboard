@@ -5,7 +5,7 @@
   "occurred_at": "2026-07-04T12:34:56.123000Z",
   "payload": {
     "duration_ms": 1500,
-    "effect_id": "generic_chime"
+    "effect_id": "generic_press"
   },
   "source": "doorboard-contracts-test",
   "trace_id": "9d1e8a34-52a1-4b0e-9c0f-2a7d1f66b100",

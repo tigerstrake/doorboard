@@ -45,8 +45,20 @@ run_backup() {
   tmp_path="$dump_path.partial"
 
   log info "backup_starting path=$dump_path"
+  # No `pg_dump | gzip` pipeline: this runs under /bin/sh, where a pipeline's
+  # status is the LAST command's. A failed pg_dump (server down, auth rejected,
+  # OOM mid-dump) would leave gzip exiting 0 over a ~20-byte dump of nothing —
+  # which then got mv'd into place, checksummed, logged `backup_completed`, and
+  # after BACKUP_RETAIN_COUNT repeats would evict every real dump in the prune.
+  # Dump raw first so pg_dump's own exit code is the verdict, then compress and
+  # sanity-check the result before it may replace anything.
+  raw_path="$dump_path.raw"
   if pg_dump --dbname="$POSTGRES_DSN" --format=plain --no-owner --no-privileges \
-      | gzip -9 > "$tmp_path"; then
+      > "$raw_path" \
+      && [ "$(wc -c < "$raw_path")" -ge 4096 ] \
+      && gzip -9 -c "$raw_path" > "$tmp_path" \
+      && gzip -t "$tmp_path"; then
+    rm -f "$raw_path"
     mv "$tmp_path" "$dump_path"
     # Record a BARE filename, not $dump_path: the path here is the container's
     # (/mnt/nas-backups), so an absolute entry makes `sha256sum -c` fail for
@@ -58,7 +70,11 @@ run_backup() {
     size=$(wc -c < "$dump_path")
     log info "backup_completed path=$dump_path size_bytes=$size"
   else
-    rm -f "$tmp_path"
+    # A dump under the 4096-byte floor also lands here: a schema-bearing dump of
+    # this database cannot legitimately be that small, but an empty or truncated
+    # one can. Nothing failed-but-undersized may ever be mv'd into place, and
+    # returning 1 skips the prune — a broken dump must not evict a good one.
+    rm -f "$raw_path" "$tmp_path"
     log error "backup_failed path=$dump_path"
     return 1
   fi

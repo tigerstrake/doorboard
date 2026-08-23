@@ -218,8 +218,14 @@ def test_every_compose_default_matches_the_setting_it_stands_in_for() -> None:
 
     from wallboard_worker.settings import Settings
 
-    # `list[str]` fields whose validators map "" to the documented default on purpose.
-    EMPTY_MEANS_DEFAULT = {"BIRDNET_SPECIES_FILTER", "SATELLITES_WATCHLIST"}
+    # `list[...]` fields whose validators map "" to the documented default on purpose.
+    EMPTY_MEANS_DEFAULT = {
+        "BIRDNET_SPECIES_FILTER",
+        "SATELLITES_WATCHLIST",
+        # parse_orbit_ids returns DEFAULT_ORBIT_NORAD_IDS for an empty string (ADR-0041),
+        # so compose passing "" is the built-in interesting-satellite set, not a crash.
+        "SATELLITES_ORBIT_NORAD_IDS",
+    }
 
     compose = (REPO_ROOT / "infra/compose/docker-compose.yml").read_text()
     alias_to_field = {f.alias: name for name, f in Settings.model_fields.items() if f.alias}

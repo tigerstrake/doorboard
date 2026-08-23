@@ -37,6 +37,12 @@ export type { SessionEndBannerProps } from "./SessionEndBanner";
 export { CrossfadeSwitch } from "./CrossfadeSwitch";
 export type { CrossfadeSwitchProps } from "./CrossfadeSwitch";
 
+export { CameraNotice } from "./CameraNotice";
+export type { CameraNoticeProps } from "./CameraNotice";
+
+export { ConnectionDot } from "./ConnectionDot";
+export type { ConnectionDotProps, ConnectionLiveness } from "./ConnectionDot";
+
 export type { DoorboardEvent, HealthPayload, SessionState, PresenceLabel } from "@doorboard/contracts";
 
 export { PROFILE_COLORS, DEFAULT_ACCENT, profileAccent, accentInk } from "./profiles";

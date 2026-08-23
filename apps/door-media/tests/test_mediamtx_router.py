@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 import pytest
 from door_media.mediamtx_router import (
     MediaMTXRouter,
@@ -953,3 +954,106 @@ def test_recognition_rotation_can_still_be_set_independently(tmp_path: Path) -> 
 
     assert cfg.video_rotation == 180
     assert cfg.recognition_rotation == 0
+
+
+class _StubApi:
+    """Stands in for the MediaMTX HTTP client, returning one scripted response."""
+
+    def __init__(self, response: httpx.Response) -> None:
+        self._response = response
+        self.paths: list[str] = []
+
+    async def get(self, path: str) -> httpx.Response:
+        self.paths.append(path)
+        return self._response
+
+
+def _paths_get(payload: dict[str, object], *, status_code: int = 200) -> httpx.Response:
+    return httpx.Response(status_code, json=payload)
+
+
+async def _with_stubbed_api(cfg: Settings, response: httpx.Response) -> MediaMTXRouter:
+    """Build a router whose MediaMTX API calls hit ``response`` instead of the network."""
+    router = MediaMTXRouter(cfg)
+    await router._http.aclose()  # noqa: SLF001 (the real client is never used here)
+    router._http = _StubApi(response)  # type: ignore[assignment]  # noqa: SLF001
+    return router
+
+
+@pytest.mark.anyio
+async def test_health_is_not_green_for_a_configured_path_with_no_publisher(
+    tmp_path: Path,
+) -> None:
+    """MediaMTX answers 200 for a *configured* path even with no camera behind it.
+
+    ``{"ready": false, "source": null}`` is what an unplugged camera or a crashed
+    libcamera publisher looks like: the path exists, zero frames flow. Treating
+    the 200 as health made /health green over a dead camera — the one condition
+    it exists to surface.
+    """
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+    router = await _with_stubbed_api(
+        cfg, _paths_get({"name": "visitor", "ready": False, "source": None, "readers": []})
+    )
+
+    assert await router.health_check() is False
+
+
+@pytest.mark.anyio
+async def test_health_is_green_only_when_the_path_is_ready(tmp_path: Path) -> None:
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+    router = await _with_stubbed_api(
+        cfg,
+        _paths_get(
+            {
+                "name": "visitor",
+                "ready": True,
+                "source": {"type": "rtspSession"},
+                "readers": [],
+            }
+        ),
+    )
+
+    assert await router.health_check() is True
+
+
+@pytest.mark.anyio
+async def test_health_is_not_green_on_a_non_200(tmp_path: Path) -> None:
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+    router = await _with_stubbed_api(cfg, _paths_get({"error": "path not found"}, status_code=404))
+
+    assert await router.health_check() is False
+
+
+@pytest.mark.anyio
+async def test_stream_info_reports_down_when_the_path_is_not_ready(tmp_path: Path) -> None:
+    """The same 200-means-up bug, on the surface the wallboard/admin read."""
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+    router = await _with_stubbed_api(
+        cfg, _paths_get({"name": "visitor", "ready": False, "source": None, "readers": []})
+    )
+
+    (info,) = await router.stream_info_async()
+
+    assert info.stream_up is False
+
+
+@pytest.mark.anyio
+async def test_stream_info_reports_up_and_counts_readers_when_ready(tmp_path: Path) -> None:
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+    router = await _with_stubbed_api(
+        cfg,
+        _paths_get(
+            {
+                "name": "visitor",
+                "ready": True,
+                "source": {"type": "rtspSession"},
+                "readers": [{"type": "webRTCSession"}, {"type": "webRTCSession"}],
+            }
+        ),
+    )
+
+    (info,) = await router.stream_info_async()
+
+    assert info.stream_up is True
+    assert info.webrtc_clients == 2

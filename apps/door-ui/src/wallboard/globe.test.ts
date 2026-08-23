@@ -6,6 +6,8 @@ import {
   greatCircleKm,
   groundAtFraction,
   groundTrack,
+  orbitAtTime,
+  orbitGroundTrack,
   projectToGlobe,
   projectToGlobeSvg,
   shortestLngDelta,
@@ -184,5 +186,77 @@ describe("shortestLngDelta", () => {
     expect(shortestLngDelta(175, -175)).toBeCloseTo(10, 6);
     expect(shortestLngDelta(-175, 175)).toBeCloseTo(-10, 6);
     expect(shortestLngDelta(0, 90)).toBeCloseTo(90, 6);
+  });
+});
+
+describe("orbitGroundTrack", () => {
+  it("parses absolute sample times into ms and keeps valid positions", () => {
+    const track = orbitGroundTrack([
+      { at: "2026-07-20T21:00:00Z", lat: 0, lng: -122 },
+      { at: "2026-07-20T21:23:00Z", lat: 45, lng: -80 },
+    ]);
+    expect(track).toHaveLength(2);
+    expect(track[0]!.atMs).toBe(Date.parse("2026-07-20T21:00:00Z"));
+    expect(track[1]!.lat).toBe(45);
+    // 23 minutes apart.
+    expect(track[1]!.atMs - track[0]!.atMs).toBe(23 * 60_000);
+  });
+});
+
+describe("orbitAtTime", () => {
+  // One ~92-minute period sampled every 23 minutes; the last sample closes the loop.
+  const t0 = Date.parse("2026-07-20T21:00:00Z");
+  const period = 92 * 60_000;
+  const track = orbitGroundTrack([
+    { at: new Date(t0).toISOString(), lat: 0, lng: 0 },
+    { at: new Date(t0 + period / 4).toISOString(), lat: 40, lng: 45 },
+    { at: new Date(t0 + period / 2).toISOString(), lat: 0, lng: 90 },
+    { at: new Date(t0 + (3 * period) / 4).toISOString(), lat: -40, lng: 135 },
+    { at: new Date(t0 + period).toISOString(), lat: 0, lng: 180 },
+  ]);
+
+  it("picks the sample the real clock lands on", () => {
+    const at = orbitAtTime(track, t0 + period / 2)!;
+    expect(at.lat).toBeCloseTo(0, 6);
+    expect(at.lng).toBeCloseTo(90, 6);
+  });
+
+  it("interpolates between samples", () => {
+    const at = orbitAtTime(track, t0 + period / 8)!;
+    // Halfway between sample 0 (0,0) and sample 1 (40,45).
+    expect(at.lat).toBeCloseTo(20, 6);
+    expect(at.lng).toBeCloseTo(22.5, 6);
+  });
+
+  it("wraps a now past the end back into the period", () => {
+    // now one and a half periods on == half a period in.
+    const wrapped = orbitAtTime(track, t0 + period + period / 2)!;
+    const direct = orbitAtTime(track, t0 + period / 2)!;
+    expect(wrapped.lat).toBeCloseTo(direct.lat, 6);
+    expect(wrapped.lng).toBeCloseTo(direct.lng, 6);
+  });
+
+  it("wraps a now before the first sample", () => {
+    // A quarter-period before t0 is three-quarters of the way through the loop.
+    const before = orbitAtTime(track, t0 - period / 4)!;
+    const equiv = orbitAtTime(track, t0 + (3 * period) / 4)!;
+    expect(before.lat).toBeCloseTo(equiv.lat, 6);
+    expect(before.lng).toBeCloseTo(equiv.lng, 6);
+  });
+
+  it("crosses the antimeridian the short way", () => {
+    const crossing = orbitGroundTrack([
+      { at: new Date(t0).toISOString(), lat: 0, lng: 175 },
+      { at: new Date(t0 + period).toISOString(), lat: 0, lng: -175 },
+    ]);
+    // Midway is at ±180, not sweeping 350 degrees back across the planet.
+    const mid = orbitAtTime(crossing, t0 + period / 2)!;
+    expect(Math.abs(mid.lng)).toBeCloseTo(180, 4);
+  });
+
+  it("handles degenerate tracks without throwing", () => {
+    expect(orbitAtTime([], Date.now())).toBeNull();
+    const one = orbitGroundTrack([{ at: new Date(t0).toISOString(), lat: 5, lng: 6 }]);
+    expect(orbitAtTime(one, Date.now())!.lat).toBe(5);
   });
 });

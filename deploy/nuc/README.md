@@ -41,8 +41,8 @@ why" overview the handoff's trust model expects a reader to find first.
 7. Issue the door Pi's separate `ingest` token:
    `docker compose ... exec control-plane-api control-plane-api-admin issue-token --door-id primary --scope ingest`
    — copy the printed `token=...` value into the Pi's own `.env` as
-   `SYNC_UPLOAD_TOKEN` (out of git, lives on the Pi only; see the root
-   `.env.example`'s Door Pi section). Repeat with `--scope config` if
+   `SYNC_INGEST_TOKEN` (out of git, lives on the Pi only; see the root
+   `.env.example`'s door-sync section). Repeat with `--scope config` if
    door-api needs to pull config bundles directly.
 8. If adopting internal HTTPS: set `DOORBOARD_INTERNAL_DOMAIN` in `.env`,
    start with `--profile https`, and trust Caddy's internal CA on client

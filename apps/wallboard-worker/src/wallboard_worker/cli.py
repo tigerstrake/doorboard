@@ -21,6 +21,7 @@ from wallboard_worker.jobs import (
     run_daily_collage,
     run_food_recommendation,
     run_printer_status,
+    run_satellite_orbits,
     run_satellite_passes,
 )
 from wallboard_worker.scheduler import Scheduler, build_food_provider
@@ -81,30 +82,44 @@ def daily_collage() -> None:
     run_daily_collage(settings)
 
 
+def _build_satellite_provider(
+    mock: bool, settings: Settings
+) -> MockSatelliteProvider | SkyfieldSatelliteProvider:
+    if mock or not settings.feature_satellites:
+        logger.info("Using MockSatelliteProvider")
+        return MockSatelliteProvider()
+    logger.info("Using SkyfieldSatelliteProvider")
+    config = SatelliteConfig(
+        watchlist=settings.satellites_watchlist,
+        observer_lat=settings.satellites_observer_lat,
+        observer_lon=settings.satellites_observer_lon,
+        observer_elevation=settings.satellites_observer_elevation,
+        min_elevation=settings.satellites_min_elevation,
+        tle_url=settings.satellites_tle_url,
+        tle_cache_path=settings.satellites_tle_cache_path,
+        ephemeris_dir=settings.satellites_ephemeris_dir,
+        orbit_norad_ids=settings.satellites_orbit_norad_ids,
+        orbit_tle_url=settings.satellites_orbit_tle_url,
+        orbit_tle_cache_path=settings.satellites_orbit_tle_cache_path,
+        orbit_samples=settings.satellites_orbit_samples,
+    )
+    return SkyfieldSatelliteProvider(config)
+
+
 @cli.command()
 @click.option("--mock", is_flag=True, help="Force use of mock provider")
 def satellite_passes(mock: bool) -> None:
     """Run the satellite pass prediction ingestion job."""
     settings = Settings()
+    run_satellite_passes(settings, _build_satellite_provider(mock, settings))
 
-    if mock or not settings.feature_satellites:
-        logger.info("Using MockSatelliteProvider")
-        provider = MockSatelliteProvider()
-    else:
-        logger.info("Using SkyfieldSatelliteProvider")
-        config = SatelliteConfig(
-            watchlist=settings.satellites_watchlist,
-            observer_lat=settings.satellites_observer_lat,
-            observer_lon=settings.satellites_observer_lon,
-            observer_elevation=settings.satellites_observer_elevation,
-            min_elevation=settings.satellites_min_elevation,
-            tle_url=settings.satellites_tle_url,
-            tle_cache_path=settings.satellites_tle_cache_path,
-            ephemeris_dir=settings.satellites_ephemeris_dir,
-        )
-        provider = SkyfieldSatelliteProvider(config)
 
-    run_satellite_passes(settings, provider)
+@cli.command()
+@click.option("--mock", is_flag=True, help="Force use of mock provider")
+def satellite_orbits(mock: bool) -> None:
+    """Run the full-orbit satellite-track ingestion job (ADR-0041)."""
+    settings = Settings()
+    run_satellite_orbits(settings, _build_satellite_provider(mock, settings))
 
 
 @cli.command()

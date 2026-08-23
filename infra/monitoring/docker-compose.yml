@@ -37,14 +37,14 @@ services:
     image: grafana/grafana:10.4.3
     restart: unless-stopped
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       - grafana_data:/var/lib/grafana
     ports:
-      - "${MONITORING_BIND_ADDR:-0.0.0.0}:3000:3000"
+      - "${MONITORING_BIND_ADDR:-127.0.0.1}:3000:3000"
 
 volumes:
   prometheus_data:

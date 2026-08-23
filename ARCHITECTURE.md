@@ -88,7 +88,7 @@ The performance harness (M1/M7) makes these observable, with two exceptions it r
 Recognition is proactive, never bell-triggered:
 
 1. Recognition camera runs continuously; `door-visiond` requires a stable match (2 of last 3 frames, minimum face size).
-2. On stability it writes a short-lived `current_visitor` cache (2.5 s TTL), pushes a `door.profile_update` to the ESP32 (profile ID + monotonic expiry only), and forwards `vision.identity_stable` to door-api, which is the only service the kiosks are connected to. All three legs are required: the ESP32 leg is the door light, the door-api leg is the on-screen greeting, and a leg that silently does nothing looks exactly like recognition not working.
+2. On stability it writes a short-lived `current_visitor` cache (2.5 s TTL), sends a `door.profile_update` toward the ESP32 (profile ID + monotonic expiry only), and forwards `vision.identity_stable` to door-api, which is the only service the kiosks are connected to. All three legs are required: the ESP32 leg is the door light, the door-api leg is the on-screen greeting, and a leg that silently does nothing looks exactly like recognition not working. door-api owns the single ESP32 UART, so the profile push is not sent direct — door-visiond forwards it to door-api's `/internal/esp32/profile` relay and door-api puts it on the wire (ADR-0040); the light and the greeting are therefore driven by the same loopback hop and cannot diverge.
 3. Button press consumes the cache instantly; no cache means an immediate generic greeting.
 4. Late recognition may update the display but never delays the initial interaction.
 5. Greeting cooldown: 30 s per person. Unknown faces: generic greeting, nothing persisted.

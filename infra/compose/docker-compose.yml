@@ -213,6 +213,10 @@ services:
       DOORBOARD_DOOR_ID: ${DOORBOARD_DOOR_ID:-primary}
       CONTROL_PLANE_URL: http://control-plane-api:8090
       WALLBOARD_WORKER_INGEST_TOKEN: ${WALLBOARD_WORKER_INGEST_TOKEN:-}
+      # The academic countdown job (ADR-0039) reads the container's local zone
+      # for "today". Without this it silently runs in UTC, which is wrong for
+      # hours a day (see control-plane-api's TZ above for the same pattern).
+      TZ: ${TZ:-UTC}
       FEATURE_BIRDNET: ${FEATURE_BIRDNET:-false}
       FEATURE_SATELLITES: ${FEATURE_SATELLITES:-false}
       FEATURE_AIRCRAFT: ${FEATURE_AIRCRAFT:-false}
@@ -264,6 +268,11 @@ services:
       SATELLITES_MIN_ELEVATION: ${SATELLITES_MIN_ELEVATION:-10.0}
       SATELLITES_TLE_URL: ${SATELLITES_TLE_URL:-https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle}
       SATELLITES_TLE_CACHE_PATH: ${SATELLITES_TLE_CACHE_PATH:-/tmp/satellite_tle_cache.txt}
+      WALLBOARD_SATELLITE_ORBITS_INTERVAL_S: ${WALLBOARD_SATELLITE_ORBITS_INTERVAL_S:-3600.0}
+      SATELLITES_ORBIT_NORAD_IDS: ${SATELLITES_ORBIT_NORAD_IDS:-}
+      SATELLITES_ORBIT_TLE_URL: ${SATELLITES_ORBIT_TLE_URL:-https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=tle}
+      SATELLITES_ORBIT_TLE_CACHE_PATH: ${SATELLITES_ORBIT_TLE_CACHE_PATH:-/tmp/orbit_tle_cache.txt}
+      SATELLITES_ORBIT_SAMPLES: ${SATELLITES_ORBIT_SAMPLES:-120}
       WALLBOARD_BIRD_INTERVAL_S: ${WALLBOARD_BIRD_INTERVAL_S:-300.0}
       BIRDNET_CONFIDENCE_THRESHOLD: ${BIRDNET_CONFIDENCE_THRESHOLD:-0.70}
       BIRDNET_SPECIES_FILTER: ${BIRDNET_SPECIES_FILTER:-}

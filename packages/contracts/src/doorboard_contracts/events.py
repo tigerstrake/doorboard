@@ -487,6 +487,65 @@ class AmbientSatellitePassPayload(StrictModel):
     track: list[SatelliteTrackSample] = []
 
 
+class SatelliteOrbitSample(StrictModel):
+    """One point on a full-period ground track: an absolute UTC time and the
+    sub-satellite point at that time (ADR-0041).
+
+    Absolute ``at`` — not a ``t_offset_s`` from a rise, the way ``SatelliteTrackSample``
+    carries — because this track wraps a whole orbit and stays on the wire between hourly
+    refreshes. The client draws a LIVE marker by wrapping "now" into the period and
+    interpolating along the track, and that needs real timestamps, not offsets from an
+    event that may already be an hour old.
+
+    ``lat``/``lng`` are required, unlike the pass track's optional ones: the whole point of
+    this event is the ground track, so a producer that cannot compute a position emits no
+    orbit for that satellite rather than a sample without one.
+    """
+
+    at: UTCDateTime
+    lat: float
+    lng: float
+
+
+class SatelliteOrbit(StrictModel):
+    """One tracked satellite and one full revolution of its ground track (ADR-0041)."""
+
+    name: str
+    norad_id: int
+    # Where it is right now, from the same TLE the track was sampled from, so the live
+    # marker has a truthful position even before the client starts interpolating.
+    sub_lat: float
+    sub_lng: float
+    # One full orbital period, sampled and bounded by the producer (~90-120 points). A
+    # consumer must not assume a fixed count or even spacing; the client interpolates
+    # between whatever samples arrive and wraps "now" into the period for the live marker.
+    track: list[SatelliteOrbitSample] = []
+
+
+class AmbientSatelliteOrbitsPayload(StrictModel):
+    """Every interesting satellite, each with a full-period ground track and its current
+    sub-point (ADR-0041).
+
+    A SEPARATE event from ``ambient.satellite_pass``, deliberately not an extension of it.
+    The pass stays the single next VISIBLE pass and its sky (az/el) geometry — "which way
+    do I look, and when". This answers a different question — where every tracked satellite
+    is right now and the whole loop each one traces on the ground — and overloading the
+    pass's ``track`` (whose az/el only mean anything during that one pass) with a full orbit
+    would conflate the two.
+
+    Being a brand-new event type it is additive to the catalogue but NOT backward compatible
+    at runtime: a consumer on older contracts rejects it rather than ignoring it (StrictModel
+    + a discriminated union with no such member). Deploy the NUC at or before the door — see
+    ADR-0041's deployment ordering and ADR-0031.
+    """
+
+    satellites: list[SatelliteOrbit] = []
+    # The moment every ``sub_lat``/``sub_lng`` above was true, so the tile can show its age.
+    # The live marker does not depend on this being fresh: the track carries absolute times,
+    # so the client re-anchors on the real "now" even from an hour-old payload.
+    as_of: UTCDateTime
+
+
 class AmbientAircraftNearby(StrictModel):
     callsign: str
     altitude_ft: int
@@ -754,6 +813,11 @@ class AmbientSatellitePassEvent(BaseEvent):
     payload: AmbientSatellitePassPayload
 
 
+class AmbientSatelliteOrbitsEvent(BaseEvent):
+    type: Literal["ambient.satellite_orbits"]
+    payload: AmbientSatelliteOrbitsPayload
+
+
 class AmbientAircraftSummaryEvent(BaseEvent):
     type: Literal["ambient.aircraft_summary"]
     payload: AmbientAircraftSummaryPayload
@@ -822,6 +886,7 @@ EVENT_MODELS: tuple[type[BaseEvent], ...] = (
     SocialDeletionRequestedEvent,
     AmbientBirdSummaryEvent,
     AmbientSatellitePassEvent,
+    AmbientSatelliteOrbitsEvent,
     AmbientAircraftSummaryEvent,
     AmbientPrinterStatusEvent,
     AmbientFoodRecommendationEvent,
@@ -877,6 +942,7 @@ type DoorboardEvent = Annotated[
     | SocialDeletionRequestedEvent
     | AmbientBirdSummaryEvent
     | AmbientSatellitePassEvent
+    | AmbientSatelliteOrbitsEvent
     | AmbientAircraftSummaryEvent
     | AmbientPrinterStatusEvent
     | AmbientFoodRecommendationEvent

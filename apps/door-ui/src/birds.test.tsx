@@ -29,6 +29,7 @@ function renderBirds(over: { birds?: AmbientBirdSummaryPayload | null; birdColla
         birds: over.birds === undefined ? BIRDS : over.birds,
         birdCollageUrl: over.birdCollageUrl ?? "",
         satellite: null,
+        satelliteOrbits: null,
         printer: null,
         food: null,
         scoreboard: null,

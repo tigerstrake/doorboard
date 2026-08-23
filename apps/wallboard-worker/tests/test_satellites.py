@@ -7,9 +7,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from doorboard_contracts import parse_event
 from satellites.provider import MockSatelliteProvider, SatelliteConfig, SkyfieldSatelliteProvider
 from skyfield.api import load
-from wallboard_worker.jobs import run_satellite_passes
+from wallboard_worker.jobs import run_satellite_orbits, run_satellite_passes
 from wallboard_worker.settings import Settings
 
 # The bundled de421.bsp lives at the repo root; point the Loader there in tests
@@ -373,6 +374,136 @@ def test_the_job_forwards_the_pass_geometry_it_is_given(mock_post) -> None:
     # And the sub-satellite points the globe plots (ADR-0030).
     assert payload["track"][1]["lat"] == 37.6
     assert payload["track"][1]["lng"] == -122.0
+
+
+ORBIT_NOW = datetime(2026, 8, 22, 12, 0, 0, tzinfo=UTC)
+
+
+def test_mock_provider_produces_full_orbits() -> None:
+    """Mock mode must draw whole orbits offline (ADR-0041, hardware-optional rule)."""
+    orbits = MockSatelliteProvider().get_orbits(ORBIT_NOW)
+
+    names = {orbit["name"] for orbit in orbits}
+    assert "ISS (ZARYA)" in names
+    assert "HST" in names
+    assert len(orbits) == 4
+
+    for orbit in orbits:
+        track = orbit["track"]
+        assert len(track) >= 30
+        # The current sub-point is the first sample (now).
+        assert orbit["sub_lat"] == track[0]["lat"]
+        assert orbit["sub_lng"] == track[0]["lng"]
+        # Absolute, non-decreasing sample times that start at `now`.
+        times = [sample["at"] for sample in track]
+        assert times == sorted(times)
+        assert times[0] == ORBIT_NOW
+        # A whole revolution wraps the globe, and latitude stays in the inclination envelope.
+        lngs = [sample["lng"] for sample in track]
+        assert max(lngs) - min(lngs) > 180
+        assert all(-99.0 <= sample["lat"] <= 99.0 for sample in track)
+
+
+def test_mock_orbits_are_deterministic() -> None:
+    # A fixed `now` must give a fixed result, so tests and CI are stable.
+    assert MockSatelliteProvider().get_orbits(ORBIT_NOW) == MockSatelliteProvider().get_orbits(
+        ORBIT_NOW
+    )
+
+
+@patch("httpx.get")
+def test_skyfield_get_orbits_samples_a_full_period(mock_httpx_get, tmp_path) -> None:
+    """A real ISS TLE, propagated offline — sub-satellite points need no ephemeris."""
+    config = SatelliteConfig(
+        observer_lat=37.7749,
+        observer_lon=-122.4194,
+        orbit_norad_ids=[25544],
+        orbit_tle_url="http://example.test/orbit.txt",
+        orbit_tle_cache_path=str(tmp_path / "orbit.txt"),
+        orbit_samples=16,
+    )
+    provider = SkyfieldSatelliteProvider(config)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = ISS_TLE
+    mock_httpx_get.return_value = mock_resp
+
+    orbits = provider.get_orbits(ORBIT_NOW)
+
+    assert len(orbits) == 1
+    orbit = orbits[0]
+    assert orbit["norad_id"] == 25544
+    track = orbit["track"]
+    assert len(track) == 17  # orbit_samples + 1
+    assert orbit["sub_lat"] == track[0]["lat"]
+    times = [sample["at"] for sample in track]
+    assert times == sorted(times)
+    assert times[0] == ORBIT_NOW
+    # One ISS revolution is ~92-93 minutes.
+    span_min = (times[-1] - times[0]).total_seconds() / 60.0
+    assert 88.0 <= span_min <= 96.0
+    # ISS inclination ~51.6°, so the ground track stays within ~±52°, and wraps the planet.
+    assert all(-53.0 <= sample["lat"] <= 53.0 for sample in track)
+    lngs = [sample["lng"] for sample in track]
+    assert max(lngs) - min(lngs) > 180.0
+
+
+@patch("httpx.get")
+def test_skyfield_get_orbits_skips_a_norad_not_in_the_feed(mock_httpx_get, tmp_path) -> None:
+    # An id absent from the fetched TLE set is skipped, not fatal.
+    config = SatelliteConfig(
+        observer_lat=37.7749,
+        observer_lon=-122.4194,
+        orbit_norad_ids=[99999],
+        orbit_tle_url="http://example.test/orbit.txt",
+        orbit_tle_cache_path=str(tmp_path / "orbit_skip.txt"),
+        orbit_samples=8,
+    )
+    provider = SkyfieldSatelliteProvider(config)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = ISS_TLE
+    mock_httpx_get.return_value = mock_resp
+
+    assert provider.get_orbits(ORBIT_NOW) == []
+
+
+def test_run_satellite_orbits_degrades_gracefully() -> None:
+    provider = MagicMock()
+    provider.get_orbits.side_effect = Exception("propagation failed")
+    assert run_satellite_orbits(Settings(), provider) is None
+
+
+@patch("httpx.post")
+def test_run_satellite_orbits_emits_a_valid_event(mock_post) -> None:
+    """The job forwards the tracked set as a contract-valid ambient.satellite_orbits event."""
+    token_resp, ingest_resp = MagicMock(), MagicMock()
+    token_resp.status_code = 200
+    token_resp.json.return_value = {"token": "tok"}
+    ingest_resp.status_code = 200
+    ingest_resp.json.return_value = {"status": "stored"}
+    mock_post.side_effect = [token_resp, ingest_resp]
+
+    assert run_satellite_orbits(Settings(), MockSatelliteProvider(), now=ORBIT_NOW) is not None
+
+    # Whichever POST carried the batch, parse the event back through the contract.
+    event = None
+    for call in mock_post.mock_calls:
+        body = call.kwargs.get("json")
+        if isinstance(body, dict) and body.get("events"):
+            event = body["events"][0]
+            break
+    assert event is not None, "no ingest POST was made"
+
+    parsed = parse_event(event)
+    assert parsed.type == "ambient.satellite_orbits"
+    assert len(parsed.payload.satellites) == 4
+    first = parsed.payload.satellites[0]
+    assert first.norad_id == 25544
+    assert len(first.track) >= 30
+    assert first.sub_lat == first.track[0].lat
 
 
 @patch("httpx.post")

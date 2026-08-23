@@ -238,6 +238,25 @@ export interface AmbientSatellitePassPayload {
   track: Array<SatelliteTrackSample>;
 }
 
+export interface SatelliteOrbitSample {
+  at: string;
+  lat: number;
+  lng: number;
+}
+
+export interface SatelliteOrbit {
+  name: string;
+  norad_id: number;
+  sub_lat: number;
+  sub_lng: number;
+  track: Array<SatelliteOrbitSample>;
+}
+
+export interface AmbientSatelliteOrbitsPayload {
+  satellites: Array<SatelliteOrbit>;
+  as_of: string;
+}
+
 export interface AmbientAircraftNearby {
   callsign: string;
   altitude_ft: number;
@@ -849,6 +868,17 @@ export interface AmbientSatellitePassEvent {
   payload: AmbientSatellitePassPayload;
 }
 
+export interface AmbientSatelliteOrbitsEvent {
+  event_id: string;
+  type: "ambient.satellite_orbits";
+  source: string;
+  occurred_at: string;
+  monotonic_ms: number;
+  door_id: string;
+  trace_id: string;
+  payload: AmbientSatelliteOrbitsPayload;
+}
+
 export interface AmbientAircraftSummaryEvent {
   event_id: string;
   type: "ambient.aircraft_summary";
@@ -926,6 +956,6 @@ export interface SystemLatencySampleEvent {
   payload: SystemLatencySamplePayload;
 }
 
-export type DoorboardEvent = DoorButtonPressedEvent | DoorKnockDetectedEvent | DoorContactChangedEvent | DoorProfileUpdateEvent | DoorProfileClearEvent | DoorEffectPlayEvent | DoorControllerHealthEvent | VisionFaceVisibleEvent | VisionIdentityStableEvent | VisionIdentityExpiredEvent | VisionPrivacyModeChangedEvent | VisionPipelineStatusEvent | SessionStateChangedEvent | SessionStartedEvent | SessionEndedEvent | MediaRecordingStartedEvent | MediaRecordingFinalizedEvent | MediaThumbnailReadyEvent | MediaRetentionDeletedEvent | MediaStorageStatusEvent | SyncUploadQueuedEvent | SyncUploadCompletedEvent | SyncUploadFailedEvent | StatusPresenceChangedEvent | SocialGuestbookEntryCreatedEvent | SocialPollVoteCastEvent | SocialCheckinCreatedEvent | SocialMoodUpdatedEvent | SocialScoreboardUpdatedEvent | SocialDeletionRequestedEvent | AmbientBirdSummaryEvent | AmbientSatellitePassEvent | AmbientAircraftSummaryEvent | AmbientPrinterStatusEvent | AmbientFoodRecommendationEvent | AmbientAcademicCountdownEvent | SystemServiceHealthEvent | SystemStorageAlertEvent | SystemLatencySampleEvent;
+export type DoorboardEvent = DoorButtonPressedEvent | DoorKnockDetectedEvent | DoorContactChangedEvent | DoorProfileUpdateEvent | DoorProfileClearEvent | DoorEffectPlayEvent | DoorControllerHealthEvent | VisionFaceVisibleEvent | VisionIdentityStableEvent | VisionIdentityExpiredEvent | VisionPrivacyModeChangedEvent | VisionPipelineStatusEvent | SessionStateChangedEvent | SessionStartedEvent | SessionEndedEvent | MediaRecordingStartedEvent | MediaRecordingFinalizedEvent | MediaThumbnailReadyEvent | MediaRetentionDeletedEvent | MediaStorageStatusEvent | SyncUploadQueuedEvent | SyncUploadCompletedEvent | SyncUploadFailedEvent | StatusPresenceChangedEvent | SocialGuestbookEntryCreatedEvent | SocialPollVoteCastEvent | SocialCheckinCreatedEvent | SocialMoodUpdatedEvent | SocialScoreboardUpdatedEvent | SocialDeletionRequestedEvent | AmbientBirdSummaryEvent | AmbientSatellitePassEvent | AmbientSatelliteOrbitsEvent | AmbientAircraftSummaryEvent | AmbientPrinterStatusEvent | AmbientFoodRecommendationEvent | AmbientAcademicCountdownEvent | SystemServiceHealthEvent | SystemStorageAlertEvent | SystemLatencySampleEvent;
 
-export type DoorboardEventType = "door.button_pressed" | "door.knock_detected" | "door.contact_changed" | "door.profile_update" | "door.profile_clear" | "door.effect_play" | "door.controller_health" | "vision.face_visible" | "vision.identity_stable" | "vision.identity_expired" | "vision.privacy_mode_changed" | "vision.pipeline_status" | "session.state_changed" | "session.started" | "session.ended" | "media.recording_started" | "media.recording_finalized" | "media.thumbnail_ready" | "media.retention_deleted" | "media.storage_status" | "sync.upload_queued" | "sync.upload_completed" | "sync.upload_failed" | "status.presence_changed" | "social.guestbook_entry_created" | "social.poll_vote_cast" | "social.checkin_created" | "social.mood_updated" | "social.scoreboard_updated" | "social.deletion_requested" | "ambient.bird_summary" | "ambient.satellite_pass" | "ambient.aircraft_summary" | "ambient.printer_status" | "ambient.food_recommendation" | "ambient.academic_countdown" | "system.service_health" | "system.storage_alert" | "system.latency_sample";
+export type DoorboardEventType = "door.button_pressed" | "door.knock_detected" | "door.contact_changed" | "door.profile_update" | "door.profile_clear" | "door.effect_play" | "door.controller_health" | "vision.face_visible" | "vision.identity_stable" | "vision.identity_expired" | "vision.privacy_mode_changed" | "vision.pipeline_status" | "session.state_changed" | "session.started" | "session.ended" | "media.recording_started" | "media.recording_finalized" | "media.thumbnail_ready" | "media.retention_deleted" | "media.storage_status" | "sync.upload_queued" | "sync.upload_completed" | "sync.upload_failed" | "status.presence_changed" | "social.guestbook_entry_created" | "social.poll_vote_cast" | "social.checkin_created" | "social.mood_updated" | "social.scoreboard_updated" | "social.deletion_requested" | "ambient.bird_summary" | "ambient.satellite_pass" | "ambient.satellite_orbits" | "ambient.aircraft_summary" | "ambient.printer_status" | "ambient.food_recommendation" | "ambient.academic_countdown" | "system.service_health" | "system.storage_alert" | "system.latency_sample";

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Protocol
 
 from door_sync.fence import resolve_syncable
+from door_sync.targets import DEFAULT_NAS_MOUNT_MARKER
 
 
 def _utcnow() -> str:
@@ -76,10 +77,18 @@ class FilesystemGalleryStore:
     pass the same sync fence as media uploads.
     """
 
-    def __init__(self, *, nas_root: Path, ssd_data_root: Path, syncable_roots: tuple[str, ...]):
+    def __init__(
+        self,
+        *,
+        nas_root: Path,
+        ssd_data_root: Path,
+        syncable_roots: tuple[str, ...],
+        mount_marker: str = DEFAULT_NAS_MOUNT_MARKER,
+    ):
         self._nas_root = nas_root
         self._ssd_data_root = ssd_data_root
         self._syncable_roots = syncable_roots
+        self._mount_marker = mount_marker
         self._manifest_path = nas_root / "gallery" / "manifest.json"
 
     def ingest_approved_photo(self, photo: GalleryPhotoInput) -> GalleryPhoto:
@@ -212,6 +221,17 @@ class FilesystemGalleryStore:
     def _ensure_nas(self) -> None:
         if not self._nas_root.exists() or not self._nas_root.is_dir():
             msg = f"NAS gallery root is unavailable: {self._nas_root}"
+            raise FileNotFoundError(msg)
+        # "exists and is a directory" is not "the share is mounted": an unmounted
+        # NAS leaves the bare mountpoint on the Pi's microSD rootfs, so gallery
+        # photos would accumulate there silently. Require the marker that lives only
+        # on the share (same guard, same sentinel as FilesystemNasTarget); never
+        # create it here.
+        if not (self._nas_root / self._mount_marker).exists():
+            msg = (
+                f"NAS gallery share not mounted at {self._nas_root}: "
+                f"marker {self._mount_marker} absent"
+            )
             raise FileNotFoundError(msg)
 
     def _copy(self, src: Path, dest: Path) -> None:

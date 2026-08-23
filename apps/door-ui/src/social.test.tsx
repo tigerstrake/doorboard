@@ -285,7 +285,11 @@ describe("T-405 public kiosk regressions", () => {
     expect(deleteButton?.disabled).toBe(true);
   });
 
-  it("shows post-ring choices immediately and permits retry after a local service failure", async () => {
+  it("never shows the ringing screen when the ring POST fails, and permits retry", async () => {
+    // Updated for the honest-ring fix (was "shows post-ring choices immediately"): the UI
+    // used to flip to RINGING optimistically, so a ring the door-api never confirmed still
+    // showed the ringing screen. Now a failed POST keeps the visitor on home and surfaces a
+    // retry on the ring button instead of pretending the bell fired.
     window.history.pushState(null, "", "/doorpad");
     const fetchMock = mockFetchSequence([
       { body: { session: { state: "IDLE" }, config: {} } },
@@ -296,19 +300,46 @@ describe("T-405 public kiosk regressions", () => {
 
     await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
     fireEvent.click(screen.getByText("Ring Bell"));
-    expect(screen.getByText("Bell sent")).toBeTruthy();
-    expect(screen.getByText("Live view at the door")).toBeTruthy();
-    expect(screen.getByText("Wait for Someone to Open")).toBeTruthy();
-    expect(screen.getByText("Send a Video Message")).toBeTruthy();
-    expect(document.querySelector("#post-ring-checkin")).toBeTruthy();
-    expect(screen.queryByText("Camera Notice & Deletion Requests")).toBeNull();
-    await waitFor(() => expect(screen.getByText("Retry Bell")).toBeTruthy());
-    fireEvent.click(screen.getByText("Retry Bell"));
+
+    // The POST fails, so the ring button surfaces a retry — and the ringing screen and its
+    // post-ring choices must NOT appear, because the bell was never confirmed.
+    await waitFor(() => expect(screen.getByText(/Bell Unavailable/)).toBeTruthy());
+    expect(screen.queryByText("Bell sent")).toBeNull();
+    expect(screen.queryByText("Live view at the door")).toBeNull();
+    expect(document.querySelector("#post-ring-checkin")).toBeNull();
+
+    fireEvent.click(screen.getByText(/Bell Unavailable/));
     await waitFor(() => {
       expect(
         fetchMock.mock.calls.filter(([url]) => String(url).includes("/doorpad/ring"))
       ).toHaveLength(2);
     });
+  });
+
+  it("shows a calm chime-offline aside when a ring is accepted but the ESP32 effect failed", async () => {
+    // accepted:true means the resident IS notified through the session path, so we still
+    // show the ringing screen — but effect.status "unavailable" means the local light/chime
+    // did not fire, so we add a calm aside rather than overstate the physical bell.
+    window.history.pushState(null, "", "/doorpad");
+    mockFetchSequence([
+      { body: { session: { state: "IDLE" }, config: {} } },
+      {
+        body: {
+          accepted: true,
+          effect: { status: "unavailable" },
+          session: { state: "RINGING", session_id: "sess-effect" },
+        },
+      },
+    ]);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
+    fireEvent.click(screen.getByText("Ring Bell"));
+
+    await waitFor(() => expect(screen.getByText("Bell sent")).toBeTruthy());
+    expect(screen.getByText(/Bell chime offline/)).toBeTruthy();
+    expect(screen.getByText(/they've still been notified/)).toBeTruthy();
   });
 
   it("ignores malformed and oversized kiosk-local content history", async () => {
@@ -366,22 +397,28 @@ describe("T-405 public kiosk regressions", () => {
     expect(screen.queryByText("Recording Starts In")).toBeNull();
   });
 
-  it("keeps the camera notice behind the About tile", async () => {
+  it("moved the About content off the doorpad, keeping only the data-deletion screen", async () => {
+    // The About text is now a wallboard channel (its focused render is covered in
+    // wallboardFocusSplit.test.tsx). The doorpad's privacy screen keeps only the
+    // visitor-facing "what have I left here, and how do I erase it" controls.
     window.history.pushState(null, "", "/doorpad");
     mockFetchSequence([{ body: { session: { state: "IDLE" }, config: {} } }]);
 
     render(<App />);
 
     await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
-    // The home screen stays a grid of actions: the notice is one tap away, not inline.
     expect(screen.queryByTestId("about-doorboard")).toBeNull();
 
-    const aboutTile = document.getElementById("btn-privacy");
-    expect(aboutTile).toBeTruthy();
-    fireEvent.click(aboutTile as HTMLElement);
+    const privacyTile = document.getElementById("btn-privacy");
+    expect(privacyTile).toBeTruthy();
+    fireEvent.click(privacyTile as HTMLElement);
 
-    expect(screen.getByTestId("about-doorboard")).toBeTruthy();
-    expect(screen.getByText("If you are not enrolled")).toBeTruthy();
+    // The About section is gone from the doorpad entirely...
+    expect(screen.queryByTestId("about-doorboard")).toBeNull();
+    expect(screen.queryByText("If you are not enrolled")).toBeNull();
+    // ...but the deletion controls are still here and working.
+    expect(screen.getByText("Request Deletion of My Data")).toBeTruthy();
+    expect(screen.getByText(/Nothing submitted yet this session/)).toBeTruthy();
   });
 
   it("lets DoorPad choose a mock Wallboard focused channel locally", async () => {
@@ -397,6 +434,23 @@ describe("T-405 public kiosk regressions", () => {
     const stored = window.localStorage.getItem("doorboard_wallboard_focus_request");
     expect(stored).toContain('"mode":"focus"');
     expect(stored).toContain('"channel":"aircraft"');
+  });
+
+  it("offers About as a first-class selectable Wallboard channel from the control panel", async () => {
+    // The About tile used to be ambient-only (channel: null); it is now individually
+    // focusable from the launcher, exactly like Flights, satellite, birds, etc.
+    window.history.pushState(null, "", "/doorpad");
+    mockFetchSequence([{ body: { session: { state: "IDLE" }, config: {} } }]);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
+    fireEvent.click(screen.getByText("Wallboard Control"));
+    fireEvent.click(screen.getByText("About this doorboard"));
+
+    const stored = window.localStorage.getItem("doorboard_wallboard_focus_request");
+    expect(stored).toContain('"mode":"focus"');
+    expect(stored).toContain('"channel":"about"');
   });
 });
 

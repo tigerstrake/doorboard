@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     event_forward_timeout_s: float = Field(
         default=1.0, alias="VISIOND_EVENT_FORWARD_TIMEOUT_S", gt=0
     )
+    # When the ESP32 profile push is relayed to door-api (no local UART transport,
+    # ADR-0040), a same-profile refresh is sent at most this often — the ESP32 cache
+    # TTL is a couple seconds, so ~1 Hz keeps it warm without a loopback POST per
+    # frame. A new/changed profile ignores this and goes immediately.
+    esp32_profile_relay_min_interval_ms: int = Field(
+        default=1000, alias="VISIOND_ESP32_PROFILE_RELAY_MIN_INTERVAL_MS", ge=0
+    )
 
     # ── durable archive purge delivery ───────────────────────────────────
     sync_base_url: str = Field(default="http://127.0.0.1:8083", alias="DOOR_SYNC_BASE_URL")

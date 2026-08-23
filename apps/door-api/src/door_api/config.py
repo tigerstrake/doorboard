@@ -230,8 +230,13 @@ class SessionConfig:
     # selection. Short, so a dead relay stops being advertised quickly.
     visitor_relay_freshness_s: float = 30.0
 
-    # ESP32 feedback effect requested for DoorPad touch actions.
-    doorpad_effect_id: str = "generic_chime"
+    # ESP32 feedback effect requested for DoorPad touch actions. This must name an
+    # effect the firmware actually has (`door_effect_from_name` in
+    # firmware/esp32-door-controller/components/door_effects/door_effects.c): an
+    # unknown name resolves to DOOR_EFFECT_NONE, and the controller acks the message
+    # and then plays nothing, which is indistinguishable from success here.
+    # "generic_chime" was such a name, so the DoorPad ring produced no feedback at all.
+    doorpad_effect_id: str = "generic_press"
     doorpad_effect_duration_ms: int = 900
 
     # Optional MQTT bridge: subscribe to the NUC control-plane's Mosquitto and
@@ -343,7 +348,7 @@ class SessionConfig:
             visitor_relay_timeout_s=_env_float("DOOR_API_VISITOR_RELAY_TIMEOUT_S", 4.0),
             visitor_relay_backoff_max_s=_env_float("DOOR_API_VISITOR_RELAY_BACKOFF_MAX_S", 60.0),
             visitor_relay_freshness_s=_env_float("DOOR_API_VISITOR_RELAY_FRESHNESS_S", 30.0),
-            doorpad_effect_id=os.environ.get("DOOR_API_DOORPAD_EFFECT_ID", "generic_chime"),
+            doorpad_effect_id=os.environ.get("DOOR_API_DOORPAD_EFFECT_ID", "generic_press"),
             doorpad_effect_duration_ms=int(
                 _env_float("DOOR_API_DOORPAD_EFFECT_DURATION_MS", 900.0)
             ),

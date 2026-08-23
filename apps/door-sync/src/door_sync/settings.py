@@ -24,6 +24,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from door_sync.fence import validate_roots
+from door_sync.targets import DEFAULT_NAS_MOUNT_MARKER
 
 
 class Settings(BaseSettings):
@@ -60,6 +61,14 @@ class Settings(BaseSettings):
     # filesystem adapter is the CI/dev path and models a mounted share exactly.
     nas_sync_target: str = Field(default="", alias="NAS_SYNC_TARGET")
 
+    # Marker file that must exist ON the share before anything is archived to it.
+    # An unmounted share leaves the bare mountpoint on the Pi's microSD rootfs,
+    # where a write would "succeed" and read-back-verify — and then license the
+    # SSD original for deletion (ADR-0007 violation). door-sync never creates
+    # this file; provision it on the NAS once, exactly like the Postgres backup
+    # loop's BACKUP_MARKER (infra/compose/backup/pg-backup.sh).
+    nas_mount_marker: str = Field(default=DEFAULT_NAS_MOUNT_MARKER, alias="NAS_MOUNT_MARKER")
+
     # Which media target to use: "nas" (filesystem archive) or "mock" (in-proc,
     # for dev without a share). Events/purge always go to the NUC target.
     media_target: str = Field(default="mock", alias="SYNC_MEDIA_TARGET")
@@ -91,6 +100,15 @@ class Settings(BaseSettings):
     # while still catching near-term duplicate re-deliveries. Dead-letters are
     # never auto-pruned (they need attention).
     completed_retention_s: int = Field(default=24 * 3600, alias="SYNC_COMPLETED_RETENTION_S")
+
+    # ── health ────────────────────────────────────────────────────────────────
+    # A target that is merely unreachable only ever raises TransientError, which
+    # never dead-letters — so a week-long NAS outage would otherwise report a
+    # green /health over a queue that has drained nothing. Report degraded once
+    # the oldest pending item is older than this. Default matches the
+    # SyncQueueAging alert in infra/monitoring/alert.rules.yml (4h) so the local
+    # health endpoint and the NUC's alert agree on when the backlog is stale.
+    pending_age_degraded_s: int = Field(default=4 * 3600, alias="SYNC_PENDING_AGE_DEGRADED_S")
 
     @field_validator("media_target")
     @classmethod

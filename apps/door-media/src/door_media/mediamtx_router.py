@@ -983,7 +983,9 @@ class MediaMTXRouter:
                     StreamInfo(
                         name=stream,
                         whep_url=f"http://127.0.0.1:8889/{stream}/whep",
-                        stream_up=True,
+                        # A configured path with no publisher answers 200 with
+                        # ``ready: false`` — the camera is dead, not the stream up.
+                        stream_up=data.get("ready") is True,
                         webrtc_clients=readers,
                     )
                 ]
@@ -999,12 +1001,21 @@ class MediaMTXRouter:
         ]
 
     async def health_check(self) -> bool:
-        """Return True if MediaMTX API is reachable and the stream is live."""
+        """Return True if MediaMTX API is reachable and the stream is live.
+
+        A 200 is not enough. MediaMTX answers 200 with ``{"ready": false,
+        "source": null}`` for a path that is *configured* but has no publisher —
+        the camera unplugged, the libcamera publisher crashed, ``runOnInit``
+        never started. Health must mean frames are flowing, so ``ready`` is the
+        verdict; a 200 alone would keep /health green over a dead camera.
+        """
         try:
             resp = await self._http.get(
                 f"/v3/paths/get/{self._settings.visitor_cam_stream}",
             )
-            return resp.status_code == 200
+            if resp.status_code != 200:
+                return False
+            return resp.json().get("ready") is True
         except Exception:
             return False
 

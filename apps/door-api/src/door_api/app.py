@@ -32,7 +32,7 @@ from doorboard_contracts.events import (
     consent_covers_extended_personalisation,
     parse_event,
 )
-from doorboard_esp32_link import Esp32Transport, WireMessage
+from doorboard_esp32_link import Esp32Transport
 from doorboard_esp32_link.esp32 import uuid7_now
 from fastapi import (
     Depends,
@@ -72,6 +72,7 @@ from door_api.visitor_relay import (
     HttpVisitorRelayTransport,
     VisitorRelayTransport,
     VisitorRelayWorker,
+    opaque_session_id,
 )
 from door_api.visitor_relay import build_snapshot as build_visitor_snapshot
 from door_api.visitor_tokens import (
@@ -128,6 +129,13 @@ class DoorApiState:
         self.esp32_transport: Esp32Transport | None = None
         self.effect_requests = 0
         self.effect_unavailable = 0
+        # Recognition profile pushes relayed from door-visiond onto the ESP32 link.
+        # door-visiond computes the profile + expiry but door-api owns the single UART,
+        # so it forwards door.profile_update/clear here and door-api puts them on the
+        # wire (ADR-0040). Counters so a leg that silently does nothing is visible.
+        self.esp32_profile_relayed = 0
+        self.esp32_profile_relay_failed = 0
+        self.esp32_profile_relay_noop = 0
         self.media_forward_errors = 0
         self.media_forward_successes = 0
         self.sync_forward_errors = 0
@@ -180,9 +188,21 @@ class DoorApiState:
         self.social_store = SocialStore(self.social_config.db_path)
 
         def on_social_event(event: dict[str, Any]) -> None:
+            # The NUC archive and moderation record need every social event, so
+            # this always queues for upstream sync.
             dropped = self.store.enqueue_sync_event(event)
             if dropped:
                 self.sync_forward_errors += dropped
+            # A guestbook entry is created `pending` and becomes public only once an
+            # admin approves it (SocialService.approve_guestbook_entry). Fanning the
+            # created event out over /ws would put unmoderated text on the corridor
+            # wallboard the instant it is written — exactly what the moderation queue
+            # exists to prevent. No kiosk consumes this delta (the wallboard renders
+            # the approved list it polls from GET /guestbook), so it is dropped from
+            # the live broadcast while still being archived above. Every other social
+            # event still fans out live.
+            if event.get("type") == "social.guestbook_entry_created":
+                return
             self.broadcast.send_delta(event)
 
         self.social_service = SocialService(
@@ -580,6 +600,10 @@ class DoorApiState:
         """Emit and, when configured, send DoorPad feedback to the ESP32."""
         self.effect_requests += 1
         event_trace = trace_id or uuid4()
+        effect_payload: dict[str, object] = {
+            "effect_id": self.config.doorpad_effect_id,
+            "duration_ms": self.config.doorpad_effect_duration_ms,
+        }
         event = {
             "event_id": str(uuid7_now()),
             "type": "door.effect_play",
@@ -588,10 +612,7 @@ class DoorApiState:
             "monotonic_ms": int(time.monotonic() * 1000),
             "door_id": self.config.door_id,
             "trace_id": str(event_trace),
-            "payload": {
-                "effect_id": self.config.doorpad_effect_id,
-                "duration_ms": self.config.doorpad_effect_duration_ms,
-            },
+            "payload": effect_payload,
         }
         self.broadcast.send_delta(event)
 
@@ -600,19 +621,47 @@ class DoorApiState:
             return {"status": "unavailable"}
 
         try:
+            # Built by the transport, never by hand: it owns the sequence counter.
+            # This used to send seq=0 on every ring, and the controller dedupes by
+            # (boot_id, seq) in a 16-entry ring -- so the second and every later tap
+            # was acked and then discarded, while this method still reported "sent"
+            # for an effect nobody saw. ARCHITECTURE.md §10: never pretend a physical
+            # effect occurred. Reused sequence numbers also collided in the
+            # transport's pending-ack table, so two near-simultaneous taps raised
+            # Esp32ProtocolError instead of playing twice.
             await self.esp32_transport.send(
-                WireMessage(
-                    v=1,
-                    seq=0,
-                    message_type="effect_play",
-                    ack=None,
-                    payload=event["payload"],
-                )
+                self.esp32_transport.make_message("effect_play", effect_payload)
             )
         except Exception:
             self.effect_unavailable += 1
             return {"status": "failed"}
         return {"status": "sent"}
+
+    async def relay_esp32_profile(self, event: DoorboardEvent) -> str:
+        """Put a recognition profile push from door-visiond onto the ESP32 link.
+
+        door-visiond owns recognition and computes the profile + its expiry, but
+        door-api owns the single ESP32 UART (ADR-0006, ADR-0040), so the proactive
+        ``door.profile_update`` / ``door.profile_clear`` cannot go direct — it is
+        forwarded here and door-api is the wire. ``send_event`` does the expiry→ttl
+        conversion and allocates the transport's own sequence number, so this shares
+        no seq counter with the doorpad effect path.
+
+        Best-effort, like the doorpad light: the personalized greeting is a
+        convenience, never the critical path, so a missing/mock ESP32 or an offline
+        controller is a recorded no-op/failure, never an error the caller must handle.
+        """
+        if self.esp32_transport is None:
+            self.esp32_profile_relay_noop += 1
+            return "unavailable"
+        try:
+            await self.esp32_transport.send_event(event)
+        except Exception:
+            self.esp32_profile_relay_failed += 1
+            logger.warning("esp32_profile_relay_failed", extra={"event_type": event.type})
+            return "failed"
+        self.esp32_profile_relayed += 1
+        return "sent"
 
     def visitor_token(self) -> dict[str, str | int]:
         snapshot = self.machine.snapshot()
@@ -797,11 +846,50 @@ class DoorApiState:
             if action.action_id in self._visitor_relay_applied:
                 return self._visitor_relay_applied[action.action_id]
 
+            # Bind the action to the live session before applying it. The relay
+            # leases actions rather than deleting them, so one minted during session
+            # A can still be delivered after A has ended — and applying it under
+            # whatever session is live now would attach A-writer's note to whoever is
+            # recognised during session B (ADR-0018 §2: a write carries the recognised
+            # person of the session it was made in, never a later one). The snapshot
+            # path already refuses to publish across a session boundary; the write
+            # path must refuse too. Reject rather than silently anonymise: a note that
+            # outlived its session is an edge case (a relay outage spanning the
+            # boundary), and dropping it is safer than posting it under the wrong name.
+            snapshot = self.machine.snapshot()
+            try:
+                claims = decode_visitor_token(token, secret=self.config.visitor_token_secret)
+            except VisitorTokenError:
+                self._visitor_relay_token = None
+                return VisitorActionOutcome(
+                    action_id=action.action_id,
+                    kind="note",
+                    status="rejected",
+                    reason="session_mismatch",
+                )
+            # The phone only ever sees the opaque session id (build_snapshot hashes
+            # the raw UUID through opaque_session_id), so the action echoes that form
+            # back — compare it against the live session hashed the same way, not the
+            # raw UUID.
+            if (
+                snapshot.session_id is None
+                or claims.session_id != snapshot.session_id
+                or action.session_id != opaque_session_id(str(snapshot.session_id))
+            ):
+                return VisitorActionOutcome(
+                    action_id=action.action_id,
+                    kind="note",
+                    status="rejected",
+                    reason="session_mismatch",
+                )
+
             # Bucket rate limits per session rather than per real IP: the relay
             # deliberately does not forward visitor IP addresses, and we would
             # rather not collect them anyway.
             pseudo_ip = f"relay:{action.session_id}"
 
+            # Safe now: the action provably belongs to the live session, so the
+            # recognised person (if any) is that session's, not a later one's.
             attributed = self.attributable_person_id()
 
             if action.note is not None:
@@ -1121,6 +1209,9 @@ async def metrics() -> Response:
         {
             "door_api_doorpad_effect_requests_total": state.effect_requests,
             "door_api_doorpad_effect_unavailable_total": state.effect_unavailable,
+            "door_api_esp32_profile_relayed_total": state.esp32_profile_relayed,
+            "door_api_esp32_profile_relay_failed_total": state.esp32_profile_relay_failed,
+            "door_api_esp32_profile_relay_noop_total": state.esp32_profile_relay_noop,
             "door_api_media_forward_errors_total": state.media_forward_errors,
             "door_api_media_forward_successes_total": state.media_forward_successes,
             "door_api_media_outbox_depth": state.store.media_outbox_depth(),
@@ -1235,6 +1326,40 @@ async def internal_events(payload: dict[str, Any]) -> dict[str, Any]:
         )
     changed = state.handle_contract_event(event)
     return {"accepted": True, "changed": changed}
+
+
+@app.post(
+    "/internal/esp32/profile",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(_require_internal_event_token)],
+)
+async def internal_esp32_profile(payload: dict[str, Any]) -> dict[str, Any]:
+    """Relay a recognition profile push from door-visiond to the ESP32 (ADR-0040).
+
+    Separate from ``/internal/events`` on purpose. That route ingests *inbound*
+    identity claims and deliberately refuses ``door.*`` so it can never be used to
+    fake the door's own inputs. This one is the opposite direction: an *outbound*
+    light command that door-api, the owner of the single ESP32 UART, puts on the
+    wire on door-visiond's behalf — door-visiond computes the profile and its
+    expiry but cannot reach the controller itself. It accepts only the two profile
+    events and nothing else, and it never reaches the session machine.
+
+    Token required (503 when unset) and 202 whatever the ESP32 does: the caller is a
+    fire-and-forget forwarder and the personalized light is never the critical path.
+    """
+    try:
+        event = parse_event(payload)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid event envelope"
+        ) from exc
+    if event.type not in ("door.profile_update", "door.profile_clear"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"event type {event.type} is not accepted on this route",
+        )
+    status_str = await state.relay_esp32_profile(event)
+    return {"accepted": True, "status": status_str}
 
 
 @app.post("/doorpad/ring")

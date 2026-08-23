@@ -112,6 +112,7 @@ testpaths = [
     "apps/door-visiond/tests",
     "apps/door-media/tests",
     "apps/door-sync/tests",
+    "apps/door-voice/tests",
     "apps/control-plane-api/tests",
     "apps/wallboard-worker/tests",
     "apps/simulator/tests",

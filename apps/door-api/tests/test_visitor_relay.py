@@ -188,6 +188,45 @@ def test_a_collected_note_becomes_a_guestbook_entry(relay_state: Any) -> None:
     assert any(NOTE_SENTINEL in entry.text for entry in entries)
 
 
+def test_a_note_from_a_foreign_session_is_rejected_not_attributed(relay_state: Any) -> None:
+    """A note minted in a session that has since ended must never be posted under
+    whoever is recognised in the *current* session (ADR-0018 §2). The relay leases
+    actions rather than deleting them, so a stale delivery across a session boundary
+    is a real case — and the danger is that an unrecognised stranger's note gets
+    attributed to a resident recognised later. Attribution binds the writer's own
+    session; a foreign one is refused, not silently re-attributed.
+    """
+    client = TestClient(app)
+    _issue_token(relay_state, client)
+    snapshot = relay_state.visitor_relay_snapshot()
+    assert snapshot is not None
+
+    # A resident is recognised in the live session, with attribution-covering consent.
+    relay_state.machine.handle_identity_stable(
+        person_id="prs_tiger", display_name="Tiger", profile_id="warm_amber", consent_version="v3"
+    )
+    assert relay_state.attributed_display_name() == "Tiger"
+
+    # An action carrying some *other* session's opaque id — the shape the relay would
+    # deliver for a note written in an earlier, now-ended session.
+    foreign = VisitorQueuedAction(
+        action_id=new_action_id(),
+        session_id=opaque_session_id("00000000-0000-0000-0000-000000000000"),
+        submitted_at=snapshot.pushed_at,
+        note=VisitorNoteAction(text=NOTE_SENTINEL),
+    )
+    assert foreign.session_id != snapshot.session_id
+
+    outcome = relay_state.visitor_relay_apply(foreign)
+    assert outcome.status == "rejected"
+    assert outcome.reason == "session_mismatch"
+    # Nothing was written that could carry Tiger's name.
+    entries = relay_state.social_service.list_admin_guestbook_entries(
+        status="pending", limit=10, cursor=None
+    )
+    assert not any(NOTE_SENTINEL in entry.text for entry in entries)
+
+
 def test_duplicate_delivery_applies_once(relay_state: Any) -> None:
     """P-23: the relay leases rather than deletes, so this is a real case."""
     client = TestClient(app)

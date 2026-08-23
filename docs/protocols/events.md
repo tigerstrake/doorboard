@@ -36,8 +36,8 @@ Rules: UTC only; never compute durations from `occurred_at`; `person_id` is opaq
 | Type | Payload |
 |---|---|
 | `vision.face_visible` | `face_count: int`, `largest_face_px: int` — no identity, no embedding |
-| `vision.identity_stable` | `person_id: opaque`, `display_name: string`, `confidence: float`, `expires_at: ISO-8601`, `expires_at_monotonic_ms: int`, `profile_id: string` |
-| `vision.identity_expired` | `person_id: opaque` |
+| `vision.identity_stable` | `person_id: opaque`, `display_name: string`, `accent_color: string\|null`, `consent_version: string\|null`, `confidence: float`, `expires_at: ISO-8601`, `expires_at_monotonic_ms: int`, `profile_id: string` |
+| `vision.identity_expired` | `person_id: opaque`, `reason: "expired"\|"admin"\|"privacy_mode"\|null` |
 | `vision.privacy_mode_changed` | `enabled: bool`, `changed_by: "admin"\|"schedule"\|"physical"` |
 | `vision.pipeline_status` | `mode: "disabled"\|"mock"\|"single-camera"\|"dual-camera"\|"hardware"`, `hailo_ok: bool`, `fps: float`, `inference_ms_p50: float` |
 
@@ -47,7 +47,7 @@ Only enrolled, consenting people ever appear in `identity_stable`. There is no e
 
 | Type | Payload |
 |---|---|
-| `session.state_changed` | `session_id: uuid`, `from_state: State`, `to_state: State`, `trigger: string` |
+| `session.state_changed` | `session_id: uuid`, `from_state: State`, `to_state: State`, `trigger: string`, `display_name: string\|null`, `recipients: string[]\|null` |
 | `session.started` | `session_id`, `entry: "button"\|"touch"\|"approach"` |
 | `session.ended` | `session_id`, `outcome: "answered"\|"unanswered_timeout"\|"message_left"\|"abandoned"\|"reset"` |
 
@@ -98,17 +98,17 @@ Local file deletion is only legal after `sync.upload_completed` with a matching 
 
 | Type | Payload |
 |---|---|
-| `status.presence_changed` | `subject_id: opaque` (owner/roommate), `label: "available"\|"busy"\|"do_not_disturb"\|"sleeping"\|"at_class"\|"at_library"\|"away"\|"unknown"`, `source: "manual"\|"focus_shortcut"\|"geofence_label"\|"calendar"\|"default"`, `until: ISO-8601\|null` |
+| `status.presence_changed` | `subject_id: opaque` (owner/roommate), `label: "social"\|"available"\|"busy"\|"knock_if_urgent"\|"do_not_disturb"\|"sleeping"\|"at_class"\|"at_library"\|"away"\|"unknown"`, `source: "manual"\|"focus_shortcut"\|"geofence_label"\|"calendar"\|"schedule"\|"default"`, `until: ISO-8601\|null` |
 
-Precedence (higher wins): manual > focus_shortcut > geofence_label > calendar > default. Broad labels only — no coordinates, no calendar contents.
+Precedence (higher wins): manual > focus_shortcut > geofence_label > calendar > schedule > default. Broad labels only — no coordinates, no calendar contents.
 
 ## social.* — voluntary interactions (door-api public write, control-plane-api storage)
 
 | Type | Payload |
 |---|---|
-| `social.guestbook_entry_created` | `entry_id: uuid`, `text: string` (sanitized, length-capped), `author_label: string\|null` (freeform, optional) |
+| `social.guestbook_entry_created` | `entry_id: uuid`, `text: string` (sanitized, length-capped), `author_label: string\|null` (freeform, optional), `photo_recording_id: string\|null` (optional reference to a photo-booth recording) |
 | `social.poll_vote_cast` | `poll_id`, `option_id` |
-| `social.checkin_created` | `checkin_id`, `person_id: opaque\|null` (enrolled + consented only), `label: string\|null` |
+| `social.checkin_created` | `checkin_id`, `person_id: opaque\|null` (enrolled + consented only), `label: string\|null`, `photo_recording_id: string\|null` (optional reference to a photo-booth recording) |
 | `social.mood_updated` | `subject_id: opaque`, `mood: string` (from configured set) |
 | `social.scoreboard_updated` | `board_id`, `entry_id`, `delta: int` |
 | `social.deletion_requested` | `target_kind: "guestbook"\|"video_message"\|"photo"\|"checkin"\|"enrollment"`, `target_id` |
@@ -120,10 +120,12 @@ All public writes are rate-limited and produce moderation-capable records with t
 | Type | Payload |
 |---|---|
 | `ambient.bird_summary` | `window: "today"`, `top_species: [{name, count, confidence_avg}]`, `total_detections: int` |
-| `ambient.satellite_pass` | `satellite: string`, `rise_at: ISO-8601`, `max_elevation_deg: float`, `direction: string`, `visible: bool` |
-| `ambient.aircraft_summary` | `nearby: [{callsign, altitude_ft, distance_km, heading}]`, `as_of: ISO-8601` |
+| `ambient.satellite_pass` | `satellite: string`, `rise_at: ISO-8601`, `max_elevation_deg: float`, `direction: string`, `visible: bool`, `set_at: ISO-8601\|null`, `rise_azimuth_deg: float\|null`, `set_azimuth_deg: float\|null`, `culmination_azimuth_deg: float\|null`, `track: [{t_offset_s, azimuth_deg, elevation_deg, lat, lng}]` |
+| `ambient.satellite_orbits` | `satellites: [{name: string, norad_id: int, sub_lat: float, sub_lng: float, track: [{at: ISO-8601, lat: float, lng: float}]}]`, `as_of: ISO-8601` — every interesting satellite, each with one full-period ground track (absolute sample times, so the client shows a live marker without a re-publish) and its current sub-point (ADR-0041) |
+| `ambient.aircraft_summary` | `nearby: [{callsign, altitude_ft, distance_km, heading}]`, `as_of: ISO-8601`, `observer: {latitude, longitude}\|null` |
 | `ambient.printer_status` | `state: "idle"\|"printing"\|"paused"\|"error"\|"offline"`, `job_name: string\|null`, `progress_pct: float\|null`, `eta: ISO-8601\|null` |
-| `ambient.food_recommendation` | `date: ISO-8601 date`, `title: string`, `detail: string\|null`, `provider: string` |
+| `ambient.food_recommendation` | `date: ISO-8601 date`, `title: string`, `detail: string\|null`, `provider: string`, `hall: string\|null`, `backup_hall: string\|null` |
+| `ambient.academic_countdown` | `next: {label, date, days_until, kind}`, `upcoming: [{label, date, days_until, kind}]`, `source: string` |
 
 Wallboard consumes summaries only; raw integration data stays on the control plane.
 

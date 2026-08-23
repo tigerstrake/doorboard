@@ -9,21 +9,24 @@ import {
   CrossfadeSwitch,
   SessionState,
   Gauge,
+  CameraNotice,
+  ConnectionDot,
   profileAccent,
   accentInk,
   warmQrEncoder,
 } from "@doorboard/ui-kit";
+import type { ConnectionLiveness } from "@doorboard/ui-kit";
 import { DoorboardEventClient, uuidv7 } from "@doorboard/event-client";
 import type {
   AmbientAircraftSummaryPayload,
   AmbientBirdSummaryPayload,
   AmbientFoodRecommendationPayload,
   AmbientPrinterStatusPayload,
+  AmbientSatelliteOrbitsPayload,
   AmbientSatellitePassPayload,
   DoorboardEvent,
   PresenceLabel,
 } from "@doorboard/contracts";
-import { AboutDoorboard } from "./AboutDoorboard";
 import { pollShares } from "./PollResultBars";
 import { CampusDiningMap } from "./wallboard/CampusDiningMap";
 import { GuestbookSlideshow } from "./wallboard/GuestbookSlideshow";
@@ -35,6 +38,7 @@ import {
   birdFixture,
   aircraftFixture,
   satelliteFixture,
+  satelliteOrbitsFixture,
   printerFixture,
   scoreboardFixture,
   foodFixture,
@@ -255,8 +259,23 @@ type PhotoCaptureStatus =
 // request settles first and the capture feels intentional, not jarring.
 const POST_RING_PHOTO_DELAY_MS = 600;
 
+// The Pi has no RTC, so at boot its clock reads ~1970 until NTP syncs. Any absolute time
+// derived from the local clock is wrong during that window. One guard, used everywhere a
+// clock-derived time/date would otherwise be shown to the corridor.
+const CLOCK_SYNCED_MIN_YEAR = 2025;
+export function isClockSynced(now: Date): boolean {
+  return now.getFullYear() >= CLOCK_SYNCED_MIN_YEAR;
+}
+
+// The ESP32 light/chime result door-api returns alongside a ring: "sent" means the
+// physical bell fired, "unavailable"/"failed" mean it did not — but an accepted ring is
+// still real (the resident is notified through the session path), so we say so calmly
+// rather than pretend the bell rang.
+type RingEffectStatus = "sent" | "unavailable" | "failed";
+
 interface DoorApiSnapshot {
   accepted?: boolean;
+  effect?: { status?: RingEffectStatus };
   session?: {
     state?: SessionState;
     session_id?: string | null;
@@ -499,9 +518,16 @@ export function App() {
   const [eventConnection, setEventConnection] = useState<"connecting" | "connected" | "disconnected">(
     "connecting"
   );
+  // Liveness for the wallboard connection dot: "live" | "reconnecting" | "stale". Distinct
+  // from `eventConnection` (raw socket status) because a socket can stay open while the
+  // server has silently dropped us — the case the staleness watchdog exists to catch.
+  const [wallboardLiveness, setWallboardLiveness] = useState<ConnectionLiveness>("reconnecting");
   const [ringRequestState, setRingRequestState] = useState<"idle" | "sending" | "sent" | "failed">(
     "idle"
   );
+  // The ESP32 light/chime result of the last accepted ring, so the ringing screen can note
+  // "bell chime offline" without implying the ring itself failed. Null = not applicable.
+  const [ringEffectStatus, setRingEffectStatus] = useState<RingEffectStatus | null>(null);
   
   // DoorPad local state
   const [doorPadScreen, setDoorPadScreen] = useState<DoorPadScreen>("home");
@@ -654,6 +680,18 @@ export function App() {
               culmination_azimuth_deg: satelliteFixture.culmination_azimuth_deg,
               set_azimuth_deg: satelliteFixture.set_azimuth_deg,
               track: satelliteFixture.track,
+            },
+          }
+        : null
+  );
+  const [satelliteOrbits, setSatelliteOrbits] = useState<TimedAmbient<AmbientSatelliteOrbitsPayload> | null>(
+    () =>
+      MOCK_AMBIENT_ENABLED
+        ? {
+            occurredAt: satelliteOrbitsFixture.occurred_at,
+            payload: {
+              satellites: satelliteOrbitsFixture.satellites,
+              as_of: satelliteOrbitsFixture.as_of,
             },
           }
         : null
@@ -882,6 +920,7 @@ export function App() {
         "wallboard.*",
       ],
       onStatusChange: setEventConnection,
+      onLiveness: setWallboardLiveness,
       onSnapshot: (snapshot) => {
         const value = snapshot as DoorApiSnapshot["session"] | DoorApiSnapshot;
         const session =
@@ -996,6 +1035,14 @@ export function App() {
       }
     });
 
+    const unsubscribeSatelliteOrbits = client.subscribe(
+      "ambient.satellite_orbits",
+      (event: DoorboardEvent) => {
+        if (event.type !== "ambient.satellite_orbits") return;
+        setSatelliteOrbits({ payload: event.payload, occurredAt: event.occurred_at });
+      }
+    );
+
     const unsubscribePrinter = client.subscribe("ambient.printer_status", (event: DoorboardEvent) => {
       if (event.type !== "ambient.printer_status") return;
       const previousState = lastPrinterStateRef.current;
@@ -1077,6 +1124,7 @@ export function App() {
       unsubscribeBirds();
       unsubscribeAircraft();
       unsubscribeSatellite();
+      unsubscribeSatelliteOrbits();
       unsubscribePrinter();
       unsubscribeFood();
       unsubscribeAcademic();
@@ -1823,7 +1871,9 @@ export function App() {
             <div className="presence-tile-content">
               {presenceEntries.slice(0, 2).map((presence, index) => (
                 <div className="presence-row" key={index}>
-                  <span>Resident {index + 1}:</span>
+                  {/* Name the residents when VITE_RESIDENTS is configured (e.g. "Tiger,
+                      Adam"); fall back to the anonymous "Resident N" when it isn't. */}
+                  <span>{RESIDENTS[index] ?? `Resident ${index + 1}`}:</span>
                   <StatusBadge label={presence.label} />
                 </div>
               ))}
@@ -1961,7 +2011,7 @@ export function App() {
       },
       {
         key: "about",
-        channel: null,
+        channel: "about",
         node: (
           <Tile title="About Doorboard">
             <div className="about-tile-content">
@@ -2131,6 +2181,7 @@ export function App() {
               birds: birdSummary?.payload ?? null,
               birdCollageUrl: BIRD_COLLAGE_URL,
               satellite: satellitePass?.payload ?? null,
+              satelliteOrbits: satelliteOrbits?.payload ?? null,
               printer: printerStatus?.payload ?? null,
               food: foodRecommendation?.payload ?? null,
               scoreboard: scoreboardRows.length > 0 ? scoreboardRows : null,
@@ -2153,7 +2204,13 @@ export function App() {
                 </span>
               </div>
               <div className="ambient-clock">
-                {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                {isClockSynced(currentTime) ? (
+                  currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                ) : (
+                  // No RTC: at boot the clock reads ~1970 until NTP syncs. Show a placeholder
+                  // rather than broadcast an obviously-wrong time to the corridor.
+                  <span className="ambient-clock--syncing">clock syncing…</span>
+                )}
               </div>
             </header>
 
@@ -2631,21 +2688,35 @@ export function App() {
     setPostRingPhotoStatus("idle");
     setPostRingName("");
     setPostRingCheckinPending(false);
-    setSessionState("RINGING");
-    setSessionObservedAt(Date.now());
-    setDoorPadScreen("ringing");
+    // Do NOT flip to RINGING optimistically. A ring we have not confirmed must never show
+    // the ringing screen — that lies to the visitor if the POST never lands. We navigate
+    // only from the response, driven by the session snapshot door-api returns.
+    setRingEffectStatus(null);
     setRingRequestState("sending");
     const result = await postDoorApi(
       "/doorpad/ring",
       "The local bell service is unavailable. You can still leave a video message."
     );
     if (!result) {
+      // POST failed entirely (door-api down / network error). Stay off the ringing screen
+      // and surface a retry on the home ring button (postDoorApi already toasted why),
+      // rather than pretending the bell fired.
       setRingRequestState("failed");
       return;
     }
-    applySessionSnapshot(result.session);
     setRingRequestState("sent");
-    if (!result.accepted) triggerToast("The bell is already active.");
+    if (!result.accepted) {
+      // A ring is already active elsewhere. The snapshot still routes to the ringing screen,
+      // which is honest — the bell IS ringing, just not from this tap.
+      applySessionSnapshot(result.session);
+      triggerToast("The bell is already active.");
+      return;
+    }
+    // Accepted: the resident is notified through the session path even if the local
+    // light/chime failed. Record the ESP32 effect result so the ringing screen can say
+    // "bell chime offline — they've still been notified" instead of overstating the bell.
+    setRingEffectStatus(result.effect?.status ?? null);
+    applySessionSnapshot(result.session);
   };
 
   const renderVideoPreview = () => <LiveVideoPreview title="Live self-preview" />;
@@ -2774,10 +2845,19 @@ export function App() {
               id="btn-ring"
               variant="primary"
               icon={<span aria-hidden="true">R</span>}
-              hint="Let them know you're here"
+              disabled={ringRequestState === "sending"}
+              hint={
+                ringRequestState === "failed"
+                  ? "The bell didn't confirm — tap to try again"
+                  : "Let them know you're here"
+              }
               onClick={ringDoorbell}
             >
-              Ring Bell
+              {ringRequestState === "sending"
+                ? "Ringing…"
+                : ringRequestState === "failed"
+                  ? "Bell Unavailable — Retry"
+                  : "Ring Bell"}
             </BigButton>
 
             {/* Promoted deliberately: this is how anyone becomes recognised at all, and
@@ -2928,6 +3008,18 @@ export function App() {
                               ? "The local bell service did not confirm the ring. Retry here or leave a video message."
                               : "The bell is ringing inside. You can wait here or leave a video message now."}
                       </p>
+                      {/* Accepted ring, but the ESP32 light/chime didn't fire. The resident
+                          is still notified through the session path, so this is a calm aside,
+                          not an error — it just stops the physical bell being overstated. */}
+                      {sessionState !== "ANSWERED" &&
+                        sessionState !== "UNANSWERED_TIMEOUT" &&
+                        sessionState !== "VIDEO_MESSAGE_OFFERED" &&
+                        ringRequestState !== "failed" &&
+                        (ringEffectStatus === "unavailable" || ringEffectStatus === "failed") && (
+                          <p className="doorpad-journey-status__aside">
+                            Bell chime offline — they've still been notified.
+                          </p>
+                        )}
                     </div>
                   </div>
                   {FEATURE_PHOTOBOOTH &&
@@ -3577,12 +3669,6 @@ export function App() {
 
           {doorPadScreen === "privacy" && (
             <div className="doorpad-sub-content">
-              <h2>About This Doorboard</h2>
-              {/* Shared with the wallboard's About channel so the panel and the hallway
-                  cannot end up describing the same door differently. */}
-              <div className="privacy-info-box">
-                <AboutDoorboard />
-              </div>
               {myContent.length > 0 && (
                 <div className="my-content-list">
                   <p>Things you've submitted this session:</p>
@@ -4129,7 +4215,24 @@ export function App() {
     <>
       {renderToast()}
       {route === "/wallboard" && renderWallboard()}
-      {route === "/doorpad" && renderDoorPad()}
+      {/* Overlays for the public wallboard surface: a calm connection dot so a frozen or
+          reconnecting display is visible to a passerby, and the persistent camera/privacy
+          notice both ARCHITECTURE.md §9 and docs/handoff §2.3 require. The wallboard also
+          renders at "/" when dev tools are off, so cover that path too. */}
+      {(route === "/wallboard" || (route === "/" && !DEV_TOOLS_ENABLED)) && (
+        <>
+          <ConnectionDot liveness={wallboardLiveness} className="wallboard-connection-dot" />
+          <CameraNotice surface="wallboard" className="wallboard-camera-notice" />
+        </>
+      )}
+      {route === "/doorpad" && (
+        // Wrapped so the persistent camera/privacy notice reserves its own row rather than
+        // floating over a control — the 1024x600 panel has no spare space to overlap.
+        <div className="doorpad-surface">
+          {renderDoorPad()}
+          <CameraNotice surface="doorpad" className="doorpad-camera-notice" />
+        </div>
+      )}
       {route === "/visitor" && renderVisitor()}
       {/* Secret owner-only "class year in review" reveal. Never linked from any
           UI; reachable only by typing /reveal#<owner-token>. */}

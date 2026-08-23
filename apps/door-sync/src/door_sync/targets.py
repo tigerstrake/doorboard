@@ -41,6 +41,12 @@ class PermanentError(Exception):
     """Item is fundamentally unprocessable — dead-letter after the cap."""
 
 
+# Marker file that must exist ON the NAS share — never created by any writer.
+# Same sentinel and same rationale as the Postgres backup loop's ``BACKUP_MARKER``
+# (infra/compose/backup/pg-backup.sh).
+DEFAULT_NAS_MOUNT_MARKER = ".doorboard-nas"
+
+
 def sha256_file(path: Path, *, chunk: int = 1 << 20) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -84,10 +90,23 @@ class FilesystemNasTarget:
     Writes atomically (temp file + fsync + rename) under ``nas_root`` and
     verifies by reading the destination back and hashing it. A missing/unwritable
     ``nas_root`` is treated as the mount being down (:class:`TransientError`).
+
+    "``nas_root`` exists and is a directory" is *not* evidence that the share is
+    mounted: when the mount is absent the bare mountpoint still exists on the
+    Pi's microSD rootfs, so the write succeeds, the read-back verifies, and the
+    engine licenses door-media to delete the SSD original — leaving the only
+    copy of the clip on the one tier ADR-0007 forbids for recordings. So the
+    share must additionally carry ``mount_marker``, a file that exists only on
+    the NAS itself and that this class never creates (creating it is exactly
+    what would defeat the check). Its absence is a :class:`TransientError`: an
+    unmounted share is a mount problem, not a bad item, and must retry forever
+    rather than dead-letter. This mirrors ``BACKUP_MARKER`` in
+    ``infra/compose/backup/pg-backup.sh``.
     """
 
-    def __init__(self, nas_root: Path) -> None:
+    def __init__(self, nas_root: Path, *, mount_marker: str = DEFAULT_NAS_MOUNT_MARKER) -> None:
         self._nas_root = nas_root
+        self._mount_marker = mount_marker
 
     async def upload_and_verify(
         self, *, local_path: Path, dest_key: str, expected_sha256: str
@@ -105,6 +124,13 @@ class FilesystemNasTarget:
         # Mount presence check: the share root must exist and be a directory.
         if not self._nas_root.exists() or not self._nas_root.is_dir():
             msg = f"NAS share not mounted at {self._nas_root}"
+            raise TransientError(msg)
+        # …and it must be the share, not the bare mountpoint on the rootfs.
+        if not (self._nas_root / self._mount_marker).exists():
+            msg = (
+                f"NAS share not mounted at {self._nas_root}: "
+                f"marker {self._mount_marker} absent (refusing to archive to local disk)"
+            )
             raise TransientError(msg)
 
         dest = self._nas_root / dest_key

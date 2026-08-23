@@ -140,6 +140,46 @@ export const satelliteFixture = {
   track: satelliteTrack,
 };
 
+/**
+ * Deterministic full-orbit ground tracks for mock mode (ADR-0041), mirroring what
+ * MockSatelliteProvider emits: each an inclined great circle drifting westward as Earth turns
+ * beneath it. Absolute sample times so the panel's live marker advances by the real clock.
+ */
+const wrap180 = (deg: number) => (((((deg + 180) % 360) + 360) % 360) - 180);
+
+function mockOrbitTrack(inclDeg: number, nodeLng: number, periodMin: number, samples = 60) {
+  const start = Date.now();
+  const incl = (inclDeg * Math.PI) / 180;
+  return Array.from({ length: samples + 1 }, (_, index) => {
+    const frac = index / samples;
+    const u = 2 * Math.PI * frac;
+    const lat = (Math.asin(Math.sin(incl) * Math.sin(u)) * 180) / Math.PI;
+    const lonOrbit = (Math.atan2(Math.cos(incl) * Math.sin(u), Math.cos(u)) * 180) / Math.PI;
+    const rotation = 360 * frac * (periodMin / 1436);
+    return {
+      at: new Date(start + frac * periodMin * 60000).toISOString(),
+      lat: Number(lat.toFixed(3)),
+      lng: Number(wrap180(nodeLng + lonOrbit - rotation).toFixed(3)),
+    };
+  });
+}
+
+function mockOrbit(name: string, noradId: number, inclDeg: number, nodeLng: number, periodMin: number) {
+  const track = mockOrbitTrack(inclDeg, nodeLng, periodMin);
+  return { name, norad_id: noradId, sub_lat: track[0]!.lat, sub_lng: track[0]!.lng, track };
+}
+
+export const satelliteOrbitsFixture = {
+  occurred_at: new Date().toISOString(),
+  as_of: new Date().toISOString(),
+  satellites: [
+    mockOrbit("ISS (ZARYA)", 25544, 51.6, -45, 92.9),
+    mockOrbit("CSS (TIANHE)", 48274, 41.5, 100, 91.0),
+    mockOrbit("HST", 20580, 28.5, 10, 95.4),
+    mockOrbit("NOAA 15", 25338, 98.7, -120, 101.0),
+  ],
+};
+
 export const printerFixture = {
   occurred_at: "2026-07-04T12:34:56.123Z",
   state: "printing",

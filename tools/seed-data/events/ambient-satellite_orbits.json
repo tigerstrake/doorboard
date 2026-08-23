@@ -1,0 +1,70 @@
+{
+  "door_id": "primary",
+  "event_id": "018f6b2e-7c9a-7000-8000-3f9d2ba41c11",
+  "monotonic_ms": 123456789,
+  "occurred_at": "2026-07-04T12:34:56.123000Z",
+  "payload": {
+    "as_of": "2026-07-04T12:34:56.123000Z",
+    "satellites": [
+      {
+        "name": "ISS (ZARYA)",
+        "norad_id": 25544,
+        "sub_lat": 12.3,
+        "sub_lng": -45.6,
+        "track": [
+          {
+            "at": "2026-07-04T12:30:00Z",
+            "lat": 12.3,
+            "lng": -45.6
+          },
+          {
+            "at": "2026-07-04T12:53:00Z",
+            "lat": 45.9,
+            "lng": -12.0
+          },
+          {
+            "at": "2026-07-04T13:16:00Z",
+            "lat": 11.7,
+            "lng": 24.8
+          },
+          {
+            "at": "2026-07-04T13:39:00Z",
+            "lat": -45.9,
+            "lng": 60.4
+          },
+          {
+            "at": "2026-07-04T14:02:00Z",
+            "lat": 12.3,
+            "lng": 94.0
+          }
+        ]
+      },
+      {
+        "name": "CSS (TIANHE)",
+        "norad_id": 48274,
+        "sub_lat": -5.0,
+        "sub_lng": 100.0,
+        "track": [
+          {
+            "at": "2026-07-04T12:30:00Z",
+            "lat": -5.0,
+            "lng": 100.0
+          },
+          {
+            "at": "2026-07-04T13:16:00Z",
+            "lat": 33.0,
+            "lng": 150.0
+          },
+          {
+            "at": "2026-07-04T14:02:00Z",
+            "lat": -5.0,
+            "lng": -160.0
+          }
+        ]
+      }
+    ]
+  },
+  "source": "doorboard-contracts-test",
+  "trace_id": "9d1e8a34-52a1-4b0e-9c0f-2a7d1f66b100",
+  "type": "ambient.satellite_orbits"
+}

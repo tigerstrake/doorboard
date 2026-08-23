@@ -1,0 +1,142 @@
+{
+  "$defs": {
+    "AmbientSatelliteOrbitsPayload": {
+      "additionalProperties": false,
+      "description": "Every interesting satellite, each with a full-period ground track and its current\nsub-point (ADR-0041).\n\nA SEPARATE event from ``ambient.satellite_pass``, deliberately not an extension of it.\nThe pass stays the single next VISIBLE pass and its sky (az/el) geometry \u2014 \"which way\ndo I look, and when\". This answers a different question \u2014 where every tracked satellite\nis right now and the whole loop each one traces on the ground \u2014 and overloading the\npass's ``track`` (whose az/el only mean anything during that one pass) with a full orbit\nwould conflate the two.\n\nBeing a brand-new event type it is additive to the catalogue but NOT backward compatible\nat runtime: a consumer on older contracts rejects it rather than ignoring it (StrictModel\n+ a discriminated union with no such member). Deploy the NUC at or before the door \u2014 see\nADR-0041's deployment ordering and ADR-0031.",
+      "properties": {
+        "as_of": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "satellites": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SatelliteOrbit"
+          },
+          "title": "Satellites",
+          "type": "array"
+        }
+      },
+      "required": [
+        "as_of"
+      ],
+      "title": "AmbientSatelliteOrbitsPayload",
+      "type": "object"
+    },
+    "SatelliteOrbit": {
+      "additionalProperties": false,
+      "description": "One tracked satellite and one full revolution of its ground track (ADR-0041).",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "norad_id": {
+          "title": "Norad Id",
+          "type": "integer"
+        },
+        "sub_lat": {
+          "title": "Sub Lat",
+          "type": "number"
+        },
+        "sub_lng": {
+          "title": "Sub Lng",
+          "type": "number"
+        },
+        "track": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SatelliteOrbitSample"
+          },
+          "title": "Track",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "norad_id",
+        "sub_lat",
+        "sub_lng"
+      ],
+      "title": "SatelliteOrbit",
+      "type": "object"
+    },
+    "SatelliteOrbitSample": {
+      "additionalProperties": false,
+      "description": "One point on a full-period ground track: an absolute UTC time and the\nsub-satellite point at that time (ADR-0041).\n\nAbsolute ``at`` \u2014 not a ``t_offset_s`` from a rise, the way ``SatelliteTrackSample``\ncarries \u2014 because this track wraps a whole orbit and stays on the wire between hourly\nrefreshes. The client draws a LIVE marker by wrapping \"now\" into the period and\ninterpolating along the track, and that needs real timestamps, not offsets from an\nevent that may already be an hour old.\n\n``lat``/``lng`` are required, unlike the pass track's optional ones: the whole point of\nthis event is the ground track, so a producer that cannot compute a position emits no\norbit for that satellite rather than a sample without one.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/UTCDateTime"
+        },
+        "lat": {
+          "title": "Lat",
+          "type": "number"
+        },
+        "lng": {
+          "title": "Lng",
+          "type": "number"
+        }
+      },
+      "required": [
+        "at",
+        "lat",
+        "lng"
+      ],
+      "title": "SatelliteOrbitSample",
+      "type": "object"
+    },
+    "UTCDateTime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UUIDv7": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "door_id": {
+      "title": "Door Id",
+      "type": "string"
+    },
+    "event_id": {
+      "$ref": "#/$defs/UUIDv7"
+    },
+    "monotonic_ms": {
+      "title": "Monotonic Ms",
+      "type": "integer"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/UTCDateTime"
+    },
+    "payload": {
+      "$ref": "#/$defs/AmbientSatelliteOrbitsPayload"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "ambient.satellite_orbits",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "source",
+    "occurred_at",
+    "monotonic_ms",
+    "door_id",
+    "trace_id",
+    "type",
+    "payload"
+  ],
+  "title": "AmbientSatelliteOrbitsEvent",
+  "type": "object"
+}

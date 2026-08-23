@@ -28,6 +28,7 @@ from wallboard_worker.jobs import (
     run_daily_collage,
     run_food_recommendation,
     run_printer_status,
+    run_satellite_orbits,
     run_satellite_passes,
 )
 from wallboard_worker.settings import Settings
@@ -149,6 +150,10 @@ def build_jobs(settings: Settings, *, force_mock: bool = False) -> list[Schedule
                     tle_url=settings.satellites_tle_url,
                     tle_cache_path=settings.satellites_tle_cache_path,
                     ephemeris_dir=settings.satellites_ephemeris_dir,
+                    orbit_norad_ids=settings.satellites_orbit_norad_ids,
+                    orbit_tle_url=settings.satellites_orbit_tle_url,
+                    orbit_tle_cache_path=settings.satellites_orbit_tle_cache_path,
+                    orbit_samples=settings.satellites_orbit_samples,
                 )
             )
         )
@@ -157,6 +162,13 @@ def build_jobs(settings: Settings, *, force_mock: bool = False) -> list[Schedule
                 "satellite-passes",
                 settings.satellite_interval_s,
                 lambda: run_satellite_passes(settings, satellite),
+            )
+        )
+        jobs.append(
+            ScheduledJob(
+                "satellite-orbits",
+                settings.satellite_orbits_interval_s,
+                lambda: run_satellite_orbits(settings, satellite),
             )
         )
 

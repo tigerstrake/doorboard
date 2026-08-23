@@ -3,12 +3,33 @@ import type { DoorboardEvent } from "@doorboard/contracts";
 export { uuidv7 } from "./uuid";
 
 
+/**
+ * Liveness for the UI, distinct from the raw socket status:
+ * - "live": frames are arriving.
+ * - "reconnecting": the socket is down or connecting (backoff owns recovery).
+ * - "stale": the socket is OPEN but has been silent past `staleTimeoutMs`. door-api
+ *   drops a stuttering kiosk without closing its socket, so no `onclose` ever fires and
+ *   a public display can sit on a frozen frame forever. We surface "stale" and then
+ *   force-reconnect so the client recovers on its own.
+ */
+export type ConnectionLiveness = "live" | "reconnecting" | "stale";
+
 export interface EventClientOptions {
   wsUrl?: string;
   mock?: boolean;
   filters?: string[];
   onStatusChange?: (status: "connecting" | "connected" | "disconnected") => void;
   onSnapshot?: (state: unknown) => void;
+  /** Liveness callback (see {@link ConnectionLiveness}). Fires only when the value changes. */
+  onLiveness?: (liveness: ConnectionLiveness) => void;
+  /**
+   * Silence, in ms, after which an OPEN-but-silent socket is treated as a dropped client
+   * and force-reconnected. door-api sends session snapshots and ambient replays, so real
+   * silence this long means the server dropped us while the socket stayed open. Default 45s.
+   */
+  staleTimeoutMs?: number;
+  /** How often the staleness watchdog checks for silence. Default 5s. Keep it cheap. */
+  watchdogIntervalMs?: number;
 }
 
 export class DoorboardEventClient {
@@ -20,10 +41,18 @@ export class DoorboardEventClient {
   private filters: string[];
   private onStatusChange?: (status: "connecting" | "connected" | "disconnected") => void;
   private onSnapshot?: (state: unknown) => void;
+  private onLiveness?: (liveness: ConnectionLiveness) => void;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private maxReconnectDelay = 16000;
   private explicitClose = false;
+  // Staleness watchdog: the last time any server frame arrived, plus the timer that
+  // checks whether an OPEN socket has gone silent past the window (see ConnectionLiveness).
+  private staleTimeoutMs: number;
+  private watchdogIntervalMs: number;
+  private lastMessageAt = 0;
+  private liveness: ConnectionLiveness = "reconnecting";
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: EventClientOptions = {}) {
     const defaultWsUrl = `ws://${window.location.hostname}:8765/ws`;
@@ -32,6 +61,9 @@ export class DoorboardEventClient {
     this.filters = options.filters || ["*"];
     this.onStatusChange = options.onStatusChange;
     this.onSnapshot = options.onSnapshot;
+    this.onLiveness = options.onLiveness;
+    this.staleTimeoutMs = options.staleTimeoutMs ?? 45000;
+    this.watchdogIntervalMs = options.watchdogIntervalMs ?? 5000;
     this.channel = new BroadcastChannel("doorboard-events");
 
     // Listen to local BroadcastChannel (for multi-tab sync under mock or fallback)
@@ -44,7 +76,14 @@ export class DoorboardEventClient {
 
     if (!this.mock) {
       this.connect();
+      this.startWatchdog();
     }
+  }
+
+  private setLiveness(next: ConnectionLiveness) {
+    if (this.liveness === next) return;
+    this.liveness = next;
+    this.onLiveness?.(next);
   }
 
   private connect() {
@@ -57,12 +96,19 @@ export class DoorboardEventClient {
       this.ws.onopen = () => {
         this.onStatusChange?.("connected");
         this.reconnectDelay = 1000; // Reset delay on success
-        
+        this.lastMessageAt = Date.now();
+        this.setLiveness("live");
+
         // Subscribe with filters per conventions
         this.ws?.send(JSON.stringify({ subscribe: this.filters }));
       };
 
       this.ws.onmessage = (messageEvent) => {
+        // Any server frame proves the socket is alive — subscribe acks and frames we do
+        // not otherwise handle included. The watchdog cares that the socket is silent,
+        // not which message type broke the silence.
+        this.lastMessageAt = Date.now();
+        this.setLiveness("live");
         try {
           const raw = JSON.parse(messageEvent.data) as unknown;
           if (isSnapshotMessage(raw)) {
@@ -83,6 +129,7 @@ export class DoorboardEventClient {
       this.ws.onclose = () => {
         this.onStatusChange?.("disconnected");
         this.ws = null;
+        this.setLiveness("reconnecting");
         this.scheduleReconnect();
       };
 
@@ -92,6 +139,39 @@ export class DoorboardEventClient {
     } catch (err) {
       console.error("Error setting up WebSocket:", err);
       this.onStatusChange?.("disconnected");
+      this.setLiveness("reconnecting");
+      this.scheduleReconnect();
+    }
+  }
+
+  private startWatchdog() {
+    if (this.watchdogTimer !== null) return;
+    this.watchdogTimer = setInterval(() => this.checkLiveness(), this.watchdogIntervalMs);
+  }
+
+  private stopWatchdog() {
+    if (this.watchdogTimer !== null) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+  }
+
+  private checkLiveness() {
+    if (this.explicitClose) return;
+    // A socket that isn't OPEN is already the reconnect path's business: onclose fired and
+    // scheduled a backoff. The watchdog exists only for the socket that stays OPEN while
+    // the server has quietly stopped sending — no onclose ever fires, so nothing else notices.
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (Date.now() - this.lastMessageAt <= this.staleTimeoutMs) return;
+    // Silent past the window: surface "stale" for the UI, then force the socket closed so the
+    // existing exponential-backoff reconnect takes over and a dropped-but-open client recovers
+    // on its own instead of showing a frozen frame forever. onclose moves us to "reconnecting".
+    this.setLiveness("stale");
+    try {
+      this.ws.close();
+    } catch {
+      this.ws = null;
+      this.setLiveness("reconnecting");
       this.scheduleReconnect();
     }
   }
@@ -155,6 +235,7 @@ export class DoorboardEventClient {
 
   public close() {
     this.explicitClose = true;
+    this.stopWatchdog();
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;

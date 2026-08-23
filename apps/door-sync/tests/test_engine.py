@@ -220,6 +220,9 @@ async def test_gallery_delete_removes_photo_across_nas_tiers(tmp_path: Path, hel
     settings = helpers.make_settings(tmp_path, media_target="nas")
     nas_root = Path(settings.nas_sync_target)
     nas_root.mkdir(parents=True)
+    # Stand in for the marker the real share carries; without it the gallery store
+    # refuses to write (it cannot tell a mounted share from a bare mountpoint).
+    (nas_root / settings.nas_mount_marker).touch()
     rid = "00000000-0000-7000-8000-00000000d606"
 
     photo_rel, sha, photo_abs = helpers.make_recording_file(

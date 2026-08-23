@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 
 from door_visiond.clock import FakeClock
 from door_visiond.embedder import MockEmbedder
@@ -30,6 +30,11 @@ class _CollectingEmitter(EventEmitter):
 class _FailingTransport:
     def __init__(self) -> None:
         self.messages: list[WireMessage] = []
+        self._seq = 0
+
+    def make_message(self, message_type: str, payload: Mapping[str, object]) -> WireMessage:
+        self._seq += 1
+        return WireMessage(v=1, seq=self._seq, message_type=message_type, ack=None, payload=payload)
 
     async def send(self, msg: WireMessage) -> WireMessage:
         self.messages.append(msg)

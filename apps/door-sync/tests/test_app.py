@@ -7,6 +7,7 @@ request-handling surface deterministically.
 from __future__ import annotations
 
 from collections.abc import Generator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,46 @@ def test_health(client: TestClient) -> None:
     body = resp.json()
     assert body["service"] == "door-sync"
     assert body["status"] == "ok"
+
+
+def _backdate_pending(client: TestClient, *, age_s: int) -> None:
+    """Age every pending item by ``age_s`` — a stalled queue, in one line.
+
+    A NAS or NUC that is merely unreachable raises only TransientError, which
+    retries forever and never dead-letters, so backdating ``created_at`` is
+    exactly the shape a week-long outage leaves behind.
+    """
+    queue = client.app.state.queue  # type: ignore[attr-defined]
+    old = datetime.now(UTC) - timedelta(seconds=age_s)
+    with queue._lock:  # noqa: SLF001 (test introspection)
+        queue._conn.execute(  # noqa: SLF001
+            "UPDATE queue_item SET created_at = ? WHERE status='pending'",
+            (old.isoformat(),),
+        )
+        queue._conn.commit()  # noqa: SLF001
+
+
+def test_health_is_degraded_when_the_queue_has_stalled(client: TestClient, helpers) -> None:
+    """Zero dead-letters, nothing draining — health must not say "ok"."""
+    client.post("/internal/enqueue", json={"event": helpers.make_session_event_dict()})
+
+    assert client.get("/health").json()["status"] == "ok"
+
+    threshold = client.app.state.cfg.pending_age_degraded_s  # type: ignore[attr-defined]
+    _backdate_pending(client, age_s=threshold + 60)
+
+    body = client.get("/health").json()
+    assert body["status"] == "degraded"
+    assert client.get("/queue").json()["summary"]["dead_letter"] == 0
+    assert "oldest pending" in body["detail"]
+
+
+def test_health_stays_ok_for_a_backlog_inside_the_threshold(client: TestClient, helpers) -> None:
+    client.post("/internal/enqueue", json={"event": helpers.make_session_event_dict()})
+    threshold = client.app.state.cfg.pending_age_degraded_s  # type: ignore[attr-defined]
+    _backdate_pending(client, age_s=threshold - 60)
+
+    assert client.get("/health").json()["status"] == "ok"
 
 
 def test_metrics(client: TestClient) -> None:

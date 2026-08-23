@@ -26,8 +26,12 @@ from doorboard_contracts.events import (
     AmbientFoodRecommendationPayload,
     AmbientPrinterStatusEvent,
     AmbientPrinterStatusPayload,
+    AmbientSatelliteOrbitsEvent,
+    AmbientSatelliteOrbitsPayload,
     AmbientSatellitePassEvent,
     AmbientSatellitePassPayload,
+    SatelliteOrbit,
+    SatelliteOrbitSample,
 )
 from food_recommendation.provider import (
     FoodRecommendationCache,
@@ -222,6 +226,78 @@ def run_satellite_passes(
             logger.error(f"Ingestion failed with status {resp.status_code}: {resp.text}")
     except Exception as exc:
         logger.error(f"Failed to post satellite pass event: {exc}")
+
+    return None
+
+
+def run_satellite_orbits(
+    settings: Settings, provider: SatelliteProvider, now: datetime | None = None
+) -> dict | None:
+    """Compute full-orbit ground tracks for the tracked satellites and ingest them (ADR-0041).
+
+    Separate from ``run_satellite_passes``: this emits ``ambient.satellite_orbits`` (every
+    tracked satellite, a whole revolution each, with a live sub-point), while the pass job
+    keeps emitting the single next visible pass. The client animates the live markers itself
+    off the absolute sample times, so this job only needs to refresh the tracks occasionally.
+    """
+    if now is None:
+        now = datetime.now(UTC)
+
+    try:
+        orbits_data = provider.get_orbits(now)
+    except Exception as exc:
+        logger.error(f"Satellite orbits job failed: {exc}")
+        # Degradation path: publish nothing so the tile keeps its last real reading with an age.
+        return None
+
+    if not orbits_data:
+        logger.info("No satellite orbits computed (empty TLE selection?).")
+        return None
+
+    satellites = [
+        SatelliteOrbit(
+            name=orbit["name"],
+            norad_id=orbit["norad_id"],
+            sub_lat=orbit["sub_lat"],
+            sub_lng=orbit["sub_lng"],
+            track=[
+                SatelliteOrbitSample(at=sample["at"], lat=sample["lat"], lng=sample["lng"])
+                for sample in orbit.get("track", [])
+            ],
+        )
+        for orbit in orbits_data
+    ]
+    payload = AmbientSatelliteOrbitsPayload(satellites=satellites, as_of=now)
+
+    event = AmbientSatelliteOrbitsEvent(
+        event_id=uuid7(),
+        type="ambient.satellite_orbits",
+        source="wallboard-worker",
+        occurred_at=now,
+        monotonic_ms=int(time.monotonic() * 1000),
+        door_id=settings.door_id,
+        trace_id=uuid.uuid4(),
+        payload=payload,
+    )
+
+    url = f"{settings.control_plane_url.rstrip('/')}/ingest"
+    token = get_ingest_token(settings)
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    raw_event = event.model_dump(mode="json")
+    batch = {"batch_id": f"worker-satellite-orbits-{int(time.time())}", "events": [raw_event]}
+
+    try:
+        resp = httpx.post(url, json=batch, headers=headers, timeout=5.0)
+        if resp.status_code == 200:
+            logger.info(f"Ingested satellite orbits event successfully. Count: {len(satellites)}")
+            return resp.json()
+        else:
+            logger.error(f"Ingestion failed with status {resp.status_code}: {resp.text}")
+    except Exception as exc:
+        logger.error(f"Failed to post satellite orbits event: {exc}")
 
     return None
 

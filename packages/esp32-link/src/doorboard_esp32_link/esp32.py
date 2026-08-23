@@ -83,8 +83,32 @@ class Esp32TransportMetrics:
 
 
 class Esp32Transport(Protocol):
+    def make_message(self, message_type: str, payload: Mapping[str, object]) -> WireMessage:
+        """Build an outbound message carrying the transport's next sequence number.
+
+        Part of the protocol rather than an implementation detail: `seq` is
+        transport-private state, so a caller that hand-builds a `WireMessage` cannot
+        choose a correct one. The controller dedupes inbound frames by
+        `(boot_id, seq)` and *acks* duplicates before discarding them, which makes a
+        reused `seq` invisible from this side -- `send()` resolves normally for a
+        message the controller never acted on. Always construct outbound messages
+        here.
+        """
+        ...
+
     async def send(self, msg: WireMessage) -> WireMessage:
         """Send a wire message and resolve with its ack or raise on timeout."""
+        ...
+
+    async def send_event(self, event: DoorboardEvent) -> WireMessage:
+        """Convert an outbound contract event to a wire message and send it.
+
+        Handles both things a caller must not do by hand: the `door.profile_update`
+        expiry→ttl conversion (the ESP32 re-anchors against its own clock, so a raw
+        Pi monotonic timestamp would be meaningless), and allocating the transport's
+        next sequence number. Preferred over `make_message` for the outbound
+        `door.*` contract events. See `wire_message_from_event`.
+        """
         ...
 
     def events(self) -> AsyncIterator[DoorboardEvent]:

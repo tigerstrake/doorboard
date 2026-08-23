@@ -24,7 +24,11 @@ async def test_finalized_clip_syncs_and_is_licensed_for_deletion(tmp_path: Path,
     from door_sync.engine import SyncEngine
     from door_sync.media_client import HttpMediaClient
     from door_sync.queue import UploadQueue
-    from door_sync.targets import FilesystemNasTarget, MockNucTarget
+    from door_sync.targets import (
+        DEFAULT_NAS_MOUNT_MARKER,
+        FilesystemNasTarget,
+        MockNucTarget,
+    )
 
     ssd = tmp_path / "ssd"
     media_admin_token = "integration-media-token"
@@ -54,6 +58,9 @@ async def test_finalized_clip_syncs_and_is_licensed_for_deletion(tmp_path: Path,
             # door-sync, pointed at door-media over ASGI.
             nas_root = tmp_path / "nas"
             nas_root.mkdir()
+            # Stand in for the marker the real share carries; without it the
+            # target refuses to archive (see test_targets.py).
+            (nas_root / DEFAULT_NAS_MOUNT_MARKER).touch()
             settings = helpers.make_settings(
                 tmp_path, media_target="nas", nas_sync_target=str(nas_root)
             )
