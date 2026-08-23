@@ -202,6 +202,21 @@ dead code/config.
 
 ---
 
+## Pending deploy (fixed in git, not yet on the devices — packed for transport 2026-08-23)
+
+- Everything in commits `e9bdc70` + `10ad701` + the kiosk-scrollbar fix: the FR profile-light
+  relay, About tile move, live satellites, presence naming, the owner-reported live-door batch
+  (camera notice off the wallboard, About off the ambient grid, satellite seam hidden, flights
+  zoom + type icons, video-playback patience, presence re-publish on startup, bell-takeover
+  clipping, guestbook readability, real resident names, DoorPad admin unlock ADR-0042), and
+  hiding the native OS scrollbars on the kiosk surfaces. Deploy NUC-then-Pi (see the deploy
+  runbook), then **re-enroll the owner's face** — the July-20 templates no longer match the
+  model (live match score ~0.33 vs 0.62 threshold), which is why recognition fails.
+- **Verify on-device after deploy** (couldn't be checked here — devices offline): the
+  video-message backend (the "preparing playback" root cause is likely the two-MediaMTX-instance
+  conflict in §A — the client is patient now, but recording finalization needs an on-device
+  check), and the visual CSS fixes (bell layout, guestbook size, About readability, scrollbars).
+
 ## Already FIXED (do not redo) — 2026-08-22 / 2026-08-23
 
 pg-backup false-success + eviction; NAS mount-marker for clips **and** gallery; honest

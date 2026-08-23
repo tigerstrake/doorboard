@@ -3746,6 +3746,41 @@ input:focus-visible {
 }
 
 /*
+ * Hide the native scrollbar on EVERY scrollable element of the kiosk surfaces, not just the
+ * hand-listed few above. The old rule missed anything not on its list — a long tile, the bell
+ * takeover, a focus panel — so the Pi's Chrome painted a grey gutter down them. Nobody drags a
+ * scrollbar on a wall panel or a touched pad (swipe still scrolls with the chrome hidden), so
+ * hide it across the whole wallboard and doorpad and their descendants. `display:none` + `width:0`
+ * is what actually removes a WebKit scrollbar (the old `overflow:hidden` on the pseudo-element did
+ * nothing). Still scoped to the kiosk: /admin (laptop) and /visitor (phone) keep real scrollbars,
+ * where the bar is genuine "how much more is there" information.
+ */
+.wallboard-ambient-view,
+.wallboard-ambient-view *,
+.wallboard-visitor-view,
+.wallboard-visitor-view *,
+.wallboard-focus-panel,
+.wallboard-focus-panel *,
+.doorpad-surface,
+.doorpad-surface * {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* legacy Edge */
+}
+
+.wallboard-ambient-view::-webkit-scrollbar,
+.wallboard-ambient-view *::-webkit-scrollbar,
+.wallboard-visitor-view::-webkit-scrollbar,
+.wallboard-visitor-view *::-webkit-scrollbar,
+.wallboard-focus-panel::-webkit-scrollbar,
+.wallboard-focus-panel *::-webkit-scrollbar,
+.doorpad-surface::-webkit-scrollbar,
+.doorpad-surface *::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/*
  * Doorpad screen transitions — drilling in and backing out.
  *
  * Replaces a generic 8px `fade-in` that only ever played on the first step away from home,
