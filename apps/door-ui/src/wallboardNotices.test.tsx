@@ -41,7 +41,7 @@ describe("isClockSynced (FIX 4 boot-clock guard)", () => {
 });
 
 describe("Wallboard public-surface notices", () => {
-  it("shows the connection dot and the camera/privacy notice", async () => {
+  it("shows the connection dot but NOT a camera notice on the wallboard", async () => {
     window.history.pushState(null, "", "/wallboard");
     mockWallboardFetch();
 
@@ -49,15 +49,12 @@ describe("Wallboard public-surface notices", () => {
 
     await waitFor(() => expect(screen.getByText("Room 304 Wallboard")).toBeTruthy());
 
-    // FIX 2c: a liveness dot exists so a frozen/reconnecting display is visible.
+    // A liveness dot exists so a frozen/reconnecting display is visible.
     expect(screen.getByTestId("connection-dot")).toBeTruthy();
 
-    // FIX 3: the camera/privacy notice is present and states the honest facts.
-    const notice = screen.getByLabelText("Camera and privacy notice");
-    expect(notice).toBeTruthy();
-    expect(notice.textContent).toMatch(/camera/i);
-    expect(notice.textContent).toMatch(/opt-in/i);
-    expect(notice.textContent).not.toMatch(/nothing is recorded/i);
+    // The camera/privacy notice was removed from the corridor wallboard (owner's call);
+    // it now lives only on the touchable doorpad.
+    expect(screen.queryByLabelText("Camera and privacy notice")).toBeNull();
   });
 
   it("renders the live clock (not the syncing placeholder) when the clock is synced", async () => {

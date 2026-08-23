@@ -14,6 +14,7 @@ import {
   groundTrack,
   orbitAtTime,
   orbitGroundTrack,
+  orbitLoopPoints,
   projectToGlobeSvg,
 } from "./globe";
 import { humanizeSeconds, passProgress } from "./passTiming";
@@ -53,6 +54,32 @@ const ORBIT_COLORS = ["#7cc4ff", "#ff8fab", "#8ce99a", "#e599f7", "#ffa94d", "#6
 function shortSatName(name: string): string {
   const trimmed = name.split("(")[0]?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : name;
+}
+
+/**
+ * A plain-English "what is it" for each tracked satellite, keyed by NORAD catalog number — so the
+ * panel explains the objects instead of only showing catalogue abbreviations (the owner's ask).
+ * The ids are the wallboard-worker default set (ADR-0041): ISS, Tiangong/CSS, Hubble, two NOAA
+ * birds. An id that is not listed simply gets no blurb and falls back to its raw name.
+ */
+const SATELLITE_BLURBS: Record<number, string> = {
+  25544: "International Space Station",
+  48274: "Tiangong — China's space station",
+  20580: "Hubble Space Telescope",
+  25338: "Weather satellite (NOAA)",
+  28654: "Weather satellite (NOAA)",
+};
+
+/**
+ * A compact label and a readable description for a satellite. The label stays the short catalogue
+ * name so it can sit on the globe without crowding it; the description carries the meaning and
+ * rides in the legend, which has room. Falls back to the payload's own name when the id is unknown.
+ */
+export function describeSatellite(
+  noradId: number,
+  rawName: string
+): { name: string; blurb: string | null } {
+  return { name: shortSatName(rawName), blurb: SATELLITE_BLURBS[noradId] ?? null };
 }
 
 export function SatelliteGlobePanel({
@@ -113,19 +140,26 @@ export function SatelliteGlobePanel({
     return parts.filter((d) => d.length > 0).join("");
   }, [centre]);
 
-  // Every tracked satellite's whole-orbit ground track (ADR-0041). The paths are static per
-  // payload; on an orthographic globe the antimeridian needs no special case — the seam that
-  // bites a flat map does not exist here, and globePath already breaks each loop at the limb.
+  // Every tracked satellite's whole-orbit ground track (ADR-0041). A track is exactly one orbital
+  // period, so Earth's rotation leaves its two ends ~22.5° of longitude apart — an open loop.
+  // orbitLoopPoints re-winds each loop so that seam is hidden behind the globe; globePath then
+  // draws the near hemisphere as one clean arc and culls the far side. Paths are static per payload.
   const orbitRenders = useMemo(() => {
     const list = orbits?.satellites ?? [];
     return list.map((sat, index) => {
       const ground = orbitGroundTrack(sat.track ?? []);
       const color = ORBIT_COLORS[index % ORBIT_COLORS.length]!;
+      const info = describeSatellite(sat.norad_id, sat.name);
       return {
-        name: shortSatName(sat.name),
+        noradId: sat.norad_id,
+        name: info.name,
+        blurb: info.blurb,
         color,
         ground,
-        path: ground.length >= 2 ? globePath(ground, centre, SIZE, PADDING) : "",
+        path:
+          ground.length >= 2
+            ? globePath(orbitLoopPoints(ground, centre), centre, SIZE, PADDING)
+            : "",
       };
     });
   }, [orbits, centre]);
@@ -135,7 +169,7 @@ export function SatelliteGlobePanel({
   const orbitMarkers = orbitRenders.map((orbit) => {
     const at = orbitAtTime(orbit.ground, nowMs);
     const point = at ? project(at) : null;
-    return { name: orbit.name, color: orbit.color, point };
+    return { noradId: orbit.noradId, name: orbit.name, color: orbit.color, point };
   });
 
   const trackPath = hasGround ? globePath(track, centre, SIZE, PADDING) : "";
@@ -227,7 +261,7 @@ export function SatelliteGlobePanel({
               when on the near hemisphere (a far-side dot would be a lie about where it is). */}
           {orbitMarkers.map((orbit) =>
             orbit.point && orbit.point.visible ? (
-              <g key={orbit.name} data-testid="globe-orbit-sat">
+              <g key={orbit.noradId} data-testid="globe-orbit-sat">
                 <circle cx={orbit.point.x} cy={orbit.point.y} r={3.4} fill={orbit.color} />
                 <text
                   x={orbit.point.x + 6}
@@ -302,14 +336,13 @@ export function SatelliteGlobePanel({
         >
           {orbitRenders.map((orbit) => (
             <span
-              key={orbit.name}
+              key={orbit.noradId}
               style={{
                 display: "inline-flex",
-                alignItems: "center",
-                gap: "0.35rem",
+                alignItems: "baseline",
+                gap: "0.4rem",
                 fontFamily: "var(--db-font-mono)",
-                fontSize: "0.74rem",
-                color: "var(--db-text-secondary)",
+                fontSize: "0.8rem",
               }}
             >
               <span
@@ -320,9 +353,16 @@ export function SatelliteGlobePanel({
                   borderRadius: 999,
                   background: orbit.color,
                   display: "inline-block",
+                  alignSelf: "center",
+                  flex: "0 0 auto",
                 }}
               />
-              {orbit.name}
+              {/* Short catalogue tag, colour-matched to its loop and marker. */}
+              <span style={{ color: orbit.color, fontWeight: 600 }}>{orbit.name}</span>
+              {/* The plain-English "what is it" the owner asked for, next to the abbreviation. */}
+              {orbit.blurb ? (
+                <span style={{ color: "var(--db-text-secondary)" }}>{orbit.blurb}</span>
+              ) : null}
             </span>
           ))}
         </div>

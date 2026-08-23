@@ -25,6 +25,8 @@ export interface WallboardVisitorModeProps {
     owner: { label: PresenceLabel };
     roommate: { label: PresenceLabel };
   };
+  /** Resident names in presence order (from VITE_RESIDENTS); falls back to "Owner"/"Roommate". */
+  residents?: string[];
   pollQuestion: string;
   visitorUrl: string | null;
   autoResetMs?: number;
@@ -57,6 +59,7 @@ export function WallboardVisitorMode({
   profileId,
   displayName,
   presence,
+  residents = [],
   pollQuestion,
   visitorUrl,
   autoResetMs = 30000,
@@ -133,11 +136,11 @@ export function WallboardVisitorMode({
           <Tile title="Availability State">
             <div className="status-display-box">
               <div className="status-display-row">
-                <span className="person-name">Taylor (Owner)</span>
+                <span className="person-name">{residents[0] ?? "Owner"}</span>
                 <StatusBadge label={presence.owner.label} />
               </div>
               <div className="status-display-row">
-                <span className="person-name">Alex (Roommate)</span>
+                <span className="person-name">{residents[1] ?? "Roommate"}</span>
                 <StatusBadge label={presence.roommate.label} />
               </div>
             </div>

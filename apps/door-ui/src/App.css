@@ -299,13 +299,17 @@
 }
 
 .guestbook-slideshow .guestbook-quote p {
-  font-size: 1.35rem;
+  /* Bigger and brighter: at 1.35rem in the muted quote colour the notes were
+     unreadable from across the corridor. Read at hallway distance now. */
+  font-size: 1.7rem;
   line-height: 1.4;
-  /* A 280-character note at this size fits; anything longer is clipped with an
+  color: var(--db-text-primary);
+  font-weight: 500;
+  /* A shorter note fits at this larger size; anything longer is clipped with an
      ellipsis rather than being allowed to push the counter out of the tile. */
   display: -webkit-box;
-  -webkit-line-clamp: 6;
-  line-clamp: 6;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -590,17 +594,26 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  padding: var(--db-spacing-xl);
+  /* Never taller than the screen: the bell takeover stacks a greeting, a status
+     panel, a 3-tile grid, a poll and a footer, and at xl padding + xl grid margins
+     that overran 1080p and clipped the "Done" button off the bottom. Bound it to the
+     viewport, trim the spacing, and allow a scroll only as a last-resort fallback so
+     nothing is ever lost. */
+  max-height: 100vh;
+  overflow-y: auto;
+  padding: var(--db-spacing-lg);
   box-sizing: border-box;
   justify-content: space-between;
+  gap: var(--db-spacing-md);
 }
 
 .visitor-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: var(--db-spacing-lg);
-  margin: var(--db-spacing-xl) 0;
-  flex: 1;
+  margin: var(--db-spacing-md) 0;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .instructions-card {
@@ -3233,6 +3246,27 @@ input:focus-visible {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   opacity: 0.7;
+}
+
+/* Admin unlock, shown only once the door recognises someone. Deliberately understated —
+   it is a convenience surface, not a control; the /admin token is what actually opens it. */
+.doorpad-admin-link {
+  margin-left: 10px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--db-border-color);
+  background: transparent;
+  color: var(--db-text-secondary);
+  font: inherit;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.doorpad-admin-link:hover,
+.doorpad-admin-link:focus-visible {
+  border-color: var(--db-border-hover);
+  color: var(--db-text-primary);
 }
 
 /* Enrollment is the entry point to everything personalised, so it reads as an

@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   closestApproach,
   decodeCoastline,
+  farthestSampleIndex,
   globePath,
   greatCircleKm,
   groundAtFraction,
   groundTrack,
   orbitAtTime,
   orbitGroundTrack,
+  orbitLoopPoints,
   projectToGlobe,
   projectToGlobeSvg,
   shortestLngDelta,
@@ -200,6 +202,89 @@ describe("orbitGroundTrack", () => {
     expect(track[1]!.lat).toBe(45);
     // 23 minutes apart.
     expect(track[1]!.atMs - track[0]!.atMs).toBe(23 * 60_000);
+  });
+});
+
+describe("farthestSampleIndex", () => {
+  it("picks the sample deepest in the far hemisphere (smallest facing)", () => {
+    // At the centre, the antipode, and points either side. The antipode is deepest.
+    const points = [
+      CAMPUS,
+      { lat: 0, lng: CAMPUS.lng + 90 }, // limb
+      { lat: -CAMPUS.lat, lng: CAMPUS.lng + 180 }, // antipode: most hidden
+      { lat: 0, lng: CAMPUS.lng - 90 }, // limb
+    ];
+    expect(farthestSampleIndex(points, CAMPUS)).toBe(2);
+  });
+});
+
+describe("orbitLoopPoints", () => {
+  // One period of an inclined orbit that drifts westward as Earth turns — the shape the mock
+  // provider and the real feed both emit (ADR-0041). Its first/last samples are ~23° of longitude
+  // apart, so the loop does not close.
+  const wrap180 = (deg: number) => (((((deg + 180) % 360) + 360) % 360) - 180);
+  function mockOrbitTrack(inclDeg: number, nodeLng: number, periodMin: number, samples = 60) {
+    const incl = (inclDeg * Math.PI) / 180;
+    return Array.from({ length: samples + 1 }, (_, index) => {
+      const frac = index / samples;
+      const u = 2 * Math.PI * frac;
+      const lat = (Math.asin(Math.sin(incl) * Math.sin(u)) * 180) / Math.PI;
+      const lonOrbit = (Math.atan2(Math.cos(incl) * Math.sin(u), Math.cos(u)) * 180) / Math.PI;
+      const rotation = 360 * frac * (periodMin / 1436);
+      return {
+        lat: Number(lat.toFixed(3)),
+        lng: Number(wrap180(nodeLng + lonOrbit - rotation).toFixed(3)),
+      };
+    });
+  }
+  const countSubpaths = (d: string) => (d.match(/M/g) ?? []).length;
+
+  it("hides the seam so a near-side seam becomes one continuous arc, ends behind the globe", () => {
+    // ISS parameters from the door: the period seam falls (0, -45)/(0, -68), both on the NEAR face.
+    const track = mockOrbitTrack(51.6, -45, 92.9);
+
+    // Bug reproduction: in payload order the near hemisphere breaks into two stubs with dangling
+    // ends mid-disc — the "line that randomly starts and ends".
+    expect(countSubpaths(globePath(track, CAMPUS, 200))).toBe(2);
+
+    const loop = orbitLoopPoints(track, CAMPUS);
+    // After re-winding, the whole near hemisphere is one uninterrupted arc.
+    expect(countSubpaths(globePath(loop, CAMPUS, 200))).toBe(1);
+    // And the drawn polyline's two ends — the seam — are both on the far hemisphere (not drawn).
+    expect(projectToGlobe(loop[0]!, CAMPUS).visible).toBe(false);
+    expect(projectToGlobe(loop[loop.length - 1]!, CAMPUS).visible).toBe(false);
+  });
+
+  it("keeps a far-side seam hidden and the near arc single", () => {
+    // HST parameters: the seam already falls on the far side. It must stay one clean near arc,
+    // and the polyline must still begin and end behind the globe.
+    const track = mockOrbitTrack(28.5, 10, 95.4);
+    const loop = orbitLoopPoints(track, CAMPUS);
+    expect(countSubpaths(globePath(loop, CAMPUS, 200))).toBe(1);
+    expect(projectToGlobe(loop[0]!, CAMPUS).visible).toBe(false);
+    expect(projectToGlobe(loop[loop.length - 1]!, CAMPUS).visible).toBe(false);
+  });
+
+  it("bridges the seam densely, so no drawn near-side segment is a long straight jump", () => {
+    // The ~23° period gap is filled with interpolated points; every near-side step should be a
+    // short chord like the rest of the track, not one long line across the disc.
+    const track = mockOrbitTrack(51.6, -45, 92.9);
+    const loop = orbitLoopPoints(track, CAMPUS);
+    let maxStepPx = 0;
+    for (let i = 1; i < loop.length; i += 1) {
+      const a = projectToGlobeSvg(loop[i - 1]!, CAMPUS, 200, 16);
+      const b = projectToGlobeSvg(loop[i]!, CAMPUS, 200, 16);
+      if (a.visible && b.visible) {
+        maxStepPx = Math.max(maxStepPx, Math.hypot(b.x - a.x, b.y - a.y));
+      }
+    }
+    // Every visible-to-visible step stays small and even; the seam is not a giant chord.
+    expect(maxStepPx).toBeLessThan(15);
+  });
+
+  it("returns degenerate tracks unchanged rather than throwing", () => {
+    expect(orbitLoopPoints([], CAMPUS)).toEqual([]);
+    expect(orbitLoopPoints([{ lat: 1, lng: 2 }], CAMPUS)).toEqual([{ lat: 1, lng: 2 }]);
   });
 });
 

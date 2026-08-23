@@ -371,6 +371,47 @@ def sync_presence(
     return resolved
 
 
+def republish_current_presence(
+    session: Session,
+    *,
+    now: datetime,
+    door_id: str,
+    calendar_provider: CalendarProvider,
+    schedule_provider: ScheduleProvider | None = None,
+    mqtt_publisher: MqttPublisher,
+) -> int:
+    """Re-publish (retained) the current presence for every known subject.
+
+    ``sync_presence`` emits only on a *change*, and the change is measured against
+    the persisted history — so after a restart nothing re-publishes, the retained
+    ``status.presence_changed`` topic can be stale or empty, and a freshly-connected
+    public wallboard (which can only read presence over ``/ws``, never the
+    admin-only GET) shows "unavailable". Called once at startup, this refreshes the
+    retained topic for each subject from the current resolution. It does NOT record a
+    history row — it is a re-statement of existing state, not a new transition.
+    """
+    published = 0
+    for subject_id in list_known_subject_ids(session):
+        resolved = resolve_current(
+            session,
+            subject_id=subject_id,
+            now=now,
+            calendar_provider=calendar_provider,
+            schedule_provider=schedule_provider,
+        )
+        event = _build_presence_event(
+            subject_id=subject_id, resolved=resolved, now=now, door_id=door_id
+        )
+        try:
+            mqtt_publisher.publish_event(event)
+            published += 1
+        except Exception:
+            logger.warning(
+                "presence_republish_failed", extra={"subject_id": subject_id}, exc_info=True
+            )
+    return published
+
+
 # ---------------------------------------------------------------------------
 # Read-side composition (admin listing + Pi-facing bundle)
 # ---------------------------------------------------------------------------

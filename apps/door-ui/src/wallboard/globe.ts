@@ -95,6 +95,65 @@ export function globePath(
   return parts.join("");
 }
 
+/**
+ * Index of the sample deepest in the FAR hemisphere from `centre` — the smallest facing cosine.
+ *
+ * That is the most-hidden point on the globe, so it is where an orbit loop should be cut: begin
+ * and end the drawn polyline there and its two ends both fall behind the horizon. See
+ * {@link orbitLoopPoints}.
+ */
+export function farthestSampleIndex(points: readonly LatLng[], centre: LatLng): number {
+  let best = 0;
+  let bestFacing = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < points.length; index += 1) {
+    const facing = projectToGlobe(points[index]!, centre).facing;
+    if (facing < bestFacing) {
+      bestFacing = facing;
+      best = index;
+    }
+  }
+  return best;
+}
+
+/** Bridge the seam with points no more than this far apart, so the join matches the sampling. */
+const ORBIT_SEAM_STEP_DEG = 5;
+
+/**
+ * One orbit's ground track, re-wound so its seam is hidden behind the globe (ADR-0041).
+ *
+ * A track is exactly one orbital period, and Earth turns ~22.5° under the orbit in that time, so
+ * the first and last samples are ~22.5° of longitude apart — an open loop whose ends do not meet.
+ * Left in payload order that seam can land on the near face, where {@link globePath} draws the loop
+ * as two stubs with dangling ends mid-disc: the "line that randomly starts and ends" the owner saw.
+ *
+ * Fixed in two moves. First close the loop: bridge the last sample back to the first with a few
+ * interpolated points (linear latitude, longitude the short way) so the join is sampled as densely
+ * as the rest of the track instead of reading as one long straight jump. Then cut the closed loop
+ * at the sample deepest in the far hemisphere and unroll from there, so the drawn sequence both
+ * begins and ends behind the globe. The whole near hemisphere is then one uninterrupted arc from
+ * limb to limb, and every break — the seam included — is on the side you cannot see.
+ */
+export function orbitLoopPoints(samples: readonly LatLng[], centre: LatLng): LatLng[] {
+  if (samples.length < 2) return samples.slice();
+
+  const loop: LatLng[] = samples.slice();
+  const first = samples[0]!;
+  const last = samples[samples.length - 1]!;
+  const seamLng = shortestLngDelta(last.lng, first.lng);
+  const steps = Math.max(1, Math.round(Math.abs(seamLng) / ORBIT_SEAM_STEP_DEG));
+  for (let step = 1; step < steps; step += 1) {
+    const t = step / steps;
+    loop.push({ lat: last.lat + (first.lat - last.lat) * t, lng: last.lng + seamLng * t });
+  }
+
+  const cut = farthestSampleIndex(loop, centre);
+  const out: LatLng[] = [];
+  for (let k = 0; k < loop.length; k += 1) {
+    out.push(loop[(cut + k) % loop.length]!);
+  }
+  return out;
+}
+
 /** Decode one delta-encoded lon-first coastline run (see worldCoastline.ts). */
 export function decodeCoastline(line: readonly number[], scale: number): LatLng[] {
   const out: LatLng[] = [];

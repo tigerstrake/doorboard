@@ -6,7 +6,13 @@ import type {
   AmbientAircraftNearby,
   AmbientAircraftSummaryPayload,
 } from "@doorboard/contracts";
-import { maxViewBounds, viewBoundsFor } from "./flightsMapView";
+import {
+  aircraftCategory,
+  aircraftSilhouetteSvg,
+  maxViewBounds,
+  VIEW_MAX_ZOOM,
+  viewBoundsFor,
+} from "./flightsMapView";
 import type { LatLngTuple } from "./flightsMapView";
 
 // Fallback observer location (Stanford) used when the payload omits `observer`
@@ -171,14 +177,20 @@ function FlightsMap({ planes, observer }: FlightsMapProps) {
         if (lat === null || lng === null) continue;
         const heading = finiteNum(plane.heading) ?? 0;
         const callsign = cleanStr(plane.callsign) ?? "—";
+        // FlightRadar24-style silhouette, chosen by aircraft category and rotated to
+        // heading (0° = north, matching the north-up SVGs). Falls back to the generic
+        // twin-jet when the type is missing or unrecognised.
+        const silhouette = aircraftSilhouetteSvg(aircraftCategory(plane.aircraft_type));
         L.marker([lat, lng], {
           icon: L.divIcon({
             className: "flight-marker-icon",
             html:
-              `<span class="flight-marker__glyph" style="transform: rotate(${heading}deg)">▲</span>` +
+              `<span class="flight-marker__glyph" style="transform: rotate(${heading}deg); filter: drop-shadow(0 0 3px rgba(0,0,0,0.9))">${silhouette}</span>` +
               `<span class="flight-marker__label">${escapeHtml(callsign)}</span>`,
-            iconSize: [46, 46],
-            iconAnchor: [23, 23],
+            // Roomy box so the largest silhouette still fits once rotated 45°; the icon
+            // container has `overflow: visible`, so any spill is harmless.
+            iconSize: [64, 64],
+            iconAnchor: [32, 32],
           }),
           interactive: false,
           keyboard: false,
@@ -191,9 +203,10 @@ function FlightsMap({ planes, observer }: FlightsMapProps) {
       // the box still gets a marker — it just no longer sets the scale.
       map.fitBounds(viewBoundsFor(points, observer), {
         padding: [46, 46],
-        // Keeps the surroundings legible when the only traffic overhead is two planes a
-        // mile apart, which would otherwise fill the screen with rooftops.
-        maxZoom: 12,
+        // Lets clustered traffic actually fill the view (the owner's "tiny specks"
+        // complaint): at the old cap of 12, planes a couple of km apart still refused to
+        // zoom in. Still bounded so two planes a mile apart don't drop to rooftop level.
+        maxZoom: VIEW_MAX_ZOOM,
       });
     } catch {
       /* ignore transient Leaflet errors (e.g. during teardown) */

@@ -273,3 +273,55 @@ def test_list_known_subject_ids_always_includes_the_default_pair(session_factory
     with session_factory() as session:
         ids = presence_engine.list_known_subject_ids(session)
     assert ids == ["owner", "roommate", "guest"]
+
+
+def test_republish_current_presence_re_emits_without_recording_history(session_factory) -> None:
+    """After a restart the wallboard must still get presence.
+
+    ``sync_presence`` emits only on a change (measured against persisted history), so a
+    plain restart re-publishes nothing and a public wallboard — which can only read
+    presence over /ws — shows "unavailable". The startup re-publish re-states the
+    current resolution (retained) for every subject, without inventing a change.
+    """
+    mqtt = RecordingMqttPublisher()
+    calendar = MockCalendarProvider()
+
+    with session_scope(session_factory) as session:
+        presence_engine.set_source_value(
+            session,
+            subject_id="owner",
+            source="geofence_label",
+            label=PresenceLabel.AWAY,
+            until=None,
+            now=NOW,
+        )
+        presence_engine.sync_presence(
+            session,
+            subject_id="owner",
+            now=NOW,
+            door_id="primary",
+            calendar_provider=calendar,
+            mqtt_publisher=mqtt,
+            history_max_rows=500,
+        )
+    assert len(mqtt.published) == 1
+    history_before = len(_history_rows(session_factory, "owner"))
+
+    republished = RecordingMqttPublisher()
+    with session_scope(session_factory) as session:
+        n = presence_engine.republish_current_presence(
+            session,
+            now=NOW + timedelta(minutes=1),
+            door_id="primary",
+            calendar_provider=calendar,
+            mqtt_publisher=republished,
+        )
+
+    assert n == 2  # both default subjects (owner + roommate) are re-stated
+    subjects = {event.payload.subject_id for _topic, event in republished.published}
+    assert subjects == {"owner", "roommate"}
+    owner_evt = next(e for _t, e in republished.published if e.payload.subject_id == "owner")
+    assert owner_evt.type == "status.presence_changed"
+    assert owner_evt.payload.label.value == "away"
+    # A re-statement, not a transition: no new history row.
+    assert len(_history_rows(session_factory, "owner")) == history_before

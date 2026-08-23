@@ -1229,6 +1229,24 @@ export function App() {
     setRoute(path);
   };
 
+  // Admin unlock from the DoorPad (ADR-0042). Two ways in, and BOTH still land on the
+  // /admin token gate — recognition only *surfaces* the entrance, it never authorises
+  // it (ADR-0005 §3: recognition is never authorization). That token is what stops
+  // anyone else "using my name": a face — real or a photo held up — opens nothing
+  // without it. The long-press is the bootstrap that works even when recognition is
+  // down (e.g. to re-enroll a stale face), so admin is never locked out of its own door.
+  const adminHoldRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelAdminHold = () => {
+    if (adminHoldRef.current !== null) {
+      clearTimeout(adminHoldRef.current);
+      adminHoldRef.current = null;
+    }
+  };
+  const startAdminHold = () => {
+    cancelAdminHold();
+    adminHoldRef.current = setTimeout(() => navigateTo("/admin"), 2500);
+  };
+
   const returnDoorPadToContext = () => {
     if (VISITOR_STATES.includes(sessionState)) {
       setDoorPadScreen("ringing");
@@ -2165,6 +2183,7 @@ export function App() {
             profileId={activeProfile}
             displayName={activeDisplayName}
             presence={visitorPresence}
+            residents={RESIDENTS}
             pollQuestion={currentPoll?.question ?? "No poll running right now."}
             visitorUrl={visitorQrUrl}
             onDone={endVisitorSession}
@@ -2187,7 +2206,7 @@ export function App() {
               scoreboard: scoreboardRows.length > 0 ? scoreboardRows : null,
             }}
             secondary={ambientTiles
-              .filter((tile) => tile.channel !== focusedChannel)
+              .filter((tile) => tile.channel !== focusedChannel && tile.key !== "about")
               .map((tile) => (
                 <React.Fragment key={tile.key}>{tile.node}</React.Fragment>
               ))}
@@ -2232,12 +2251,16 @@ export function App() {
                   Rendered as direct grid children (Fragments emit no DOM) so the
                   staggered power-on nth-child delays still line up.
 
-                  The "Who's Stopped By" visitor collage is intentionally absent
-                  from the public wallboard — it is private all year and only
-                  shown on-demand via the owner-only /reveal#<token> page. */}
-              {ambientTiles.map((tile) => (
-                <React.Fragment key={tile.key}>{tile.node}</React.Fragment>
-              ))}
+                  "about" is excluded from the ambient grid on purpose: it is a
+                  selectable channel from the control panel, not part of the
+                  default hallway dashboard (owner's call). The "Who's Stopped By"
+                  visitor collage is likewise absent — private all year, shown only
+                  via the owner-only /reveal#<token> page. */}
+              {ambientTiles
+                .filter((tile) => tile.key !== "about")
+                .map((tile) => (
+                  <React.Fragment key={tile.key}>{tile.node}</React.Fragment>
+                ))}
             </main>
           </div>
         )}
@@ -2267,7 +2290,12 @@ export function App() {
   }, []);
 
   const fetchLatestRecording = useCallback(async (): Promise<VideoRecording | null> => {
-    for (let attempt = 0; attempt < 12; attempt += 1) {
+    // Finalizing a clip (concat + thumbnail) can take several seconds on the Pi, so
+    // poll patiently — ~30 s — rather than giving up at 3 s and stranding the visitor on
+    // "Preparing playback…". The review screen keeps the Send buttons usable throughout
+    // (they don't depend on the preview), and the server holds the session for 180 s, so
+    // there is time. Well within the review timeout.
+    for (let attempt = 0; attempt < 60; attempt += 1) {
       try {
         const response = await fetch(`${API_BASE}/doorpad/video-message/latest`);
         if (response.ok) {
@@ -2278,9 +2306,9 @@ export function App() {
           }
         }
       } catch {
-        // Retry briefly; final unavailable state is shown by the review screen.
+        // Retry; the review screen shows a preparing state and stays interactive.
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 250));
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
     }
     return null;
   }, []);
@@ -2822,7 +2850,16 @@ export function App() {
           <header className="doorpad-header">
             <div className="doorpad-header__row">
               <div>
-                <h2>Room {ROOM_LABEL} DoorPad</h2>
+                {/* Long-press the title to reach admin — the hidden bootstrap that works
+                    even when recognition is down. It only opens the /admin token gate. */}
+                <h2
+                  onPointerDown={startAdminHold}
+                  onPointerUp={cancelAdminHold}
+                  onPointerLeave={cancelAdminHold}
+                  onPointerCancel={cancelAdminHold}
+                >
+                  Room {ROOM_LABEL} DoorPad
+                </h2>
                 {RESIDENTS_LABEL && <p className="doorpad-residents">{RESIDENTS_LABEL}</p>}
               </div>
               {/* Who the door currently thinks you are, for as long as it thinks so
@@ -2834,6 +2871,15 @@ export function App() {
                   <span className="doorpad-identity__dot" aria-hidden="true" />
                   <span className="doorpad-identity__name">{activeDisplayName}</span>
                   <span className="doorpad-identity__note">recognised</span>
+                  {/* Recognition surfaces the entrance; the /admin token still authorises. */}
+                  <button
+                    type="button"
+                    className="doorpad-admin-link"
+                    data-testid="doorpad-admin-link"
+                    onClick={() => navigateTo("/admin")}
+                  >
+                    Admin
+                  </button>
                 </div>
               )}
             </div>
@@ -2939,10 +2985,10 @@ export function App() {
             <BigButton
               id="btn-privacy"
               icon={<span aria-hidden="true">I</span>}
-              hint="How this door works, what it records, and how to erase it"
-              onClick={() => handleActionClick("About", "privacy")}
+              hint="See what you've left here and erase it"
+              onClick={() => handleActionClick("My Data", "privacy")}
             >
-              About This Doorboard
+              My Data &amp; Privacy
             </BigButton>
           </div>
         </div>
@@ -3177,7 +3223,10 @@ export function App() {
               {latestRecording?.playback_url ? (
                 <video className="review-video" src={latestRecording.playback_url} controls playsInline />
               ) : (
-                <div className="video-preview-frame video-preview-frame--unavailable">Preparing playback...</div>
+                <div className="video-preview-frame video-preview-frame--unavailable">
+                  <strong>Your message is recorded.</strong>
+                  <span>Preparing the preview — you can send it now without waiting.</span>
+                </div>
               )}
               <div className="message-meta">
                 Consent context: {latestRecording?.consent_context ?? "visitor_initiated"}
@@ -4215,15 +4264,12 @@ export function App() {
     <>
       {renderToast()}
       {route === "/wallboard" && renderWallboard()}
-      {/* Overlays for the public wallboard surface: a calm connection dot so a frozen or
-          reconnecting display is visible to a passerby, and the persistent camera/privacy
-          notice both ARCHITECTURE.md §9 and docs/handoff §2.3 require. The wallboard also
-          renders at "/" when dev tools are off, so cover that path too. */}
+      {/* A calm connection dot so a frozen/reconnecting corridor display is visible to a
+          passerby. The camera/privacy notice is intentionally NOT on the wallboard (owner's
+          call) — it stays only on the touchable doorpad below. The wallboard also renders at
+          "/" when dev tools are off, so cover that path too. */}
       {(route === "/wallboard" || (route === "/" && !DEV_TOOLS_ENABLED)) && (
-        <>
-          <ConnectionDot liveness={wallboardLiveness} className="wallboard-connection-dot" />
-          <CameraNotice surface="wallboard" className="wallboard-camera-notice" />
-        </>
+        <ConnectionDot liveness={wallboardLiveness} className="wallboard-connection-dot" />
       )}
       {route === "/doorpad" && (
         // Wrapped so the persistent camera/privacy notice reserves its own row rather than
