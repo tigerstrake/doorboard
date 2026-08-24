@@ -23,12 +23,16 @@ dead code/config.
   "never delete unverified" is binding, so this needs a superseding ADR: either a loud
   escape valve (drop unsynced clips past a hard age/space bound) or explicit acceptance of
   the recording halt.
-- `[ADR]` **Enrollment invite secret rides in the URL path** (`door-visiond .../service.py`
-  builds `…/e/<invite_id>.<secret>#k=<fp>`). A compromised relay reads it from its own
-  request line and can enroll an attacker's face — falsifying ADR-0016 §4/E-11
-  ("a fully compromised relay cannot cause an enrollment"). Move the secret into the URL
-  fragment (never sent to the server), or POST it; needs a superseding ADR because the
-  README + security-checklist assert the now-false conclusion.
+- `[PARTLY DONE a9a6fe5 · ADR-0043 §2]` **Enrollment invite secret rides in the URL path**
+  (`door-visiond .../service.py` built `…/e/<invite_id>.<secret>#k=<fp>`). A compromised relay
+  read it from its own request line — falsifying ADR-0016 §4/E-11. **Landed:** the secret now
+  rides in the fragment (`#s=<secret>&k=<fp>`) and, for the API calls, an
+  `X-Doorboard-Invite-Secret` header, so it never appears in any request line (logs, history,
+  Referer). P-32 pins it; README updated. **Still open (deferred, needs hardware):** the relay
+  still receives the raw secret at *submit* time for the spam check, so the full E-11
+  "compromised relay cannot cause an enrollment" isn't restored — that needs the relay to
+  verify `sha256(secret)` only, with the raw secret sealed to the Pi. Own ADR when the door
+  can be tested.
 - `[ADR]` **`/doorpad/enroll-invite` is unauthenticated on the LAN-exposed door-api.** A
   hallway stranger can mint up to 6 live remote-enroll invites/hour. ADR-0019's "standing
   at the door is the authorization" assumed a house, not a shared dorm corridor. Decide what
