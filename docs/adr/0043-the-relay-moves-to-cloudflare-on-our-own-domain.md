@@ -65,6 +65,26 @@ Nothing in the *shape* of the relay changes: same routes, same request/response 
 (`packages/contracts`, E-13), same blind-courier semantics, same scoped device tokens
 (E-17). What changes is the runtime and the datastore.
 
+**Runtime-compat, decided against the code inventory:**
+
+- **`lib/device.ts` is the only runtime code with Node-only APIs** — `createHash` /
+  `timingSafeEqual` (`node:crypto`) and `Buffer`, in the device-token check and the
+  invite-secret / visitor-token hash compares. This is security-critical constant-time
+  comparison. We enable the Workers **`nodejs_compat`** flag and keep it *unchanged* rather
+  than rewrite it on `crypto.subtle` — a rewrite would make `sha256Base64Url`/`digestsMatch`
+  async and ripple through four route handlers and the test call-sites, and hand-rolling a
+  constant-time compare is exactly the kind of change not to make untested. If a specific API
+  proves unsupported on deploy, the WebCrypto rewrite is the documented fallback.
+- **What forces D1 over plain KV:** the lease queues are Redis sorted-sets (`pending`,
+  `visitor:pending`, scored by time), the rate limiter is `INCR`+`EXPIRE`, and the
+  invite-`consumed` flag, the terminal-status guard, and the visitor `outcomes[]` are
+  read-modify-write. KV has neither sorted sets nor atomic increment. (`@upstash/redis` is
+  fetch-based and *would* run on Workers, but the owner's decision is off-Upstash, so it is
+  dropped.) Note today's code performs these read-modify-writes **non-atomically**, relying on
+  Upstash per-key serialization plus the single-threaded Pi poller; D1 transactions make them
+  actually atomic, an improvement, not just a port. One incidental bug to fix in passing:
+  `putDoorKey` writes `doorkey:active` with **no TTL** despite the "TTL on every key" claim.
+
 ### 2. The invite secret leaves the URL path (amends ADR-0016 §4 / E-11)
 
 Today the enrollment link is `…/e/<invite_id>.<secret>`, so the secret sits in the **request
@@ -73,11 +93,21 @@ line** of the page load — visible in the relay's access logs, the browser hist
 compromised relay already sees it at *submit* time; but the path placement leaks it far more
 widely and passively, which is what falsifies the "reads it from its own request line" case.
 
-The secret moves into the **URL fragment**, exactly as the key fingerprint already does
-(§3): `…/e/<invite_id>#s=<secret>&k=<fp>`. Fragments are never sent to any server. The client
-reads the secret from the fragment and presents it only in the submit body, as before. This
-closes the passive path leak (logs, history, `Referer`) — the decided, in-scope fix, and the
-one the backlog names.
+The inventory shows the secret is worse-placed than "the page URL": the client also puts the
+whole `<invite_id>.<secret>` token in the **API request path** on both the invite-state `GET
+/api/enroll/<token>` and the `POST …/submit` (`EnrollFlow.tsx:79,293`), so the secret reaches
+the origin in the request line of two API calls, not just the page load. Moving it out of the
+page URL alone would not fix that.
+
+The fix therefore has two parts: (a) the enroll link becomes `…/e/<invite_id>#s=<secret>&k=<fp>`
+— the secret in the fragment, exactly as the key fingerprint already is (§3), never sent to a
+server on the page load; the client reads it from `location.hash`. (b) The API path carries
+only `<invite_id>`; the client presents the secret in a request **header**
+(`X-Doorboard-Invite-Secret`), which the two handlers read instead of splitting it off the
+path. The relay still hashes it for the §4.1 spam check exactly as before — the secret simply
+never appears in a URL/request line (logs, history, `Referer`) again. This is relay-side plus a
+one-line change to door-visiond's URL builder (`service.py:799`) and its test; it is
+platform-independent, so it can land ahead of the platform move. P-32 pins it.
 
 **Follow-up, deferred (not in this change):** to restore E-11's *full* "a compromised relay
 cannot cause an enrollment" property against the submit-time exposure, the relay's spam check
@@ -87,18 +117,25 @@ enrollment *crypto protocol* spanning door-visiond, the Pi's pickup verification
 `packages/contracts` — and it must be verified against real hardware, which is offline during
 this change. It is recorded in the backlog and gets its own ADR when the door can be tested.
 
-### 3. The visitor page stops handing a name to any token holder
+### 3. The visitor-page attribution exposure — escalated to the owner, not changed here
 
 Per ADR-0017 §2 (as amended by ADR-0018 §2) the visitor snapshot carries `attributed_to` —
 the recognised person's own name — so the page can disclose "posting as Tiger" *before* a
-write (E-23). The exact current exposure and the minimal correct fix are pinned to the code
-inventory of `app/v/[token]` and `/api/visitor/*`; the decision here is the **invariant**:
-the relay-served visitor page discloses attribution to the recognised person without turning
-the token-addressable snapshot into a way for *any* holder of the QR to read who is currently
-at the door. Whatever the fix's mechanics, it must not widen the ADR-0017 §2 allow-list and
-must keep `attributed_to` null unless consent covers attribution (ADR-0018 §2). If the correct
-fix requires revisiting the attribution *model* (not just its transport), that is escalated to
-the owner rather than improvised here — the allow-list is binding.
+write (E-23). The inventory settles what this is: **`app/api/visitor/[token]/route.ts:42`
+returns `attributed_to` to anyone who presents a token whose `sha256` matches the snapshot**,
+and the relay has **no mechanism binding the token-holder to the recognised person** — door-api
+computes the name from face recognition at the door, while the token is simply whatever phone
+scanned the wallboard QR. So a different person who scans that session's QR receives the
+resident's real name. The existing tests (`visitorFlow.test.tsx:183`, `visitor.test.ts:117`)
+assert the name *is* present, because ADR-0017/0018 deliberately put it there.
+
+This is therefore a **design decision, not a code defect**: "fixing" it means either removing
+the name from the relay path (weakening E-23's explicit "say the name" disclosure) or narrowing
+when door-api populates it — both are amendments to ADR-0017 §2 / ADR-0018 E-23, which are
+binding. Per the coordinator rule, an architecture flaw is resolved by an ADR/owner decision,
+not by an implementer improvising. **This ADR does not change `route.ts:42`.** The options are
+put to the owner; the chosen behaviour lands in a follow-up amendment. The platform move ships
+without touching attribution, so the two concerns stay independent.
 
 ### 4. Door-side and deployment changes
 
@@ -125,15 +162,18 @@ the `fakeRedis` double. Two properties get an explicit new test on the new platf
 
 | ID | Test | Where |
 |---|---|---|
-| P-32 | `test_invite_secret_never_in_a_server_request` — the enroll URL the Pi builds carries the secret only in the fragment; a simulated page load exposes no secret in path, query, or any header the Function receives. | public-relay / visiond |
+| P-32 | `test_invite_secret_never_in_a_url` — the enroll link the Pi builds carries the secret only in the `#s=` fragment (never the path/query); the client's API calls carry `<invite_id>` in the path and the secret in the `X-Doorboard-Invite-Secret` header, so no request line — page load or API — contains the secret. The relay still rejects a hash-mismatched secret (non-enumerable), unchanged. | public-relay / visiond |
 | P-33 | `test_d1_store_preserves_lease_and_terminal_semantics` — single-use invite consumed once under concurrent pickups; a lapsed lease re-collects; a terminal status never regresses on a duplicate ack — the D1 store passes the same assertions the Redis store did. | public-relay |
 
 ## Consequences
 
 - The relay's production origin changes from `*.vercel.app` to `door.tigerstrake.com`. The QR
   content changes accordingly; door-api's fail-safe LAN fallback (E-19) is unaffected.
-- `@upstash/redis` leaves the relay's dependencies; a D1 binding and `wrangler` config enter.
-  The Next server runtime is no longer used in production (pages static, API as Functions).
+- `@upstash/redis` leaves the relay's dependencies; a D1 binding and `wrangler` config enter,
+  with `nodejs_compat` enabled so the device/hash crypto in `lib/device.ts` is unchanged. The
+  Next server runtime is no longer used in production (pages static, API as Functions).
+- Attribution (`attributed_to`) is deliberately **untouched** by this change; it is escalated
+  to the owner (§3) and any change to it is a separate ADR-0017/0018 amendment.
 - The residual "host can serve malicious JS" risk (ADR-0016 §9) now rests on the owner's
   Cloudflare account rather than Vercel — reduced, not removed. The consent statement's
   "encrypted photos through a relay that cannot read them" wording stays true and needs no
