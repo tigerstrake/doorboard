@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS media_outbox (
     attempts INTEGER NOT NULL DEFAULT 0,
     next_attempt_epoch REAL NOT NULL DEFAULT 0,
     created_epoch REAL NOT NULL,
-    last_error TEXT
+    last_error TEXT,
+    dead INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_outbox_ready
@@ -74,7 +75,8 @@ CREATE TABLE IF NOT EXISTS sync_outbox (
     attempts INTEGER NOT NULL DEFAULT 0,
     next_attempt_epoch REAL NOT NULL DEFAULT 0,
     created_epoch REAL NOT NULL,
-    last_error TEXT
+    last_error TEXT,
+    dead INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_sync_outbox_ready
@@ -130,7 +132,25 @@ class SessionStore:
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA synchronous=FULL;")
         self._conn.executescript(_CREATE_TABLE)
+        self._migrate_locked()
         self._conn.commit()
+
+    def _migrate_locked(self) -> None:
+        """Idempotent schema migrations for databases created by older versions.
+
+        ``CREATE TABLE IF NOT EXISTS`` never alters an existing table, so a column
+        added to the schema above only reaches a fresh DB. Existing outbox DBs get
+        the column back-filled here. Guarded by ``PRAGMA table_info`` so it is a
+        no-op on an already-migrated DB and never loses rows.
+        """
+        for table in ("media_outbox", "sync_outbox"):
+            columns = {
+                row[1] for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if "dead" not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN dead INTEGER NOT NULL DEFAULT 0"
+                )
 
     def load(self) -> PersistedSession | None:
         """Load the current session, or None if no session is persisted."""
@@ -277,7 +297,7 @@ class SessionStore:
         with self._lock:
             row = self._conn.execute(
                 "SELECT event_id, event_json, attempts, next_attempt_epoch FROM media_outbox "
-                "ORDER BY rowid LIMIT 1",
+                "WHERE dead = 0 ORDER BY rowid LIMIT 1",
             ).fetchone()
         if row is None or float(row[3]) > now_epoch:
             return None
@@ -298,18 +318,36 @@ class SessionStore:
         attempts: int,
         next_attempt_epoch: float,
         last_error: str,
+        max_attempts: int,
     ) -> None:
+        """Record a failed forward attempt.
+
+        When ``attempts`` reaches ``max_attempts`` the item is dead-lettered
+        (``dead = 1``) rather than left retryable: a permanently-failing head is
+        tried a bounded number of times, then parked so it stops blocking every
+        healthy item queued behind it. The attempt count and last error are still
+        recorded, so the parked item is surfaced (via /metrics and /health), never
+        silently dropped.
+        """
+        dead = 1 if attempts >= max_attempts else 0
         with self._lock:
             self._conn.execute(
-                "UPDATE media_outbox SET attempts = ?, next_attempt_epoch = ?, last_error = ? "
+                "UPDATE media_outbox "
+                "SET attempts = ?, next_attempt_epoch = ?, last_error = ?, dead = ? "
                 "WHERE event_id = ?",
-                (attempts, next_attempt_epoch, last_error[:500], event_id),
+                (attempts, next_attempt_epoch, last_error[:500], dead, event_id),
             )
             self._conn.commit()
 
     def media_outbox_depth(self) -> int:
         with self._lock:
             return int(self._conn.execute("SELECT COUNT(*) FROM media_outbox").fetchone()[0])
+
+    def media_outbox_dead_total(self) -> int:
+        with self._lock:
+            return int(
+                self._conn.execute("SELECT COUNT(*) FROM media_outbox WHERE dead = 1").fetchone()[0]
+            )
 
     def media_outbox_dropped_total(self) -> int:
         with self._lock:
@@ -360,7 +398,7 @@ class SessionStore:
         with self._lock:
             row = self._conn.execute(
                 "SELECT event_id, event_json, attempts, next_attempt_epoch FROM sync_outbox "
-                "ORDER BY rowid LIMIT 1",
+                "WHERE dead = 0 ORDER BY rowid LIMIT 1",
             ).fetchone()
         if row is None or float(row[3]) > now_epoch:
             return None
@@ -381,18 +419,32 @@ class SessionStore:
         attempts: int,
         next_attempt_epoch: float,
         last_error: str,
+        max_attempts: int,
     ) -> None:
+        """Record a failed forward attempt; dead-letter at the cap.
+
+        See :meth:`retry_media_event` — same bounded-retry contract for the
+        sync outbox (door-sync delivery).
+        """
+        dead = 1 if attempts >= max_attempts else 0
         with self._lock:
             self._conn.execute(
-                "UPDATE sync_outbox SET attempts = ?, next_attempt_epoch = ?, last_error = ? "
+                "UPDATE sync_outbox "
+                "SET attempts = ?, next_attempt_epoch = ?, last_error = ?, dead = ? "
                 "WHERE event_id = ?",
-                (attempts, next_attempt_epoch, last_error[:500], event_id),
+                (attempts, next_attempt_epoch, last_error[:500], dead, event_id),
             )
             self._conn.commit()
 
     def sync_outbox_depth(self) -> int:
         with self._lock:
             return int(self._conn.execute("SELECT COUNT(*) FROM sync_outbox").fetchone()[0])
+
+    def sync_outbox_dead_total(self) -> int:
+        with self._lock:
+            return int(
+                self._conn.execute("SELECT COUNT(*) FROM sync_outbox WHERE dead = 1").fetchone()[0]
+            )
 
     def sync_outbox_dropped_total(self) -> int:
         with self._lock:

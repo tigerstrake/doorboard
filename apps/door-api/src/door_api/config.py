@@ -146,6 +146,12 @@ class SessionConfig:
     media_forward_poll_s: float = 0.25
     media_retry_base_s: float = 0.5
     media_retry_max_s: float = 30.0
+    # After this many failed forward attempts a media-outbox item is dead-lettered
+    # (parked, no longer retried) so one permanently-failing head — e.g. a
+    # contract-drift event door-media answers 422 forever — stops blocking every
+    # bell-clip projection queued behind it. Bounded retries, then surfaced on
+    # /metrics and /health; never silently dropped.
+    media_forward_max_attempts: int = 10
 
     # door-visiond local base URL. Used only to forward the doorpad's self-service
     # enrollment request (ADR-0019): the kiosks connect to door-api and nothing else
@@ -166,6 +172,8 @@ class SessionConfig:
     sync_forward_poll_s: float = 0.25
     sync_retry_base_s: float = 0.5
     sync_retry_max_s: float = 30.0
+    # Dead-letter cap for the sync outbox; see media_forward_max_attempts.
+    sync_forward_max_attempts: int = 10
 
     # Shared secret door-visiond presents on POST /internal/events, the hop that
     # carries recognised identities into the session machine and onto the kiosk
@@ -314,6 +322,7 @@ class SessionConfig:
             media_forward_poll_s=_env_float("DOOR_API_MEDIA_FORWARD_POLL_S", 0.25),
             media_retry_base_s=_env_float("DOOR_API_MEDIA_RETRY_BASE_S", 0.5),
             media_retry_max_s=_env_float("DOOR_API_MEDIA_RETRY_MAX_S", 30.0),
+            media_forward_max_attempts=int(_env_float("DOOR_API_MEDIA_FORWARD_MAX_ATTEMPTS", 10.0)),
             visiond_base_url=os.environ.get("DOOR_API_VISIOND_BASE_URL", "http://127.0.0.1:8081"),
             visiond_timeout_s=_env_float("DOOR_API_VISIOND_TIMEOUT_S", 3.0),
             visiond_admin_token=os.environ.get("DOOR_VISIOND_ADMIN_TOKEN", ""),
@@ -324,6 +333,7 @@ class SessionConfig:
             sync_forward_poll_s=_env_float("DOOR_API_SYNC_FORWARD_POLL_S", 0.25),
             sync_retry_base_s=_env_float("DOOR_API_SYNC_RETRY_BASE_S", 0.5),
             sync_retry_max_s=_env_float("DOOR_API_SYNC_RETRY_MAX_S", 30.0),
+            sync_forward_max_attempts=int(_env_float("DOOR_API_SYNC_FORWARD_MAX_ATTEMPTS", 10.0)),
             internal_event_token=os.environ.get("DOOR_API_INTERNAL_EVENT_TOKEN", ""),
             ambient_cache_max_age_s=_env_float("DOOR_API_AMBIENT_CACHE_MAX_AGE_S", 26 * 3600.0),
             recognised_identity_idle_ttl_s=_env_float("DOOR_API_IDENTITY_IDLE_TTL_S", 33.0),

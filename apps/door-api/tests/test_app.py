@@ -48,6 +48,30 @@ def test_metrics() -> None:
     assert "door_api_media_outbox_depth" in response.text
 
 
+def test_dead_lettered_event_surfaces_on_metrics_and_health() -> None:
+    client = TestClient(app)
+    # Enqueue an event and drive it past a cap of one so it is parked as dead.
+    state.store.enqueue_sync_event({"event_id": "poison-1", "type": "session.state_changed"})
+    state.store.retry_sync_event(
+        "poison-1",
+        attempts=1,
+        next_attempt_epoch=0.0,
+        last_error="422 contract drift",
+        max_attempts=1,
+    )
+    assert state.store.sync_outbox_dead_total() == 1
+
+    metrics = client.get("/metrics").text
+    assert "door_api_sync_outbox_dead_total 1" in metrics
+    assert "door_api_media_outbox_dead_total 0" in metrics
+
+    health = client.get("/health")
+    assert health.status_code == 200
+    body = health.json()
+    assert body["status"] == "degraded"
+    assert "sync=1" in body["detail"]
+
+
 def test_admin_routes_fail_closed_without_configured_token() -> None:
     client = TestClient(app)
 

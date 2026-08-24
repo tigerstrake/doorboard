@@ -541,6 +541,7 @@ class DoorApiState:
                     attempts=attempts,
                     next_attempt_epoch=time.time() + delay_s,
                     last_error=type(exc).__name__,
+                    max_attempts=self.config.media_forward_max_attempts,
                 )
                 continue
 
@@ -590,6 +591,7 @@ class DoorApiState:
                     attempts=attempts,
                     next_attempt_epoch=time.time() + delay_s,
                     last_error=type(exc).__name__,
+                    max_attempts=self.config.sync_forward_max_attempts,
                 )
                 continue
 
@@ -1199,6 +1201,21 @@ def _sync_auth_headers() -> dict[str, str]:
 
 @app.get("/health", response_model=HealthPayload)
 async def health() -> HealthPayload:
+    # A dead-lettered outbox event is a mirror the NUC will never receive. It no
+    # longer blocks the queue (healthy items forward past it), but the operator
+    # must know it happened — the door's local behaviour is fine, the off-door
+    # projection is not — so report degraded with a count, not OK.
+    media_dead = state.store.media_outbox_dead_total()
+    sync_dead = state.store.sync_outbox_dead_total()
+    if media_dead or sync_dead:
+        return HealthPayload(
+            service="door-api",
+            status=HealthStatus.DEGRADED,
+            detail=(
+                f"dead-lettered outbox events: media={media_dead} sync={sync_dead}; "
+                "these mirrors will not reach the NUC without operator action"
+            ),
+        )
     return HealthPayload(service="door-api", status=HealthStatus.OK, detail=None)
 
 
@@ -1216,10 +1233,12 @@ async def metrics() -> Response:
             "door_api_media_forward_successes_total": state.media_forward_successes,
             "door_api_media_outbox_depth": state.store.media_outbox_depth(),
             "door_api_media_outbox_dropped_total": state.store.media_outbox_dropped_total(),
+            "door_api_media_outbox_dead_total": state.store.media_outbox_dead_total(),
             "door_api_sync_forward_errors_total": state.sync_forward_errors,
             "door_api_sync_forward_successes_total": state.sync_forward_successes,
             "door_api_sync_outbox_depth": state.store.sync_outbox_depth(),
             "door_api_sync_outbox_dropped_total": state.store.sync_outbox_dropped_total(),
+            "door_api_sync_outbox_dead_total": state.store.sync_outbox_dead_total(),
             "door_api_mqtt_bridge_enabled": int(state.mqtt_bridge is not None),
             "door_api_mqtt_bridge_messages_received_total": (
                 state.mqtt_bridge.messages_received if state.mqtt_bridge else 0
