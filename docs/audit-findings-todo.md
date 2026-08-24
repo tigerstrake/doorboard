@@ -109,10 +109,10 @@ dead code/config.
   Fixed: reconciled all four profile surfaces (door-visiond, ui-kit, phone EnrollFlow, admin
   dropdown) to the firmware's six effects; new test parses the firmware source so it can't
   drift again. Needs redeploy to the Pi + phone relay.
-- `[FIX]` **`INFERRED_SOURCES` is dead code** (imported nowhere); the real `tracking_enabled`
+- `[DONE 8d8f8f8]` **`INFERRED_SOURCES` is dead code** (imported nowhere); the real `tracking_enabled`
   consent gate is three inline literals in `presence_engine.py`. A new inferred presence
-  source would bypass the gate silently. Either wire `INFERRED_SOURCES` as the gate or delete
-  it.
+  source would bypass the gate silently. Fixed: wired `INFERRED_SOURCES` as the single gate in
+  `_build_entries`; invariant guard test pins the set complete. NUC-only change (redeploy control-plane).
 - `[FIX]` **Finalize orphans a clip on restart** (door-media `service.py`): the idempotency
   memo is process-local, the lifespan does no startup reconciliation, and the media DB is
   `synchronous=NORMAL` (no fsync). A restart/power-loss mid-finalize strands a clip that no
