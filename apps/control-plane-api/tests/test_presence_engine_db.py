@@ -16,7 +16,12 @@ from control_plane_api import presence_engine
 from control_plane_api.db import session_scope
 from control_plane_api.models import PresenceHistoryRow
 from control_plane_api.mqtt import RecordingMqttPublisher
-from control_plane_api.presence import MockCalendarProvider, SourceEntry
+from control_plane_api.presence import (
+    INFERRED_SOURCES,
+    SOURCE_PRECEDENCE,
+    MockCalendarProvider,
+    SourceEntry,
+)
 from doorboard_contracts import PresenceLabel
 from sqlalchemy import select
 
@@ -222,6 +227,31 @@ def test_tracking_disabled_suppresses_inferred_sources_but_not_manual(session_fa
         )
     assert resolved_with_manual.label == PresenceLabel.SLEEPING
     assert resolved_with_manual.source == "manual"
+
+
+def test_every_source_is_consent_gated_unless_self_declared() -> None:
+    """The consent gate is now driven by INFERRED_SOURCES membership, not by a
+    per-source literal in ``_build_entries``. That is only safe if the set stays
+    complete: every real presence source must be either inferred (and so gated by
+    ``tracking_enabled``) or one of the two self-declared exemptions. This pins the
+    rule so a source added to SOURCE_PRECEDENCE without a deliberate choice fails
+    here instead of silently leaking presence past a roommate's disabled consent.
+    """
+    # "manual" is the subject stating their own status; "default" is the UNKNOWN
+    # floor. Everything else is inference about the subject and must be gated.
+    self_declared = {"manual", "default"}
+    must_be_gated = set(SOURCE_PRECEDENCE) - self_declared
+    ungated = must_be_gated - INFERRED_SOURCES
+    assert not ungated, (
+        f"these sources are neither self-declared nor consent-gated, so they resolve even "
+        f"when tracking is disabled: {sorted(ungated)}. Add each to INFERRED_SOURCES, or to "
+        f"the self_declared exemption if it is genuinely the subject's own declaration."
+    )
+    # And the set must not name a source that does not exist (a typo would gate nothing).
+    assert INFERRED_SOURCES.issubset(SOURCE_PRECEDENCE), (
+        f"INFERRED_SOURCES names sources not in SOURCE_PRECEDENCE: "
+        f"{sorted(INFERRED_SOURCES - set(SOURCE_PRECEDENCE))}"
+    )
 
 
 def test_retention_cap_keeps_only_the_most_recent_rows(session_factory) -> None:

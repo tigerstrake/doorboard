@@ -91,20 +91,24 @@ dead code/config.
 
 ## B. Correctness & reliability — contained, fixable
 
-- `[FIX]` **door-media 422 permanently wedges door-api's media outbox.** Strict FIFO
+- `[DONE 417b5ab]` **door-media 422 permanently wedges door-api's media outbox.** Strict FIFO
   (`persistence.py` `ORDER BY rowid LIMIT 1`), no attempt cap, no dead-letter, no
   skip-past-poison-head. One contract-drift 422 on a partial deploy blocks all bell-clip
   recording forwarding until the outbox fills and evicts the head. Same shape for the sync
-  outbox. Mirror door-sync's queue (cap + dead-letter).
-- `[FIX]` **door-sync SSE consumer catches the wrong exception** (`sources.py`: `except
+  outbox. Fixed: `dead` column + `WHERE dead = 0` head select + `max_attempts` cap on both
+  outboxes (mirrors door-sync's queue); dead count on /metrics + degraded /health. Tests
+  prove the wedge is gone. Needs redeploy to the Pi.
+- `[DONE 1609ef3]` **door-sync SSE consumer catches the wrong exception** (`sources.py`: `except
   (JSONDecodeError, KeyError)`, but `parse_event` raises `ValidationError`), so one
   schema-invalid media event tears down the whole clip-sync stream and mislogs it as a
-  disconnect.
-- `[FIX]` **LED profile catalog drift (VERIFIED drift today).** `PROFILE_CATALOG` has
+  disconnect. Fixed: `_handle_frame` swallows any per-frame error; only a transport failure
+  reconnects. Tests pin it with a real `parse_event` ValidationError. Needs redeploy to the Pi.
+- `[DONE 1609ef3]` **LED profile catalog drift (VERIFIED drift today).** `PROFILE_CATALOG` had
   `warm_amber, violet_dusk, coral_glow, cool_white`, none of which exist in the firmware's
-  `door_effect_from_name` — so 4 of 6 enrollable profiles silently fall back to `blue_wave`.
-  Add a startup/CI cross-check that every catalog id resolves in the firmware table, and
-  reconcile the two lists.
+  `door_effect_from_name` — so 4 of 6 enrollable profiles silently fell back to `blue_wave`.
+  Fixed: reconciled all four profile surfaces (door-visiond, ui-kit, phone EnrollFlow, admin
+  dropdown) to the firmware's six effects; new test parses the firmware source so it can't
+  drift again. Needs redeploy to the Pi + phone relay.
 - `[FIX]` **`INFERRED_SOURCES` is dead code** (imported nowhere); the real `tracking_enabled`
   consent gate is three inline literals in `presence_engine.py`. A new inferred presence
   source would bypass the gate silently. Either wire `INFERRED_SOURCES` as the gate or delete

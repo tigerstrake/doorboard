@@ -46,6 +46,7 @@ from control_plane_api.ingest import ingest_one
 from control_plane_api.models import PresenceHistoryRow, PresenceSourceRow, PresenceSubjectRow
 from control_plane_api.mqtt import MqttPublisher
 from control_plane_api.presence import (
+    INFERRED_SOURCES,
     SOURCE_PRECEDENCE,
     CalendarProvider,
     ResolvedPresence,
@@ -222,9 +223,19 @@ def _build_entries(
 
     entries: dict[str, SourceEntry | None] = {}
     for source in SOURCE_PRECEDENCE:
+        # Consent gate (roommate consent — ADR-0005 §5). An inferred source is
+        # suppressed entirely when the subject has tracking disabled. This is the
+        # ONE place the gate lives, driven by membership in INFERRED_SOURCES rather
+        # than a per-source literal, so a source added to that set is gated
+        # automatically — a new inferred source can no longer leak past consent by
+        # someone forgetting to repeat the check. "manual"/"default" are never in
+        # the set: they are the subject's own declared status, not inference.
+        if source in INFERRED_SOURCES and not tracking_enabled:
+            entries[source] = None
+            continue
         if source == "calendar":
             cal_row = source_rows.get("calendar")
-            if not tracking_enabled or (cal_row is not None and not cal_row.enabled):
+            if cal_row is not None and not cal_row.enabled:
                 entries[source] = None
             else:
                 entries[source] = calendar_provider.get_label(subject_id, now=now)
@@ -234,17 +245,10 @@ def _build_entries(
             # on every resolution, so it reappears the moment a higher source is
             # cleared rather than needing to be re-triggered (ADR-0037).
             sched_row = source_rows.get("schedule")
-            if (
-                schedule_provider is None
-                or not tracking_enabled
-                or (sched_row is not None and not sched_row.enabled)
-            ):
+            if schedule_provider is None or (sched_row is not None and not sched_row.enabled):
                 entries[source] = None
             else:
                 entries[source] = schedule_provider.get_label(subject_id, now=now)
-            continue
-        if source in ("focus_shortcut", "geofence_label") and not tracking_enabled:
-            entries[source] = None
             continue
         row = source_rows.get(source)
         if row is None or not row.enabled or row.label is None:
