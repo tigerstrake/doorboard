@@ -41,7 +41,7 @@ The Pi always initiates. There is no route here that reaches toward the door, an
 | Route | Who | Purpose |
 |---|---|---|
 | `GET /` | anyone | Explains the site. No enrollee data. |
-| `GET /e/<invite_id>.<secret>#k=<fp>` | invited phone | The enrollment flow. The `#k=` fragment is the door key fingerprint and **never reaches the server**. |
+| `GET /e/<invite_id>#s=<secret>&k=<fp>` | invited phone | The enrollment flow. The fragment carries the invite secret (`s`) and the door-key fingerprint (`k`); it **never reaches the server** (ADR-0043 §2). The path is just the invite id; the client re-presents the secret in the `X-Doorboard-Invite-Secret` header. |
 | `PUT /api/door-key` | door Pi | Publish the sealing public key + canonical consent text. |
 | `GET /api/door-key` | invited phone | Fetch them. |
 | `PUT /api/invite`, `DELETE /api/invite/<id>` | door Pi | Register / revoke an invite. Only `sha256(secret)` is stored. |

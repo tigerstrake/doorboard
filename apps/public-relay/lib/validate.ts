@@ -170,15 +170,24 @@ export function parsePickupAck(value: unknown): PickupAck {
   };
 }
 
-/** Split an invite token (`<invite_id>.<secret>`) without leaking either half. */
-export function parseInviteToken(token: string): { inviteId: string; secret: string } | null {
-  const dot = token.indexOf(".");
-  if (dot <= 0 || dot === token.length - 1) return null;
-  const inviteId = token.slice(0, dot);
-  const secret = token.slice(dot + 1);
-  if (!OPAQUE_ID.test(inviteId)) return null;
+/**
+ * The header a phone presents its invite secret in (ADR-0043 §2). The secret used to ride in
+ * the URL path (`/e/<id>.<secret>`), so it landed in the request line of every enroll API call
+ * — access logs, browser history, `Referer`. It now travels only in the URL fragment (to the
+ * page, never to a server) and in this header (to the API), so no request line ever carries it.
+ */
+export const INVITE_SECRET_HEADER = "X-Doorboard-Invite-Secret";
+
+/** Validate an invite id taken from the URL path. The secret travels in {@link INVITE_SECRET_HEADER}. */
+export function parseInviteId(inviteId: string): string | null {
+  return OPAQUE_ID.test(inviteId) ? inviteId : null;
+}
+
+/** Validate an invite secret presented in the header; `null`/malformed is indistinguishable from absent. */
+export function parseInviteSecret(secret: string | null): string | null {
+  if (secret === null) return null;
   if (!BASE64URL.test(secret) || secret.length < 16 || secret.length > 128) return null;
-  return { inviteId, secret };
+  return secret;
 }
 
 // -- visitor surface (ADR-0017) --------------------------------------------

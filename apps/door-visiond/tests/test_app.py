@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, cast
+from urllib.parse import parse_qs
 
 import pytest
 from door_visiond.app import app
@@ -181,16 +182,16 @@ def test_create_invite_returns_a_url_with_a_pinned_fingerprint(client: TestClien
     assert resp.status_code == 201
     body = resp.json()
     assert body["invite_id"].startswith("inv_")
-    assert "#k=" in body["url"]
-    assert body["url"].split("#k=", 1)[1] == body["door_key_fingerprint"]
-    # The invite id and secret are separated by a dot in the path segment.
-    token = body["url"].split("#", 1)[0].rsplit("/e/", 1)[1]
-    assert token.split(".", 1)[0] == body["invite_id"]
+    # Secret and fingerprint live in the fragment now (ADR-0043 §2); the path is just the id.
+    before_fragment, fragment = body["url"].split("#", 1)
+    frag = parse_qs(fragment)
+    assert frag["k"] == [body["door_key_fingerprint"]]
+    assert before_fragment.rsplit("/e/", 1)[1] == body["invite_id"]
 
 
 def test_listed_invites_never_expose_the_secret(client: TestClient) -> None:
     created = client.post("/invites", json={"label": "phone"}).json()
-    secret = created["url"].split("#", 1)[0].rsplit("/e/", 1)[1].split(".", 1)[1]
+    secret = parse_qs(created["url"].split("#", 1)[1])["s"][0]
 
     listed = client.get("/invites").json()
     assert [i["invite_id"] for i in listed] == [created["invite_id"]]

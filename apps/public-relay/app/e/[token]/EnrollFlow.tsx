@@ -19,8 +19,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { DoorKeyPublication, InvitePublicState, SealedProfile } from "@/lib/contracts";
 import { KeyFingerprintMismatch, assertKeyMatchesFingerprint, newBundleId, sealBundle } from "@/lib/seal";
+import { INVITE_SECRET_HEADER } from "@/lib/validate";
 
 type Step = "checking" | "blocked" | "consent" | "capture" | "details" | "sending" | "waiting" | "done";
+
+/**
+ * Read one parameter from the URL fragment. The invite secret (`s`) and the key fingerprint
+ * (`k`) both live here (ADR-0043 §2, ADR-0016 §3): fragments are never sent to a server, so
+ * neither reaches the relay through a request line.
+ */
+function hashParam(name: string): string | null {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.hash.replace(/^#/, "")).get(name);
+}
 
 /** The effects catalogue the doorboard understands (T-103) — every id is a real firmware
  * effect (door-visiond PROFILE_CATALOG). The old amber/violet/coral/white ids were not, so
@@ -46,7 +57,7 @@ const MAX_EDGE_PX = 1000;
 const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 3 * 60 * 1000;
 
-export default function EnrollFlow({ token }: { token: string }) {
+export default function EnrollFlow({ inviteId }: { inviteId: string }) {
   const [step, setStep] = useState<Step>("checking");
   const [error, setError] = useState<string | null>(null);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
@@ -76,8 +87,23 @@ export default function EnrollFlow({ token }: { token: string }) {
 
     async function prepare() {
       try {
-        const inviteResp = await fetch(`/api/enroll/${encodeURIComponent(token)}`, {
+        // Both halves of the security check now live in the fragment (ADR-0043 §2): the invite
+        // secret (`s`) and the key fingerprint (`k`). Neither is ever sent to a server, so read
+        // and require both here, before the first request.
+        const secret = hashParam("s");
+        const expectedFingerprint = hashParam("k");
+        if (!secret || !expectedFingerprint) {
+          setBlockedReason(
+            "This link is missing its security check. Scan the QR code from the doorboard " +
+              "again rather than copying the address by hand.",
+          );
+          setStep("blocked");
+          return;
+        }
+
+        const inviteResp = await fetch(`/api/enroll/${encodeURIComponent(inviteId)}`, {
           cache: "no-store",
+          headers: { [INVITE_SECRET_HEADER]: secret },
         });
         const inviteState = (await inviteResp.json()) as InvitePublicState;
         if (cancelled) return;
@@ -109,16 +135,7 @@ export default function EnrollFlow({ token }: { token: string }) {
 
         // The fragment never reaches a server, so this comparison is the one thing
         // a tampered relay cannot quietly satisfy (E-10).
-        const expected = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("k");
-        if (!expected) {
-          setBlockedReason(
-            "This link is missing its security check. Scan the QR code from the doorboard " +
-              "again rather than copying the address by hand.",
-          );
-          setStep("blocked");
-          return;
-        }
-        await assertKeyMatchesFingerprint(key.public_key, expected);
+        await assertKeyMatchesFingerprint(key.public_key, expectedFingerprint);
 
         if (cancelled) return;
         setDoorKey(key);
@@ -138,7 +155,7 @@ export default function EnrollFlow({ token }: { token: string }) {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [inviteId]);
 
   // -- camera lifecycle ---------------------------------------------------
 
@@ -272,7 +289,7 @@ export default function EnrollFlow({ token }: { token: string }) {
       };
       const bundleId = newBundleId();
 
-      const secret = token.slice(token.indexOf(".") + 1);
+      const secret = hashParam("s") ?? "";
       const bundle = await sealBundle({
         doorPublicKey: doorKey.public_key,
         doorKeyId: doorKey.door_key_id,
@@ -290,9 +307,9 @@ export default function EnrollFlow({ token }: { token: string }) {
         images: photos,
       });
 
-      const resp = await fetch(`/api/enroll/${encodeURIComponent(token)}/submit`, {
+      const resp = await fetch(`/api/enroll/${encodeURIComponent(inviteId)}/submit`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", [INVITE_SECRET_HEADER]: secret },
         body: JSON.stringify(bundle),
       });
       if (!resp.ok) {
@@ -313,7 +330,7 @@ export default function EnrollFlow({ token }: { token: string }) {
     // accentColor belongs here: without it `submit` closes over the colour as it was
     // when the callback was last created, so a visitor who adjusts the picker and sends
     // immediately would enrol with the previous colour (ADR-0021).
-  }, [accentColor, doorKey, displayName, invite, photos, profileId, retakeAll, stopCamera, token]);
+  }, [accentColor, doorKey, displayName, invite, photos, profileId, retakeAll, stopCamera, inviteId]);
 
   const stepIndex = useMemo(() => {
     const order: Step[] = ["consent", "capture", "details", "sending", "waiting", "done"];

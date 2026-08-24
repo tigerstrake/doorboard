@@ -8,7 +8,7 @@
  */
 import { RATE_LIMITS, clientAddress, digestsMatch, jsonError, jsonOk, sha256Base64Url } from "@/lib/device";
 import { getInvite, storageConfigured, underRateLimit } from "@/lib/store";
-import { parseInviteToken } from "@/lib/validate";
+import { INVITE_SECRET_HEADER, parseInviteId, parseInviteSecret } from "@/lib/validate";
 
 export const dynamic = "force-dynamic";
 
@@ -23,12 +23,15 @@ export async function GET(
     return jsonError(429, "rate_limited");
   }
 
-  const { token } = await context.params;
-  const parsed = parseInviteToken(token);
-  if (!parsed) return jsonOk({ invite_id: "", status: "unknown", max_images: 1 });
+  // The path segment is the invite id; the secret arrives in a header (ADR-0043 §2), never a URL.
+  const { token: inviteId } = await context.params;
+  const secret = parseInviteSecret(request.headers.get(INVITE_SECRET_HEADER));
+  if (!parseInviteId(inviteId) || !secret) {
+    return jsonOk({ invite_id: "", status: "unknown", max_images: 1 });
+  }
 
-  const invite = await getInvite(parsed.inviteId);
-  if (!invite || !digestsMatch(invite.secret_sha256, sha256Base64Url(parsed.secret))) {
+  const invite = await getInvite(inviteId);
+  if (!invite || !digestsMatch(invite.secret_sha256, sha256Base64Url(secret))) {
     // Deliberately indistinguishable from a wrong secret.
     return jsonOk({ invite_id: "", status: "unknown", max_images: 1 });
   }
@@ -37,7 +40,7 @@ export async function GET(
   const status = invite.consumed ? "consumed" : expired ? "expired" : "open";
 
   return jsonOk({
-    invite_id: parsed.inviteId,
+    invite_id: inviteId,
     status,
     max_images: invite.max_images,
     expires_at: invite.expires_at,

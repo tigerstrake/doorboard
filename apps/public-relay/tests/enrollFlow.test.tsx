@@ -32,7 +32,7 @@ import { SEAL_INFO_PREFIX, SEAL_SUITE } from "@/lib/contracts";
  * the E-10 fingerprint check are exercised as written rather than mocked past.
  */
 
-const TOKEN = `inv_${"a".repeat(22)}.c2VjcmV0LXZhbHVlLWhlcmU`;
+const INVITE_ID = `inv_${"a".repeat(22)}`;
 const INVITE_SECRET = "c2VjcmV0LXZhbHVlLWhlcmU";
 const DOOR_KEY_ID = `dky_${"c".repeat(22)}`;
 const CONSENT_TEXT =
@@ -145,7 +145,7 @@ function failingCamera(error: unknown) {
 
 beforeEach(() => {
   // The fingerprint travels in the URL fragment, which never reaches a server.
-  window.location.hash = `#k=${doorFingerprint}`;
+  window.location.hash = `#k=${doorFingerprint}&s=${INVITE_SECRET}`;
 });
 
 afterEach(() => {
@@ -155,7 +155,7 @@ afterEach(() => {
 });
 
 async function reachConsent() {
-  render(<EnrollFlow token={TOKEN} />);
+  render(<EnrollFlow inviteId={INVITE_ID} />);
   await waitFor(() => expect(screen.getByText("Please read and agree")).toBeTruthy());
 }
 
@@ -201,28 +201,28 @@ describe("invite and key verification", () => {
 
   it("blocks a consumed invite before asking for anything", async () => {
     mockApi({ invite: { invite_id: "", status: "consumed", max_images: 5 } });
-    render(<EnrollFlow token={TOKEN} />);
+    render(<EnrollFlow inviteId={INVITE_ID} />);
     await waitFor(() => expect(screen.getByText("Cannot enrol")).toBeTruthy());
     expect(screen.getByText(/already been used/)).toBeTruthy();
   });
 
   it("blocks when the door has not checked in", async () => {
     mockApi({ doorKeyStatus: 503 });
-    render(<EnrollFlow token={TOKEN} />);
+    render(<EnrollFlow inviteId={INVITE_ID} />);
     await waitFor(() => expect(screen.getByText(/has not checked in/)).toBeTruthy());
   });
 
   it("refuses to proceed when the QR fragment is missing (E-10)", async () => {
     window.location.hash = "";
     mockApi();
-    render(<EnrollFlow token={TOKEN} />);
+    render(<EnrollFlow inviteId={INVITE_ID} />);
     await waitFor(() => expect(screen.getByText(/missing its security check/)).toBeTruthy());
   });
 
   it("refuses, and uploads nothing, when the key does not match the fragment (E-10)", async () => {
-    window.location.hash = "#k=Zm9yZ2VkLWZpbmdlcnByaW50";
+    window.location.hash = `#k=Zm9yZ2VkLWZpbmdlcnByaW50&s=${INVITE_SECRET}`;
     const calls = mockApi();
-    render(<EnrollFlow token={TOKEN} />);
+    render(<EnrollFlow inviteId={INVITE_ID} />);
     await waitFor(() =>
       expect(screen.getByText(/does not match the code you scanned/)).toBeTruthy(),
     );

@@ -18,7 +18,7 @@ import { GET as getStatus } from "@/app/api/status/[bundleId]/route";
 import { sha256Base64Url } from "@/lib/device";
 import { KeyFingerprintMismatch, assertKeyMatchesFingerprint, fingerprintFor } from "@/lib/seal";
 import { setRedisForTests } from "@/lib/store";
-import { InvalidBody, parseSealedBundle } from "@/lib/validate";
+import { INVITE_SECRET_HEADER, InvalidBody, parseSealedBundle } from "@/lib/validate";
 
 import { FakeRedis } from "./fakeRedis";
 import {
@@ -57,12 +57,22 @@ function deviceRequest(url: string, method: string, body?: unknown): Request {
   });
 }
 
-function publicRequest(url: string, method = "GET", body?: unknown): Request {
+function publicRequest(
+  url: string,
+  method = "GET",
+  body?: unknown,
+  extraHeaders: Record<string, string> = {},
+): Request {
   return new Request(url, {
     method,
-    headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.4" },
+    headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.4", ...extraHeaders },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+}
+
+/** The enroll secret now travels in a header, never the URL (ADR-0043 §2). */
+function withSecret(secret: string): Record<string, string> {
+  return { [INVITE_SECRET_HEADER]: secret };
 }
 
 async function seedDoorKeyAndInvite(): Promise<{ token: string; inviteId: string; secret: string }> {
@@ -84,19 +94,20 @@ async function seedDoorKeyAndInvite(): Promise<{ token: string; inviteId: string
   );
   expect(registerResp.status).toBe(200);
 
-  return { token: `${inviteId}.${secret}`, inviteId, secret };
+  // `token` is now just the invite id — the path segment. The secret rides in a header.
+  return { token: inviteId, inviteId, secret };
 }
 
 // -- P-13: the relay never holds plaintext ---------------------------------
 
 describe("P-13 the relay never sees plaintext", () => {
   it("stores no image bytes or display name anywhere, through a full submit", async () => {
-    const { token, inviteId } = await seedDoorKeyAndInvite();
+    const { token, inviteId, secret } = await seedDoorKeyAndInvite();
     const key = await fakeDoorKey();
     const bundle = await makeSealedBundle({ key, inviteId });
 
     const resp = await submitBundle(
-      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle),
+      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
       routeContext({ token }),
     );
     expect(resp.status).toBe(202);
@@ -111,11 +122,11 @@ describe("P-13 the relay never sees plaintext", () => {
   });
 
   it("hands the Pi back exactly the ciphertext it was given, and nothing more", async () => {
-    const { token, inviteId } = await seedDoorKeyAndInvite();
+    const { token, inviteId, secret } = await seedDoorKeyAndInvite();
     const key = await fakeDoorKey();
     const bundle = await makeSealedBundle({ key, inviteId });
     await submitBundle(
-      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle),
+      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
       routeContext({ token }),
     );
 
@@ -127,11 +138,11 @@ describe("P-13 the relay never sees plaintext", () => {
   });
 
   it("keeps no ciphertext after the Pi acks", async () => {
-    const { token, inviteId } = await seedDoorKeyAndInvite();
+    const { token, inviteId, secret } = await seedDoorKeyAndInvite();
     const key = await fakeDoorKey();
     const bundle = await makeSealedBundle({ key, inviteId });
     await submitBundle(
-      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle),
+      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
       routeContext({ token }),
     );
     await pickup(deviceRequest("https://relay.test/api/pickup", "GET"));
@@ -154,7 +165,7 @@ describe("P-13 the relay never sees plaintext", () => {
     expect(status.status).toBe("enrolled");
     // And the invite is closed out, so a replay cannot be uploaded again.
     const second = await submitBundle(
-      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle),
+      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
       routeContext({ token }),
     );
     expect(second.status).toBe(409);
@@ -267,9 +278,9 @@ describe("E-14 the relay exposes no privileged surface", () => {
 
 describe("invite state tells a phone only about its own invite", () => {
   it("reports open for a valid unused invite", async () => {
-    const { token, inviteId } = await seedDoorKeyAndInvite();
+    const { token, inviteId, secret } = await seedDoorKeyAndInvite();
     const resp = await getInviteState(
-      publicRequest(`https://relay.test/api/enroll/${token}`),
+      publicRequest(`https://relay.test/api/enroll/${token}`, "GET", undefined, withSecret(secret)),
       routeContext({ token }),
     );
     const body = (await resp.json()) as { status: string; invite_id: string; max_images: number };
@@ -282,25 +293,42 @@ describe("invite state tells a phone only about its own invite", () => {
     const { inviteId } = await seedDoorKeyAndInvite();
 
     // A real invite id with the wrong secret must look exactly like a made-up one.
+    const wrong = "d3Jvbmctc2VjcmV0LXZhbHVl";
     const wrongSecret = await getInviteState(
-      publicRequest(`https://relay.test/api/enroll/${inviteId}.d3Jvbmctc2VjcmV0LXZhbHVl`),
-      routeContext({ token: `${inviteId}.d3Jvbmctc2VjcmV0LXZhbHVl` }),
+      publicRequest(`https://relay.test/api/enroll/${inviteId}`, "GET", undefined, withSecret(wrong)),
+      routeContext({ token: inviteId }),
     );
+    const madeUpId = `inv_${"z".repeat(22)}`;
     const madeUp = await getInviteState(
-      publicRequest(`https://relay.test/api/enroll/inv_${"z".repeat(22)}.d3Jvbmctc2VjcmV0LXZhbHVl`),
-      routeContext({ token: `inv_${"z".repeat(22)}.d3Jvbmctc2VjcmV0LXZhbHVl` }),
+      publicRequest(`https://relay.test/api/enroll/${madeUpId}`, "GET", undefined, withSecret(wrong)),
+      routeContext({ token: madeUpId }),
     );
 
     expect(await wrongSecret.json()).toEqual(await madeUp.json());
   });
 
+  it("P-32: ignores a secret carried in the path (the old, leaky form)", async () => {
+    // The pre-ADR-0043 link put the secret in the path: `/e/<inviteId>.<secret>`. That form
+    // must no longer authenticate — a `<id>.<secret>` path segment is not a valid invite id,
+    // and with no secret header there is nothing to check, so the invite reads `unknown`.
+    const { inviteId, secret } = await seedDoorKeyAndInvite();
+    const pathToken = `${inviteId}.${secret}`;
+    const resp = await getInviteState(
+      publicRequest(`https://relay.test/api/enroll/${pathToken}`),
+      routeContext({ token: pathToken }),
+    );
+    const body = (await resp.json()) as { status: string; invite_id: string };
+    expect(body.status).toBe("unknown");
+    expect(body.invite_id).toBe("");
+  });
+
   it("refuses a submit whose invite_id disagrees with the URL", async () => {
-    const { token } = await seedDoorKeyAndInvite();
+    const { token, secret } = await seedDoorKeyAndInvite();
     const key = await fakeDoorKey();
     const bundle = await makeSealedBundle({ key, inviteId: `inv_${"b".repeat(22)}` });
 
     const resp = await submitBundle(
-      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle),
+      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
       routeContext({ token }),
     );
     expect(resp.status).toBe(422);
@@ -319,11 +347,11 @@ describe("invite state tells a phone only about its own invite", () => {
         max_images: 1,
       }),
     );
-    const token = `${inviteId}.${secret}`;
+    const token = inviteId;
     const bundle = await makeSealedBundle({ key, inviteId, imageCount: 3 });
 
     const resp = await submitBundle(
-      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle),
+      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
       routeContext({ token }),
     );
     expect(resp.status).toBe(422);
@@ -335,11 +363,11 @@ describe("invite state tells a phone only about its own invite", () => {
 
 describe("pickup leasing", () => {
   it("does not hand the same bundle to a second poll inside the lease", async () => {
-    const { token, inviteId } = await seedDoorKeyAndInvite();
+    const { token, inviteId, secret } = await seedDoorKeyAndInvite();
     const key = await fakeDoorKey();
     const bundle = await makeSealedBundle({ key, inviteId });
     await submitBundle(
-      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle),
+      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
       routeContext({ token }),
     );
 
@@ -355,11 +383,11 @@ describe("pickup leasing", () => {
   });
 
   it("does not let a late duplicate ack undo an enrollment", async () => {
-    const { token, inviteId } = await seedDoorKeyAndInvite();
+    const { token, inviteId, secret } = await seedDoorKeyAndInvite();
     const key = await fakeDoorKey();
     const bundle = await makeSealedBundle({ key, inviteId });
     await submitBundle(
-      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle),
+      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
       routeContext({ token }),
     );
     await pickup(deviceRequest("https://relay.test/api/pickup", "GET"));

@@ -18,7 +18,7 @@ import {
   sha256Base64Url,
 } from "@/lib/device";
 import { BUNDLE_TTL_S, getInvite, putBundle, storageConfigured, underRateLimit } from "@/lib/store";
-import { InvalidBody, parseInviteToken, parseSealedBundle } from "@/lib/validate";
+import { INVITE_SECRET_HEADER, InvalidBody, parseInviteId, parseInviteSecret, parseSealedBundle } from "@/lib/validate";
 
 export const dynamic = "force-dynamic";
 
@@ -28,23 +28,22 @@ export async function POST(
 ): Promise<Response> {
   if (!storageConfigured()) return jsonError(503, "storage_not_configured");
 
-  const { token } = await context.params;
-  const parsed = parseInviteToken(token);
-  if (!parsed) return jsonError(404, "invite_not_found");
+  // Invite id from the path, secret from a header — never in a URL (ADR-0043 §2).
+  const { token: inviteId } = await context.params;
+  if (!parseInviteId(inviteId)) return jsonError(404, "invite_not_found");
 
   const perIp = RATE_LIMITS.submitPerIp;
   const perInvite = RATE_LIMITS.submitPerInvite;
   if (!(await underRateLimit("submit-ip", clientAddress(request), perIp.limit, perIp.windowS))) {
     return jsonError(429, "rate_limited");
   }
-  if (
-    !(await underRateLimit("submit-inv", parsed.inviteId, perInvite.limit, perInvite.windowS))
-  ) {
+  if (!(await underRateLimit("submit-inv", inviteId, perInvite.limit, perInvite.windowS))) {
     return jsonError(429, "rate_limited");
   }
 
-  const invite = await getInvite(parsed.inviteId);
-  if (!invite || !digestsMatch(invite.secret_sha256, sha256Base64Url(parsed.secret))) {
+  const secret = parseInviteSecret(request.headers.get(INVITE_SECRET_HEADER));
+  const invite = secret ? await getInvite(inviteId) : null;
+  if (!invite || !secret || !digestsMatch(invite.secret_sha256, sha256Base64Url(secret))) {
     return jsonError(404, "invite_not_found");
   }
   if (invite.consumed) return jsonError(409, "invite_already_used");
@@ -58,7 +57,7 @@ export async function POST(
     return jsonError(400, "malformed_json");
   }
 
-  if (bundle.invite_id !== parsed.inviteId) return jsonError(422, "invite_mismatch");
+  if (bundle.invite_id !== inviteId) return jsonError(422, "invite_mismatch");
   // items = 1 manifest + N photos.
   if (bundle.items.length - 1 > invite.max_images) return jsonError(422, "too_many_images");
 

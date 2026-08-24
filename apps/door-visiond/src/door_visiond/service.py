@@ -778,9 +778,12 @@ class VisiondService:
     def create_invite(self, *, label: str | None = None) -> dict[str, object]:
         """Mint a single-use invite and return the URL a phone can open.
 
-        The secret appears in the returned URL and is never stored or logged; the
-        fragment carries the key fingerprint so the client can detect a relay that
-        substituted its own key (E-10). Fragments are not sent to servers.
+        The secret and the key fingerprint both ride in the URL *fragment*
+        (`#s=<secret>&k=<fingerprint>`), which is never sent to a server (ADR-0043 §2):
+        the path carries only the invite id. This keeps the secret out of the relay's
+        request line, access logs, browser history, and `Referer` — a compromised relay
+        no longer reads it passively. The fingerprint placement still lets the client
+        detect a relay that substituted its own key (E-10).
         """
         if self._privacy_enabled:
             raise PrivacyModeActiveError
@@ -796,7 +799,7 @@ class VisiondService:
             max_images=self._settings.relay_max_images,
         )
         base = self._settings.relay_invite_base_url
-        url = f"{base}/e/{invite_id}.{secret}#k={keyring.fingerprint}"
+        url = f"{base}/e/{invite_id}#s={secret}&k={keyring.fingerprint}"
         registration = InviteRegistration(
             invite_id=invite_id,
             secret_sha256=hash_invite_secret(secret),

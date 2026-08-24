@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from door_visiond.clock import FakeClock
@@ -97,12 +97,18 @@ def svc(relay_settings: Settings, transport: FakeRelayTransport) -> VisiondServi
 
 
 def _mint(svc: VisiondService) -> tuple[str, str, str]:
-    """Mint an invite and split its URL back into (invite_id, secret, fingerprint)."""
+    """Mint an invite and split its URL back into (invite_id, secret, fingerprint).
+
+    The secret and fingerprint now live in the fragment (`#s=<secret>&k=<fp>`, ADR-0043 §2);
+    only the invite id is in the path.
+    """
     invite = svc.create_invite(label="Tiger's phone")
     url = str(invite["url"])
-    token = urlparse(url).path.rsplit("/", 1)[-1]
-    invite_id, secret = token.split(".", 1)
-    fingerprint = url.split("#k=", 1)[1]
+    parsed = urlparse(url)
+    invite_id = parsed.path.rsplit("/", 1)[-1]
+    fragment = parse_qs(parsed.fragment)
+    secret = fragment["s"][0]
+    fingerprint = fragment["k"][0]
     assert invite_id == invite["invite_id"]
     return invite_id, secret, fingerprint
 
@@ -157,14 +163,21 @@ def test_remote_enrollment_enrolls_and_becomes_matchable(svc: VisiondService) ->
         assert "Tiger" not in registration.model_dump_json()
 
 
-def test_invite_url_carries_the_key_fingerprint_in_the_fragment(svc: VisiondService) -> None:
-    """The fingerprint must be in the fragment so it never reaches the relay (E-10)."""
+def test_invite_url_carries_the_secret_and_fingerprint_only_in_the_fragment(
+    svc: VisiondService,
+) -> None:
+    """The secret and fingerprint must be in the fragment so neither reaches the relay:
+    the fingerprint for E-10, the secret so a compromised relay can't read it from a
+    request line (ADR-0043 §2). The path carries only the invite id."""
     invite = svc.create_invite()
     url = str(invite["url"])
-    assert "#k=" in url
     before_fragment, fragment = url.split("#", 1)
-    assert fragment == f"k={svc._keyring().fingerprint}"
+    parsed = parse_qs(fragment)
+    assert parsed["k"] == [svc._keyring().fingerprint]
+    assert parsed["s"][0]  # the secret is present in the fragment
+    # Neither secret nor fingerprint appears before the '#', where a server would see it.
     assert svc._keyring().fingerprint not in before_fragment
+    assert parsed["s"][0] not in before_fragment
 
 
 # -- P-14: invite single use, expiry, revocation, forgery -------------------
@@ -315,7 +328,7 @@ def test_relay_path_logs_are_clean(svc: VisiondService) -> None:
 def test_minting_an_invite_never_logs_the_secret(svc: VisiondService) -> None:
     with capture_logs("door_visiond") as records:
         invite = svc.create_invite(label="Tiger's phone")
-    secret = str(invite["url"]).rsplit("/", 1)[-1].split(".", 1)[1].split("#", 1)[0]
+    secret = parse_qs(urlparse(str(invite["url"])).fragment)["s"][0]
     blob = "\n".join(f"{r.getMessage()} {r.__dict__}" for r in records)
     assert secret not in blob
 

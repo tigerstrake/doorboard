@@ -52,7 +52,9 @@ def test_visitor_mints_an_invite_with_no_credential(self_enroll_settings: Settin
     svc = _svc(self_enroll_settings)
     invite = svc.create_self_enroll_invite()
     assert str(invite["url"]).startswith("https://enroll.example.test/e/")
-    assert "#k=" in str(invite["url"]), "the key fingerprint must be in the URL (E-10)"
+    url = str(invite["url"])
+    # Secret and fingerprint both ride in the fragment now (ADR-0043 §2, E-10).
+    assert "#s=" in url and "&k=" in url, "the secret and key fingerprint must be in the fragment"
 
 
 def test_self_service_invites_are_labelled_so_the_cap_can_see_them(
