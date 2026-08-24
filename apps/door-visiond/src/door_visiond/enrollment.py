@@ -34,15 +34,23 @@ _BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 # offer. `profile.profile_id` is UNIQUE (ADR-0009 §1) so each person gets a
 # distinguishable light — but two people picking the same colour must not be an
 # error, so a taken choice is reassigned to the next free entry rather than
-# rejected. Ids stay inside this catalogue so the ESP32 and UI always receive one
-# they recognise; inventing `blue_wave_2` would produce an unknown effect id.
+# rejected.
+#
+# EVERY id here MUST be an effect the firmware actually plays (its
+# `door_effect_from_name` in firmware/esp32-door-controller/.../door_effects.c) — an
+# unknown id resolves to DOOR_EFFECT_NONE and the light silently falls back to
+# blue_wave. Four ids used to be fiction (warm_amber/violet_dusk/coral_glow/cool_white),
+# so two-thirds of enrollees got blue whatever they picked; the catalogue is now the
+# firmware's six personalisation effects. `tests/firmware`/door-visiond assert this
+# against the firmware source so it cannot drift again. The colour is the screen accent
+# (ADR-0021), paired with the light that suits it.
 PROFILE_CATALOG: tuple[tuple[str, str], ...] = (
-    ("warm_amber", "#ffb300"),
+    ("sunrise", "#ffb300"),
     ("blue_wave", "#3a86ff"),
     ("green_pulse", "#3ddc84"),
-    ("violet_dusk", "#9b5de5"),
-    ("coral_glow", "#ff6b5e"),
-    ("cool_white", "#e8eef5"),
+    ("rainbow", "#9b5de5"),
+    ("mint_pulse", "#2ec4b6"),
+    ("sparkle", "#e8eef5"),
 )
 
 

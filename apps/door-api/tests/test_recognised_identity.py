@@ -32,7 +32,7 @@ def _remember(holder: RecognisedIdentity, *, person_id: str = "prs_1", consent: 
         person_id=person_id,
         display_name="Tiger" if person_id == "prs_1" else "Sam",
         consent_version=consent,
-        profile_id="warm_amber",
+        profile_id="sunrise",
     )
 
 

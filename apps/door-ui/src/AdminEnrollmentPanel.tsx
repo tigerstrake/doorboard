@@ -469,12 +469,15 @@ export function AdminEnrollmentPanel() {
                       onChange={(e) => setProfileId(e.target.value)}
                       style={{ width: "100%", padding: "8px", background: "#222", border: "1px solid #333", borderRadius: "4px" }}
                     >
-                      <option value="blue_wave">blue_wave</option>
+                      {/* The six firmware personalisation effects (door-visiond
+                          PROFILE_CATALOG). generic_press/fallback were system effects that
+                          never belonged here as a person's greeting light. */}
                       <option value="sunrise">sunrise</option>
-                      <option value="mint_pulse">mint_pulse</option>
+                      <option value="blue_wave">blue_wave</option>
                       <option value="green_pulse">green_pulse</option>
-                      <option value="generic_press">generic_press</option>
-                      <option value="fallback">fallback</option>
+                      <option value="mint_pulse">mint_pulse</option>
+                      <option value="rainbow">rainbow</option>
+                      <option value="sparkle">sparkle</option>
                     </select>
                   </div>
                   <div>

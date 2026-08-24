@@ -439,7 +439,7 @@ def _recognise(consent_version: str | None) -> None:
     state.machine.handle_identity_stable(
         person_id="prs_tiger",
         display_name="Tiger",
-        profile_id="warm_amber",
+        profile_id="sunrise",
         consent_version=consent_version,
     )
 
@@ -548,7 +548,7 @@ def test_public_routes_never_expose_arrival_history(client: TestClient) -> None:
 def test_frequency_ranking_is_off_by_default(client: TestClient) -> None:
     """P-32: "who was here most" stays absent unless explicitly enabled."""
     state.machine.handle_identity_stable(
-        person_id="prs_tiger", display_name="Tiger", profile_id="warm_amber", consent_version="v3"
+        person_id="prs_tiger", display_name="Tiger", profile_id="sunrise", consent_version="v3"
     )
     client.post("/checkins", json={"label": "Tiger", "session_token": _visitor_token(client)})
 

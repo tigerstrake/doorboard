@@ -80,7 +80,7 @@ export async function makeSealedBundle(options: {
       display_name: NAME_SENTINEL,
       consent_version: "v2",
       consent_confirmed: true,
-      profile: { profile_id: "warm_amber", color: "#ffb300", sound: null },
+      profile: { profile_id: "sunrise", color: "#ffb300", sound: null },
       captured_at: new Date().toISOString(),
       image_count: images.length,
     },

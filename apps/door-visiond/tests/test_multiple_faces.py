@@ -71,7 +71,7 @@ def _core(matcher: Any, **kwargs: Any) -> PipelineCore:
 
 
 def test_an_enrolled_person_is_found_behind_a_larger_unknown_face() -> None:
-    tiger = _Match("prs_tiger", "Tiger", "warm_amber", None, None, 0.71)
+    tiger = _Match("prs_tiger", "Tiger", "sunrise", None, None, 0.71)
     matcher = _MatcherByFirstElement({0.2: tiger})
     core = _core(matcher)
 

@@ -63,7 +63,7 @@ describe("shouldGreetOnApproach", () => {
 describe("ApproachGreeting", () => {
   it("renders the name", () => {
     render(
-      <ApproachGreeting sessionState="APPROACH_DETECTED" displayName="Tiger" profileId="warm_amber" />
+      <ApproachGreeting sessionState="APPROACH_DETECTED" displayName="Tiger" profileId="sunrise" />
     );
     expect(screen.getByTestId("approach-greeting")).toBeTruthy();
     expect(screen.getByText("Hi Tiger")).toBeTruthy();
@@ -87,7 +87,7 @@ describe("ApproachGreeting", () => {
 
   it("cannot swallow a touch meant for the wallboard beneath it", () => {
     render(
-      <ApproachGreeting sessionState="APPROACH_DETECTED" displayName="Tiger" profileId="warm_amber" />
+      <ApproachGreeting sessionState="APPROACH_DETECTED" displayName="Tiger" profileId="sunrise" />
     );
     // The class carries pointer-events: none; assert the hook is present so the
     // CSS contract is not silently renamed away.

@@ -18,13 +18,16 @@
  * nothing but the door's LED ring.
  */
 
+// Every id here is a real firmware effect (door-visiond's PROFILE_CATALOG); the old
+// warm_amber/violet_dusk/coral_glow/cool_white were not, so those lights silently fell
+// back to blue. Kept in lockstep with PROFILE_CATALOG (profiles.test.ts).
 export const PROFILE_COLORS: Readonly<Record<string, string>> = Object.freeze({
-  warm_amber: "#ffb300",
+  sunrise: "#ffb300",
   blue_wave: "#3a86ff",
   green_pulse: "#3ddc84",
-  violet_dusk: "#9b5de5",
-  coral_glow: "#ff6b5e",
-  cool_white: "#e8eef5",
+  mint_pulse: "#2ec4b6",
+  rainbow: "#9b5de5",
+  sparkle: "#e8eef5",
 });
 
 /** Accent used when nobody is recognised, or for a profile id we do not know. */

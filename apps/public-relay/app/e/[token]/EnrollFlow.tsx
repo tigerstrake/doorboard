@@ -22,14 +22,16 @@ import { KeyFingerprintMismatch, assertKeyMatchesFingerprint, newBundleId, sealB
 
 type Step = "checking" | "blocked" | "consent" | "capture" | "details" | "sending" | "waiting" | "done";
 
-/** The effects catalogue the doorboard understands (T-103). */
+/** The effects catalogue the doorboard understands (T-103) — every id is a real firmware
+ * effect (door-visiond PROFILE_CATALOG). The old amber/violet/coral/white ids were not, so
+ * those lights silently fell back to blue; these are the firmware's six. */
 const PROFILES: ReadonlyArray<{ id: string; color: string; name: string }> = [
-  { id: "warm_amber", color: "#ffb300", name: "Amber" },
+  { id: "sunrise", color: "#ffb300", name: "Amber" },
   { id: "blue_wave", color: "#3a86ff", name: "Blue" },
   { id: "green_pulse", color: "#3ddc84", name: "Green" },
-  { id: "violet_dusk", color: "#9b5de5", name: "Violet" },
-  { id: "coral_glow", color: "#ff6b5e", name: "Coral" },
-  { id: "cool_white", color: "#e8eef5", name: "White" },
+  { id: "mint_pulse", color: "#2ec4b6", name: "Mint" },
+  { id: "rainbow", color: "#9b5de5", name: "Rainbow" },
+  { id: "sparkle", color: "#e8eef5", name: "Sparkle" },
 ];
 
 const POSES = [

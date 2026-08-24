@@ -40,7 +40,7 @@ def make_manifest(
     display_name: str = "Tiger",
     consent_version: str = "v2",
     image_count: int = 2,
-    profile_id: str = "warm_amber",
+    profile_id: str = "sunrise",
 ) -> SealedManifest:
     return SealedManifest(
         invite_secret=invite_secret,

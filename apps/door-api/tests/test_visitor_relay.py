@@ -203,7 +203,7 @@ def test_a_note_from_a_foreign_session_is_rejected_not_attributed(relay_state: A
 
     # A resident is recognised in the live session, with attribution-covering consent.
     relay_state.machine.handle_identity_stable(
-        person_id="prs_tiger", display_name="Tiger", profile_id="warm_amber", consent_version="v3"
+        person_id="prs_tiger", display_name="Tiger", profile_id="sunrise", consent_version="v3"
     )
     assert relay_state.attributed_display_name() == "Tiger"
 
@@ -526,12 +526,12 @@ def test_disclosure_name_is_gated_on_consent(relay_state: Any) -> None:
     _ring(client)
 
     relay_state.machine.handle_identity_stable(
-        person_id="prs_tiger", display_name="Tiger", profile_id="warm_amber", consent_version="v2"
+        person_id="prs_tiger", display_name="Tiger", profile_id="sunrise", consent_version="v2"
     )
     assert relay_state.attributed_display_name() is None
 
     relay_state.machine.handle_identity_stable(
-        person_id="prs_tiger", display_name="Tiger", profile_id="warm_amber", consent_version="v3"
+        person_id="prs_tiger", display_name="Tiger", profile_id="sunrise", consent_version="v3"
     )
     assert relay_state.attributed_display_name() == "Tiger"
 
@@ -546,7 +546,7 @@ def test_every_surface_receives_the_disclosure_name(relay_state: Any) -> None:
     client = TestClient(app)
     _ring(client)
     relay_state.machine.handle_identity_stable(
-        person_id="prs_tiger", display_name="Tiger", profile_id="warm_amber", consent_version="v3"
+        person_id="prs_tiger", display_name="Tiger", profile_id="sunrise", consent_version="v3"
     )
 
     # The WebSocket snapshot the doorpad and wallboard render from.

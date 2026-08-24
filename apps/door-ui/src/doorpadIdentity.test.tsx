@@ -43,7 +43,7 @@ describe("doorpad identity badge", () => {
     mockSnapshot({
       state: "APPROACH_DETECTED",
       display_name: "Tiger",
-      profile_id: "warm_amber",
+      profile_id: "sunrise",
       attributed_to: "Tiger",
       identity_expires_in_s: 104,
     });
@@ -69,7 +69,7 @@ describe("doorpad identity badge", () => {
     mockSnapshot({
       state: "IDLE",
       display_name: "Tiger",
-      profile_id: "warm_amber",
+      profile_id: "sunrise",
       attributed_to: "Tiger",
       identity_expires_in_s: 88,
     });
@@ -84,7 +84,7 @@ describe("doorpad identity badge", () => {
     mockSnapshot({
       state: "IDLE",
       display_name: "Tiger",
-      profile_id: "warm_amber",
+      profile_id: "sunrise",
       attributed_to: "Tiger",
       identity_expires_in_s: 88,
     });

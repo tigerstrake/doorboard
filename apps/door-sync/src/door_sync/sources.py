@@ -114,12 +114,23 @@ class MediaEventSource:
                 raw = line[len("data:") :].strip()
                 if not raw:
                     continue
-                try:
-                    event = json.loads(raw)
-                    self.handle_event(event)
-                except (json.JSONDecodeError, KeyError) as exc:
-                    # One malformed frame must never kill the stream.
-                    logger.warning("media_sse_bad_frame", extra={"error": str(exc)[:200]})
+                self._handle_frame(raw)
+
+    def _handle_frame(self, raw: str) -> None:
+        """Process one SSE frame. A bad frame is logged and dropped, never raised.
+
+        This is synchronous and swallows every error on purpose. The old inline catch
+        was JSONDecodeError/KeyError only, but handle_event -> parse_event raises a
+        pydantic ValidationError for a schema-invalid event — which escaped to run()'s
+        reconnect path and tore the whole clip-sync stream down, mislogged as
+        `media_sse_disconnected`. A single bad frame must never kill the stream; only a
+        genuine transport failure (raised from _consume_once, above) triggers a reconnect.
+        """
+        try:
+            event = json.loads(raw)
+            self.handle_event(event)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("media_sse_bad_frame", extra={"error": str(exc)[:200]})
 
     def stop(self) -> None:
         self._running = False

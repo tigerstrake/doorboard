@@ -51,18 +51,18 @@ def store(tmp_path: Path) -> EnrollmentStore:
 class TestChosenColourSurvives:
     def test_a_reassigned_profile_keeps_the_chosen_colour(self, store: EnrollmentStore) -> None:
         """The actual reported bug: pick amber second, get amber."""
-        _enroll(store, "First", ProfileSpec("warm_amber", "#ffb300", accent_color="#ffb300"))
+        _enroll(store, "First", ProfileSpec("sunrise", "#ffb300", accent_color="#ffb300"))
 
         second = _enroll(
             store,
             "Second",
-            ProfileSpec("warm_amber", "#ffb300", accent_color="#ffb300"),
+            ProfileSpec("sunrise", "#ffb300", accent_color="#ffb300"),
             seed=2,
         )
 
         row = _person(store, second)
         # A different LED effect, because two identical door lights defeat the point...
-        assert row["profile_id"] != "warm_amber"
+        assert row["profile_id"] != "sunrise"
         # ...but the colour they actually chose is untouched.
         assert row["accent_color"] == "#ffb300"
 
@@ -77,12 +77,12 @@ class TestChosenColourSurvives:
 
     def test_no_preference_falls_back_to_the_catalogue_colour(self, store: EnrollmentStore) -> None:
         """Nothing changes for someone who does not care which colour they get."""
-        person = _enroll(store, "Nobody", ProfileSpec("violet_dusk", "#9b5de5"))
+        person = _enroll(store, "Nobody", ProfileSpec("rainbow", "#9b5de5"))
 
         assert _person(store, person)["accent_color"] == "#9b5de5"
 
     def test_the_matcher_carries_the_chosen_colour(self, store: EnrollmentStore) -> None:
-        _enroll(store, "Tiger", ProfileSpec("warm_amber", "#ffb300", accent_color="#00ff99"))
+        _enroll(store, "Tiger", ProfileSpec("sunrise", "#ffb300", accent_color="#00ff99"))
 
         enrolled = store.load_enrolled()
 
@@ -108,7 +108,7 @@ class TestMigration:
                 profile_id TEXT NOT NULL UNIQUE, color TEXT NOT NULL, sound TEXT
             );
             INSERT INTO person VALUES ('prs_old', 'Legacy', 'v3', 'then', 'then');
-            INSERT INTO profile VALUES ('prs_old', 'coral_glow', '#ff6b5e', NULL);
+            INSERT INTO profile VALUES ('prs_old', 'mint_pulse', '#2ec4b6', NULL);
             """
         )
         legacy.commit()
@@ -117,7 +117,7 @@ class TestMigration:
         migrated = EnrollmentStore(db)
 
         row = _person(migrated, "prs_old")
-        assert row["accent_color"] == "#ff6b5e"
+        assert row["accent_color"] == "#2ec4b6"
 
     def test_opening_twice_is_safe(self, tmp_path: Path) -> None:
         """ALTER TABLE is not idempotent, so the guard has to hold on reopen."""
@@ -160,10 +160,10 @@ class TestColourValidation:
 def test_the_catalogue_is_still_the_led_source_of_truth() -> None:
     """Colour is decoupled; the effect ids are still the firmware's, unchanged."""
     assert [entry[0] for entry in PROFILE_CATALOG] == [
-        "warm_amber",
+        "sunrise",
         "blue_wave",
         "green_pulse",
-        "violet_dusk",
-        "coral_glow",
-        "cool_white",
+        "rainbow",
+        "mint_pulse",
+        "sparkle",
     ]

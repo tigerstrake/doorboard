@@ -65,7 +65,7 @@ async function buildVector(): Promise<Vector> {
     display_name: "Vector Tester",
     consent_version: "v2",
     consent_confirmed: true as const,
-    profile: { profile_id: "warm_amber", color: "#ffb300", sound: null },
+    profile: { profile_id: "sunrise", color: "#ffb300", sound: null },
     captured_at: "2026-08-05T12:00:00+00:00",
     image_count: images.length,
   };

@@ -56,7 +56,7 @@ def test_a_still_present_person_survives_a_whole_cooldown_gap() -> None:
         person_id="prs_tiger",
         display_name="Tiger",
         consent_version="v3",
-        profile_id="warm_amber",
+        profile_id="sunrise",
     )
 
     # One second before the next announcement is even permitted, they must still be known.
@@ -80,7 +80,7 @@ def test_it_still_forgets_someone_who_has_actually_left() -> None:
         person_id="prs_tiger",
         display_name="Tiger",
         consent_version="v3",
-        profile_id="warm_amber",
+        profile_id="sunrise",
     )
 
     clock["t"] += config.recognised_identity_idle_ttl_s + 1

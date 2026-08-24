@@ -31,7 +31,7 @@ describe("profile catalogue", () => {
   });
 
   it("resolves a known profile to the colour chosen at onboarding", () => {
-    expect(profileAccent("warm_amber")).toBe("#ffb300");
+    expect(profileAccent("sunrise")).toBe("#ffb300");
     expect(profileAccent("blue_wave")).toBe("#3a86ff");
   });
 
@@ -43,9 +43,9 @@ describe("profile catalogue", () => {
   });
 
   it("picks readable ink for both ends of the catalogue", () => {
-    // cool_white is near-white: the case where white-on-accent would be unreadable.
-    expect(accentInk(profileAccent("cool_white"))).toBe("#12161c");
-    expect(accentInk(profileAccent("violet_dusk"))).toBe("#ffffff");
+    // sparkle is near-white: the case where white-on-accent would be unreadable.
+    expect(accentInk(profileAccent("sparkle"))).toBe("#12161c");
+    expect(accentInk(profileAccent("rainbow"))).toBe("#ffffff");
   });
 
   it("gives every cataloged profile readable ink", () => {

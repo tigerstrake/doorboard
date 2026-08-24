@@ -43,7 +43,7 @@ def store(ssd_settings: Settings) -> EnrollmentStore:
 
 
 def test_sightings_within_the_window_extend_one_visit(store: EnrollmentStore) -> None:
-    person_id = _enrol(store, "Tiger", "warm_amber")
+    person_id = _enrol(store, "Tiger", "sunrise")
     start = datetime(2026, 8, 5, 18, 0, tzinfo=UTC)
 
     first_id, opened = store.record_sighting(person_id, now=start, merge_window_s=MERGE_WINDOW_S)
@@ -62,7 +62,7 @@ def test_sightings_within_the_window_extend_one_visit(store: EnrollmentStore) ->
 
 
 def test_a_sighting_after_the_window_opens_a_new_visit(store: EnrollmentStore) -> None:
-    person_id = _enrol(store, "Tiger", "warm_amber")
+    person_id = _enrol(store, "Tiger", "sunrise")
     start = datetime(2026, 8, 5, 18, 0, tzinfo=UTC)
 
     first_id, _ = store.record_sighting(person_id, now=start, merge_window_s=MERGE_WINDOW_S)
@@ -77,7 +77,7 @@ def test_a_sighting_after_the_window_opens_a_new_visit(store: EnrollmentStore) -
 
 def test_pacing_in_the_hallway_is_one_visit(store: EnrollmentStore) -> None:
     """The realistic case: recognition refreshes repeatedly while someone lingers."""
-    person_id = _enrol(store, "Tiger", "warm_amber")
+    person_id = _enrol(store, "Tiger", "sunrise")
     start = datetime(2026, 8, 5, 18, 0, tzinfo=UTC)
     for seconds in range(0, 300, 30):
         store.record_sighting(
@@ -87,7 +87,7 @@ def test_pacing_in_the_hallway_is_one_visit(store: EnrollmentStore) -> None:
 
 
 def test_two_people_get_independent_visits(store: EnrollmentStore) -> None:
-    tiger = _enrol(store, "Tiger", "warm_amber")
+    tiger = _enrol(store, "Tiger", "sunrise")
     alex = _enrol(store, "Alex", "blue_wave")
     now = datetime.now(UTC)
     store.record_sighting(tiger, now=now, merge_window_s=MERGE_WINDOW_S)
@@ -112,7 +112,7 @@ def test_a_sighting_for_an_unenrolled_person_is_dropped(store: EnrollmentStore) 
 
 def test_unenroll_purges_visit_history(store: EnrollmentStore, ssd_settings: Settings) -> None:
     """P-26: the whole reason this table lives in the enrollment database."""
-    person_id = _enrol(store, "Tiger", "warm_amber")
+    person_id = _enrol(store, "Tiger", "sunrise")
     start = datetime(2026, 8, 5, 18, 0, tzinfo=UTC)
     for day in range(5):
         store.record_sighting(
@@ -149,7 +149,7 @@ def test_unenroll_purges_visit_history(store: EnrollmentStore, ssd_settings: Set
 
 def test_purging_visits_keeps_the_person_enrolled(store: EnrollmentStore) -> None:
     """The narrower control: forget where I've been, keep recognising me."""
-    person_id = _enrol(store, "Tiger", "warm_amber")
+    person_id = _enrol(store, "Tiger", "sunrise")
     store.record_sighting(person_id, now=datetime.now(UTC), merge_window_s=MERGE_WINDOW_S)
 
     assert store.purge_visits(person_id=person_id) == 1
@@ -159,7 +159,7 @@ def test_purging_visits_keeps_the_person_enrolled(store: EnrollmentStore) -> Non
 
 
 def test_purging_all_visits_leaves_everyone_enrolled(store: EnrollmentStore) -> None:
-    tiger = _enrol(store, "Tiger", "warm_amber")
+    tiger = _enrol(store, "Tiger", "sunrise")
     alex = _enrol(store, "Alex", "blue_wave")
     now = datetime.now(UTC)
     store.record_sighting(tiger, now=now, merge_window_s=MERGE_WINDOW_S)
@@ -171,7 +171,7 @@ def test_purging_all_visits_leaves_everyone_enrolled(store: EnrollmentStore) -> 
 
 
 def test_visit_counts_rank_by_frequency(store: EnrollmentStore) -> None:
-    tiger = _enrol(store, "Tiger", "warm_amber")
+    tiger = _enrol(store, "Tiger", "sunrise")
     alex = _enrol(store, "Alex", "blue_wave")
     start = datetime(2026, 8, 5, 18, 0, tzinfo=UTC)
     for day in range(3):
@@ -209,7 +209,7 @@ def test_visits_endpoint_returns_history_for_an_admin(client: TestClient) -> Non
         "display_name": "Tiger",
         "consent_version": CONSENT_VERSION,
         "consent_confirmed": "true",
-        "profile_id": "warm_amber",
+        "profile_id": "sunrise",
         "color": "#ffb300",
     }
     person_id = client.post("/enroll", data=data, files=files).json()["person_id"]
@@ -237,7 +237,7 @@ def test_the_recognition_path_throttles_visit_writes(ssd_settings: Settings) -> 
 
     clock = FakeClock()
     svc = VisiondService(ssd_settings, clock=clock)
-    person_id = _enrol(svc._store, "Tiger", "warm_amber")
+    person_id = _enrol(svc._store, "Tiger", "sunrise")
 
     for _ in range(20):
         svc._record_visit_sighting(person_id, CONSENT_VERSION)
@@ -266,7 +266,7 @@ def test_older_consent_is_not_logged(ssd_settings: Settings, version: str | None
     from door_visiond.service import VisiondService
 
     svc = VisiondService(ssd_settings, clock=FakeClock())
-    person_id = _enrol(svc._store, "Tiger", "warm_amber")
+    person_id = _enrol(svc._store, "Tiger", "sunrise")
 
     svc._record_visit_sighting(person_id, version or "")
 
@@ -278,7 +278,7 @@ def test_current_consent_is_logged(ssd_settings: Settings) -> None:
     from door_visiond.service import VisiondService
 
     svc = VisiondService(ssd_settings, clock=FakeClock())
-    person_id = _enrol(svc._store, "Tiger", "warm_amber")
+    person_id = _enrol(svc._store, "Tiger", "sunrise")
 
     svc._record_visit_sighting(person_id, CONSENT_VERSION)
 
@@ -292,7 +292,7 @@ def test_the_consent_version_reaches_the_matcher(ssd_settings: Settings) -> None
     from door_visiond.matcher import Matcher
 
     store = EnrollmentStore(ssd_settings.enrollment_db_path)
-    _enrol(store, "Tiger", "warm_amber")
+    _enrol(store, "Tiger", "sunrise")
 
     enrolled = store.load_enrolled()
     assert enrolled[0].consent_version == CONSENT_VERSION

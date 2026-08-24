@@ -58,7 +58,7 @@ def _identity_stable() -> DoorboardEvent:
         confidence=0.91,
         expires_at=datetime.now(UTC),
         expires_at_monotonic_ms=1234,
-        profile_id="warm_amber",
+        profile_id="sunrise",
     )
 
 
@@ -186,7 +186,7 @@ async def test_a_recognised_person_reaches_door_api_end_to_end(ssd_settings: Set
         consent_version=CONSENT_VERSION,
         consent_confirmed=True,
         images=[b"tiger-enrollment-photo"],
-        profile=ProfileSpec(profile_id="warm_amber", color="#f0a", sound=None),
+        profile=ProfileSpec(profile_id="sunrise", color="#f0a", sound=None),
     )
 
     await svc.start()

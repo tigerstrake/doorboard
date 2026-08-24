@@ -10,6 +10,7 @@ future refactor can't silently drop the NUC mirror again.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import Mock
 
 from door_sync.engine import SyncEngine
@@ -76,3 +77,45 @@ def test_unknown_event_type_is_ignored(helpers) -> None:
     engine.enqueue_recording.assert_not_called()
     engine.enqueue_thumbnail.assert_not_called()
     engine.enqueue_event.assert_not_called()
+
+
+def _a_real_validation_error() -> Exception:
+    """A genuine parse_event ValidationError — the exact error a schema-invalid frame
+    raises inside enqueue_event, which the old per-frame catch (JSONDecodeError/KeyError)
+    let escape."""
+    from doorboard_contracts.events import parse_event
+
+    try:
+        parse_event({"type": "bogus.not_a_real_event", "payload": {}})
+    except Exception as exc:  # noqa: BLE001
+        return exc
+    raise AssertionError("parse_event unexpectedly accepted a bogus event")
+
+
+def test_a_schema_invalid_frame_is_dropped_not_stream_killing(helpers) -> None:
+    """A frame that fails contract validation must NOT tear the clip-sync stream down.
+
+    parse_event raises pydantic ValidationError, which the old JSONDecodeError/KeyError-only
+    catch missed, so one bad event escaped to the reconnect path and killed the stream —
+    mislogged as `media_sse_disconnected`. _handle_frame now swallows any per-frame error.
+    """
+    source, engine = _make_source()
+    engine.enqueue_event.side_effect = _a_real_validation_error()
+    event = helpers.make_media_recording_started_dict()
+
+    # Must not raise — the stream survives a bad frame.
+    source._handle_frame(json.dumps(event))
+    engine.enqueue_event.assert_called_once()
+
+
+def test_a_non_json_frame_is_dropped(helpers) -> None:
+    source, engine = _make_source()
+    source._handle_frame("this is not json {{{")
+    engine.enqueue_event.assert_not_called()
+
+
+def test_a_good_frame_is_handled(helpers) -> None:
+    source, engine = _make_source()
+    event = helpers.make_media_recording_started_dict()
+    source._handle_frame(json.dumps(event))
+    engine.enqueue_event.assert_called_once_with(event)
