@@ -7,6 +7,22 @@ this changes *where* it runs, not what it holds. The door side changes only its 
 The build sandbox cannot run `wrangler`, so the steps below are the first place the Cloudflare
 build and runtime are exercised. Where a step needs verifying, it says so — do not skip those.
 
+## Fast path (one script)
+
+`deploy/relay-cloudflare-deploy.sh` automates everything that doesn't require you personally —
+creating the D1 database, wiring its id into `wrangler.toml`, applying the schema, building the
+static site, and deploying. You do only the three things a script can't: the interactive login,
+pasting the two token values into wrangler's own prompt, and the domain click.
+
+```bash
+npm i -g wrangler && wrangler login     # once (browser OAuth)
+./deploy/relay-cloudflare-deploy.sh     # does steps 1–6 below; prompts you for the two secrets
+# then: add the custom domain (step 5) and, when the door is back online, point its env (step 7)
+```
+
+It is idempotent — safe to re-run. The rest of this file is the manual reference the script
+follows, and the verification + rollback detail.
+
 ## 0. Prerequisites
 
 - `tigerstrake.com`'s DNS is already on Cloudflare (it is — the personal site is there).
