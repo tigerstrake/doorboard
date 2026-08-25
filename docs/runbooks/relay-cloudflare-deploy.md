@@ -15,10 +15,13 @@ static site, and deploying. You do only the three things a script can't: the int
 pasting the two token values into wrangler's own prompt, and the domain click.
 
 ```bash
-npm i -g wrangler && wrangler login     # once (browser OAuth)
+npx wrangler login                      # once (browser OAuth; no global install, no sudo)
 ./deploy/relay-cloudflare-deploy.sh     # does steps 1–6 below; prompts you for the two secrets
 # then: add the custom domain (step 5) and, when the door is back online, point its env (step 7)
 ```
+
+(The script runs wrangler via `npx`, so `npm i -g wrangler` — which needs sudo on a default
+npm prefix — is not required. If you prefer a global install, `sudo npm i -g wrangler` also works.)
 
 It is idempotent — safe to re-run. The rest of this file is the manual reference the script
 follows, and the verification + rollback detail.
@@ -26,7 +29,8 @@ follows, and the verification + rollback detail.
 ## 0. Prerequisites
 
 - `tigerstrake.com`'s DNS is already on Cloudflare (it is — the personal site is there).
-- `npm i -g wrangler` (or `pnpm dlx wrangler`), then `wrangler login`.
+- `npx wrangler login` (no install needed). A global `sudo npm i -g wrangler` also works but
+  isn't required — the script and the commands below run wrangler via `npx`.
 - Work from `apps/public-relay/`.
 
 ## 1. Create the D1 database
