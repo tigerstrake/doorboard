@@ -78,8 +78,20 @@ fi
 echo "Export OK (placeholder shells + _redirects present)."
 
 # --- 5. Deploy --------------------------------------------------------------
-say "Deploying to Cloudflare Pages ($PROJECT)"
-"${WRANGLER[@]}" pages deploy out --project-name "$PROJECT"
+# Deploy to the project's PRODUCTION branch, so it serves on doorboard-relay.pages.dev and the
+# custom domain — not a preview URL. wrangler otherwise labels the deploy with the current git
+# branch (here task/T-204-…), which is a preview and leaves production as "Nothing is here yet".
+say "Deploying to Cloudflare Pages ($PROJECT), production branch"
+PROD_BRANCH="$("${WRANGLER[@]}" pages project list --json 2>/dev/null \
+  | python3 -c "import sys,json
+try:
+    ps=json.load(sys.stdin)
+    print(next((p.get('production_branch') or 'main' for p in ps if p.get('name')=='$PROJECT'),'main'))
+except Exception:
+    print('main')")"
+[ -n "$PROD_BRANCH" ] || PROD_BRANCH="main"
+echo "production branch: $PROD_BRANCH"
+"${WRANGLER[@]}" pages deploy out --project-name "$PROJECT" --branch="$PROD_BRANCH" --commit-dirty=true
 
 # --- 6. Device-token secrets (you paste them; nothing else sees them) -------
 say "Setting the two device-token secrets"
