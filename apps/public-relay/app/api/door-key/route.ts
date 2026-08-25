@@ -6,14 +6,15 @@
  * open anything it stores (ADR-0016 E-9).
  */
 import { isDeviceRequest, jsonError, jsonOk } from "@/lib/device";
-import { getDoorKey, putDoorKey, storageConfigured } from "@/lib/store";
+import { resolveStore } from "@/lib/relayStore";
+import type { RelayStore } from "@/lib/relayTypes";
 import { InvalidBody, parseDoorKeyPublication } from "@/lib/validate";
 
 export const dynamic = "force-dynamic";
 
-export async function PUT(request: Request): Promise<Response> {
+export async function PUT(request: Request, store: RelayStore = resolveStore()): Promise<Response> {
   if (!isDeviceRequest(request)) return jsonError(401, "device_auth_required");
-  if (!storageConfigured()) return jsonError(503, "storage_not_configured");
+  if (!store.configured()) return jsonError(503, "storage_not_configured");
 
   let publication;
   try {
@@ -23,13 +24,13 @@ export async function PUT(request: Request): Promise<Response> {
     return jsonError(400, "malformed_json");
   }
 
-  await putDoorKey(publication);
+  await store.putDoorKey(publication);
   return jsonOk({ door_key_id: publication.door_key_id, published: true });
 }
 
-export async function GET(): Promise<Response> {
-  if (!storageConfigured()) return jsonError(503, "storage_not_configured");
-  const record = await getDoorKey();
+export async function GET(store: RelayStore = resolveStore()): Promise<Response> {
+  if (!store.configured()) return jsonError(503, "storage_not_configured");
+  const record = await store.getDoorKey();
   if (!record) {
     // The door has not checked in yet — it may be offline or the relay may be
     // freshly deployed. Either way there is nothing to seal to.

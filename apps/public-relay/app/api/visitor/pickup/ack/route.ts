@@ -6,14 +6,15 @@
  * bounded and machine-readable; they are not a channel for echoing content back.
  */
 import { isDeviceRequest, jsonError, jsonOk } from "@/lib/device";
-import { completeVisitorAction, storageConfigured } from "@/lib/store";
+import { resolveStore } from "@/lib/relayStore";
+import type { RelayStore } from "@/lib/relayTypes";
 import { InvalidBody, parseVisitorAck } from "@/lib/validate";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(request: Request): Promise<Response> {
+export async function POST(request: Request, store: RelayStore = resolveStore()): Promise<Response> {
   if (!isDeviceRequest(request, "visitor")) return jsonError(401, "device_auth_required");
-  if (!storageConfigured()) return jsonError(503, "storage_not_configured");
+  if (!store.configured()) return jsonError(503, "storage_not_configured");
 
   let outcomes;
   try {
@@ -24,7 +25,7 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   for (const outcome of outcomes) {
-    await completeVisitorAction(outcome.session_id, outcome.action_id, {
+    await store.completeVisitorAction(outcome.session_id, outcome.action_id, {
       action_id: outcome.action_id,
       kind: outcome.kind,
       status: outcome.status,

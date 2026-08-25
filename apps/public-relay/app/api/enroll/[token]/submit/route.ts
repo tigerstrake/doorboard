@@ -17,7 +17,9 @@ import {
   jsonOk,
   sha256Base64Url,
 } from "@/lib/device";
-import { BUNDLE_TTL_S, getInvite, putBundle, storageConfigured, underRateLimit } from "@/lib/store";
+import { resolveStore } from "@/lib/relayStore";
+import { BUNDLE_TTL_S } from "@/lib/relayTypes";
+import type { RelayStore } from "@/lib/relayTypes";
 import { INVITE_SECRET_HEADER, InvalidBody, parseInviteId, parseInviteSecret, parseSealedBundle } from "@/lib/validate";
 
 export const dynamic = "force-dynamic";
@@ -25,8 +27,9 @@ export const dynamic = "force-dynamic";
 export async function POST(
   request: Request,
   context: { params: Promise<{ token: string }> },
+  store: RelayStore = resolveStore(),
 ): Promise<Response> {
-  if (!storageConfigured()) return jsonError(503, "storage_not_configured");
+  if (!store.configured()) return jsonError(503, "storage_not_configured");
 
   // Invite id from the path, secret from a header — never in a URL (ADR-0043 §2).
   const { token: inviteId } = await context.params;
@@ -34,15 +37,15 @@ export async function POST(
 
   const perIp = RATE_LIMITS.submitPerIp;
   const perInvite = RATE_LIMITS.submitPerInvite;
-  if (!(await underRateLimit("submit-ip", clientAddress(request), perIp.limit, perIp.windowS))) {
+  if (!(await store.underRateLimit("submit-ip", clientAddress(request), perIp.limit, perIp.windowS))) {
     return jsonError(429, "rate_limited");
   }
-  if (!(await underRateLimit("submit-inv", inviteId, perInvite.limit, perInvite.windowS))) {
+  if (!(await store.underRateLimit("submit-inv", inviteId, perInvite.limit, perInvite.windowS))) {
     return jsonError(429, "rate_limited");
   }
 
   const secret = parseInviteSecret(request.headers.get(INVITE_SECRET_HEADER));
-  const invite = secret ? await getInvite(inviteId) : null;
+  const invite = secret ? await store.getInvite(inviteId) : null;
   if (!invite || !secret || !digestsMatch(invite.secret_sha256, sha256Base64Url(secret))) {
     return jsonError(404, "invite_not_found");
   }
@@ -61,7 +64,7 @@ export async function POST(
   // items = 1 manifest + N photos.
   if (bundle.items.length - 1 > invite.max_images) return jsonError(422, "too_many_images");
 
-  await putBundle(bundle);
+  await store.putBundle(bundle);
 
   return jsonOk(
     {

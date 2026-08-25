@@ -6,9 +6,10 @@
  * belt to the Pi's braces, which already consumed it transactionally (E-11).
  */
 import { isDeviceRequest, jsonError, jsonOk } from "@/lib/device";
-import { finishBundle, markInviteConsumed, storageConfigured } from "@/lib/store";
+import { resolveStore } from "@/lib/relayStore";
+import type { RelayStore } from "@/lib/relayTypes";
 import { InvalidBody, parsePickupAck } from "@/lib/validate";
-import type { BundleState } from "@/lib/store";
+import type { BundleState } from "@/lib/relayTypes";
 
 export const dynamic = "force-dynamic";
 
@@ -19,9 +20,9 @@ const OUTCOME_TO_STATE: Record<string, BundleState> = {
   rejected: "failed",
 };
 
-export async function POST(request: Request): Promise<Response> {
+export async function POST(request: Request, store: RelayStore = resolveStore()): Promise<Response> {
   if (!isDeviceRequest(request)) return jsonError(401, "device_auth_required");
-  if (!storageConfigured()) return jsonError(503, "storage_not_configured");
+  if (!store.configured()) return jsonError(503, "storage_not_configured");
 
   let ack;
   try {
@@ -32,9 +33,9 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const state = OUTCOME_TO_STATE[ack.outcome] ?? "failed";
-  const inviteId = await finishBundle(ack.bundle_id, state, ack.reason ?? null);
+  const inviteId = await store.finishBundle(ack.bundle_id, state, ack.reason ?? null);
 
-  if (ack.outcome === "enrolled" && inviteId) await markInviteConsumed(inviteId);
+  if (ack.outcome === "enrolled" && inviteId) await store.markInviteConsumed(inviteId);
 
   return jsonOk({ bundle_id: ack.bundle_id, acknowledged: true });
 }

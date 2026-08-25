@@ -5,17 +5,18 @@
  * is a public route on an untrusted host (ARCHITECTURE.md §2).
  */
 import { deviceTokenConfigured, jsonOk } from "@/lib/device";
-import { getDoorKey, pendingCount, storageConfigured } from "@/lib/store";
+import { resolveStore } from "@/lib/relayStore";
+import type { RelayStore } from "@/lib/relayTypes";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(): Promise<Response> {
-  const configured = storageConfigured() && deviceTokenConfigured();
+export async function GET(store: RelayStore = resolveStore()): Promise<Response> {
+  const configured = store.configured() && deviceTokenConfigured();
   if (!configured) {
     return jsonOk({
       service: "public-relay",
       status: "degraded",
-      storage_configured: storageConfigured(),
+      storage_configured: store.configured(),
       device_token_configured: deviceTokenConfigured(),
       door_checked_in: false,
       pending_bundles: 0,
@@ -26,8 +27,8 @@ export async function GET(): Promise<Response> {
   let pending = 0;
   let status = "ok";
   try {
-    doorCheckedIn = (await getDoorKey()) !== null;
-    pending = await pendingCount();
+    doorCheckedIn = (await store.getDoorKey()) !== null;
+    pending = await store.pendingCount();
   } catch {
     status = "degraded";
   }

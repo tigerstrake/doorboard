@@ -10,23 +10,25 @@
  * no business travelling back into browser history or a screenshot.
  */
 import { RATE_LIMITS, clientAddress, jsonError, jsonOk, sha256Base64Url } from "@/lib/device";
-import { getVisitorSnapshotByTokenHash, storageConfigured, underRateLimit } from "@/lib/store";
+import { resolveStore } from "@/lib/relayStore";
+import type { RelayStore } from "@/lib/relayTypes";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(
   request: Request,
   context: { params: Promise<{ token: string }> },
+  store: RelayStore = resolveStore(),
 ): Promise<Response> {
-  if (!storageConfigured()) return jsonError(503, "storage_not_configured");
+  if (!store.configured()) return jsonError(503, "storage_not_configured");
 
   const limit = RATE_LIMITS.visitorRead;
-  if (!(await underRateLimit("vread", clientAddress(request), limit.limit, limit.windowS))) {
+  if (!(await store.underRateLimit("vread", clientAddress(request), limit.limit, limit.windowS))) {
     return jsonError(429, "rate_limited");
   }
 
   const { token } = await context.params;
-  const snapshot = await getVisitorSnapshotByTokenHash(sha256Base64Url(token));
+  const snapshot = await store.getVisitorSnapshotByTokenHash(sha256Base64Url(token));
   if (!snapshot) return jsonError(404, "session_not_found");
 
   // Named field by field rather than spread-minus-one: a future field added to the

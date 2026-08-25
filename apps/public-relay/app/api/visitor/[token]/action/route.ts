@@ -11,12 +11,8 @@
  * end-to-end would be theatre (ADR-0017).
  */
 import { RATE_LIMITS, clientAddress, jsonError, jsonOk, sha256Base64Url } from "@/lib/device";
-import {
-  getVisitorSnapshotByTokenHash,
-  queueVisitorAction,
-  storageConfigured,
-  underRateLimit,
-} from "@/lib/store";
+import { resolveStore } from "@/lib/relayStore";
+import type { RelayStore } from "@/lib/relayTypes";
 import { InvalidBody, newActionId, parseVisitorWrite } from "@/lib/validate";
 
 export const dynamic = "force-dynamic";
@@ -36,21 +32,22 @@ const WRITABLE_STATES = new Set([
 export async function POST(
   request: Request,
   context: { params: Promise<{ token: string }> },
+  store: RelayStore = resolveStore(),
 ): Promise<Response> {
-  if (!storageConfigured()) return jsonError(503, "storage_not_configured");
+  if (!store.configured()) return jsonError(503, "storage_not_configured");
 
   const { token } = await context.params;
   const perIp = RATE_LIMITS.visitorWritePerIp;
-  if (!(await underRateLimit("vwrite-ip", clientAddress(request), perIp.limit, perIp.windowS))) {
+  if (!(await store.underRateLimit("vwrite-ip", clientAddress(request), perIp.limit, perIp.windowS))) {
     return jsonError(429, "rate_limited");
   }
 
-  const snapshot = await getVisitorSnapshotByTokenHash(sha256Base64Url(token));
+  const snapshot = await store.getVisitorSnapshotByTokenHash(sha256Base64Url(token));
   if (!snapshot) return jsonError(404, "session_not_found");
 
   const perSession = RATE_LIMITS.visitorWritePerSession;
   if (
-    !(await underRateLimit(
+    !(await store.underRateLimit(
       "vwrite-sess",
       snapshot.session_id,
       perSession.limit,
@@ -72,7 +69,7 @@ export async function POST(
   }
 
   const actionId = newActionId();
-  await queueVisitorAction(actionId, {
+  await store.queueVisitorAction(actionId, {
     action_id: actionId,
     session_id: snapshot.session_id,
     submitted_at: new Date().toISOString(),

@@ -6,14 +6,15 @@
  * does not hand over the other's surface.
  */
 import { isDeviceRequest, jsonError, jsonOk } from "@/lib/device";
-import { putVisitorSnapshot, storageConfigured } from "@/lib/store";
+import { resolveStore } from "@/lib/relayStore";
+import type { RelayStore } from "@/lib/relayTypes";
 import { InvalidBody, parseVisitorSnapshot } from "@/lib/validate";
 
 export const dynamic = "force-dynamic";
 
-export async function PUT(request: Request): Promise<Response> {
+export async function PUT(request: Request, store: RelayStore = resolveStore()): Promise<Response> {
   if (!isDeviceRequest(request, "visitor")) return jsonError(401, "device_auth_required");
-  if (!storageConfigured()) return jsonError(503, "storage_not_configured");
+  if (!store.configured()) return jsonError(503, "storage_not_configured");
 
   let snapshot;
   try {
@@ -23,6 +24,6 @@ export async function PUT(request: Request): Promise<Response> {
     return jsonError(400, "malformed_json");
   }
 
-  await putVisitorSnapshot(snapshot);
+  await store.putVisitorSnapshot(snapshot);
   return jsonOk({ session_id: snapshot.session_id, pushed: true });
 }

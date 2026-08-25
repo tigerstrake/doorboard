@@ -10,15 +10,16 @@
  * single-use (E-11).
  */
 import { isDeviceRequest, jsonError, jsonOk } from "@/lib/device";
-import { leaseBundles, storageConfigured } from "@/lib/store";
+import { resolveStore } from "@/lib/relayStore";
+import type { RelayStore } from "@/lib/relayTypes";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(request: Request): Promise<Response> {
+export async function GET(request: Request, store: RelayStore = resolveStore()): Promise<Response> {
   if (!isDeviceRequest(request)) return jsonError(401, "device_auth_required");
-  if (!storageConfigured()) return jsonError(503, "storage_not_configured");
+  if (!store.configured()) return jsonError(503, "storage_not_configured");
 
-  const leased = await leaseBundles();
+  const leased = await store.leaseBundles();
   return jsonOk({
     items: leased.map((record) => ({
       bundle: record.bundle,

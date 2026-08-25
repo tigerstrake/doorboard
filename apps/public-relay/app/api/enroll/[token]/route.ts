@@ -7,7 +7,8 @@
  * enumerate valid invite ids.
  */
 import { RATE_LIMITS, clientAddress, digestsMatch, jsonError, jsonOk, sha256Base64Url } from "@/lib/device";
-import { getInvite, storageConfigured, underRateLimit } from "@/lib/store";
+import { resolveStore } from "@/lib/relayStore";
+import type { RelayStore } from "@/lib/relayTypes";
 import { INVITE_SECRET_HEADER, parseInviteId, parseInviteSecret } from "@/lib/validate";
 
 export const dynamic = "force-dynamic";
@@ -15,11 +16,12 @@ export const dynamic = "force-dynamic";
 export async function GET(
   request: Request,
   context: { params: Promise<{ token: string }> },
+  store: RelayStore = resolveStore(),
 ): Promise<Response> {
-  if (!storageConfigured()) return jsonError(503, "storage_not_configured");
+  if (!store.configured()) return jsonError(503, "storage_not_configured");
 
   const limit = RATE_LIMITS.inviteLookup;
-  if (!(await underRateLimit("invite", clientAddress(request), limit.limit, limit.windowS))) {
+  if (!(await store.underRateLimit("invite", clientAddress(request), limit.limit, limit.windowS))) {
     return jsonError(429, "rate_limited");
   }
 
@@ -30,7 +32,7 @@ export async function GET(
     return jsonOk({ invite_id: "", status: "unknown", max_images: 1 });
   }
 
-  const invite = await getInvite(inviteId);
+  const invite = await store.getInvite(inviteId);
   if (!invite || !digestsMatch(invite.secret_sha256, sha256Base64Url(secret))) {
     // Deliberately indistinguishable from a wrong secret.
     return jsonOk({ invite_id: "", status: "unknown", max_images: 1 });
