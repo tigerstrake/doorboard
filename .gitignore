@@ -69,3 +69,5 @@ firmware/**/sdkconfig
 # Fetched by the component manager from the registry; dependencies.lock pins the
 # versions and IS committed, so these are reproducible without being vendored.
 firmware/**/managed_components/
+.vercel
+.env*

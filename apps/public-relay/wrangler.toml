@@ -18,4 +18,4 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "doorboard-relay"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "11887df7-7a1d-42f1-8c65-9ef751c17afa"
