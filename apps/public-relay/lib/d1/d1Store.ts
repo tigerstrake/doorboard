@@ -11,11 +11,12 @@
 import type {
   BundleState,
   DoorKeyRecord,
+  RelayStore,
   StoredBundle,
   StoredInvite,
   StoredStatus,
   StoredVisitorSnapshot,
-} from "../store";
+} from "../relayTypes";
 import {
   BUNDLE_TTL_S,
   INVITE_GRACE_S,
@@ -26,18 +27,23 @@ import {
   VISITOR_ACTION_TTL_S,
   VISITOR_LEASE_S,
   VISITOR_SNAPSHOT_GRACE_S,
-} from "../store";
+} from "../relayTypes";
 import type { SealedBundle } from "../contracts";
 import { SCHEMA_SQL } from "./schema";
 import type { D1Like } from "./types";
 
 const TERMINAL_SQL = "('enrolled','expired')";
 
-export class D1RelayStore {
+export class D1RelayStore implements RelayStore {
   constructor(
     private readonly db: D1Like,
     private readonly now: () => number = () => Date.now(),
   ) {}
+
+  /** A constructed D1 store always has its binding — the route's 503 gate is for the Redis path. */
+  configured(): boolean {
+    return true;
+  }
 
   /** Create the schema. Idempotent (every statement is `IF NOT EXISTS`). */
   async migrate(): Promise<void> {

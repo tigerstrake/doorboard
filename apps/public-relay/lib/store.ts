@@ -12,45 +12,31 @@
 import { Redis } from "@upstash/redis";
 
 import type { SealedBundle } from "./contracts";
+import {
+  BUNDLE_TTL_S,
+  INVITE_GRACE_S,
+  MAX_PICKUP_BATCH,
+  MAX_VISITOR_BATCH,
+  PICKUP_LEASE_S,
+  STATUS_TTL_S,
+  TERMINAL,
+  VISITOR_ACTION_TTL_S,
+  VISITOR_LEASE_S,
+  VISITOR_SNAPSHOT_GRACE_S,
+} from "./relayTypes";
+import type {
+  BundleState,
+  DoorKeyRecord,
+  StoredBundle,
+  StoredInvite,
+  StoredStatus,
+  StoredVisitorSnapshot,
+} from "./relayTypes";
 
-export const BUNDLE_TTL_S = 15 * 60;
-export const STATUS_TTL_S = 60 * 60;
-export const INVITE_GRACE_S = 60 * 60;
-export const PICKUP_LEASE_S = 60;
-export const MAX_PICKUP_BATCH = 8;
-
-export type BundleState = "pending" | "collected" | "enrolled" | "failed" | "expired";
-
-/** Terminal states never regress — a late duplicate ack cannot un-enroll someone. */
-const TERMINAL: ReadonlySet<BundleState> = new Set<BundleState>(["enrolled", "expired"]);
-
-export interface StoredInvite {
-  secret_sha256: string;
-  expires_at: string;
-  max_images: number;
-  consumed: boolean;
-}
-
-export interface StoredBundle {
-  bundle: SealedBundle;
-  submitted_at: string;
-}
-
-export interface StoredStatus {
-  status: BundleState;
-  reason: string | null;
-  updated_at: string;
-}
-
-export interface DoorKeyRecord {
-  door_key_id: string;
-  suite: string;
-  public_key: string;
-  fingerprint: string;
-  consent_version: string;
-  consent_text: string;
-  published_at: string;
-}
+// The storage types and retention constants now live in `relayTypes.ts` (shared with the D1
+// backend so nothing on the Cloudflare path imports Upstash); re-export them so existing
+// `@/lib/store` imports keep resolving.
+export * from "./relayTypes";
 
 const KEY = {
   invite: (id: string) => `invite:${id}`,
@@ -256,27 +242,9 @@ export async function pendingCount(): Promise<number> {
 
 // -- visitor surface (ADR-0017) --------------------------------------------
 
-/**
- * A visitor session lives as long as the door session plus a small grace. Short
- * on purpose: this is transient interaction state, and nothing here should outlive
- * the person standing at the door by more than a few minutes.
- */
-export const VISITOR_SNAPSHOT_GRACE_S = 5 * 60;
-export const VISITOR_ACTION_TTL_S = 15 * 60;
-export const VISITOR_LEASE_S = 30;
-export const MAX_VISITOR_BATCH = 16;
-
-export interface StoredVisitorSnapshot {
-  session_token_sha256: string;
-  session_id: string;
-  state: string;
-  expires_at: string;
-  poll: unknown;
-  poll_results: unknown;
-  outcomes: unknown[];
-  attributed: boolean;
-  pushed_at: string;
-}
+// Visitor retention constants and `StoredVisitorSnapshot` live in `relayTypes.ts` (re-exported
+// above). A visitor session lives as long as the door session plus a small grace — transient
+// interaction state that should not outlive the person at the door by more than a few minutes.
 
 const VISITOR_KEY = {
   snapshot: (sessionId: string) => `visitor:snap:${sessionId}`,
