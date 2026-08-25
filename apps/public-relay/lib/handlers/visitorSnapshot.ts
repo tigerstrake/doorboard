@@ -10,15 +10,12 @@
  * no business travelling back into browser history or a screenshot.
  */
 import { RATE_LIMITS, clientAddress, jsonError, jsonOk, sha256Base64Url } from "@/lib/device";
-import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
 
-export const dynamic = "force-dynamic";
-
-export async function GET(
+export async function handleGet(
   request: Request,
-  context: { params: Promise<{ token: string }> },
-  store: RelayStore = resolveStore(),
+  store: RelayStore,
+  params: Record<string, string>,
 ): Promise<Response> {
   if (!store.configured()) return jsonError(503, "storage_not_configured");
 
@@ -27,7 +24,7 @@ export async function GET(
     return jsonError(429, "rate_limited");
   }
 
-  const { token } = await context.params;
+  const token = params.token!;
   const snapshot = await store.getVisitorSnapshotByTokenHash(sha256Base64Url(token));
   if (!snapshot) return jsonError(404, "session_not_found");
 

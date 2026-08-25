@@ -10,12 +10,9 @@
  * single-use (E-11).
  */
 import { isDeviceRequest, jsonError, jsonOk } from "@/lib/device";
-import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
 
-export const dynamic = "force-dynamic";
-
-export async function GET(request: Request, store: RelayStore = resolveStore()): Promise<Response> {
+export async function handleGet(request: Request, store: RelayStore): Promise<Response> {
   if (!isDeviceRequest(request)) return jsonError(401, "device_auth_required");
   if (!store.configured()) return jsonError(503, "storage_not_configured");
 

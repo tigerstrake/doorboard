@@ -17,22 +17,19 @@ import {
   jsonOk,
   sha256Base64Url,
 } from "@/lib/device";
-import { resolveStore } from "@/lib/relayStore";
 import { BUNDLE_TTL_S } from "@/lib/relayTypes";
 import type { RelayStore } from "@/lib/relayTypes";
 import { INVITE_SECRET_HEADER, InvalidBody, parseInviteId, parseInviteSecret, parseSealedBundle } from "@/lib/validate";
 
-export const dynamic = "force-dynamic";
-
-export async function POST(
+export async function handlePost(
   request: Request,
-  context: { params: Promise<{ token: string }> },
-  store: RelayStore = resolveStore(),
+  store: RelayStore,
+  params: Record<string, string>,
 ): Promise<Response> {
   if (!store.configured()) return jsonError(503, "storage_not_configured");
 
   // Invite id from the path, secret from a header — never in a URL (ADR-0043 §2).
-  const { token: inviteId } = await context.params;
+  const inviteId = params.token!;
   if (!parseInviteId(inviteId)) return jsonError(404, "invite_not_found");
 
   const perIp = RATE_LIMITS.submitPerIp;

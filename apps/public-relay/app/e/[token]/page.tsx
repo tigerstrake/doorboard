@@ -1,17 +1,16 @@
 import EnrollFlow from "./EnrollFlow";
 
 /**
- * The invite page.
- *
- * Rendered as a thin server shell around a client component on purpose: the
- * invite secret and the key fingerprint both travel in the URL fragment
- * (ADR-0043 §2, ADR-0016 §3), which is never sent to a server. The path segment
- * carries only the invite id. All verification and sealing therefore has to
- * happen in the browser (E-10).
+ * The invite page (ADR-0016). On Cloudflare this exports as ONE static shell (ADR-0043 §1):
+ * invite ids aren't known at build, so `generateStaticParams` emits a single placeholder and
+ * `public/_redirects` serves it for every `/e/<id>`. The client reads the real id from the
+ * path and the secret + key fingerprint from the URL fragment — so the door-built URL
+ * `/e/<id>#s=<secret>&k=<fp>` is unchanged, and no server runtime is involved.
  */
-export const dynamic = "force-dynamic";
+export function generateStaticParams(): Array<{ token: string }> {
+  return [{ token: "_" }];
+}
 
-export default async function InvitePage({ params }: { params: Promise<{ token: string }> }) {
-  const { token: inviteId } = await params;
-  return <EnrollFlow inviteId={inviteId} />;
+export default function InvitePage() {
+  return <EnrollFlow />;
 }

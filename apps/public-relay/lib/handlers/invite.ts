@@ -7,13 +7,10 @@
  * forged record here authorizes nothing (E-11).
  */
 import { isDeviceRequest, jsonError, jsonOk } from "@/lib/device";
-import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
 import { InvalidBody, parseInviteRegistration } from "@/lib/validate";
 
-export const dynamic = "force-dynamic";
-
-export async function PUT(request: Request, store: RelayStore = resolveStore()): Promise<Response> {
+export async function handlePut(request: Request, store: RelayStore): Promise<Response> {
   if (!isDeviceRequest(request)) return jsonError(401, "device_auth_required");
   if (!store.configured()) return jsonError(503, "storage_not_configured");
 

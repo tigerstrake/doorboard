@@ -7,20 +7,22 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { GET as getDoorKey, PUT as putDoorKey } from "@/app/api/door-key/route";
-import { PUT as registerInvite } from "@/app/api/invite/route";
-import { GET as pickupEnrollment } from "@/app/api/pickup/route";
-import { POST as ackEnrollment } from "@/app/api/pickup/ack/route";
-import { GET as readVisitor } from "@/app/api/visitor/[token]/route";
-import { POST as writeVisitor } from "@/app/api/visitor/[token]/action/route";
-import { GET as pickupVisitor } from "@/app/api/visitor/pickup/route";
-import { POST as ackVisitor } from "@/app/api/visitor/pickup/ack/route";
-import { PUT as pushSnapshot } from "@/app/api/visitor/session/route";
+import { handleGet as getDoorKey, handlePut as putDoorKey } from "@/lib/handlers/doorKey";
+import { handlePut as registerInvite } from "@/lib/handlers/invite";
+import { handleGet as pickupEnrollment } from "@/lib/handlers/pickup";
+import { handlePost as ackEnrollment } from "@/lib/handlers/pickupAck";
+import { handleGet as readVisitor } from "@/lib/handlers/visitorSnapshot";
+import { handlePost as writeVisitor } from "@/lib/handlers/visitorAction";
+import { handleGet as pickupVisitor } from "@/lib/handlers/visitorPickup";
+import { handlePost as ackVisitor } from "@/lib/handlers/visitorPickupAck";
+import { handlePut as pushSnapshot } from "@/lib/handlers/visitorSession";
 import { sha256Base64Url } from "@/lib/device";
+import { resolveStore } from "@/lib/relayStore";
+import type { RelayStore } from "@/lib/relayTypes";
 import { setRedisForTests } from "@/lib/store";
 
 import { FakeRedis } from "./fakeRedis";
-import { DEVICE_TOKEN, routeContext } from "./helpers";
+import { DEVICE_TOKEN } from "./helpers";
 
 const VISITOR_TOKEN = "eyJ2IjoxfQ.c2lnbmF0dXJl";
 const VISITOR_DEVICE_TOKEN = "test-visitor-device-token";
@@ -84,6 +86,7 @@ async function seedSnapshot(overrides: Record<string, unknown> = {}): Promise<vo
       body: snapshotBody(overrides),
       token: VISITOR_DEVICE_TOKEN,
     }),
+    resolveStore(),
   );
   expect(resp.status).toBe(200);
 }
@@ -100,7 +103,8 @@ describe("P-21 the relay never holds a usable visitor token", () => {
 
     const resp = await readVisitor(
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}`, "GET"),
-      routeContext({ token: VISITOR_TOKEN }),
+      resolveStore(),
+      { token: VISITOR_TOKEN },
     );
     expect(resp.status).toBe(200);
   });
@@ -110,7 +114,8 @@ describe("P-21 the relay never holds a usable visitor token", () => {
     const body = (await (
       await readVisitor(
         req(`https://relay.test/api/visitor/${VISITOR_TOKEN}`, "GET"),
-        routeContext({ token: VISITOR_TOKEN }),
+        resolveStore(),
+        { token: VISITOR_TOKEN },
       )
     ).json()) as Record<string, unknown>;
 
@@ -134,11 +139,13 @@ describe("P-21 the relay never holds a usable visitor token", () => {
     await seedSnapshot();
     const wrong = await readVisitor(
       req("https://relay.test/api/visitor/nope.nope", "GET"),
-      routeContext({ token: "nope.nope" }),
+      resolveStore(),
+      { token: "nope.nope" },
     );
     const unknown = await readVisitor(
       req("https://relay.test/api/visitor/other.other", "GET"),
-      routeContext({ token: "other.other" }),
+      resolveStore(),
+      { token: "other.other" },
     );
     expect(wrong.status).toBe(404);
     expect(await wrong.json()).toEqual(await unknown.json());
@@ -150,11 +157,12 @@ describe("P-21 the relay never holds a usable visitor token", () => {
 describe("P-22 device token scopes are disjoint", () => {
   it("refuses the enrollment token on visitor routes", async () => {
     for (const handler of [pushSnapshot, pickupVisitor, ackVisitor]) {
-      const resp = await (handler as (r: Request) => Promise<Response>)(
+      const resp = await (handler as (r: Request, s: RelayStore) => Promise<Response>)(
         req("https://relay.test/api/visitor/x", "PUT", {
           body: snapshotBody(),
           token: DEVICE_TOKEN,
         }),
+        resolveStore(),
       );
       expect(resp.status).toBe(401);
     }
@@ -167,20 +175,22 @@ describe("P-22 device token scopes are disjoint", () => {
         body: key.publication,
         token: VISITOR_DEVICE_TOKEN,
       }),
+      resolveStore(),
     );
     expect(publish.status).toBe(401);
 
     for (const handler of [registerInvite, pickupEnrollment, ackEnrollment]) {
-      const resp = await (handler as (r: Request) => Promise<Response>)(
+      const resp = await (handler as (r: Request, s: RelayStore) => Promise<Response>)(
         req("https://relay.test/api/x", "POST", {
           body: { bundle_id: `bnd_${"a".repeat(22)}`, outcome: "enrolled" },
           token: VISITOR_DEVICE_TOKEN,
         }),
+        resolveStore(),
       );
       expect(resp.status).toBe(401);
     }
     // Sanity: the door key was never published, so this is a real refusal.
-    expect((await getDoorKey()).status).toBe(503);
+    expect((await getDoorKey(req("https://relay.test/api/door-key", "GET"), resolveStore())).status).toBe(503);
   });
 });
 
@@ -193,6 +203,7 @@ describe("E-15 the snapshot is an allow-list", () => {
         body: { ...snapshotBody(), display_name: "Tiger", person_id: "prs_x" },
         token: VISITOR_DEVICE_TOKEN,
       }),
+      resolveStore(),
     );
     expect(resp.status).toBe(422);
   });
@@ -203,6 +214,7 @@ describe("E-15 the snapshot is an allow-list", () => {
         body: snapshotBody({ state: "ADMIN_DIAGNOSTICS" }),
         token: VISITOR_DEVICE_TOKEN,
       }),
+      resolveStore(),
     );
     expect(resp.status).toBe(422);
   });
@@ -218,7 +230,8 @@ describe("visitor writes queue for the Pi", () => {
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
         body: { kind: "note", text: NOTE_SENTINEL },
       }),
-      routeContext({ token: VISITOR_TOKEN }),
+      resolveStore(),
+      { token: VISITOR_TOKEN },
     );
     expect(submit.status).toBe(202);
     const { action_id: actionId } = (await submit.json()) as { action_id: string };
@@ -226,6 +239,7 @@ describe("visitor writes queue for the Pi", () => {
     const collected = (await (
       await pickupVisitor(
         req("https://relay.test/api/visitor/pickup", "GET", { token: VISITOR_DEVICE_TOKEN }),
+        resolveStore(),
       )
     ).json()) as { items: Array<{ action_id: string; note: { text: string } | null }> };
     expect(collected.items).toHaveLength(1);
@@ -247,12 +261,14 @@ describe("visitor writes queue for the Pi", () => {
           ],
         },
       }),
+      resolveStore(),
     );
 
     const after = (await (
       await readVisitor(
         req(`https://relay.test/api/visitor/${VISITOR_TOKEN}`, "GET"),
-        routeContext({ token: VISITOR_TOKEN }),
+        resolveStore(),
+        { token: VISITOR_TOKEN },
       )
     ).json()) as { outcomes: Array<{ action_id: string; status: string; entry_id: string }> };
     expect(after.outcomes).toHaveLength(1);
@@ -265,7 +281,8 @@ describe("visitor writes queue for the Pi", () => {
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
         body: { kind: "note", text: "too late" },
       }),
-      routeContext({ token: VISITOR_TOKEN }),
+      resolveStore(),
+      { token: VISITOR_TOKEN },
     );
     expect(resp.status).toBe(409);
     expect(await resp.json()).toEqual({ error: "session_not_writable" });
@@ -277,7 +294,8 @@ describe("visitor writes queue for the Pi", () => {
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
         body: { kind: "note", text: "expired" },
       }),
-      routeContext({ token: VISITOR_TOKEN }),
+      resolveStore(),
+      { token: VISITOR_TOKEN },
     );
     expect(resp.status).toBe(410);
   });
@@ -288,7 +306,8 @@ describe("visitor writes queue for the Pi", () => {
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
         body: { kind: "note", text: "x".repeat(501) },
       }),
-      routeContext({ token: VISITOR_TOKEN }),
+      resolveStore(),
+      { token: VISITOR_TOKEN },
     );
     expect(resp.status).toBe(422);
   });
@@ -299,7 +318,8 @@ describe("visitor writes queue for the Pi", () => {
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
         body: { kind: "unlock_the_door", text: "nice try" },
       }),
-      routeContext({ token: VISITOR_TOKEN }),
+      resolveStore(),
+      { token: VISITOR_TOKEN },
     );
     expect(resp.status).toBe(422);
   });
@@ -310,17 +330,20 @@ describe("visitor writes queue for the Pi", () => {
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
         body: { kind: "vote", poll_id: "poll_1", option_id: "opt_a" },
       }),
-      routeContext({ token: VISITOR_TOKEN }),
+      resolveStore(),
+      { token: VISITOR_TOKEN },
     );
 
     const first = (await (
       await pickupVisitor(
         req("https://relay.test/api/visitor/pickup", "GET", { token: VISITOR_DEVICE_TOKEN }),
+        resolveStore(),
       )
     ).json()) as { items: unknown[] };
     const second = (await (
       await pickupVisitor(
         req("https://relay.test/api/visitor/pickup", "GET", { token: VISITOR_DEVICE_TOKEN }),
+        resolveStore(),
       )
     ).json()) as { items: unknown[] };
 
@@ -336,7 +359,8 @@ describe("visitor writes queue for the Pi", () => {
         req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
           body: { kind: "note", text: `spam ${i}` },
         }),
-        routeContext({ token: VISITOR_TOKEN }),
+        resolveStore(),
+        { token: VISITOR_TOKEN },
       );
       statuses.push(resp.status);
     }

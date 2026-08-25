@@ -6,13 +6,10 @@
  * open anything it stores (ADR-0016 E-9).
  */
 import { isDeviceRequest, jsonError, jsonOk } from "@/lib/device";
-import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
 import { InvalidBody, parseDoorKeyPublication } from "@/lib/validate";
 
-export const dynamic = "force-dynamic";
-
-export async function PUT(request: Request, store: RelayStore = resolveStore()): Promise<Response> {
+export async function handlePut(request: Request, store: RelayStore): Promise<Response> {
   if (!isDeviceRequest(request)) return jsonError(401, "device_auth_required");
   if (!store.configured()) return jsonError(503, "storage_not_configured");
 
@@ -28,7 +25,7 @@ export async function PUT(request: Request, store: RelayStore = resolveStore()):
   return jsonOk({ door_key_id: publication.door_key_id, published: true });
 }
 
-export async function GET(store: RelayStore = resolveStore()): Promise<Response> {
+export async function handleGet(request: Request, store: RelayStore): Promise<Response> {
   if (!store.configured()) return jsonError(503, "storage_not_configured");
   const record = await store.getDoorKey();
   if (!record) {

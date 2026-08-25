@@ -87,8 +87,3 @@ export async function makeSealedBundle(options: {
     images,
   });
 }
-
-/** Next.js route handlers receive params as a promise. */
-export function routeContext<T extends Record<string, string>>(params: T): { params: Promise<T> } {
-  return { params: Promise.resolve(params) };
-}

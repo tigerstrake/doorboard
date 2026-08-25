@@ -506,7 +506,7 @@ describe("every failure code lands somewhere useful", () => {
 
   it("says something actionable for every code the submit route returns", () => {
     const source = readFileSync(
-      path.join(REPO, "apps", "public-relay", "app", "api", "enroll", "[token]", "submit", "route.ts"),
+      path.join(REPO, "apps", "public-relay", "lib", "handlers", "enrollSubmit.ts"),
       "utf8",
     );
     const codes = [...source.matchAll(/jsonError\(\d+,\s*"([a-z_]+)"\)/g)].map((m) => m[1]!);

@@ -1,0 +1,21 @@
+# Cloudflare Pages configuration for the relay (ADR-0043). Deploy target: door.tigerstrake.com.
+#
+# The static export (`next build` → out/) is served as assets; the API is the Pages Function in
+# functions/api/[[route]].ts, bound to the D1 database below. `nodejs_compat` is required so
+# lib/device.ts's node:crypto constant-time compares run unchanged and so the device-token
+# secrets are readable via process.env.
+#
+# The database_id is filled in after `wrangler d1 create doorboard-relay` (see the runbook).
+# The two device-token secrets are NOT stored here — set them with:
+#   wrangler pages secret put RELAY_DEVICE_TOKEN
+#   wrangler pages secret put RELAY_VISITOR_DEVICE_TOKEN
+
+name = "doorboard-relay"
+pages_build_output_dir = "out"
+compatibility_date = "2026-08-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "doorboard-relay"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"

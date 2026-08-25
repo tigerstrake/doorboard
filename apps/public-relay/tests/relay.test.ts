@@ -7,15 +7,17 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { GET as getDoorKey, PUT as putDoorKey } from "@/app/api/door-key/route";
-import { GET as getInviteState } from "@/app/api/enroll/[token]/route";
-import { POST as submitBundle } from "@/app/api/enroll/[token]/submit/route";
-import { GET as getHealth } from "@/app/api/health/route";
-import { PUT as registerInvite } from "@/app/api/invite/route";
-import { GET as pickup } from "@/app/api/pickup/route";
-import { POST as ack } from "@/app/api/pickup/ack/route";
-import { GET as getStatus } from "@/app/api/status/[bundleId]/route";
+import { handleGet as getDoorKey, handlePut as putDoorKey } from "@/lib/handlers/doorKey";
+import { handleGet as getInviteState } from "@/lib/handlers/enrollInvite";
+import { handlePost as submitBundle } from "@/lib/handlers/enrollSubmit";
+import { handleGet as getHealth } from "@/lib/handlers/health";
+import { handlePut as registerInvite } from "@/lib/handlers/invite";
+import { handleGet as pickup } from "@/lib/handlers/pickup";
+import { handlePost as ack } from "@/lib/handlers/pickupAck";
+import { handleGet as getStatus } from "@/lib/handlers/status";
 import { sha256Base64Url } from "@/lib/device";
+import { resolveStore } from "@/lib/relayStore";
+import type { RelayStore } from "@/lib/relayTypes";
 import { KeyFingerprintMismatch, assertKeyMatchesFingerprint, fingerprintFor } from "@/lib/seal";
 import { setRedisForTests } from "@/lib/store";
 import { INVITE_SECRET_HEADER, InvalidBody, parseSealedBundle } from "@/lib/validate";
@@ -28,7 +30,6 @@ import {
   b64url,
   fakeDoorKey,
   makeSealedBundle,
-  routeContext,
 } from "./helpers";
 
 let store: FakeRedis;
@@ -79,6 +80,7 @@ async function seedDoorKeyAndInvite(): Promise<{ token: string; inviteId: string
   const key = await fakeDoorKey();
   const publishResp = await putDoorKey(
     deviceRequest("https://relay.test/api/door-key", "PUT", key.publication),
+    resolveStore(),
   );
   expect(publishResp.status).toBe(200);
 
@@ -91,6 +93,7 @@ async function seedDoorKeyAndInvite(): Promise<{ token: string; inviteId: string
       expires_at: new Date(Date.now() + 3_600_000).toISOString(),
       max_images: 5,
     }),
+    resolveStore(),
   );
   expect(registerResp.status).toBe(200);
 
@@ -108,7 +111,8 @@ describe("P-13 the relay never sees plaintext", () => {
 
     const resp = await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      routeContext({ token }),
+      resolveStore(),
+      { token },
     );
     expect(resp.status).toBe(202);
 
@@ -127,10 +131,11 @@ describe("P-13 the relay never sees plaintext", () => {
     const bundle = await makeSealedBundle({ key, inviteId });
     await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      routeContext({ token }),
+      resolveStore(),
+      { token },
     );
 
-    const resp = await pickup(deviceRequest("https://relay.test/api/pickup", "GET"));
+    const resp = await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore());
     const body = (await resp.json()) as { items: Array<{ bundle: typeof bundle }> };
     expect(body.items).toHaveLength(1);
     expect(body.items[0]!.bundle).toEqual(bundle);
@@ -143,9 +148,10 @@ describe("P-13 the relay never sees plaintext", () => {
     const bundle = await makeSealedBundle({ key, inviteId });
     await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      routeContext({ token }),
+      resolveStore(),
+      { token },
     );
-    await pickup(deviceRequest("https://relay.test/api/pickup", "GET"));
+    await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore());
 
     await ack(
       deviceRequest("https://relay.test/api/pickup/ack", "POST", {
@@ -153,20 +159,23 @@ describe("P-13 the relay never sees plaintext", () => {
         outcome: "enrolled",
         reason: null,
       }),
+      resolveStore(),
     );
 
     expect(await store.get(`bundle:${bundle.bundle_id}`)).toBeNull();
     // The status survives so the phone can be told, and carries no user data.
     const statusResp = await getStatus(
       publicRequest(`https://relay.test/api/status/${bundle.bundle_id}`),
-      routeContext({ bundleId: bundle.bundle_id }),
+      resolveStore(),
+      { bundleId: bundle.bundle_id },
     );
     const status = (await statusResp.json()) as { status: string };
     expect(status.status).toBe("enrolled");
     // And the invite is closed out, so a replay cannot be uploaded again.
     const second = await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      routeContext({ token }),
+      resolveStore(),
+      { token },
     );
     expect(second.status).toBe(409);
   });
@@ -245,8 +254,9 @@ describe("E-14 the relay exposes no privileged surface", () => {
   ])("requires the device token for %s %s", async (method, path, handler) => {
     // GET/HEAD cannot carry a body, so only send one for the mutating routes.
     const body = method === "GET" ? undefined : { bundle_id: "x", outcome: "enrolled" };
-    const resp = await (handler as (r: Request) => Promise<Response>)(
+    const resp = await (handler as (r: Request, s: RelayStore) => Promise<Response>)(
       publicRequest(`https://relay.test${path}`, method, body),
+      resolveStore(),
     );
     expect(resp.status).toBe(401);
   });
@@ -256,13 +266,16 @@ describe("E-14 the relay exposes no privileged surface", () => {
       new Request("https://relay.test/api/pickup", {
         headers: { authorization: "Bearer not-the-token" },
       }),
+      resolveStore(),
     );
     expect(resp.status).toBe(401);
   });
 
   it("reports health without revealing who is enrolled", async () => {
     await seedDoorKeyAndInvite();
-    const body = (await (await getHealth()).json()) as Record<string, unknown>;
+    const body = (await (
+      await getHealth(publicRequest("https://relay.test/api/health"), resolveStore())
+    ).json()) as Record<string, unknown>;
     expect(body).toEqual({
       service: "public-relay",
       status: "ok",
@@ -281,7 +294,8 @@ describe("invite state tells a phone only about its own invite", () => {
     const { token, inviteId, secret } = await seedDoorKeyAndInvite();
     const resp = await getInviteState(
       publicRequest(`https://relay.test/api/enroll/${token}`, "GET", undefined, withSecret(secret)),
-      routeContext({ token }),
+      resolveStore(),
+      { token },
     );
     const body = (await resp.json()) as { status: string; invite_id: string; max_images: number };
     expect(body.status).toBe("open");
@@ -296,12 +310,14 @@ describe("invite state tells a phone only about its own invite", () => {
     const wrong = "d3Jvbmctc2VjcmV0LXZhbHVl";
     const wrongSecret = await getInviteState(
       publicRequest(`https://relay.test/api/enroll/${inviteId}`, "GET", undefined, withSecret(wrong)),
-      routeContext({ token: inviteId }),
+      resolveStore(),
+      { token: inviteId },
     );
     const madeUpId = `inv_${"z".repeat(22)}`;
     const madeUp = await getInviteState(
       publicRequest(`https://relay.test/api/enroll/${madeUpId}`, "GET", undefined, withSecret(wrong)),
-      routeContext({ token: madeUpId }),
+      resolveStore(),
+      { token: madeUpId },
     );
 
     expect(await wrongSecret.json()).toEqual(await madeUp.json());
@@ -315,7 +331,8 @@ describe("invite state tells a phone only about its own invite", () => {
     const pathToken = `${inviteId}.${secret}`;
     const resp = await getInviteState(
       publicRequest(`https://relay.test/api/enroll/${pathToken}`),
-      routeContext({ token: pathToken }),
+      resolveStore(),
+      { token: pathToken },
     );
     const body = (await resp.json()) as { status: string; invite_id: string };
     expect(body.status).toBe("unknown");
@@ -329,14 +346,15 @@ describe("invite state tells a phone only about its own invite", () => {
 
     const resp = await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      routeContext({ token }),
+      resolveStore(),
+      { token },
     );
     expect(resp.status).toBe(422);
   });
 
   it("refuses more photos than the invite allows", async () => {
     const key = await fakeDoorKey();
-    await putDoorKey(deviceRequest("https://relay.test/api/door-key", "PUT", key.publication));
+    await putDoorKey(deviceRequest("https://relay.test/api/door-key", "PUT", key.publication), resolveStore());
     const inviteId = `inv_${"c".repeat(22)}`;
     const secret = "dGVzdC1pbnZpdGUtc2VjcmV0LXZhbHVl";
     await registerInvite(
@@ -346,13 +364,15 @@ describe("invite state tells a phone only about its own invite", () => {
         expires_at: new Date(Date.now() + 3_600_000).toISOString(),
         max_images: 1,
       }),
+      resolveStore(),
     );
     const token = inviteId;
     const bundle = await makeSealedBundle({ key, inviteId, imageCount: 3 });
 
     const resp = await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      routeContext({ token }),
+      resolveStore(),
+      { token },
     );
     expect(resp.status).toBe(422);
     expect((await resp.json()) as unknown).toEqual({ error: "too_many_images" });
@@ -368,13 +388,14 @@ describe("pickup leasing", () => {
     const bundle = await makeSealedBundle({ key, inviteId });
     await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      routeContext({ token }),
+      resolveStore(),
+      { token },
     );
 
-    const first = (await (await pickup(deviceRequest("https://relay.test/api/pickup", "GET"))).json()) as {
+    const first = (await (await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore())).json()) as {
       items: unknown[];
     };
-    const second = (await (await pickup(deviceRequest("https://relay.test/api/pickup", "GET"))).json()) as {
+    const second = (await (await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore())).json()) as {
       items: unknown[];
     };
 
@@ -388,9 +409,10 @@ describe("pickup leasing", () => {
     const bundle = await makeSealedBundle({ key, inviteId });
     await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      routeContext({ token }),
+      resolveStore(),
+      { token },
     );
-    await pickup(deviceRequest("https://relay.test/api/pickup", "GET"));
+    await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore());
 
     for (const outcome of ["enrolled", "rejected"]) {
       await ack(
@@ -399,12 +421,14 @@ describe("pickup leasing", () => {
           outcome,
           reason: outcome === "rejected" ? "invite_already_consumed" : null,
         }),
+        resolveStore(),
       );
     }
 
     const statusResp = await getStatus(
       publicRequest(`https://relay.test/api/status/${bundle.bundle_id}`),
-      routeContext({ bundleId: bundle.bundle_id }),
+      resolveStore(),
+      { bundleId: bundle.bundle_id },
     );
     expect(((await statusResp.json()) as { status: string }).status).toBe("enrolled");
   });
@@ -412,7 +436,7 @@ describe("pickup leasing", () => {
 
 describe("door key availability", () => {
   it("tells a phone the door has not checked in rather than serving nothing", async () => {
-    const resp = await getDoorKey();
+    const resp = await getDoorKey(publicRequest("https://relay.test/api/door-key"), resolveStore());
     expect(resp.status).toBe(503);
     expect((await resp.json()) as unknown).toEqual({ error: "door_key_unavailable" });
   });

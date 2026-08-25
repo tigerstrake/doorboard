@@ -37,14 +37,22 @@ the relay is a URL change on the door, not a code change.
 The relay is served from a **Cloudflare Pages** project bound to **`door.tigerstrake.com`**
 (a Cloudflare DNS record; the apex/`www` personal site is untouched):
 
-- **The two pages** (`/e/<token>` enrollment, `/v/<token>` visitor) become **static** and
-  client-rendered. They already are client flows that call `/api/*`; `output: "export"` plus
-  moving the last of their data-fetching to the client makes them static-serveable with no
-  server runtime. This sidesteps running the (very new) Next 16 server runtime on Cloudflare.
-- **The ~16 API routes** become **Cloudflare Pages Functions** (`functions/api/**`), plain
-  `onRequest*` handlers over the Web `Request`/`Response` and `env` bindings — no Next server
-  APIs. Each handler's logic is a pure `(request, env) => Response` function so the existing
-  vitest suite exercises it unchanged (see §5).
+- **The two pages** (`/e/<token>` enrollment, `/v/<token>` visitor) are **statically exported**
+  (`output: "export"`), with no Next server runtime — this sidesteps running the (very new) Next
+  16 server runtime on Cloudflare. Their tokens are not known at build, and a static export
+  cannot enumerate arbitrary dynamic-route params, so each page exports as **one placeholder
+  shell** (`generateStaticParams` → `"_"`) that `public/_redirects` serves for every `/e/*` and
+  `/v/*` (a 200 rewrite). The client reads the real id/token from `window.location` (the id from
+  the path, the secret + fingerprint from the fragment). **The door-built URLs are unchanged** —
+  `/e/<id>#s=…&k=…` and `/v/<token>` still work — which keeps this a URL change on the door, not
+  a code change (§4).
+- **The API is one catch-all Pages Function** (`functions/api/[[route]].ts`) that resolves the
+  D1-backed store from `env.DB` and delegates to a routing table in `lib/apiRouter.ts`. The
+  handler logic is extracted from the old Next `app/api/**` routes into `lib/handlers/**` as
+  plain `(request, store, params) => Response` functions — so the vitest suite drives the same
+  logic directly (and the Next API routes, which a static export cannot contain, are removed).
+  Nothing in `lib` uses the `@/` path alias, so the Function bundles with plain relative imports
+  and no alias configuration.
 - **State moves from Upstash Redis to one Cloudflare D1 database** (SQLite, strongly
   consistent, transactional). D1 — not KV — because the relay's correctness rests on
   operations KV's eventual consistency cannot guarantee:

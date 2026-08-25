@@ -83,7 +83,20 @@ function isSettled(outcome: { status: string }): boolean {
 /** Reasons where offering another attempt would only waste the visitor's time. */
 const TERMINAL_VOTE_REASONS = new Set(["poll_closed", "already_voted"]);
 
-export default function VisitorFlow({ token }: { token: string }) {
+/**
+ * The visitor token is the last path segment. On Cloudflare the page is one static shell
+ * served for every `/v/<token>` (ADR-0043 §1, public/_redirects), so it is read from the
+ * live path rather than a route param — keeping the wallboard-built URL `/v/<token>`
+ * unchanged. Tests pass it as a prop, which wins.
+ */
+function pathToken(): string {
+  if (typeof window === "undefined") return "";
+  const segments = window.location.pathname.split("/").filter(Boolean);
+  return decodeURIComponent(segments[segments.length - 1] ?? "");
+}
+
+export default function VisitorFlow({ token: propToken }: { token?: string }) {
+  const token = propToken ?? pathToken();
   const [access, setAccess] = useState<Access>("checking");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   /**

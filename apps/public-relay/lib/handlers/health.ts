@@ -5,12 +5,9 @@
  * is a public route on an untrusted host (ARCHITECTURE.md §2).
  */
 import { deviceTokenConfigured, jsonOk } from "@/lib/device";
-import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
 
-export const dynamic = "force-dynamic";
-
-export async function GET(store: RelayStore = resolveStore()): Promise<Response> {
+export async function handleGet(request: Request, store: RelayStore): Promise<Response> {
   const configured = store.configured() && deviceTokenConfigured();
   if (!configured) {
     return jsonOk({

@@ -3,52 +3,27 @@ import path from "node:path";
 import type { NextConfig } from "next";
 
 /**
- * The pnpm workspace root. Both Turbopack's module resolution and file tracing
- * have to start here: `next` and `@doorboard/contracts` are hoisted to the
- * monorepo's node_modules, above this app.
+ * The pnpm workspace root. Turbopack's module resolution has to start here: `next` and
+ * `@doorboard/contracts` are hoisted to the monorepo's node_modules, above this app.
  */
 const WORKSPACE_ROOT = path.join(__dirname, "..", "..");
 
 /**
- * Relay configuration (ADR-0016).
+ * Relay build configuration (ADR-0016, ADR-0043).
  *
- * This deployment is a blind courier: it holds ciphertext and opaque ids, never a
- * decryption key. Two things here are load-bearing rather than cosmetic:
- *
- * - `outputFileTracingRoot` lets the app build from inside the pnpm monorepo.
- * - The headers below keep the sealing page from being framed or from leaking the
- *   invite URL (which contains the invite secret) through a Referer header.
+ * `output: "export"` produces a fully static site (Cloudflare Pages): the two flows are
+ * client-rendered shells, the API is Cloudflare Pages Functions (`functions/api/**`), and no
+ * Next server runtime runs in production. The security/cache headers that `headers()` used to
+ * set do not run under a static export, so they live in `public/_headers` instead; the SPA
+ * fallback for the dynamic page routes lives in `public/_redirects`. This deployment is still
+ * a blind courier — ciphertext and opaque ids only, no decryption key.
  */
 const nextConfig: NextConfig = {
-  outputFileTracingRoot: WORKSPACE_ROOT,
+  output: "export",
+  images: { unoptimized: true },
   turbopack: { root: WORKSPACE_ROOT },
   reactStrictMode: true,
   poweredByHeader: false,
-  async headers() {
-    return [
-      {
-        source: "/:path*",
-        headers: [
-          // The invite secret lives in the URL path, so it must never travel in a
-          // Referer to any third party.
-          { key: "Referrer-Policy", value: "no-referrer" },
-          { key: "X-Frame-Options", value: "DENY" },
-          { key: "X-Content-Type-Options", value: "nosniff" },
-          {
-            key: "Permissions-Policy",
-            // The page needs the camera; it needs nothing else.
-            value: "camera=(self), microphone=(), geolocation=(), payment=()",
-          },
-        ],
-      },
-      {
-        // Invite pages and API responses must never be cached by a CDN or a
-        // shared proxy: they are single-use and carry per-person state.
-        source: "/(api|e)/:path*",
-        headers: [{ key: "Cache-Control", value: "no-store, max-age=0" }],
-      },
-    ];
-  },
 };
 
 export default nextConfig;

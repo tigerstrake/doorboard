@@ -33,6 +33,18 @@ function hashParam(name: string): string | null {
   return new URLSearchParams(window.location.hash.replace(/^#/, "")).get(name);
 }
 
+/**
+ * The invite id is the last path segment. On Cloudflare the page is a single static shell
+ * served for every `/e/<id>` (ADR-0043 §1, public/_redirects), so the id is read from the
+ * live path here rather than a route param — which keeps the door-built URL `/e/<id>#s=…`
+ * unchanged. Tests pass it as a prop, which wins.
+ */
+function pathInviteId(): string {
+  if (typeof window === "undefined") return "";
+  const segments = window.location.pathname.split("/").filter(Boolean);
+  return decodeURIComponent(segments[segments.length - 1] ?? "");
+}
+
 /** The effects catalogue the doorboard understands (T-103) — every id is a real firmware
  * effect (door-visiond PROFILE_CATALOG). The old amber/violet/coral/white ids were not, so
  * those lights silently fell back to blue; these are the firmware's six. */
@@ -57,7 +69,8 @@ const MAX_EDGE_PX = 1000;
 const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 3 * 60 * 1000;
 
-export default function EnrollFlow({ inviteId }: { inviteId: string }) {
+export default function EnrollFlow({ inviteId: propInviteId }: { inviteId?: string }) {
+  const inviteId = propInviteId ?? pathInviteId();
   const [step, setStep] = useState<Step>("checking");
   const [error, setError] = useState<string | null>(null);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);

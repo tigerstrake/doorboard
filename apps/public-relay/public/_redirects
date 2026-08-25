@@ -1,0 +1,7 @@
+# Cloudflare Pages SPA fallback (ADR-0043 §1). The enrollment and visitor pages are exported as
+# a single placeholder shell each (generateStaticParams token "_"); serve that shell for every
+# /e/<id> and /v/<token>, and let the client read the real id/token from the path. Status 200 =
+# rewrite (URL unchanged), not a redirect. /api/* is served by Pages Functions, which take
+# precedence over these rules, so it is intentionally not listed here.
+/e/*  /e/_  200
+/v/*  /v/_  200

@@ -6,15 +6,12 @@
  * the ciphertext so an enrollee can still be told what happened.
  */
 import { RATE_LIMITS, clientAddress, jsonError, jsonOk } from "@/lib/device";
-import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
 
-export const dynamic = "force-dynamic";
-
-export async function GET(
+export async function handleGet(
   request: Request,
-  context: { params: Promise<{ bundleId: string }> },
-  store: RelayStore = resolveStore(),
+  store: RelayStore,
+  params: Record<string, string>,
 ): Promise<Response> {
   if (!store.configured()) return jsonError(503, "storage_not_configured");
 
@@ -23,7 +20,7 @@ export async function GET(
     return jsonError(429, "rate_limited");
   }
 
-  const { bundleId } = await context.params;
+  const bundleId = params.bundleId!;
   const record = await store.getStatus(bundleId);
   if (!record) {
     // Either never submitted, or the status TTL lapsed an hour after the fact.

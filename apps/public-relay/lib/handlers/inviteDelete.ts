@@ -5,20 +5,17 @@
  * stop the relay accepting pointless uploads, not to enforce anything.
  */
 import { isDeviceRequest, jsonError, jsonOk } from "@/lib/device";
-import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
 
-export const dynamic = "force-dynamic";
-
-export async function DELETE(
+export async function handleDelete(
   request: Request,
-  context: { params: Promise<{ inviteId: string }> },
-  store: RelayStore = resolveStore(),
+  store: RelayStore,
+  params: Record<string, string>,
 ): Promise<Response> {
   if (!isDeviceRequest(request)) return jsonError(401, "device_auth_required");
   if (!store.configured()) return jsonError(503, "storage_not_configured");
 
-  const { inviteId } = await context.params;
+  const inviteId = params.inviteId!;
   await store.deleteInvite(inviteId);
   return jsonOk({ invite_id: inviteId, revoked: true });
 }

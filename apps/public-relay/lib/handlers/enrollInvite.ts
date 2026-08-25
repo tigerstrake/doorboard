@@ -7,16 +7,13 @@
  * enumerate valid invite ids.
  */
 import { RATE_LIMITS, clientAddress, digestsMatch, jsonError, jsonOk, sha256Base64Url } from "@/lib/device";
-import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
 import { INVITE_SECRET_HEADER, parseInviteId, parseInviteSecret } from "@/lib/validate";
 
-export const dynamic = "force-dynamic";
-
-export async function GET(
+export async function handleGet(
   request: Request,
-  context: { params: Promise<{ token: string }> },
-  store: RelayStore = resolveStore(),
+  store: RelayStore,
+  params: Record<string, string>,
 ): Promise<Response> {
   if (!store.configured()) return jsonError(503, "storage_not_configured");
 
@@ -26,7 +23,7 @@ export async function GET(
   }
 
   // The path segment is the invite id; the secret arrives in a header (ADR-0043 §2), never a URL.
-  const { token: inviteId } = await context.params;
+  const inviteId = params.token!;
   const secret = parseInviteSecret(request.headers.get(INVITE_SECRET_HEADER));
   if (!parseInviteId(inviteId) || !secret) {
     return jsonOk({ invite_id: "", status: "unknown", max_images: 1 });

@@ -6,12 +6,9 @@
  * belt to the Pi's braces, which already consumed it transactionally (E-11).
  */
 import { isDeviceRequest, jsonError, jsonOk } from "@/lib/device";
-import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
 import { InvalidBody, parsePickupAck } from "@/lib/validate";
 import type { BundleState } from "@/lib/relayTypes";
-
-export const dynamic = "force-dynamic";
 
 const OUTCOME_TO_STATE: Record<string, BundleState> = {
   enrolled: "enrolled",
@@ -20,7 +17,7 @@ const OUTCOME_TO_STATE: Record<string, BundleState> = {
   rejected: "failed",
 };
 
-export async function POST(request: Request, store: RelayStore = resolveStore()): Promise<Response> {
+export async function handlePost(request: Request, store: RelayStore): Promise<Response> {
   if (!isDeviceRequest(request)) return jsonError(401, "device_auth_required");
   if (!store.configured()) return jsonError(503, "storage_not_configured");
 

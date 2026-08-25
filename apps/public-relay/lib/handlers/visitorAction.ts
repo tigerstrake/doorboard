@@ -11,11 +11,8 @@
  * end-to-end would be theatre (ADR-0017).
  */
 import { RATE_LIMITS, clientAddress, jsonError, jsonOk, sha256Base64Url } from "@/lib/device";
-import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
 import { InvalidBody, newActionId, parseVisitorWrite } from "@/lib/validate";
-
-export const dynamic = "force-dynamic";
 
 /** Session states in which a visitor may still write. */
 const WRITABLE_STATES = new Set([
@@ -29,14 +26,14 @@ const WRITABLE_STATES = new Set([
   "VIDEO_MESSAGE_SAVED",
 ]);
 
-export async function POST(
+export async function handlePost(
   request: Request,
-  context: { params: Promise<{ token: string }> },
-  store: RelayStore = resolveStore(),
+  store: RelayStore,
+  params: Record<string, string>,
 ): Promise<Response> {
   if (!store.configured()) return jsonError(503, "storage_not_configured");
 
-  const { token } = await context.params;
+  const token = params.token!;
   const perIp = RATE_LIMITS.visitorWritePerIp;
   if (!(await store.underRateLimit("vwrite-ip", clientAddress(request), perIp.limit, perIp.windowS))) {
     return jsonError(429, "rate_limited");
