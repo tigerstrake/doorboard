@@ -90,8 +90,12 @@ dead code/config.
   embedder already takes bytes). The `finally` wipe is `rmtree` (unlink, not overwrite).
 - `[DOC]` **Stale invariant docs now false:** ARCHITECTURE §9, ADR-0017's table, and
   `docs/runbooks/security-checklist.md` say "the relay never receives an enrollee's name",
-  but ADR-0018 authorized `attributed_to` (a real display name) to cross the relay. Correct
-  the docs. Also re-run the never-completed stolen-Pi drill and re-date the checklist.
+  but ADR-0018 authorized `attributed_to` (a real display name) to cross the relay. **Update:
+  ADR-0044 (6b79c3b) reverses that for the visitor path — the name no longer crosses (it's a
+  boolean now)**, so the "no name crosses" claim is true again for visitor attribution. Still
+  correct the docs to reflect the current state (and note the enrollee name is inside the
+  sealed enrollment manifest, unreadable to the relay). Also re-run the never-completed
+  stolen-Pi drill and re-date the checklist.
 
 ## B. Correctness & reliability — contained, fixable
 
