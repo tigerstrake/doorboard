@@ -249,10 +249,12 @@ class VisitorSessionSnapshot(StrictModel):
     outcomes: list[VisitorActionOutcome] = Field(
         default_factory=list[VisitorActionOutcome], max_length=16
     )
-    # Display name of the recognised person, when their consent covers attribution
-    # (ADR-0018 §2). Present so the page can disclose whose name will be attached
-    # before they write; None for an unrecognised visitor.
-    attributed_to: str | None = Field(default=None, max_length=64)
+    # Whether a write in this session will be attributed to a recognised person whose
+    # consent covers attribution (ADR-0018 §2). A boolean, not a name: the relay is a
+    # hostile courier and cannot bind the token-holder to the recognised person, so the
+    # name never crosses to it (ADR-0044, restoring ADR-0017 §2). The page discloses
+    # attribution without naming; the LAN surfaces still show the name.
+    attributed: bool = False
     pushed_at: UTCDateTime
 
 
@@ -271,7 +273,8 @@ class VisitorPublicSnapshot(StrictModel):
     outcomes: list[VisitorActionOutcome] = Field(
         default_factory=list[VisitorActionOutcome], max_length=16
     )
-    attributed_to: str | None = Field(default=None, max_length=64)
+    # A boolean, never a name — see VisitorSessionSnapshot.attributed (ADR-0044).
+    attributed: bool = False
     pushed_at: UTCDateTime
 
 

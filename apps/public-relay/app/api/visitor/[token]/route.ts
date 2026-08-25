@@ -38,7 +38,9 @@ export async function GET(
     poll: snapshot.poll ?? null,
     poll_results: snapshot.poll_results ?? null,
     outcomes: snapshot.outcomes ?? [],
-    attributed_to: snapshot.attributed_to ?? null,
+    // A boolean, never a name (ADR-0044): disclose that a write will be attributed
+    // without handing a resident's name to whoever holds the QR token.
+    attributed: snapshot.attributed === true,
     pushed_at: snapshot.pushed_at,
   });
 }

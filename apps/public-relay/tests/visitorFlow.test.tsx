@@ -41,7 +41,7 @@ interface SnapshotShape {
   session_id: string;
   state: string;
   expires_at: string;
-  attributed_to?: string | null;
+  attributed?: boolean;
   poll: { poll_id: string; question: string; options: { option_id: string; label: string }[] } | null;
   poll_results: { option_id: string; votes: number }[] | null;
   outcomes: Outcome[];
@@ -53,7 +53,7 @@ function snapshot(overrides: Partial<SnapshotShape> = {}): SnapshotShape {
     session_id: "0123456789abcdef0123456789abcdef",
     state: "RINGING",
     expires_at: new Date(Date.now() + 300_000).toISOString(),
-    attributed_to: null,
+    attributed: false,
     poll: null,
     poll_results: null,
     outcomes: [],
@@ -181,15 +181,17 @@ describe("access", () => {
 });
 
 describe("attribution disclosure (E-23)", () => {
-  it("tells a recognised person their name will be attached", async () => {
-    mockVisitorApi({ snapshot: snapshot({ attributed_to: "Tiger" }) });
+  it("discloses a write will be attributed, without naming the person (ADR-0044)", async () => {
+    mockVisitorApi({ snapshot: snapshot({ attributed: true }) });
     render(<VisitorFlow token={TOKEN} />);
 
     await advance();
     expect(screen.getByTestId("attribution-notice")).toBeTruthy();
     const notice = screen.getByTestId("attribution-notice");
-    expect(notice.textContent).toContain("Tiger");
-    // It has to say what happens, not merely that they were recognised.
+    // The relay never receives a name (ADR-0044), so none can appear — a stranger who
+    // scans this QR must not learn who the door recognised.
+    expect(notice.textContent).toMatch(/door recognises you/);
+    // It still has to say what happens, not merely that they were recognised.
     expect(notice.textContent).toMatch(/attached to anything you leave/);
     // And it has to appear before the note box, not after they have written.
     const form = document.querySelector("textarea");
@@ -198,7 +200,7 @@ describe("attribution disclosure (E-23)", () => {
   });
 
   it("says nothing about identity for an unrecognised visitor", async () => {
-    mockVisitorApi({ snapshot: snapshot({ attributed_to: null }) });
+    mockVisitorApi({ snapshot: snapshot({ attributed: false }) });
     render(<VisitorFlow token={TOKEN} />);
     await advance();
     expect(screen.getByText("At the door")).toBeTruthy();

@@ -221,7 +221,7 @@ export function parseVisitorSnapshot(value: unknown): {
   poll: unknown;
   poll_results: unknown;
   outcomes: unknown[];
-  attributed_to: string | null;
+  attributed: boolean;
   pushed_at: string;
 } {
   const raw = object(
@@ -234,7 +234,7 @@ export function parseVisitorSnapshot(value: unknown): {
       "poll",
       "poll_results",
       "outcomes",
-      "attributed_to",
+      "attributed",
       "pushed_at",
     ],
     "snapshot",
@@ -252,12 +252,9 @@ export function parseVisitorSnapshot(value: unknown): {
     poll: raw.poll === undefined ? null : parsePollOrNull(raw.poll),
     poll_results: raw.poll_results === undefined ? null : parseResultsOrNull(raw.poll_results),
     outcomes: Array.isArray(raw.outcomes) ? raw.outcomes.slice(0, 16) : [],
-    // The recognised person's own display name, so the page can disclose
-    // attribution before a write (ADR-0018 E-23).
-    attributed_to:
-      raw.attributed_to === undefined || raw.attributed_to === null
-        ? null
-        : boundedString(raw.attributed_to, "snapshot.attributed_to", 64),
+    // Whether a write will be attributed — a boolean, never a name (ADR-0044). The
+    // relay never receives a display name; the page discloses attribution without one.
+    attributed: raw.attributed === true,
     pushed_at: isoTimestamp(raw.pushed_at, "snapshot.pushed_at"),
   };
 }

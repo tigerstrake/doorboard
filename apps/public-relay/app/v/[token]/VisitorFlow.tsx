@@ -48,8 +48,9 @@ interface Snapshot {
   session_id: string;
   state: string;
   expires_at: string;
-  /** Set when the door recognises whoever is standing there (ADR-0018 §2). */
-  attributed_to?: string | null;
+  /** Whether a write will be attributed to a recognised person — a boolean, never a
+   * name: the relay is a hostile courier and gets no display name (ADR-0044). */
+  attributed?: boolean;
   poll: { poll_id: string; question: string; options: PollOption[] } | null;
   poll_results: Array<{ option_id: string; votes: number }> | null;
   outcomes: Array<{
@@ -308,14 +309,15 @@ export default function VisitorFlow({ token }: { token: string }) {
       <h1>At the door</h1>
       <p className="lede">{RING_STATUS_COPY[state] ?? "Connected."}</p>
 
-      {/* Attribution is disclosed, never silent (E-23): someone who did not
-          realise the door knew them must not find out from a stats page later. */}
-      {snapshot?.attributed_to ? (
+      {/* Attribution is disclosed, never silent (E-23): someone who did not realise the
+          door knew them must not find out from a stats page later. The disclosure names
+          no one — the relay never receives a display name (ADR-0044), so a stranger who
+          scans this QR cannot learn who the door recognised. */}
+      {snapshot?.attributed ? (
         <div className="notice" data-testid="attribution-notice">
           <p style={{ marginBottom: 0 }}>
-            The door recognises you as <strong>{snapshot.attributed_to}</strong>, so your name will
-            be attached to anything you leave below. Enrolled residents can ask the household admin
-            to remove it.
+            The door recognises you, so your name will be attached to anything you leave below.
+            Enrolled residents can ask the household admin to remove it.
           </p>
         </div>
       ) : null}

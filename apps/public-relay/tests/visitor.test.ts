@@ -115,9 +115,9 @@ describe("P-21 the relay never holds a usable visitor token", () => {
     ).json()) as Record<string, unknown>;
 
     expect(Object.keys(body).sort()).toEqual([
-      // attributed_to is the recognised person's own name, added by ADR-0018 §2 so
-      // the page can disclose attribution before a write (E-23).
-      "attributed_to",
+      // `attributed` is a boolean (ADR-0044): the page discloses that a write will be
+      // attributed, but the relay never receives the recognised person's name.
+      "attributed",
       "expires_at",
       "outcomes",
       "poll",
@@ -127,6 +127,7 @@ describe("P-21 the relay never holds a usable visitor token", () => {
       "state",
     ]);
     expect(body).not.toHaveProperty("session_token_sha256");
+    expect(body).not.toHaveProperty("attributed_to");
   });
 
   it("rejects a wrong token indistinguishably from an unknown one", async () => {

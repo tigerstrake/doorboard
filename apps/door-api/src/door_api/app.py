@@ -818,9 +818,10 @@ class DoorApiState:
             # phone is polling for — `_visitor_relay_applied` is cleared on
             # session end, so it holds only this session's results.
             outcomes=list(self._visitor_relay_applied.values()),
-            # Only when consent covers attribution, so an unattributed visitor is
-            # never told a name will be attached (ADR-0018 §2, E-23).
-            attributed_to=self.attributed_display_name(),
+            # A boolean, never the name (ADR-0044): the relay never receives a display
+            # name. True only when consent covers attribution, so an unattributed visitor
+            # is never told a write will be attributed (ADR-0018 §2, E-23).
+            attributed=self.attributed_display_name() is not None,
         )
 
     def visitor_relay_apply(self, action: VisitorQueuedAction) -> VisitorActionOutcome:

@@ -149,18 +149,10 @@
   "additionalProperties": false,
   "description": "The snapshot minus the token hash \u2014 what actually reaches the phone.\n\nThe hash authorises the request; there is no reason to hand it back, and not\nreturning it keeps it out of browser history, screenshots, and logs.",
   "properties": {
-    "attributed_to": {
-      "anyOf": [
-        {
-          "maxLength": 64,
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Attributed To"
+    "attributed": {
+      "default": false,
+      "title": "Attributed",
+      "type": "boolean"
     },
     "expires_at": {
       "$ref": "#/$defs/UTCDateTime"

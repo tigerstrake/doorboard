@@ -210,11 +210,11 @@ def test_visitor_snapshot_is_exactly_the_binding_allow_list() -> None:
         "poll",
         "poll_results",
         "outcomes",
-        # Added deliberately by ADR-0018 §2: the page must disclose whose name a
-        # write will carry BEFORE they write it (E-23), which it cannot do without
-        # being told. It is the recognised person's own name shown back to them,
-        # not a disclosure about anyone else.
-        "attributed_to",
+        # ADR-0018 §2 required disclosing that a write will be attributed (E-23), but
+        # ADR-0044 makes this a boolean, not a name: the relay is a hostile courier and
+        # cannot bind the token-holder to the recognised person, so the name never
+        # crosses to it. The page discloses attribution without naming.
+        "attributed",
         "pushed_at",
     } == VISITOR_SNAPSHOT_FIELDS
 
