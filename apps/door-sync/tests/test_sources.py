@@ -11,8 +11,9 @@ future refactor can't silently drop the NUC mirror again.
 from __future__ import annotations
 
 import json
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
+import pytest
 from door_sync.engine import SyncEngine
 from door_sync.sources import MediaEventSource
 
@@ -119,3 +120,39 @@ def test_a_good_frame_is_handled(helpers) -> None:
     event = helpers.make_media_recording_started_dict()
     source._handle_frame(json.dumps(event))
     engine.enqueue_event.assert_called_once_with(event)
+
+
+# -- reconcile on reconnect (SSE has no replay) -----------------------------
+
+
+@pytest.mark.anyio
+async def test_first_connection_does_not_reconcile() -> None:
+    """The startup reconcile (in the lifespan) covers the first connection, so the source must
+    not reconcile again on its first connect."""
+    source, engine = _make_source()
+    engine.reconcile_from_media = AsyncMock(return_value=0)
+    await source._on_connected()
+    engine.reconcile_from_media.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_reconnect_reconciles_to_close_the_gap() -> None:
+    """Every RE-connection reconciles, to recover events door-media finalized during the gap
+    (SSE never replays them)."""
+    source, engine = _make_source()
+    engine.reconcile_from_media = AsyncMock(return_value=3)
+    await source._on_connected()  # first connect — covered by startup reconcile
+    await source._on_connected()  # reconnect
+    await source._on_connected()  # reconnect again
+    assert engine.reconcile_from_media.await_count == 2
+
+
+@pytest.mark.anyio
+async def test_a_reconcile_failure_does_not_kill_the_stream() -> None:
+    """A reconcile that fails on reconnect is logged and swallowed; a later reconcile catches
+    up. It must never propagate and tear the stream down."""
+    source, engine = _make_source()
+    engine.reconcile_from_media = AsyncMock(side_effect=RuntimeError("door-media hiccup"))
+    await source._on_connected()  # first connect
+    await source._on_connected()  # reconnect — reconcile raises internally, must not propagate
+    engine.reconcile_from_media.assert_awaited_once()
