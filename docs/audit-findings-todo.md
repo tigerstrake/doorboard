@@ -127,7 +127,7 @@ dead code/config.
   consent gate is three inline literals in `presence_engine.py`. A new inferred presence
   source would bypass the gate silently. Fixed: wired `INFERRED_SOURCES` as the single gate in
   `_build_entries`; invariant guard test pins the set complete. NUC-only change (redeploy control-plane).
-- `[FIX]` **Finalize orphans a clip on restart** (door-media `service.py`): the idempotency
+- `[PARTLY DONE 5b77edd]` **Finalize orphans a clip on restart** (door-media `service.py`): the idempotency
   memo is process-local, the lifespan does no startup reconciliation, and the media DB is
   `synchronous=NORMAL` (no fsync). A restart/power-loss mid-finalize strands a clip that no
   tool, sweep, or reconcile can find. Add a startup sweep + `synchronous=FULL`.
