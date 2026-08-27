@@ -137,7 +137,13 @@ class RecordingDB:
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
+        # FULL, not NORMAL: this DB is the authoritative record that a clip exists and whether
+        # it has been synced. Under WAL, NORMAL does not fsync on commit, so a power loss can
+        # lose the last committed row(s) — leaving a finalized clip file on the SSD with no DB
+        # row: unfindable, un-syncable, and un-purgeable (an orphan). FULL fsyncs each commit;
+        # door-media commits only a handful of times per recording, so the cost is negligible.
+        # Matches door-api's persistence store.
+        self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.executescript(_SCHEMA)
         self._ensure_column("consent_metadata_path", "TEXT")
         self._conn.commit()

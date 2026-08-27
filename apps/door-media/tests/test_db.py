@@ -12,6 +12,13 @@ def db(tmp_path):
     database.close()
 
 
+def test_durability_pragmas(db: RecordingDB):
+    # WAL + synchronous=FULL: this DB is authoritative on whether a clip exists and is synced,
+    # so a committed row must survive power loss (NORMAL can lose the last commit → orphan clip).
+    assert db._conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    assert db._conn.execute("PRAGMA synchronous").fetchone()[0] == 2  # 2 == FULL
+
+
 def test_db_lifecycle(db: RecordingDB):
     rid = uuid4()
     sid = uuid4()
