@@ -15,6 +15,10 @@ Redaction rules (a value is scrubbed to ``"[REDACTED]"`` when):
 - it is a base64-looking string longer than 64 characters;
 - its mapping key is one of ``{"embedding", "vector", "face_crop", "frame"}``.
 
+The message string itself (``record.msg``) is also scrubbed, so a payload baked into an
+f-string — ``logger.info(f"vec={v}")``, which leaves no args to scan — is caught too: a long
+opaque/base64 run or a run of more than 16 numbers in the text is redacted.
+
 The filter mutates the record in place and always returns ``True`` — it never
 drops a record, so operational context (event ids, counts, timings) survives
 while biometric payloads do not.  Install it with
@@ -42,6 +46,18 @@ _MAX_DEPTH: Final[int] = 8
 
 # Base64 alphabet (standard + url-safe), padding and inner whitespace tolerated.
 _BASE64_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9+/_=\-\s]+$")
+
+# Message-string scrubbing (record.msg): an f-string like ``f"vec={v}"`` bakes the payload
+# straight into the message with no args to scan, so these find it in the rendered text.
+# A long opaque/base64 run (a blob with no separators):
+_LONG_TOKEN_RE: Final[re.Pattern[str]] = re.compile(rf"[A-Za-z0-9+/_=-]{{{MAX_BASE64_CHARS + 1},}}")
+# More than MAX_FLOAT_SEQUENCE numbers separated by commas/whitespace (a vector rendered to
+# text). ``_NUM`` starts with an optional sign and a digit, then number characters, so it does
+# not backtrack across separators.
+_NUM: Final[str] = r"[-+]?\d[\d.eE+-]*"
+_NUMBER_SEQUENCE_RE: Final[re.Pattern[str]] = re.compile(
+    rf"(?:{_NUM}[\s,]+){{{MAX_FLOAT_SEQUENCE},}}{_NUM}"
+)
 
 # Attribute names present on a vanilla LogRecord — everything else is a
 # caller-supplied "extra" that must be scanned.
@@ -132,6 +148,18 @@ def redact_value(value: object, *, depth: int = 0) -> object:
     return value
 
 
+def redact_text(text: str) -> str:
+    """Scrub biometric-looking payloads baked directly into a message string.
+
+    This covers what redacting ``record.args`` cannot: an f-string such as
+    ``logger.info(f"vec={v}")`` renders the payload into ``record.msg`` with no args to scan.
+    Redacts long opaque/base64 runs and runs of more than ``MAX_FLOAT_SEQUENCE`` numbers.
+    """
+    text = _LONG_TOKEN_RE.sub(REDACTED, text)
+    text = _NUMBER_SEQUENCE_RE.sub(REDACTED, text)
+    return text
+
+
 class BiometricRedactionFilter(logging.Filter):
     """Scrub biometric-looking payloads from every log record (ADR-0009 E-3)."""
 
@@ -140,7 +168,14 @@ class BiometricRedactionFilter(logging.Filter):
         if record.args:
             record.args = redact_value(record.args)  # type: ignore[assignment]
 
-        # 2. Caller-supplied ``extra=...`` fields become record attributes.
+        # 2. The message itself. An f-string bakes the payload straight into record.msg with
+        #    no args to scan, so scrub the string; a non-str msg goes through the value redactor.
+        if isinstance(record.msg, str):
+            record.msg = redact_text(record.msg)
+        elif record.msg is not None:
+            record.msg = redact_value(record.msg)
+
+        # 3. Caller-supplied ``extra=...`` fields become record attributes.
         for key in list(vars(record)):
             if key in _STANDARD_LOGRECORD_ATTRS:
                 continue

@@ -62,3 +62,13 @@ def test_installed_on_visiond_logger_tree() -> None:
     assert leaked == []
     for record in records:
         assert getattr(record, "vector", REDACTED) == REDACTED
+
+
+def test_matcher_logger_carries_the_filter() -> None:
+    # The matcher works directly with embeddings; it used a bare logging.getLogger, leaving the
+    # highest-risk module unfiltered. It must go through get_logger so its logger is covered.
+    from door_visiond import matcher
+
+    assert any(isinstance(f, BiometricRedactionFilter) for f in matcher.logger.filters), (
+        "door_visiond.matcher.logger is not carrying the biometric redaction filter"
+    )

@@ -12,14 +12,17 @@ enrolled set is small (a household), so this is trivially fast.
 
 from __future__ import annotations
 
-import logging
 import math
 from dataclasses import dataclass
 
 from door_visiond.embedding import Embedding
 from door_visiond.enrollment import EnrolledPerson
+from door_visiond.logging_setup import get_logger
 
-logger = logging.getLogger("door_visiond.matcher")
+# The matcher works directly with embeddings, so its logger MUST carry the biometric redaction
+# filter (ADR-0009 E-3). A bare `logging.getLogger` here would leave this — the highest-risk
+# module — unfiltered, because logger filters are not inherited down the tree.
+logger = get_logger("door_visiond.matcher")
 
 
 @dataclass(frozen=True)
