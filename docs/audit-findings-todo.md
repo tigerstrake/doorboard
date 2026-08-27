@@ -80,11 +80,15 @@ dead code/config.
   door-media owns the camera and never learns; a LAN client polling `/snapshot/recognition`
   keeps it running. Live privacy-mode state is also not shown on public surfaces (the new
   static camera notice is a start, not the live state).
-- `[FIX]` **Redaction filter is installed only in door-visiond and never scans `record.msg`**
-  (`logging_setup.py` / `redaction.py`). A `logger.info(f"vec={v}")` is unfiltered despite the
-  docstring's guarantee. `matcher.py` still uses a bare `getLogger` (the `best_person_id` leak
-  itself was **FIXED** 2026-08-23). door-media/door-api/door-sync/control-plane don't install
-  the filter.
+- `[PARTLY DONE 30ffa51]` **Redaction filter is installed only in door-visiond and never scans
+  `record.msg`** (`logging_setup.py` / `redaction.py`). A `logger.info(f"vec={v}")` was
+  unfiltered despite the docstring's guarantee. **Fixed:** `redact_text()` now scrubs the
+  message string (long opaque/base64 run or a run of >16 numbers), the filter applies it to
+  `record.msg`, and `matcher.py` (the highest-risk module) now routes through `get_logger` so
+  its logger actually carries the filter. Tests pin both. **Still open:**
+  door-media/door-api/door-sync/control-plane don't install the filter — lower priority since
+  the contract firewall (ADR-0009 E-4) keeps raw vectors out of their events, but door-media
+  (frames) is worth covering as defense-in-depth.
 - `[FIX]` **Raw enrollment photos written to the SSD for no functional reason**
   (`door-visiond .../service.py`: `img_path.write_bytes(image)` then `read_bytes()` when the
   embedder already takes bytes). The `finally` wipe is `rmtree` (unlink, not overwrite).
