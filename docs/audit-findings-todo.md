@@ -89,9 +89,11 @@ dead code/config.
   door-media/door-api/door-sync/control-plane don't install the filter — lower priority since
   the contract firewall (ADR-0009 E-4) keeps raw vectors out of their events, but door-media
   (frames) is worth covering as defense-in-depth.
-- `[FIX]` **Raw enrollment photos written to the SSD for no functional reason**
+- `[DONE 716d749]` **Raw enrollment photos written to the SSD for no functional reason**
   (`door-visiond .../service.py`: `img_path.write_bytes(image)` then `read_bytes()` when the
-  embedder already takes bytes). The `finally` wipe is `rmtree` (unlink, not overwrite).
+  embedder already takes bytes). The `finally` wipe is `rmtree` (unlink, not overwrite). Fixed:
+  embed straight from memory — no plaintext image ever at rest; `_wipe_enroll_tmp` still clears
+  the tmp root at startup. Tests updated.
 - `[DOC]` **Stale invariant docs now false:** ARCHITECTURE §9, ADR-0017's table, and
   `docs/runbooks/security-checklist.md` say "the relay never receives an enrollee's name",
   but ADR-0018 authorized `attributed_to` (a real display name) to cross the relay. **Update:
@@ -132,9 +134,10 @@ dead code/config.
 - `[FIX]` **door-media clip write is non-atomic on the video-only path**, there is **zero
   fsync** in door-media, and `.concat_*.txt` / `.muxed_*.mp4` / per-recording `.m4a` temp
   files leak on SIGKILL with nothing pruning them.
-- `[FIX]` **door-sync reconcile never re-runs after an SSE reconnect** (`sources.py` calls it
-  once at lifespan; door-media `/events` has no replay), so finalized events emitted during a
-  door-media restart are lost.
+- `[DONE 2515b5d]` **door-sync reconcile never re-runs after an SSE reconnect** (`sources.py`
+  called it once at lifespan; door-media `/events` has no replay), so finalized events emitted
+  during a door-media restart were lost. Fixed: reconcile runs on each reconnect (`_on_connected`
+  hook); idempotent, failure-swallowing. Tests pin it.
 - `[FIX]` **Health/metrics gaps:** door-media exports no frame/finalize/zero-byte metric; a
   black or frozen camera is undetectable end to end. `infra/monitoring/alert.rules.yml` has no
   alert on `door_media_stream_up == 0`, `door_sync_dead_letter_total > 0`, or backup failure.
