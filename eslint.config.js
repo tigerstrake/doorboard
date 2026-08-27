@@ -12,6 +12,10 @@ export default [
       "**/node_modules/**",
       "**/.venv/**",
       "**/.next/**",
+      // The relay's static export (Cloudflare Pages build) and wrangler's build temp;
+      // generated, not authored.
+      "**/out/**",
+      "**/.wrangler/**",
       "**/next-env.d.ts",
       // Agent worktrees are separate checkouts nested inside the repo; their
       // in-progress files are not part of this tree and must not fail its lint.
