@@ -286,7 +286,10 @@ def test_remote_enrollment_leaves_no_plaintext_at_rest(
 
     hits = scan_tree_for(relay_settings.ssd_data_root, IMAGE_SENTINEL)
     assert hits == [], f"decrypted image bytes survived at {hits}"
-    assert list(relay_settings.enroll_tmp_root.iterdir()) == []
+    # The raw image never touches disk now (embedded from memory), so the tmp root is empty —
+    # or absent entirely, which is just as good. Either way, no plaintext image is left behind.
+    tmp_root = relay_settings.enroll_tmp_root
+    assert not (tmp_root.exists() and any(tmp_root.iterdir())), "raw images left in the tmp root"
 
 
 def test_failed_remote_enrollment_still_wipes_plaintext(
@@ -305,7 +308,10 @@ def test_failed_remote_enrollment_still_wipes_plaintext(
     assert (ack.outcome, ack.reason) == ("failed", "internal_error")
     hits = scan_tree_for(relay_settings.ssd_data_root, IMAGE_SENTINEL)
     assert hits == [], f"plaintext survived a failed enrollment at {hits}"
-    assert list(relay_settings.enroll_tmp_root.iterdir()) == []
+    # The raw image never touches disk now (embedded from memory), so the tmp root is empty —
+    # or absent entirely, which is just as good. Either way, no plaintext image is left behind.
+    tmp_root = relay_settings.enroll_tmp_root
+    assert not (tmp_root.exists() and any(tmp_root.iterdir())), "raw images left in the tmp root"
 
 
 # -- P-19: the relay path logs nothing sensitive ---------------------------

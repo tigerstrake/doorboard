@@ -662,35 +662,31 @@ class VisiondService:
         if not images:
             raise QualityTooLowError([])
 
-        req_id = uuid7().hex
-        tmp_dir = self._settings.enroll_tmp_root / f"enroll-{req_id}"
-        try:
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            embeddings: list[tuple[Embedding, str, float]] = []
-            qualities: list[float] = []
-            for i, image in enumerate(images):
-                # Raw image is transient: written to tmp, embedded, then wiped.
-                img_path = tmp_dir / f"img-{i}.bin"
-                img_path.write_bytes(image)
-                emb, quality = self._embedder.embed(img_path.read_bytes())
-                qualities.append(quality)
-                if quality >= self._settings.min_enroll_quality:
-                    embeddings.append((emb, self._embedder.model_id, quality))
+        # The raw image never touches disk (ADR-0009 §1, E-1). It is embedded straight from
+        # memory, so there is no plaintext face image at rest to wipe — and none to recover
+        # from freed SSD blocks after an ``unlink`` (the old code wrote each image to tmp and
+        # read it straight back before embedding, a pointless round-trip that put raw biometric
+        # bytes on the SSD). Only consented embeddings are ever persisted. A crash still can't
+        # leave anything behind: ``_wipe_enroll_tmp`` clears the tmp root at startup regardless.
+        embeddings: list[tuple[Embedding, str, float]] = []
+        qualities: list[float] = []
+        for image in images:
+            emb, quality = self._embedder.embed(image)
+            qualities.append(quality)
+            if quality >= self._settings.min_enroll_quality:
+                embeddings.append((emb, self._embedder.model_id, quality))
 
-            if not embeddings:
-                raise QualityTooLowError(qualities)
+        if not embeddings:
+            raise QualityTooLowError(qualities)
 
-            person_id = self._store.enroll(
-                display_name=display_name,
-                consent_version=consent_version,
-                consent_at=self._clock.utc_now(),
-                embeddings=embeddings,
-                profile=profile,
-                invite=invite,
-            )
-        finally:
-            # E-1/§1: raw enrollment images never survive the request.
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        person_id = self._store.enroll(
+            display_name=display_name,
+            consent_version=consent_version,
+            consent_at=self._clock.utc_now(),
+            embeddings=embeddings,
+            profile=profile,
+            invite=invite,
+        )
 
         self._reload_matcher()
         return EnrollResult(

@@ -52,9 +52,7 @@ def _registered_routes() -> set[tuple[str, str]]:
     """Parse the `{ method: "…", segments: [ … ] }` table in apiRouter.ts."""
     source = RELAY_ROUTER.read_text(encoding="utf-8")
     routes: set[tuple[str, str]] = set()
-    for method, seglist in re.findall(
-        r'method:\s*"([A-Z]+)",\s*segments:\s*\[([^\]]*)\]', source
-    ):
+    for method, seglist in re.findall(r'method:\s*"([A-Z]+)",\s*segments:\s*\[([^\]]*)\]', source):
         segments = re.findall(r'"([^"]+)"', seglist)
         path = _canonical("/api/" + "/".join(segments))
         routes.add((method, path))
