@@ -65,6 +65,29 @@ _FINALIZED_MEMO_MAX = 512
 _FINALIZE_LOCKS_MAX = 256
 
 
+def sweep_orphan_temp_files(recordings_root: Path, audio_tmp_root: Path) -> int:
+    """Delete finalize temp files a killed process left behind, returning how many were removed.
+
+    A `.muxed_*` / `.concat_*.txt` in the recordings dir and a `.m4a` in the audio tmp dir exist
+    only *during* an active finalize — the success and error paths both clean them up. So any
+    present at startup are orphans from a SIGKILL/power-loss mid-finalize; without pruning they
+    accumulate on the SSD forever (nothing else ever touches them). Deleting them at startup is
+    safe: they are never part of a completed recording.
+    """
+    removed = 0
+    for pattern in (".muxed_*", ".concat_*.txt"):
+        for path in recordings_root.glob(pattern):
+            with contextlib.suppress(OSError):
+                path.unlink()
+                removed += 1
+    if audio_tmp_root.exists():
+        for path in audio_tmp_root.glob("*.m4a"):
+            with contextlib.suppress(OSError):
+                path.unlink()
+                removed += 1
+    return removed
+
+
 @dataclass(frozen=True)
 class PhotoReview:
     recording_id: UUID
@@ -109,6 +132,11 @@ class RecordingService:
         self._settings.thumbnails_root.mkdir(parents=True, exist_ok=True)
         self._review_dir().mkdir(parents=True, exist_ok=True)
         self._cleanup_review_dir()
+        swept = sweep_orphan_temp_files(
+            self._settings.recordings_root, self._settings.audio_tmp_root
+        )
+        if swept:
+            logger.info("orphan_temp_files_swept", extra={"removed": swept})
 
         self._retention_task = asyncio.create_task(self._retention_loop(), name="retention-loop")
         self._storage_task = asyncio.create_task(
