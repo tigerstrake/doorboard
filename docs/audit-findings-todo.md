@@ -138,7 +138,7 @@ dead code/config.
   memo is process-local, the lifespan does no startup reconciliation, and the media DB is
   `synchronous=NORMAL` (no fsync). A restart/power-loss mid-finalize strands a clip that no
   tool, sweep, or reconcile can find. Add a startup sweep + `synchronous=FULL`.
-- `[FIX]` **door-media clip write is non-atomic on the video-only path**, there is **zero
+- `[PARTLY DONE]` **door-media clip write is non-atomic on the video-only path**, there is **zero
   fsync** in door-media, and `.concat_*.txt` / `.muxed_*.mp4` / per-recording `.m4a` temp
   files leak on SIGKILL with nothing pruning them.
 - `[DONE 2515b5d]` **door-sync reconcile never re-runs after an SSE reconnect** (`sources.py`
