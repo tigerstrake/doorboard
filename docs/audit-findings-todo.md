@@ -70,8 +70,12 @@ dead code/config.
   `CONTROL_PLANE_ENROLLMENT_KEY_TOKEN`.
 - `[PARTLY DONE e13b6db]` **Purge chain gaps** (unenrollment doesn't fully delete). **Landed:**
   door-api now has `/internal/purge/{person_id}` + `SocialStore.purge_person` (hard-deletes the
-  person's guestbook entries, poll votes, check-ins; token-protected; tested). **Still open
-  (need the NUC/Postgres to test):**
+  person's guestbook entries, poll votes, check-ins; token-protected; tested), AND control-plane's
+  purge now scrubs all social-item PII (text/author_label/label) across kinds, not just check-in
+  status (3db4dc7). **Still open:** the cross-service ORCHESTRATION — `VisiondService.unenroll`
+  does only the local delete; nothing fans the purge out to door-sync(→control-plane) or door-api,
+  so the primitives aren't triggered end-to-end on unenroll. Needs a clear owner for the fan-out.
+  Also unaddressed (design):
   - `session.state_changed` rows carry `display_name` but no `person_id`, so `purge.py`
     (`WHERE person_id=?`) can never reach them in the NUC archive.
   - Poll votes have **no** deletion flow anywhere; guestbook/check-in "deletion" is
