@@ -68,7 +68,10 @@ dead code/config.
   curls the NUC every 120s). Sound against a thief who leaves the building; not against a
   dorm-neighbor. Consider a manual-unlock or presence-gated policy; rotate the single shared
   `CONTROL_PLANE_ENROLLMENT_KEY_TOKEN`.
-- `[FIX]` **Purge chain gaps** (unenrollment doesn't fully delete):
+- `[PARTLY DONE e13b6db]` **Purge chain gaps** (unenrollment doesn't fully delete). **Landed:**
+  door-api now has `/internal/purge/{person_id}` + `SocialStore.purge_person` (hard-deletes the
+  person's guestbook entries, poll votes, check-ins; token-protected; tested). **Still open
+  (need the NUC/Postgres to test):**
   - `session.state_changed` rows carry `display_name` but no `person_id`, so `purge.py`
     (`WHERE person_id=?`) can never reach them in the NUC archive.
   - Poll votes have **no** deletion flow anywhere; guestbook/check-in "deletion" is
