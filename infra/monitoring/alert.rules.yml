@@ -45,3 +45,37 @@ groups:
         annotations:
           summary: "Pi thermal throttling"
           description: "Pi CPU temperature is extremely high: {{ $value }}°C."
+
+      - alert: MediaStreamDown
+        expr: door_media_stream_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Camera stream is down"
+          description: >-
+            door_media reports the MediaMTX stream down for more than 2 minutes: a black or
+            frozen camera, so recordings and the recognition snapshot are dead. Undetectable
+            end-to-end without this alert.
+
+      - alert: SyncDeadLetter
+        expr: door_sync_dead_letter_total > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "door-sync has dead-lettered items"
+          description: >-
+            {{ $value }} item(s) are in door-sync's dead-letter state — a clip, thumbnail, or
+            event that will never reach the NAS/NUC without operator action.
+
+      - alert: OutboxDeadLetter
+        expr: (door_api_media_outbox_dead_total > 0) or (door_api_sync_outbox_dead_total > 0)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "door-api has dead-lettered outbox events"
+          description: >-
+            A door-api outbox event was retried past its cap and parked (dead-lettered): a
+            recording/session mirror the NUC will never receive without operator action.
