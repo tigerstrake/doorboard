@@ -145,10 +145,10 @@ dead code/config.
   called it once at lifespan; door-media `/events` has no replay), so finalized events emitted
   during a door-media restart were lost. Fixed: reconcile runs on each reconnect (`_on_connected`
   hook); idempotent, failure-swallowing. Tests pin it.
-- `[FIX]` **Health/metrics gaps:** door-media exports no frame/finalize/zero-byte metric; a
+- `[PARTLY DONE]` **Health/metrics gaps:** door-media exports no frame/finalize/zero-byte metric; a
   black or frozen camera is undetectable end to end. `infra/monitoring/alert.rules.yml` has no
   alert on `door_media_stream_up == 0`, `door_sync_dead_letter_total > 0`, or backup failure.
-  (The stream-up/queue-age health lies themselves were **FIXED** 2026-08-23.)
+  (The stream-up/queue-age health lies themselves were **FIXED** 2026-08-23.) **Landed (alerts):** alert.rules.yml now has MediaStreamDown, SyncDeadLetter, and OutboxDeadLetter. Still open: door-media frame/finalize/zero-byte metrics (need the camera) and a backup-failure alert.
 - `[FIX]` **Postgres restore is not error-checked** — neither the runbook nor the integration
   test passes `psql -v ON_ERROR_STOP=1`, so a partial restore reports success. (The
   backup-side false-success was **FIXED** 2026-08-23.)
