@@ -1382,6 +1382,25 @@ async def internal_esp32_profile(payload: dict[str, Any]) -> dict[str, Any]:
     return {"accepted": True, "status": status_str}
 
 
+@app.post(
+    "/internal/purge/{person_id}",
+    dependencies=[Depends(_require_internal_event_token)],
+)
+async def internal_purge_person(person_id: str) -> dict[str, Any]:
+    """Erase every door-api social row attributed to a person (unenrollment / erasure).
+
+    When a person is unenrolled the deletion has to reach door-api too: its guestbook entries,
+    poll votes, and check-ins carry that ``person_id`` and would otherwise survive — the
+    moderation "delete" is a soft-delete that keeps the text, an audit tool, not an erasure.
+    This hard-deletes them. Token-protected like the other Pi-local internal routes, and
+    idempotent (a second purge deletes nothing and returns zeros). Only counts are logged, never
+    the ``person_id`` — logging it would re-introduce the identifier we just erased.
+    """
+    counts = state.social_store.purge_person(person_id)
+    logger.info("social_person_purged", extra={"counts": counts})
+    return {"purged": True, "counts": counts}
+
+
 @app.post("/doorpad/ring")
 async def doorpad_ring() -> dict[str, Any]:
     trace_id = uuid4()

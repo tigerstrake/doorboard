@@ -291,6 +291,32 @@ class SocialStore:
             self._conn.commit()
             return cur.rowcount > 0
 
+    def purge_person(self, person_id: str) -> dict[str, int]:
+        """Hard-delete every row attributed to ``person_id`` (unenrollment / erasure).
+
+        When a person is unenrolled, their door-api social rows must not survive: guestbook
+        entries, poll votes, and check-ins carrying that ``person_id`` are removed entirely.
+        This is a *hard* delete, unlike the moderation soft-delete above — soft-delete keeps the
+        text, which is exactly what an erasure must not do. Returns per-table counts. An empty
+        ``person_id`` is a no-op (it must never fall through to matching anonymous rows).
+        """
+        if not person_id:
+            return {"guestbook_entries": 0, "poll_votes": 0, "checkins": 0}
+        with self._lock:
+            counts = {
+                "guestbook_entries": self._conn.execute(
+                    "DELETE FROM guestbook_entries WHERE person_id = ?", (person_id,)
+                ).rowcount,
+                "poll_votes": self._conn.execute(
+                    "DELETE FROM poll_votes WHERE person_id = ?", (person_id,)
+                ).rowcount,
+                "checkins": self._conn.execute(
+                    "DELETE FROM checkins WHERE person_id = ?", (person_id,)
+                ).rowcount,
+            }
+            self._conn.commit()
+        return counts
+
     @staticmethod
     def _row_to_guestbook_entry(row: tuple) -> GuestbookEntry:
         return GuestbookEntry(
