@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import CursorResult, delete, update
+from sqlalchemy import CursorResult, delete, or_, update
 from sqlalchemy.orm import Session
 
 from control_plane_api.models import EventRow, PersonPurgeTombstoneRow, SocialItemRow
@@ -24,7 +24,7 @@ from control_plane_api.models import EventRow, PersonPurgeTombstoneRow, SocialIt
 class PurgeResult:
     person_id: str
     events_deleted: int
-    checkins_deleted: int
+    social_items_purged: int
 
 
 def purge_person(session: Session, *, person_id: str, now: datetime) -> PurgeResult:
@@ -32,16 +32,33 @@ def purge_person(session: Session, *, person_id: str, now: datetime) -> PurgeRes
         "CursorResult",
         session.execute(delete(EventRow).where(EventRow.person_id == person_id)),
     ).rowcount
-    checkins_deleted = cast(
+    # Scrub every social item attributed to the person, not just check-ins, and erase the
+    # content — the read model kept `text`, `author_label`, and `label` after a soft-delete, so
+    # a guestbook note or the check-in name survived unenrollment. Rows that still hold any of
+    # that PII are marked deleted and their PII nulled; a row already scrubbed matches nothing,
+    # so a retried purge (ADR-0009 §3.4 requires idempotency) touches zero rows. This also reaches
+    # rows a moderator had soft-deleted, which retained their text until now.
+    social_items_purged = cast(
         "CursorResult",
         session.execute(
             update(SocialItemRow)
             .where(
-                SocialItemRow.kind == "checkin",
                 SocialItemRow.person_id == person_id,
-                SocialItemRow.status != "deleted",
+                or_(
+                    SocialItemRow.text.isnot(None),
+                    SocialItemRow.author_label.isnot(None),
+                    SocialItemRow.label.isnot(None),
+                ),
             )
-            .values(status="deleted", deleted_at=now, deleted_reason="purge", updated_at=now)
+            .values(
+                status="deleted",
+                text=None,
+                author_label=None,
+                label=None,
+                deleted_at=now,
+                deleted_reason="purge",
+                updated_at=now,
+            )
         ),
     ).rowcount
 
@@ -60,5 +77,7 @@ def purge_person(session: Session, *, person_id: str, now: datetime) -> PurgeRes
         tombstone.events_deleted_total += events_deleted
     session.flush()
     return PurgeResult(
-        person_id=person_id, events_deleted=events_deleted, checkins_deleted=checkins_deleted
+        person_id=person_id,
+        events_deleted=events_deleted,
+        social_items_purged=social_items_purged,
     )

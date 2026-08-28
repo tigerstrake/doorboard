@@ -46,7 +46,7 @@ def test_purge_deletes_events_and_checkins_for_the_person(
     assert purge_resp.status_code == 200
     body = purge_resp.json()
     assert body["events_deleted"] == 3
-    assert body["checkins_deleted"] == 1
+    assert body["social_items_purged"] == 1
 
     with session_factory() as session:
         remaining_for_person = session.execute(
@@ -60,6 +60,10 @@ def test_purge_deletes_events_and_checkins_for_the_person(
     assert remaining_other == 1
     assert checkin_row.status == "deleted"
     assert checkin_row.deleted_reason == "purge"
+    # The content is erased, not just flagged — the old soft-delete kept the label/text.
+    assert checkin_row.label is None
+    assert checkin_row.text is None
+    assert checkin_row.author_label is None
 
 
 def test_purge_is_idempotent_when_called_repeatedly(client: TestClient) -> None:
@@ -97,6 +101,37 @@ def test_purge_of_a_person_with_no_data_succeeds_with_zero_counts(client: TestCl
     assert resp.json() == {
         "person_id": "prs_never_seen",
         "events_deleted": 0,
-        "checkins_deleted": 0,
+        "social_items_purged": 0,
         "status": "purged",
     }
+
+
+def test_purge_scrubs_social_item_pii_and_is_idempotent(
+    client: TestClient, session_factory
+) -> None:
+    """A person's check-in PII is scrubbed once; a retried purge finds the already-null rows and
+    counts zero (idempotency, ADR-0009 §3.4)."""
+    token = _ingest_token(client)
+    person_id = "prs_scrub"
+    client.post(
+        "/ingest",
+        json={
+            "batch_id": "b1",
+            "events": [
+                build_event(
+                    "social.checkin_created",
+                    payload_overrides={"person_id": person_id, "label": "Sam"},
+                )
+            ],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    first = client.delete(
+        f"/people/{person_id}/events", headers={"Authorization": f"Bearer {token}"}
+    )
+    second = client.delete(
+        f"/people/{person_id}/events", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert first.json()["social_items_purged"] == 1
+    assert second.json()["social_items_purged"] == 0

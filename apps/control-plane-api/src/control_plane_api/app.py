@@ -615,7 +615,7 @@ async def delete_person_events(
     return {
         "person_id": result.person_id,
         "events_deleted": result.events_deleted,
-        "checkins_deleted": result.checkins_deleted,
+        "social_items_purged": result.social_items_purged,
         "status": "purged",
     }
 
