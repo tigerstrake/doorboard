@@ -58,6 +58,8 @@ class Scheduler:
         self._monotonic = monotonic
         self._sleep = sleep
         self._stopped = False
+        # Consecutive failures per job name, driving the backoff in _next_delay.
+        self._failures: dict[str, int] = {}
 
     @property
     def job_names(self) -> tuple[str, ...]:
@@ -72,15 +74,24 @@ class Scheduler:
             self._run_isolated(job)
 
     def run_forever(self) -> None:
-        next_runs = {job.name: self._monotonic() for job in self._jobs}
+        # Staggered rather than all at `now`. Every job firing in the same instant on
+        # every (re)start means a crash-looping worker emits a burst of external
+        # requests per restart, at exactly the moment something is already wrong. The
+        # stagger is seconds, so a cold start still fills the wallboard promptly --
+        # which is the reason they all ran immediately in the first place.
+        start = self._monotonic()
+        next_runs = {
+            job.name: start + index * self._settings.scheduler_stagger_s
+            for index, job in enumerate(self._jobs)
+        }
         logger.info("scheduler_started", extra={"jobs": list(next_runs)})
         while not self._stopped:
             self._heartbeat()
             now = self._monotonic()
             for job in self._jobs:
                 if now >= next_runs[job.name]:
-                    self._run_isolated(job)
-                    next_runs[job.name] = self._monotonic() + job.interval_s
+                    ok = self._run_isolated(job)
+                    next_runs[job.name] = self._monotonic() + self._next_delay(job, ok=ok)
 
             if not next_runs:
                 self._sleep(10.0)
@@ -88,17 +99,44 @@ class Scheduler:
             wait_s = max(0.01, min(1.0, min(next_runs.values()) - self._monotonic()))
             self._sleep(wait_s)
 
-    def _run_isolated(self, job: ScheduledJob) -> None:
+    def _run_isolated(self, job: ScheduledJob) -> bool:
+        """Run one job. False if it raised, which is what drives the backoff."""
         started = self._monotonic()
         try:
             job.run()
         except Exception:
             logger.exception("scheduled_job_failed", extra={"job": job.name})
-        else:
-            logger.info(
-                "scheduled_job_completed",
-                extra={"job": job.name, "duration_s": self._monotonic() - started},
-            )
+            return False
+        logger.info(
+            "scheduled_job_completed",
+            extra={"job": job.name, "duration_s": self._monotonic() - started},
+        )
+        return True
+
+    def _next_delay(self, job: ScheduledJob, *, ok: bool) -> float:
+        """The job's interval on success; a doubling backoff while it keeps raising.
+
+        Without this, a job whose remote dependency is down retried at full rate
+        forever -- the same unbounded-retry shape ADR-0038 fixed for the relay poll.
+        A provider that is rate-limiting or refusing gets hit hardest exactly when it
+        least wants to be, and the aircraft feed is a 30s interval doing that.
+
+        Backs off on an *exception* only. A job returning None is stating that it has
+        nothing to publish -- an exhausted date table (ADR-0039), no aircraft in
+        range -- which is correct behaviour, not a failure to punish.
+        """
+        if ok:
+            if self._failures.pop(job.name, 0):
+                logger.info("scheduled_job_recovered", extra={"job": job.name})
+            return job.interval_s
+
+        failures = self._failures[job.name] = self._failures.get(job.name, 0) + 1
+        delay = min(job.interval_s * 2**failures, self._settings.scheduler_backoff_max_s)
+        logger.warning(
+            "scheduled_job_backoff",
+            extra={"job": job.name, "consecutive_failures": failures, "retry_in_s": delay},
+        )
+        return delay
 
     def _heartbeat(self) -> None:
         try:

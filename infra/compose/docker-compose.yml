@@ -257,6 +257,10 @@ services:
       # cadence is the one that bit — stuck at its 30 s default, it burns OpenSky's anonymous
       # daily quota in minutes and then every poll answers 429, which the wallboard showed as
       # "No nearby aircraft" over a full sky. Defaults here mirror Settings' own.
+      # Scheduler pacing. The stagger keeps a restart from firing every job in the
+      # same instant; the cap bounds the per-job backoff when a feed is down.
+      WALLBOARD_SCHEDULER_STAGGER_S: ${WALLBOARD_SCHEDULER_STAGGER_S:-2.0}
+      WALLBOARD_SCHEDULER_BACKOFF_MAX_S: ${WALLBOARD_SCHEDULER_BACKOFF_MAX_S:-1800.0}
       WALLBOARD_AIRCRAFT_INTERVAL_S: ${WALLBOARD_AIRCRAFT_INTERVAL_S:-30.0}
       AIRCRAFT_POLL_COOLDOWN_SECONDS: ${AIRCRAFT_POLL_COOLDOWN_SECONDS:-30}
       AIRCRAFT_PROVIDER: ${AIRCRAFT_PROVIDER:-auto}

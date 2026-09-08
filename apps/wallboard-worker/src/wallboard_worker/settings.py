@@ -26,6 +26,16 @@ class Settings(BaseSettings):
         alias="WALLBOARD_WORKER_HEARTBEAT_PATH",
     )
 
+    # Spread each job's first run over a few seconds instead of firing every job at
+    # once on every (re)start.
+    scheduler_stagger_s: float = Field(default=2.0, alias="WALLBOARD_SCHEDULER_STAGGER_S", ge=0)
+    # Ceiling on the per-job failure backoff. 30 min is long enough to stop hammering
+    # a down provider and short enough that a recovered feed comes back within a
+    # tile's useful lifetime.
+    scheduler_backoff_max_s: float = Field(
+        default=1800.0, alias="WALLBOARD_SCHEDULER_BACKOFF_MAX_S", gt=0
+    )
+
     bird_summary_interval_s: float = Field(default=300.0, alias="WALLBOARD_BIRD_INTERVAL_S", gt=0)
     satellite_interval_s: float = Field(
         default=3600.0, alias="WALLBOARD_SATELLITE_INTERVAL_S", gt=0
