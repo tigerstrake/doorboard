@@ -2,13 +2,18 @@
 
 Ambient channels publish on wildly different cadences: aircraft every 30 s, satellite
 passes hourly, the dining recommendation **once a day**. The wallboard populates its tiles
-purely from live ``ambient.*`` events arriving on ``/ws``, and the control plane publishes to
-MQTT without ``retain``, so nothing anywhere holds a last value.
+purely from live ``ambient.*`` events arriving on ``/ws``.
 
 The consequence, which is what prompted this: a wallboard that reloads — kiosk restart,
 door-ui restart, someone refreshing the page — loses the dining recommendation and cannot get
 it back for up to 24 hours. The event was produced correctly, reached the broker correctly,
 crossed the bridge correctly, and landed in a browser that had already gone away.
+
+The control plane *does* now retain ``ambient.*`` and ``status.*`` on MQTT
+(``control_plane_api/mqtt.py``), but that solves a different problem: it replays the last value
+to **the bridge** when door-api reconnects to the broker. It does nothing for a browser
+reloading against a door-api that never dropped its MQTT connection, which is the common case
+here. The two mechanisms cover the two hops and neither substitutes for the other.
 
 So door-api remembers the most recent event per ambient type and replays them to each new
 ``/ws`` client, in door-api's ordinary delta envelope. A reconnecting wallboard sees exactly

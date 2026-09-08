@@ -149,9 +149,11 @@ dead code/config.
   black or frozen camera is undetectable end to end. `infra/monitoring/alert.rules.yml` has no
   alert on `door_media_stream_up == 0`, `door_sync_dead_letter_total > 0`, or backup failure.
   (The stream-up/queue-age health lies themselves were **FIXED** 2026-08-23.) **Landed (alerts):** alert.rules.yml now has MediaStreamDown, SyncDeadLetter, and OutboxDeadLetter. Still open: door-media frame/finalize/zero-byte metrics (need the camera) and a backup-failure alert.
-- `[FIX]` **Postgres restore is not error-checked** — neither the runbook nor the integration
-  test passes `psql -v ON_ERROR_STOP=1`, so a partial restore reports success. (The
-  backup-side false-success was **FIXED** 2026-08-23.)
+- `[DONE 7c6b2d3]` **Postgres restore is not error-checked** — neither the runbook nor the
+  integration test passed `psql -v ON_ERROR_STOP=1`, so a partial restore reported success.
+  Fixed in both, plus `set -o pipefail` on the `gunzip | psql` pipelines. New integration test
+  injects one bad statement ahead of a valid dump and asserts psql exits 3 and applied nothing
+  after it; verified against a real Postgres 16.14 that it fails without the flag.
 - `[FIX]` **Perf harness measures none of the latency budgets it claims.**
   `tests/performance/harness.py` `bell_to_visitor_mode` never constructs a `SessionMachine`
   (times a dict→pydantic conversion; p95 ≈ 0.01ms vs a 250ms budget), and the regression gate
@@ -197,12 +199,21 @@ dead code/config.
 
 ## D. Operability / cost
 
-- `[FIX]` **Aircraft feed polls adsb.fi every 30s (~86k/mo) with no demand gate** and no
-  backoff on a sustained outage (ADR-0038 named it the next candidate). Gate on wallboard
-  visibility.
-- `[FIX]` **wallboard-worker scheduler fires every job immediately on each (re)start** (boot
-  burst) and has **no job-level backoff** — a failing external job retries at full rate
-  forever. Same shape ADR-0038 fixed for the relay.
+- `[PARTLY DONE — gate DECLINED, see ADR-0045]` **Aircraft feed polls adsb.fi every 30s
+  (~86k/mo) with no demand gate** and no backoff on a sustained outage. **Backoff: landed**
+  (scheduler per-job doubling to a 30 min cap, so an outage decays to 1 attempt/30 min).
+  **Demand gate: declined.** No signal anywhere reports whether a wallboard is being looked
+  at; door-api's client count is ~always non-zero (kiosk socket stays open with the monitor
+  off, door-voice is a permanent /ws client), so gating on it would skip ~0 polls; the
+  ambient grid renders every tile at once so per-tile gating needs a wallboard redesign; and
+  the fact lives on the Pi while the poller is on the NUC with no route back. Full reasoning
+  and what would reopen it: ADR-0045. The interval remains the owner's lever.
+- `[DONE e99b969]` **wallboard-worker scheduler fires every job immediately on each (re)start**
+  (boot burst) and has **no job-level backoff**. Fixed: jobs start staggered
+  (`WALLBOARD_SCHEDULER_STAGGER_S`, 2s each) and a job that raises has its next run doubled to
+  a 30 min cap (`WALLBOARD_SCHEDULER_BACKOFF_MAX_S`), resetting on the first success. Backs off
+  on an exception only — a job returning None is stating it has nothing to publish. Both
+  settings passed through compose (test_env_example_compose_safety caught their absence).
 - `[FIX]` **The NAS has no retention policy** (gallery + manifest grow unbounded), and the
   **NUC `events` table is unbounded** and holds `person_id` without the `ON DELETE CASCADE`
   protection the visit log has. Add prune jobs / decide a policy (`deploy/nas/README.md` notes
@@ -211,8 +222,9 @@ dead code/config.
   1970 each boot until NTP): the visitor-token TTL (`visitor_tokens.py`) and the persisted
   retry-backoff epochs (`door-api`/`door-visiond` outboxes) collapse across the NTP
   step-forward. Fails safe today, but fragile.
-- `[FIX]` **door-voice WS reconnect has no backoff** (flat 3s) — the one outlier against an
-  otherwise-disciplined reconnect pattern.
+- `[DONE 8c88deb]` **door-voice WS reconnect has no backoff** (flat 3s). Fixed: doubles 3s → 30s
+  (`VOICE_RECONNECT_MAX_DELAY_S`), resetting when the subscription is accepted rather than on a
+  clean exit, so a long-lived stream that drops reconnects promptly.
 
 ## E. Docs / hygiene
 

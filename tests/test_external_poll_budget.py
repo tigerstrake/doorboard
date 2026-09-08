@@ -59,10 +59,14 @@ POLLERS: tuple[Poller, ...] = (
         metered=False,
         demand_gated=False,
         note=(
-            "~2,880/day, ~86,000/month, running whether or not anyone is looking at "
-            "the wallboard. Not metered and within adsb.fi's stated limits, so no "
-            "hard failure — but it is the largest remaining ungated external poller "
-            "and the obvious next candidate for on-demand gating."
+            "~2,880/day, ~86,000/month. Not metered and within adsb.fi's stated "
+            "limits. Ungated by decision, not by omission (ADR-0045): no signal "
+            "reports whether a wallboard is being looked at, and the nearest "
+            "available one — door-api's client count — is ~always non-zero because "
+            "the kiosk holds its socket open with the monitor off and door-voice is "
+            "a permanent /ws client, so gating on it would skip ~0 polls. A sustained "
+            "outage now decays to one attempt per 30 min via the scheduler backoff. "
+            "If the budget tightens, the interval is the lever, not a gate."
         ),
     ),
     Poller(
