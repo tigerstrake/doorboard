@@ -46,6 +46,12 @@ they're covered by the same dump — no separate bundle backup exists.
 
 ## Restore procedure
 
+> **`-v ON_ERROR_STOP=1` is not optional.** By default `psql` reports a failed
+> statement, applies everything after it, and still exits `0` — so a restore that
+> rebuilt half the schema is indistinguishable from a clean one. `set -o pipefail`
+> matters for the same reason: without it a pipeline reports only `psql`'s status,
+> so a truncated or corrupt `gunzip` is invisible.
+
 1. Stop `control-plane-api` so nothing writes to Postgres mid-restore:
    ```bash
    docker compose -f infra/compose/docker-compose.yml stop control-plane-api
@@ -55,14 +61,15 @@ they're covered by the same dump — no separate bundle backup exists.
    only other copy:
    ```bash
    createdb -h localhost -U doorboard doorboard_restore_check
+   set -o pipefail
    gunzip -c "$NAS_BACKUP_PATH/doorboard-<timestamp>.sql.gz" \
-     | psql -h localhost -U doorboard doorboard_restore_check
+     | psql -v ON_ERROR_STOP=1 -h localhost -U doorboard doorboard_restore_check
    ```
 3. Integrity-check the scratch database (row counts on the append-only
    `events` table are a good smoke test; compare against the last known
    count if you have one):
    ```bash
-   psql -h localhost -U doorboard doorboard_restore_check -c "SELECT count(*) FROM events;"
+   psql -v ON_ERROR_STOP=1 -h localhost -U doorboard doorboard_restore_check -c "SELECT count(*) FROM events;"
    ```
 4. Once satisfied, restore for real: stop `postgres`, drop/recreate
    `doorboard`, restore the dump into it, then start `postgres` and
@@ -71,7 +78,8 @@ they're covered by the same dump — no separate bundle backup exists.
    docker compose -f infra/compose/docker-compose.yml stop postgres
    docker compose -f infra/compose/docker-compose.yml up -d postgres
    dropdb -h localhost -U doorboard doorboard && createdb -h localhost -U doorboard doorboard
-   gunzip -c "$NAS_BACKUP_PATH/doorboard-<timestamp>.sql.gz" | psql -h localhost -U doorboard doorboard
+   set -o pipefail
+   gunzip -c "$NAS_BACKUP_PATH/doorboard-<timestamp>.sql.gz" | psql -v ON_ERROR_STOP=1 -h localhost -U doorboard doorboard
    docker compose -f infra/compose/docker-compose.yml up -d control-plane-api
    ```
 5. Drop the scratch database.

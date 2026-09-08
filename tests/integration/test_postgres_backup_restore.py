@@ -131,7 +131,12 @@ def _restore_gzip(dump_path: str, dbname: str) -> None:
     with gzip.open(dump_path, "rb") as fh:
         sql = fh.read()
     subprocess.run(
-        ["psql", _cli_dsn_for(dbname)],
+        # -v ON_ERROR_STOP=1 is the whole reason this restore can be trusted. psql
+        # defaults to reporting each failed statement and carrying on, then exiting
+        # 0 -- so a restore that created half the schema and dropped the rest looks
+        # exactly like a clean one, to check=True and to an operator reading the
+        # runbook. Silent is the worst way for a backup to fail.
+        ["psql", "-v", "ON_ERROR_STOP=1", _cli_dsn_for(dbname)],
         input=sql,
         check=True,
         capture_output=True,
@@ -186,3 +191,54 @@ def test_dump_is_deterministic_enough_to_checksum(tmp_path, source_db) -> None:
         return [line for line in sql.splitlines() if not line.startswith(unstable_prefixes)]
 
     assert _stable_lines(first_sql) == _stable_lines(second_sql)
+
+
+def test_a_dump_with_one_bad_statement_fails_the_restore(
+    tmp_path, source_db, restore_target_db
+) -> None:
+    """A partial restore must be an error, not a success with a warning.
+
+    Without ON_ERROR_STOP psql prints the failure, applies everything after it, and
+    exits 0. The restore then "succeeds" against a database missing whatever the
+    failed statements would have built -- discovered whenever someone next needs the
+    data, which is the one moment it cannot be fixed.
+
+    One unresolvable statement in front of an otherwise-valid dump stands in for the
+    real cases: a truncated transfer, a schema the target cannot satisfy, an
+    extension the restoring server does not have.
+    """
+    _seed(source_db)
+    dump_path = tmp_path / "doorboard-broken.sql.gz"
+    _dump_gzip(source_db, str(dump_path))
+
+    # The fixture only reserves a NAME. Without this the restore fails to *connect*
+    # (psql exit 2), which raises CalledProcessError too -- so the test would pass
+    # whether or not ON_ERROR_STOP was set, proving nothing. Asserted below.
+    admin = _admin_engine()
+    with admin.connect() as conn:
+        conn.execute(sa.text(f'CREATE DATABASE "{restore_target_db}"'))
+
+    with gzip.open(dump_path, "rb") as fh:
+        good_sql = fh.read()
+    broken_path = tmp_path / "doorboard-broken-injected.sql.gz"
+    with gzip.open(broken_path, "wb") as fh:
+        fh.write(b"INSERT INTO a_table_that_does_not_exist VALUES (1);\n" + good_sql)
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        _restore_gzip(str(broken_path), restore_target_db)
+
+    # 3 is "script error, stopped by ON_ERROR_STOP". 2 would be "could not connect",
+    # which is what this test accidentally asserted before the CREATE DATABASE above.
+    assert caught.value.returncode == 3, (
+        "expected psql to stop on the bad statement, not to fail for another reason: "
+        f"{caught.value.stderr!r}"
+    )
+
+    # And the restore really did stop: nothing after the bad statement was applied.
+    engine = sa.create_engine(_sqlalchemy_dsn_for(restore_target_db), future=True)
+    with engine.connect() as conn:
+        present = conn.execute(
+            sa.text("SELECT to_regclass('public.backup_probe') IS NOT NULL")
+        ).scalar()
+    engine.dispose()
+    assert present is False, "psql carried on past the error and built the schema anyway"

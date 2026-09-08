@@ -29,6 +29,13 @@ Postgres backups are managed by the containerized `postgres-backup` service on t
 * Backups older than 14 days (`BACKUP_RETAIN_COUNT`) are automatically pruned.
 
 ### B. Restore Validation Walkthrough
+
+> **`-v ON_ERROR_STOP=1` is not optional.** By default `psql` reports a failed
+> statement, applies everything after it, and still exits `0` — so a restore that
+> rebuilt half the schema is indistinguishable from a clean one. `set -o pipefail`
+> matters for the same reason: without it a pipeline reports only `psql`'s status,
+> so a truncated or corrupt `gunzip` is invisible.
+
 This procedure must be executed to verify the integrity of the dump before replacing a production database.
 
 1. **Stop writing services:**
@@ -43,13 +50,14 @@ This procedure must be executed to verify the integrity of the dump before repla
    createdb -h localhost -U doorboard doorboard_restore_check
 
    # Decompress and restore the latest dump from the NAS
+   set -o pipefail
    gunzip -c "$NAS_BACKUP_PATH/doorboard-<timestamp>.sql.gz" \
-     | psql -h localhost -U doorboard doorboard_restore_check
+     | psql -v ON_ERROR_STOP=1 -h localhost -U doorboard doorboard_restore_check
    ```
 3. **Run Integrity Check:**
    Verify the event count matches the expected threshold:
    ```bash
-   psql -h localhost -U doorboard doorboard_restore_check -c "SELECT count(*) FROM events;"
+   psql -v ON_ERROR_STOP=1 -h localhost -U doorboard doorboard_restore_check -c "SELECT count(*) FROM events;"
    ```
 4. **Finalize Production Restore:**
    Once the scratch database is validated, swap it into production:
@@ -59,8 +67,9 @@ This procedure must be executed to verify the integrity of the dump before repla
    createdb -h localhost -U doorboard doorboard
 
    # Restore into production DB
+   set -o pipefail
    gunzip -c "$NAS_BACKUP_PATH/doorboard-<timestamp>.sql.gz" \
-     | psql -h localhost -U doorboard doorboard
+     | psql -v ON_ERROR_STOP=1 -h localhost -U doorboard doorboard
 
    # Restart services
    docker compose -f infra/compose/docker-compose.yml up -d
