@@ -117,11 +117,17 @@ class VoiceService:
             # a USB dongle and a TTS binary are present.
             logger.warning("no_tts_backend_installed_service_will_stay_silent")
 
+        delay = self._settings.reconnect_delay_s
         while True:
             try:
                 async with websockets.connect(self._settings.door_api_ws_url) as ws:
                     await ws.send(json.dumps({"subscribe": SUBSCRIBE}))
                     logger.info("connected", extra={"url": self._settings.door_api_ws_url})
+                    # Reset on a established connection, not on a clean exit: the
+                    # signal that door-api is healthy is that it accepted the
+                    # subscription. Resetting only on clean exit would make a stream
+                    # that ran for hours inherit the backoff from the drop before it.
+                    delay = self._settings.reconnect_delay_s
                     async for raw in ws:
                         try:
                             message = json.loads(raw)
@@ -135,8 +141,9 @@ class VoiceService:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a reconnect loop must not die
-                logger.warning("disconnected", extra={"error": str(exc)})
-            await asyncio.sleep(self._settings.reconnect_delay_s)
+                logger.warning("disconnected", extra={"error": str(exc), "retry_in_s": delay})
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, self._settings.reconnect_max_delay_s)
 
 
 async def main_async() -> None:

@@ -184,3 +184,99 @@ async def test_piper_is_not_chosen_without_a_voice_model():
         timeout_s=1.0,
     )
     assert speaker.available_backend() is None
+
+
+# --- reconnect pacing -------------------------------------------------------
+#
+# door-voice retried a dropped door-api /ws at a flat 3s forever, the one outlier
+# against the bounded backoff every other consumer uses.
+
+
+class _Stop(Exception):
+    """Breaks out of run()'s infinite loop from the patched sleep."""
+
+
+class FakeWS:
+    """Connects, accepts the subscribe, then drops."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def __aenter__(self) -> FakeWS:
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    async def send(self, data: str) -> None:
+        self.sent.append(data)
+
+    def __aiter__(self) -> FakeWS:
+        return self
+
+    async def __anext__(self) -> str:
+        raise ConnectionError("stream dropped")
+
+
+def _patch_loop(monkeypatch, connect, *, stop_after: int) -> list[float]:
+    delays: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+        if len(delays) >= stop_after:
+            raise _Stop
+
+    monkeypatch.setattr("door_voice.app.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("door_voice.app.websockets.connect", connect)
+    return delays
+
+
+@pytest.mark.anyio
+async def test_reconnect_backoff_doubles_up_to_the_ceiling(monkeypatch):
+    """A door-api that stays down is not retried at a fixed rate forever."""
+    service, _ = build()
+
+    def refuse(url: str) -> FakeWS:
+        raise OSError("door-api is down")
+
+    delays = _patch_loop(monkeypatch, refuse, stop_after=8)
+    with pytest.raises(_Stop):
+        await service.run()
+
+    assert delays == [3.0, 6.0, 12.0, 24.0, 30.0, 30.0, 30.0, 30.0]
+
+
+@pytest.mark.anyio
+async def test_an_established_connection_resets_the_backoff(monkeypatch):
+    """Reset on connect, not on clean exit.
+
+    A stream that ran for hours and then dropped must reconnect promptly rather
+    than inherit the backoff from whatever outage preceded it.
+    """
+    service, _ = build()
+    attempts: list[str] = []
+
+    def flaky(url: str) -> FakeWS:
+        attempts.append(url)
+        if len(attempts) <= 2:
+            raise OSError("door-api is down")
+        return FakeWS()
+
+    delays = _patch_loop(monkeypatch, flaky, stop_after=4)
+    with pytest.raises(_Stop):
+        await service.run()
+
+    # 3, 6 while refused; then each accepted subscription resets it to 3.
+    assert delays == [3.0, 6.0, 3.0, 3.0]
+
+
+def test_a_ceiling_below_the_first_delay_is_rejected():
+    """Otherwise the cap silently shortens the first delay instead of bounding it."""
+    with pytest.raises(ValueError, match="VOICE_RECONNECT_MAX_DELAY_S"):
+        Settings(VOICE_RECONNECT_DELAY_S=10.0, VOICE_RECONNECT_MAX_DELAY_S=5.0)
+
+
+def test_an_equal_ceiling_is_allowed_and_gives_a_flat_retry():
+    """The old flat-3s behaviour stays reachable for anyone who wants it."""
+    settings = Settings(VOICE_RECONNECT_DELAY_S=3.0, VOICE_RECONNECT_MAX_DELAY_S=3.0)
+    assert settings.reconnect_max_delay_s == settings.reconnect_delay_s

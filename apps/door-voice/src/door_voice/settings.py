@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import time as dtime
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from door_voice.policy import parse_quiet_hours
@@ -48,14 +48,26 @@ class Settings(BaseSettings):
 
     # A wedged synthesiser must not accumulate processes behind it.
     speak_timeout_s: float = Field(default=8.0, alias="VOICE_SPEAK_TIMEOUT_S")
+    # The *first* delay after a drop, then doubling to reconnect_max_delay_s. A flat
+    # retry was the one outlier against the reconnect discipline every other consumer
+    # follows (door-sync's SSE consumer, the relay client), and it means door-api
+    # being down is retried at a fixed rate for as long as it stays down.
     reconnect_delay_s: float = Field(default=3.0, alias="VOICE_RECONNECT_DELAY_S")
+    reconnect_max_delay_s: float = Field(default=30.0, alias="VOICE_RECONNECT_MAX_DELAY_S")
 
-    @field_validator("cooldown_s", "speak_timeout_s", "reconnect_delay_s")
+    @field_validator("cooldown_s", "speak_timeout_s", "reconnect_delay_s", "reconnect_max_delay_s")
     @classmethod
     def _must_be_positive(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("must be greater than 0")
         return value
+
+    @model_validator(mode="after")
+    def _ceiling_is_not_below_the_floor(self) -> Settings:
+        # Otherwise the cap silently shortens the first delay instead of bounding it.
+        if self.reconnect_max_delay_s < self.reconnect_delay_s:
+            raise ValueError("VOICE_RECONNECT_MAX_DELAY_S must be >= VOICE_RECONNECT_DELAY_S")
+        return self
 
     @property
     def allowed_person_ids(self) -> frozenset[str]:
