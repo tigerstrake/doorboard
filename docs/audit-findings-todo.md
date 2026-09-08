@@ -231,9 +231,20 @@ dead code/config.
 - `[DOC]` **`docs/runbooks/storage-full.md`** (marked "Verified") references columns and log
   keys that don't exist. **`events.md`** `ambient.aircraft_nearby` is still missing ~14 model
   fields (ADR-0015). Failed-admin-auth is logged nowhere.
-- `[DELETE]` **Dead config:** `HOME_ASSISTANT_URL` / `HOME_ASSISTANT_TOKEN` (read by nothing),
-  `DOORBOARD_ENV` (read by nothing), `RetentionConfig.min_free_bytes` (populated, never
-  consumed). (`SYNC_UPLOAD_TOKEN` dead-alias was **FIXED**.)
+- `[DONE — but the finding was wrong on 2 of 3]` **Dead config.** (`SYNC_UPLOAD_TOKEN`
+  dead-alias was **FIXED**.) Verified each claim before acting:
+  - `DOORBOARD_ENV` — genuinely read by nothing. **Removed** from
+    `deploy/pi-door/doorboard.env.example` and the pi-replacement runbook step.
+  - `HOME_ASSISTANT_URL` / `HOME_ASSISTANT_TOKEN` — **do not delete.** They are not in
+    `.env.example` at all. The two references are deliberate: the HA integration README
+    documents them as *Home Assistant-side* config, and `door-sync/tests/test_credential_fence.py`
+    lists them in its **denylist** — the T-502 guard that greps door-sync's source to prove
+    high-trust credentials never land on the stealable Pi (ARCHITECTURE.md §2). Deleting them
+    would silently widen a trust boundary while looking like tidying.
+  - `RetentionConfig.min_free_bytes` — unread, but not a bug. `Settings.retention` populates it
+    from door-media's own `min_free_bytes`, which is what enforcement actually reads at each
+    storage check, so the two cannot diverge. Left in the schema with a comment saying where
+    enforcement really lives, rather than churning a shared model.
 - `[FIX]` **`_frequency_stat_is_enabled()` off by default is correct, but enabling it makes the
   public shape identical to admin** (publishes `person_id` + ranking). Keep the projections
   separate even when enabled.

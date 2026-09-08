@@ -84,7 +84,6 @@ The Pi's app settings must be restored from the control plane NUC.
    cp .env.example .env
    ```
 4. Set the following variables in `.env`:
-   - `DOORBOARD_ENV=pi-door`
    - `SYNC_INGEST_TOKEN=<the-token-copied-from-nuc>`
    - `CONTROL_PLANE_URL=http://<nuc-ip>:8090`
 5. Restart the Pi services to let them sync down settings from the NUC:

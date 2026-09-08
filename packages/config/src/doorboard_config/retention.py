@@ -12,6 +12,13 @@ class KindRetentionPolicy(BaseModel):
 
 class RetentionConfig(BaseModel):
     # Global caps
+    # Enforcement does NOT go through this copy. door-media reads its own
+    # `settings.min_free_bytes` directly at each storage check (`service.py`,
+    # `mediamtx_router.py`) rather than building a RetentionConfig per check, and
+    # `Settings.retention` populates this field from that same value -- so the two
+    # cannot diverge, but setting it on a hand-built RetentionConfig will not stop
+    # any recording. Kept because it belongs in the retention schema; documented
+    # because a field that looks authoritative and is never read is a trap.
     min_free_bytes: int = Field(
         default=4 * 1024**3,  # 4 GiB
         description="Stop recording when free SSD space falls below this threshold in bytes",
