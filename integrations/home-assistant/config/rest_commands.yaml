@@ -6,7 +6,10 @@
 #
 #   1. Wrong path. control-plane-api exposes one endpoint PER SOURCE:
 #      /status/presence/webhook/focus-shortcut and .../geofence-label. The source
-#      comes from the URL, which is what makes it unspoofable by the caller.
+#      comes from the URL, so a caller cannot name its own source. WHO may call
+#      at all is a separate question, answered by the secret webhook id in
+#      automations.yaml — these commands carry the admin token, so anything that
+#      reaches the automation is forwarded with full authority.
 #   2. It sent `source` in the body. PresenceWebhookRequest is extra="forbid",
 #      so that alone was a 422 — and letting a client name its own source would
 #      defeat the precedence order (manual > focus_shortcut > geofence_label >

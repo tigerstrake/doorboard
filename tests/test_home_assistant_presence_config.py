@@ -190,6 +190,57 @@ def test_admin_token_reaches_the_home_assistant_container():
         )
 
 
+def _webhook_trigger(automations: list[dict[str, Any]]) -> dict[str, Any]:
+    automation = next(a for a in automations if a["id"] == "doorboard_presence_label_webhook")
+    return next(t for t in automation["triggers"] if t.get("trigger") == "webhook")
+
+
+def test_the_webhook_id_is_a_per_deployment_secret_not_a_literal(automations):
+    """HA authenticates a webhook by nothing but its id, and this one forwards
+    the body admin-authenticated as a Focus update that outranks geofence and
+    calendar. It was the literal `doorboard-presence-label`, checked into a repo
+    meant to go public: one curl from any device on the wifi could make the
+    door say the owner was asleep. `local_only` narrows the caller to the LAN,
+    which is a shared corridor, so it is kept but is not the control.
+    """
+    trigger = _webhook_trigger(automations)
+    webhook_id = str(trigger["webhook_id"])
+    assert webhook_id.startswith(("<!env_var:", "<!secret:")), (
+        f"webhook_id is the literal {webhook_id!r}; it must come from the environment"
+    )
+    assert trigger.get("local_only") is True
+    assert trigger.get("allowed_methods") == ["POST"]
+
+
+def test_the_webhook_id_reaches_the_container_and_is_only_a_placeholder_in_git(automations):
+    """The plumbing, end to end: env var -> compose -> container -> !env_var.
+
+    Production must require it (an unset !env_var fails the whole automations
+    include, and a guessable default is the hole being closed); the dev stack,
+    bound to localhost, may default it. And `.env.example` must carry only a
+    placeholder, never a working value.
+    """
+    match = re.search(r"!env_var:([A-Z0-9_]+)", str(_webhook_trigger(automations)["webhook_id"]))
+    assert match, "webhook_id is not an !env_var"
+    var = match.group(1)
+
+    for name, required in (("docker-compose.yml", True), ("compose.dev.yml", False)):
+        compose = yaml.safe_load((REPO / "infra/compose" / name).read_text())
+        env = compose["services"]["home-assistant"]["environment"]
+        assert var in env, f"{name} does not pass {var} to home-assistant"
+        value = str(env[var])
+        if required:
+            assert value.startswith(f"${{{var}:?"), f"{name} must require {var}, not default it"
+        assert "doorboard-presence-label" not in value, f"{name} still defaults to the old literal"
+
+    env_example = (REPO / ".env.example").read_text()
+    documented = re.search(rf"^{var}=(.*)$", env_example, flags=re.MULTILINE)
+    assert documented, f".env.example never mentions {var}"
+    assert documented.group(1).strip() == "CHANGE_ME", (
+        f".env.example must ship a placeholder for {var}, not a value"
+    )
+
+
 def test_rest_command_env_var_matches_what_compose_provides(rest_commands):
     """A typo either side is a silent 401."""
     compose = yaml.safe_load((REPO / "infra/compose/docker-compose.yml").read_text())

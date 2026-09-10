@@ -178,6 +178,12 @@ services:
       # Pre-formatted as a full header value: HA's !env_var substitutes a value
       # verbatim and cannot concatenate, so "Bearer " has to live here.
       CONTROL_PLANE_ADMIN_TOKEN_HEADER: Bearer ${CONTROL_PLANE_ADMIN_TOKEN:?CONTROL_PLANE_ADMIN_TOKEN must be set in .env}
+      # The inbound presence webhook's id (automations.yaml, via !env_var). HA
+      # authenticates a webhook by nothing but its id, and the automation
+      # forwards the body admin-authenticated — so this is a credential.
+      # Required, not defaulted: an unset !env_var fails the whole automations
+      # include, and a guessable default is the hole this closes.
+      DOORBOARD_PRESENCE_WEBHOOK_ID: ${DOORBOARD_PRESENCE_WEBHOOK_ID:?DOORBOARD_PRESENCE_WEBHOOK_ID must be set in .env (openssl rand -hex 32)}
     volumes:
       - ha_data:/config
       - ./../../integrations/home-assistant/config/configuration.yaml:/config/configuration.yaml:ro

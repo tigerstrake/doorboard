@@ -53,22 +53,28 @@ NUC-trusted (ARCHITECTURE.md §2).
 inbound endpoint automatically — no separate registration step) at:
 
 ```
-http://<nuc-lan-host>:8123/api/webhook/doorboard-presence-label
+http://<nuc-lan-host>:8123/api/webhook/<DOORBOARD_PRESENCE_WEBHOOK_ID>
 ```
 
 A phone Shortcuts automation (iOS Focus change, or an Android
-geofence/Tasker equivalent) POSTs `{"subject_id", "source", "label"}` to it
-(broad labels only, per ARCHITECTURE.md §9); the automation forwards that to
-`rest_command.presence_label_update`, which calls
-`http://control-plane-api:8090/webhooks/presence`.
+geofence/Tasker equivalent) POSTs `{"subject_id", "label"}` to it (broad
+labels only, per ARCHITECTURE.md §9; no `source` — the endpoint fixes it);
+the automation forwards that to `rest_command.presence_focus_update`, which
+calls `http://control-plane-api:8090/status/presence/webhook/focus-shortcut`
+with the admin token. A second automation reacts to the companion app's zone
+changes and calls `presence_geofence_update` the same way. Both ship
+`initial_state: true` and are pinned so by `tests/test_home_assistant_presence_config.py`.
 
-**That receiving endpoint does not exist yet** — presence computation is
-T-504's scope (explicitly out of scope for T-503, see
-[docs/tasks/T-503-nuc-stack.md](../../docs/tasks/T-503-nuc-stack.md)). The
-automation ships with `initial_state: false` for exactly this reason: wiring
-is ready, nothing calls it until T-504 lands and it's flipped to `true`. A
-call against T-503-era control-plane-api 404s harmlessly — HA is never a
-dependency of the door path (ADR-0002), so this can't regress anything.
+**The webhook id is the credential.** HA authenticates an inbound webhook by
+nothing but the secrecy of its id, and everything that reaches the automation
+is forwarded with admin authority as a `focus_shortcut` update — which outranks
+geofence and calendar (ADR-0035) and is shown on the public wallboard. The
+`source` cannot be spoofed (it comes from which URL is called), but the
+*caller* can be by anyone who knows the id, and `local_only: true` only narrows
+that to the LAN. So the id is `DOORBOARD_PRESENCE_WEBHOOK_ID` in `.env`,
+delivered through the container environment via `!env_var` like the admin
+token, generated per deployment (`openssl rand -hex 32`), and never a literal
+in this repo. Rotation: [docs/runbooks/security-checklist.md](../../docs/runbooks/security-checklist.md).
 
 ### Setting up the HA-side long-lived token
 

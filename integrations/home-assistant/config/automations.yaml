@@ -21,7 +21,7 @@
 # the tile says so.
 #
 # Point an iOS Shortcuts automation at:
-#   http://<nuc-lan-host>:8123/api/webhook/doorboard-presence-label
+#   http://<nuc-lan-host>:8123/api/webhook/<DOORBOARD_PRESENCE_WEBHOOK_ID>
 # with body: {"subject_id": "owner", "label": "busy"}
 #
 # Valid labels: available, busy, do_not_disturb, sleeping, at_class, at_library,
@@ -38,9 +38,21 @@
   max: 10
   triggers:
     - trigger: webhook
-      webhook_id: doorboard-presence-label
+      # The id IS the credential. HA authenticates an inbound webhook by nothing
+      # but the secrecy of its id, and this automation forwards the body to
+      # control-plane-api admin-authenticated as a focus_shortcut update — which
+      # outranks geofence and calendar (ADR-0035) and shows on the public
+      # wallboard. It used to be the literal `doorboard-presence-label`, checked
+      # into a repo meant to go public: anyone on the wifi could make the door
+      # say the owner was asleep. Now a per-deployment secret from `.env`,
+      # delivered through the container environment the same way the admin
+      # token reaches rest_commands.yaml. Generate with `openssl rand -hex 32`;
+      # rotation is in docs/runbooks/security-checklist.md.
+      webhook_id: !env_var DOORBOARD_PRESENCE_WEBHOOK_ID
       allowed_methods:
         - POST
+      # Still LAN-only on top of the secret: the id limits who can call, this
+      # limits where from. Neither replaces the other.
       local_only: true
   actions:
     - action: rest_command.presence_focus_update

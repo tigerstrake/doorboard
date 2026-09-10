@@ -43,6 +43,22 @@ Legend: ✅ verified in code/config now · ☐ verify at deployment (network/hos
 
 Credentials live only in `wallboard-worker` settings on the NUC. **At deployment:** allow the NUC egress only to these hosts.
 
+## Home Assistant inbound webhook (port 8123)
+
+Added 2026-09-10. HA is LAN-only, but the LAN is a shared dorm corridor and the one inbound path HA exposes is authenticated by nothing but the secrecy of a webhook id. `integrations/home-assistant/config/automations.yaml` forwards whatever arrives on it to control-plane-api **admin-authenticated** as a `focus_shortcut` presence update — which outranks geofence and calendar (ADR-0035) and shows on the public wallboard. The id was a literal string in git; it is now `DOORBOARD_PRESENCE_WEBHOOK_ID` in `.env`, delivered through the container environment via `!env_var`, and the automation keeps `local_only: true` on top of it.
+
+- ☐ **At deployment:** confirm `DOORBOARD_PRESENCE_WEBHOOK_ID` is a generated value (`openssl rand -hex 32`), not the template's `CHANGE_ME`, and not the pre-2026-09-10 literal `doorboard-presence-label`. Compose refuses to start `home-assistant` when it is unset, but cannot tell a placeholder from a secret.
+- ☐ Confirm port 8123 is not forwarded on the router and is bound to the LAN interface only (`LAN_BIND_ADDR`).
+
+**Rotation** (when a phone is lost, a Shortcut is shared, or on the token-rotation cadence in [token-rotation.md](token-rotation.md)):
+
+1. Generate a new id: `openssl rand -hex 32`. Replace `DOORBOARD_PRESENCE_WEBHOOK_ID` in the NUC's `.env`.
+2. Recreate the container so it picks up the environment: `docker compose -f infra/compose/docker-compose.yml --env-file .env up -d home-assistant`.
+3. Update the phone Shortcut's URL to `http://<nuc-lan-host>:8123/api/webhook/<new id>` and fire it once; confirm the door's presence tile changes.
+4. Confirm the old id is dead. HA answers an unknown webhook id with an empty `200` (deliberately, to defeat enumeration), so check `docker compose logs home-assistant` for `Received message for unregistered webhook` rather than trusting the status code.
+
+The blast radius of a leaked id is bounded but real: an attacker can set any broad presence label on the door (including clearing one), which persists on the public wallboard until the next real Focus change or `PRESENCE_WEBHOOK_MAX_AGE_S` expires it. They cannot read anything, cannot reach the admin token (it never leaves the container), and cannot affect the door path (ADR-0002).
+
 ## Door-Pi egress: the public relay (ADR-0016, ADR-0017)
 
 The relay gives the door Pi its **only** internet egress — one origin, two services, outbound only. Everything else it does is LAN-local.
