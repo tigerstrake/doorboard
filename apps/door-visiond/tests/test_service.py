@@ -371,6 +371,52 @@ async def test_a_permanently_broken_backend_re_degrades(
         await svc.stop()
 
 
+@pytest.mark.anyio
+async def test_recovery_deferred_by_privacy_mode_fires_once_privacy_is_off(
+    ssd_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retry that fell due while privacy mode was on used to be consumed and lost.
+
+    Privacy mode off then re-enabled capture on the DisabledBackend, which cannot raise,
+    so nothing ever scheduled another attempt: `mode: disabled` until a restart, from a
+    routine toggle. The retry must be deferred, not discarded, and privacy off must
+    bring recognition back.
+    """
+    monkeypatch.setenv("VISION_MODE", "hardware")
+    monkeypatch.setenv("VISIOND_BACKEND_RECOVERY_DELAY_S", "0.05")
+    settings = Settings()
+
+    healthy = _FlakyBackend(fail_times=0)
+    svc = VisiondService(
+        settings,
+        backend=_FailingBackend(),
+        backend_factory=lambda: healthy,  # type: ignore[arg-type]
+    )
+    await svc.start()
+    try:
+        for _ in range(200):
+            if svc.health()["runtime_warning"]:
+                break
+            await asyncio.sleep(0.01)
+        assert svc.health()["runtime_warning"]
+
+        svc.set_privacy_mode(enabled=True, changed_by="schedule")
+        await asyncio.sleep(0.3)  # the retry deadline passes while privacy mode is on
+        assert svc.metrics_snapshot()["backend_recoveries"] == 0
+        assert svc.health()["runtime_warning"]
+
+        svc.set_privacy_mode(enabled=False, changed_by="schedule")
+        for _ in range(200):
+            if svc.effective_mode == "hardware":
+                break
+            await asyncio.sleep(0.01)
+        assert svc.effective_mode == "hardware"
+        assert svc.health()["runtime_warning"] is None
+        assert svc.metrics_snapshot()["backend_recoveries"] == 1
+    finally:
+        await svc.stop()
+
+
 def test_single_camera_reads_the_visitor_stream(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VISION_MODE", "single-camera")
     settings = Settings()

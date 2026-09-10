@@ -569,7 +569,6 @@ class VisiondService:
             return
         if self._clock.monotonic_ms() < self._backend_recovery_due_ms:
             return
-        self._backend_recovery_due_ms = None
         # No compat re-check: a compat failure means a DisabledBackend was built at
         # startup, and that backend cannot raise, so no degradation — and therefore no
         # recovery — is ever scheduled from it. Re-checking here would only be a way to
@@ -577,9 +576,18 @@ class VisiondService:
         if self._settings.vision_mode not in _HARDWARE_MODES:
             # Mock/disabled have no HTTP frame source, so there is no transient failure
             # to recover from — a scripted backend that fails is failing on purpose.
+            self._backend_recovery_due_ms = None
             return
         if self._privacy_enabled or self._enrollment_locked:
+            # Defer, do not consume. Consuming here lost the retry for good: privacy
+            # mode switched on (an admin, or the nightly schedule) before the 30 s
+            # retry fired, the retry was discarded, and when privacy mode came off
+            # the next morning `set_privacy_mode` re-enabled capture on the
+            # DisabledBackend — which cannot raise, so nothing ever scheduled another
+            # attempt. The door stayed in `mode: disabled` until someone restarted it,
+            # which is exactly the failure T-321 fixed, reintroduced by a routine toggle.
             return
+        self._backend_recovery_due_ms = None
         # Restore the mode FIRST: `_build_backend` branches on `_effective_mode`, so
         # building while it still reads "disabled" hands back another DisabledBackend and
         # then relabels it "hardware" — mode restored, function not, zero frames, and
@@ -1048,6 +1056,11 @@ class VisiondService:
         self._backend.set_capturing(not enabled)
         if enabled:
             self._core.clear_cache_and_notify(reason="privacy_mode")
+        elif self._runtime_degraded_detail is not None:
+            # Re-enabling capture on a DisabledBackend restores nothing. Recovery is
+            # deferred while privacy mode is on (`_maybe_recover_backend`), so make it
+            # due now: the operator just asked for recognition back.
+            self._backend_recovery_due_ms = self._clock.monotonic_ms()
         self._emitter.emit(
             make_privacy_mode_changed(
                 clock=self._clock,
