@@ -144,6 +144,49 @@ def test_an_rfc3339_timestamp_is_preferred_and_its_zone_honoured() -> None:
     assert total == 1
 
 
+def test_a_busy_day_is_read_across_pages_not_truncated_at_the_first() -> None:
+    """BirdNET-Go pages at 100 by default; the tile said 100 on exactly the busy days.
+
+    A fake server holding 250 detections answers `{data, total, limit, offset}` in
+    pages of 100. The published total must be 250, and each request must ask for the
+    maximum page and the next offset.
+    """
+    detections = [
+        {"commonName": "House Finch", "confidence": 0.9, "date": "2026-07-07 09:00:00"}
+        for _ in range(250)
+    ]
+
+    def paged(url: str, params: dict[str, object], **_kwargs: object) -> MagicMock:
+        offset = int(params["offset"])  # type: ignore[arg-type]
+        page = detections[offset : offset + 100]
+        return _get_returning({"data": page, "total": 250, "limit": 100, "offset": offset})
+
+    provider = BirdnetGoProvider(BirdnetConfig(tz="UTC"))
+    with patch("httpx.get", side_effect=paged) as get:
+        total, top = provider.get_summary(datetime(2026, 7, 7, 12, 0, tzinfo=UTC))
+
+    assert total == 250
+    assert top == [{"name": "House Finch", "count": 250, "confidence_avg": 0.9}]
+    offsets = [call.kwargs["params"]["offset"] for call in get.call_args_list]
+    assert offsets == [0, 100, 200]
+    assert all(call.kwargs["params"]["numResults"] == 1000 for call in get.call_args_list)
+
+
+def test_paging_is_bounded_when_total_lies() -> None:
+    # A server that always reports more than it returns must not be polled forever.
+    endless = _get_returning(
+        {
+            "data": [{"commonName": "Bushtit", "confidence": 0.9, "date": "2026-07-07"}],
+            "total": 10**9,
+        }
+    )
+    provider = BirdnetGoProvider(BirdnetConfig(tz="UTC"))
+    with patch("httpx.get", return_value=endless) as get:
+        total, _top = provider.get_summary(datetime(2026, 7, 7, 12, 0, tzinfo=UTC))
+    assert get.call_count == 10
+    assert total == 10
+
+
 def test_birdnet_go_provider_api_error_graceful() -> None:
     config = BirdnetConfig(url="http://127.0.0.1:8080")
     provider = BirdnetGoProvider(config)

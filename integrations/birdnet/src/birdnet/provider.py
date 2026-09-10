@@ -11,6 +11,12 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger("doorboard.birdnet")
 
+# BirdNET-Go's `maxNumResults`. Its default page is 100.
+PAGE_SIZE = 1000
+# Hard stop on paging, in case `total` is wrong or grows under us. Ten pages is 10,000
+# detections in a day, which is no longer a tile's problem.
+MAX_PAGES = 10
+
 
 class BirdnetConfig(BaseModel):
     url: str = "http://127.0.0.1:8080"
@@ -45,20 +51,53 @@ class BirdnetGoProvider(BirdProvider):
         return ZoneInfo(self.config.tz) if self.config.tz else None
 
     def _fetch_detections(self, today: date) -> list[dict[str, Any]]:
-        """The detections BirdNET-Go holds for `today` (one local calendar day)."""
-        url = f"{self.config.url.rstrip('/')}/api/v2/detections"
-        params = {"start_date": today.isoformat(), "end_date": today.isoformat()}
-        resp = httpx.get(url, params=params, timeout=5.0)
-        if resp.status_code != 200:
-            logger.error(f"BirdNET-Go returned status {resp.status_code}: {resp.text}")
-            raise RuntimeError(f"BirdNET-Go error: {resp.status_code}")
+        """Every detection BirdNET-Go holds for `today`, across its pages.
 
-        data = resp.json()
-        if isinstance(data, dict):
-            return data.get("detections") or data.get("results") or data.get("data") or []
-        if isinstance(data, list):
-            return data
-        return []
+        v2 answers `{data, total, limit, offset}` with `defaultNumResults = 100`, and a
+        window mic on a normal spring day logs hundreds. Reading one page and publishing
+        its length as the total made the number on the tile a page size, and ranked
+        species from whichever 100 came back first. Ask for the maximum page and walk
+        `offset` until `total` is covered, bounded so a wrong `total` cannot loop.
+        """
+        url = f"{self.config.url.rstrip('/')}/api/v2/detections"
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        for _page in range(MAX_PAGES):
+            params = {
+                "start_date": today.isoformat(),
+                "end_date": today.isoformat(),
+                "numResults": PAGE_SIZE,
+                "offset": offset,
+            }
+            resp = httpx.get(url, params=params, timeout=5.0)
+            if resp.status_code != 200:
+                logger.error(f"BirdNET-Go returned status {resp.status_code}: {resp.text}")
+                raise RuntimeError(f"BirdNET-Go error: {resp.status_code}")
+
+            data = resp.json()
+            total: int | None = None
+            if isinstance(data, dict):
+                page = data.get("detections") or data.get("results") or data.get("data") or []
+                if data.get("total") is not None:
+                    total = int(data["total"])
+            elif isinstance(data, list):
+                page = data
+            else:
+                page = []
+            rows.extend(page)
+
+            # A bare list (an older API, or a mock) carries no `total`: one page is all
+            # there is. An empty page ends it too, whatever `total` claims.
+            if total is None or not page:
+                break
+            offset += len(page)
+            if offset >= total:
+                break
+        else:
+            logger.warning(
+                f"BirdNET-Go paging stopped at {MAX_PAGES} pages ({len(rows)} detections)"
+            )
+        return rows
 
     @staticmethod
     def _detection_time(d: dict[str, Any], zone: tzinfo | None) -> datetime | None:
