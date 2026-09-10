@@ -120,10 +120,22 @@ def _generate_ai_recommendation(
     if missing:
         raise ValueError(f"LLM response missing keys: {sorted(missing)}")
 
+    # The model's answer goes onto the public wallboard as-is, and the prompt it
+    # answered was built from a third-party web page. Nothing else stands between the
+    # two, so the pick is accepted only if it names things that were actually scraped:
+    # both halls, and every dish on the plate. Anything else -- a hallucinated hall, a
+    # dish from last week's menu, injected text -- is a ValueError, which the caller
+    # turns into the deterministic recommendation.
+    halls = _canonical({m.hall_name for m in menus})
+    items = _canonical({it.name for m in menus for it in m.items})
+    best_hall = _require_known(data["best_hall"], halls, "best_hall")
+    backup_hall = _require_known(data["backup_hall"], halls, "backup_hall")
+    plate = [_require_known(x, items, "recommended_plate") for x in data["recommended_plate"]]
+
     return DiningRecommendation(
-        best_hall=str(data["best_hall"]),
-        backup_hall=str(data["backup_hall"]),
-        recommended_plate=[str(x) for x in data["recommended_plate"]],
+        best_hall=best_hall,
+        backup_hall=backup_hall,
+        recommended_plate=plate,
         avoid=[str(x) for x in data["avoid"]],
         confidence=str(data["confidence"]),
         reasoning=str(data["reasoning"]),
@@ -131,6 +143,18 @@ def _generate_ai_recommendation(
         date=date,
         meal=meal,
     )
+
+
+def _canonical(names: set[str]) -> dict[str, str]:
+    """Case- and whitespace-insensitive lookup back to the scraped spelling."""
+    return {" ".join(name.split()).casefold(): name for name in names}
+
+
+def _require_known(value: object, known: dict[str, str], field: str) -> str:
+    key = " ".join(str(value).split()).casefold()
+    if key not in known:
+        raise ValueError(f"LLM {field} {value!r} is not on any scraped menu")
+    return known[key]
 
 
 def get_recommendation(

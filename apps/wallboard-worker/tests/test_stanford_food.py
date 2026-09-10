@@ -193,16 +193,8 @@ def test_provider_raises_when_no_menu_items() -> None:
         provider.get_daily_recommendation()
 
 
-def test_provider_uses_ai_when_configured(wilbur_html: str) -> None:
-    ai_pick = {
-        "best_hall": "Wilbur Dining",
-        "backup_hall": "Wilbur Dining",
-        "recommended_plate": ["Grilled Chicken", "Roasted Vegetables"],
-        "avoid": ["Blackened Salmon"],
-        "confidence": "high",
-        "reasoning": "Strong whole-food protein and vegetables.",
-    }
-    provider = StanfordDiningProvider(
+def _ai_provider(wilbur_html: str, ai_pick: dict[str, object]) -> StanfordDiningProvider:
+    return StanfordDiningProvider(
         StanfordDiningConfig(
             request_delay_s=0.0, hall_ids=["Wilbur"], use_ai=True, openai_api_key="sk-test"
         ),
@@ -210,9 +202,58 @@ def test_provider_uses_ai_when_configured(wilbur_html: str) -> None:
         http_transport=_menu_transport(wilbur_html),
         openai_transport=_openai_transport(ai_pick),
     )
-    rec = provider.get_daily_recommendation()
+
+
+AI_PICK: dict[str, object] = {
+    "best_hall": "Wilbur Dining",
+    "backup_hall": "Wilbur Dining",
+    # Both on the scraped Wilbur lunch fixture.
+    "recommended_plate": ["Grilled Chicken", "Black Eyed Peas"],
+    "avoid": ["Blackened Salmon"],
+    "confidence": "high",
+    "reasoning": "Strong whole-food protein and legumes.",
+}
+
+
+def test_provider_uses_ai_when_configured(wilbur_html: str) -> None:
+    rec = _ai_provider(wilbur_html, AI_PICK).get_daily_recommendation()
     assert rec.provider == "stanford-ai"
     assert "Grilled Chicken" in (rec.detail or "")
+
+
+def test_the_ai_pick_is_matched_loosely_but_published_in_the_menus_spelling(
+    wilbur_html: str,
+) -> None:
+    # Case and whitespace are not a reason to throw a good answer away; the wire
+    # still carries the scraped name, not the model's rendering of it.
+    pick = dict(AI_PICK, best_hall="wilbur dining", recommended_plate=["  grilled   CHICKEN "])
+    rec = _ai_provider(wilbur_html, pick).get_daily_recommendation()
+    assert rec.provider == "stanford-ai"
+    assert rec.hall == "Wilbur Dining"
+    assert "Try: Grilled Chicken" in (rec.detail or "")
+
+
+@pytest.mark.parametrize(
+    "off_menu",
+    [
+        {"best_hall": "Ricker Dining"},
+        {"backup_hall": "Ricker Dining"},
+        {"recommended_plate": ["Grilled Chicken", "Truffle Risotto"]},
+    ],
+    ids=["best_hall", "backup_hall", "plate_item"],
+)
+def test_an_ai_pick_naming_something_not_scraped_falls_back_to_scoring(
+    wilbur_html: str, off_menu: dict[str, object]
+) -> None:
+    """The model's text goes onto the public wallboard, and the prompt it answered
+    was built from a third-party web page. Nothing checked that its answer named
+    halls and dishes that were actually scraped: a hallucinated hall produced a
+    confident, mapless tile (ADR-0026's null result) instead of a fallback.
+    """
+    rec = _ai_provider(wilbur_html, dict(AI_PICK, **off_menu)).get_daily_recommendation()
+    assert rec.provider == "stanford", "an off-menu pick must not be published as the AI's"
+    assert rec.hall == "Wilbur Dining"
+    assert "Ricker" not in rec.title and "Truffle" not in (rec.detail or "")
 
 
 def test_provider_falls_back_when_ai_fails(wilbur_html: str) -> None:

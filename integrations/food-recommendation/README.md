@@ -21,7 +21,12 @@ FoodRecommendationProvider.get_daily_recommendation() -> Recommendation
      foods, protein quality, vegetables, and legumes while penalising hard-avoids.
   3. **recommender** — optionally sends the scored menus to OpenAI (via `httpx`,
      no `openai` SDK) for a natural pick; any failure falls back to the
-     deterministic score, so the LLM is a strict enhancement.
+     deterministic score, so the LLM is a strict enhancement. The model's answer
+     is accepted only if both halls and every dish on the plate are names that
+     were actually scraped (matched case- and whitespace-insensitively, published
+     in the menu's spelling) — its text goes onto the public wallboard, and the
+     prompt it answered was built from a third-party web page, so anything
+     off-menu is treated as a failure and falls back too.
 
   The rich internal result is mapped down to the public `Recommendation`
   (`title` = "<best hall> — <meal>", `detail` = plate + confidence + backup,
