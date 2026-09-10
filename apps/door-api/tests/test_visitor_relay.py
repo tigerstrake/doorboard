@@ -748,3 +748,83 @@ def test_the_advertised_memo_is_dropped_with_the_session(relay_state: Any) -> No
 
     client.post("/doorpad/session/end")
     assert relay_state._visitor_relay_advertised == {}
+
+
+# -- relay diagnostics are admin-only (audit 2026-09, P3) --------------------
+
+_DIAGNOSTIC_KEYS = {
+    "configured",
+    "status",
+    "pushes_ok",
+    "polls_ok",
+    "polls_failed",
+    "actions_applied",
+    "actions_rejected",
+    "consecutive_failures",
+    "last_error",
+}
+
+
+def test_the_public_relay_status_carries_only_the_qr_target(relay_state: Any) -> None:
+    """Counters, failure streaks and error classes are diagnostics; public surfaces show
+    broad status only (ADR-0005 §5). The one thing a kiosk may need is which URL the QR
+    encodes."""
+    client = TestClient(app)
+    body = client.get("/visitor-relay-status").json()
+    assert body == {"qr_target": "lan"}
+    assert not _DIAGNOSTIC_KEYS & set(body)
+
+
+def test_the_public_relay_status_does_not_reveal_whether_a_relay_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DOOR_API_DB_PATH", ":memory:")
+    monkeypatch.setenv("DOOR_API_SOCIAL_DB_PATH", ":memory:")
+    monkeypatch.delenv("DOOR_API_VISITOR_RELAY_BASE_URL", raising=False)
+    monkeypatch.delenv("DOOR_API_VISITOR_RELAY_DEVICE_TOKEN", raising=False)
+    state.__init__()
+    state.startup()
+    try:
+        assert TestClient(app).get("/visitor-relay-status").json() == {"qr_target": "lan"}
+    finally:
+        state.shutdown()
+
+
+@pytest.mark.anyio
+async def test_the_full_relay_diagnostics_require_the_admin_token(
+    transport: FakeVisitorTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DOOR_API_DB_PATH", ":memory:")
+    monkeypatch.setenv("DOOR_API_SOCIAL_DB_PATH", ":memory:")
+    monkeypatch.setenv("DOOR_API_VISITOR_RELAY_BASE_URL", RELAY_BASE)
+    monkeypatch.setenv("DOOR_API_VISITOR_RELAY_DEVICE_TOKEN", "visitor-device-token")
+    monkeypatch.setenv("DOOR_API_SOCIAL_ADMIN_TOKEN", "owner-token")
+    state.__init__(visitor_relay_transport=transport)
+    state.startup()
+    worker = VisitorRelayWorker(
+        transport=transport, handler=state, poll_interval_s=0.01, backoff_max_s=0.05
+    )
+    state.visitor_relay_worker = worker
+    try:
+        await worker._tick()
+        client = TestClient(app)
+
+        assert client.get("/admin/visitor-relay-status").status_code == 401
+        assert (
+            client.get(
+                "/admin/visitor-relay-status", headers={"Authorization": "Bearer wrong"}
+            ).status_code
+            == 401
+        )
+
+        body = client.get(
+            "/admin/visitor-relay-status", headers={"Authorization": "Bearer owner-token"}
+        ).json()
+        assert set(body) >= _DIAGNOSTIC_KEYS
+        assert body["configured"] is True
+        assert body["polls_ok"] == 1
+        assert body["qr_target"] == "relay"
+        # And the public route agrees on the one fact it shares.
+        assert client.get("/visitor-relay-status").json() == {"qr_target": "relay"}
+    finally:
+        state.shutdown()

@@ -1010,7 +1010,12 @@ class DoorApiState:
                 del self._visitor_relay_applied[stale]
         return outcome
 
+    def visitor_relay_qr_target(self) -> str:
+        """Which URL the QR encodes right now — the one relay fact a kiosk may need."""
+        return "relay" if self._visitor_relay_is_fresh() else "lan"
+
     def visitor_relay_status(self) -> dict[str, Any]:
+        """Full relay diagnostics: counters, failure streak, last error class. Admin-only."""
         if not self.config.visitor_relay_base_url or not self.config.visitor_relay_device_token:
             return {"configured": False, "status": "disabled"}
         worker = self.visitor_relay_worker
@@ -1027,7 +1032,7 @@ class DoorApiState:
             "actions_rejected": stats.actions_rejected,
             "consecutive_failures": stats.consecutive_failures,
             "last_error": stats.last_error,
-            "qr_target": "relay" if self._visitor_relay_is_fresh() else "lan",
+            "qr_target": self.visitor_relay_qr_target(),
         }
 
     def start_visitor_relay(self) -> None:
@@ -1733,11 +1738,21 @@ async def doorpad_enroll_invite() -> dict[str, Any]:
 
 
 @app.get("/visitor-relay-status")
-async def visitor_relay_status() -> dict[str, Any]:
-    """Whether the visitor QR is currently pointing at the relay or the LAN.
+async def visitor_relay_status() -> dict[str, str]:
+    """Which target the visitor QR currently encodes — and nothing else.
 
-    Public: it reports reachability and counters, never visitor content.
+    Public because a kiosk may need to know whether the QR is relay- or LAN-bound;
+    reduced to that one fact because the poll counters, failure streak, last error
+    class and whether a relay is configured at all are diagnostics, and public
+    surfaces show broad status only (ADR-0005 §5; handoff §12, "never diagnostics").
+    The full picture is on ``/admin/visitor-relay-status``.
     """
+    return {"qr_target": state.visitor_relay_qr_target()}
+
+
+@app.get("/admin/visitor-relay-status", dependencies=[Depends(_require_admin)])
+async def admin_visitor_relay_status() -> dict[str, Any]:
+    """Relay worker diagnostics for the owner and the runbook (docs/runbooks/visitor-qr.md)."""
     return state.visitor_relay_status()
 
 
