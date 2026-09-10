@@ -670,3 +670,84 @@ def test_guestbook_without_a_photo_still_works(client: TestClient) -> None:
         "/guestbook", json={"text": "just a note", "session_token": _visitor_token(client)}
     )
     assert resp.status_code == 201
+
+
+# ---------------------------------------------------------------------------
+# Ids on public writes are bounded and shape-checked (audit 2026-09, P2)
+# ---------------------------------------------------------------------------
+
+_FIVE_MIB = "x" * (5 * 1024 * 1024)
+_MALFORMED_IDS = ["../etc/passwd", "rec photo", "<script>", "rec/1", "", "é"]
+
+
+def _stored_photo_ids(table: str) -> list[str | None]:
+    assert table in ("checkins", "guestbook_entries")
+    return [
+        row[0]
+        for row in state.social_store._conn.execute(
+            f"SELECT photo_recording_id FROM {table}"
+        ).fetchall()
+    ]
+
+
+def test_checkin_rejects_an_oversized_photo_reference(client: TestClient) -> None:
+    """A 5 MiB photo_recording_id used to be accepted (201) and written verbatim to
+    social.sqlite on the SSD -- a hallway client could fill the disk at the write rate
+    limit and trip the storage floor that stops recording."""
+    token = _visitor_token(client)
+    resp = client.post(
+        "/checkins", json={"label": "hi", "session_token": token, "photo_recording_id": _FIVE_MIB}
+    )
+    assert resp.status_code == 422
+    assert _stored_photo_ids("checkins") == []
+
+
+def test_guestbook_rejects_an_oversized_photo_reference(client: TestClient) -> None:
+    token = _visitor_token(client)
+    resp = client.post(
+        "/guestbook", json={"text": "hi", "session_token": token, "photo_recording_id": _FIVE_MIB}
+    )
+    assert resp.status_code == 422
+    assert _stored_photo_ids("guestbook_entries") == []
+
+
+@pytest.mark.parametrize("bad_id", _MALFORMED_IDS)
+def test_public_writes_reject_a_malformed_photo_reference(client: TestClient, bad_id: str) -> None:
+    token = _visitor_token(client)
+    checkin = client.post(
+        "/checkins", json={"label": "hi", "session_token": token, "photo_recording_id": bad_id}
+    )
+    note = client.post(
+        "/guestbook", json={"text": "hi", "session_token": token, "photo_recording_id": bad_id}
+    )
+    assert checkin.status_code == 422, bad_id
+    assert note.status_code == 422, bad_id
+
+
+def test_a_real_recording_id_is_still_accepted(client: TestClient) -> None:
+    """door-media ids are UUIDs; the door-ui fixtures use rec-photo-N. Both must pass."""
+    token = _visitor_token(client)
+    for good in ("b7e4c318-2a51-4f0d-9c22-6d3f1e8a4402", "rec-photo-1", "rec_photo_abc"):
+        resp = client.post(
+            "/checkins", json={"label": "hi", "session_token": token, "photo_recording_id": good}
+        )
+        assert resp.status_code == 201, (good, resp.text)
+        assert resp.json()["photo_recording_id"] == good
+
+
+def test_vote_and_deletion_ids_are_bounded(client: TestClient) -> None:
+    token = _visitor_token(client)
+    vote = client.post(
+        "/polls/some-poll/vote", json={"option_id": _FIVE_MIB, "session_token": token}
+    )
+    assert vote.status_code == 422
+    deletion = client.post(
+        "/social/deletion-requests",
+        json={"target_kind": "guestbook", "target_id": _FIVE_MIB, "session_token": token},
+    )
+    assert deletion.status_code == 422
+    kind = client.post(
+        "/social/deletion-requests",
+        json={"target_kind": _FIVE_MIB, "target_id": "x", "session_token": token},
+    )
+    assert kind.status_code == 422
