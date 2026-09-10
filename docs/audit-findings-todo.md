@@ -228,13 +228,13 @@ dead code/config.
 
 ## E. Docs / hygiene
 
-- `[DECISION NEEDED]` **Task #19 asks for visitor streak + frequent-visitor stats "on the
-  wallboard", which ADR-0018 E-24 forbids**: public surfaces get "never arrival history, never
-  counts", and ADR-0018 §3 records the owner saying not to show who was there the most. The
-  streak half is now built and rendered on the **owner-facing** `/reveal` collage, where counts
-  already live and no invariant is at stake. Putting either on the hallway-facing wallboard needs
-  the owner to supersede ADR-0018 §3/E-24 — it is their hallway, but it is a superseding-ADR
-  decision, not an implementation detail.
+- `[DECIDED 2026-09-10 — owner-only, ADR-0018 stands]` **Task #19 asked for visitor streak +
+  frequent-visitor stats "on the wallboard", which ADR-0018 E-24 forbids**: public surfaces get
+  "never arrival history, never counts", and §3 records the owner saying not to show who was there
+  the most. Asked the owner directly; they chose to **keep both owner-only**. So the streak stays
+  on the `/reveal` collage, `SOCIAL_FREQUENCY_STAT_ENABLED` stays off, and **ADR-0018 §3/E-24 is
+  not superseded** — no wallboard tile, by decision rather than by omission. #19 is closed on that
+  basis. Reopening it means writing the superseding ADR first.
 
 - `[DOC]` **`docs/runbooks/storage-full.md`** (marked "Verified") references columns and log
   keys that don't exist. **`events.md`** `ambient.aircraft_nearby` is still missing ~14 model
