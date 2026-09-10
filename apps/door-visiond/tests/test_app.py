@@ -104,6 +104,24 @@ def test_enroll_and_unenroll(client: TestClient) -> None:
     assert body["archive_purge"] == "queued"
 
 
+def test_enroll_while_recognition_is_degraded_is_503(client: TestClient) -> None:
+    """No live pipeline to embed with: refuse, rather than reopen the closed one."""
+    svc = cast(Any, client.app).state.service
+    svc._runtime_degraded_detail = "vision backend failed: OSError"
+    files = [("images", ("a.bin", b"alex-photo-bytes", "application/octet-stream"))]
+    data = {
+        "display_name": "Alex",
+        "consent_version": CONSENT_VERSION,
+        "consent_confirmed": "true",
+        "profile_id": "blue_wave",
+        "color": "#0000ff",
+    }
+    resp = client.post("/enroll", data=data, files=files)
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == "recognition_degraded"
+    assert client.get("/people").json() == []
+
+
 def test_enroll_stale_consent_is_409(client: TestClient) -> None:
     files = [("images", ("a.bin", b"alex-photo-bytes", "application/octet-stream"))]
     data = {

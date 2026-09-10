@@ -316,6 +316,23 @@ def test_remote_display_name_is_whitespace_normalised(svc: VisiondService) -> No
     assert [p["display_name"] for p in svc._store.list_people()] == ["Zaphod Beeblebrox"]
 
 
+def test_a_degraded_backend_rejects_a_bundle_rather_than_embedding(
+    svc: VisiondService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While the backend is degraded there is no live pipeline; the bundle is refused
+    with a machine-readable reason instead of touching a closed device."""
+    invite_id, secret, _ = _mint(svc)
+    bundle = _bundle(svc, invite_id=invite_id, secret=secret)
+
+    # What `_degrade_failed_backend` leaves behind after three frame failures.
+    monkeypatch.setattr(svc, "_runtime_degraded_detail", "vision backend failed: OSError")
+    ack = svc.relay_handle_bundle(bundle)
+    assert (ack.outcome, ack.reason) == ("rejected", "recognition_degraded")
+    assert svc._store.person_count() == 0
+    # Refused before the invite was claimed, so the enrollee can retry after recovery.
+    assert svc.list_invites()[0]["status"] == "open"
+
+
 def test_an_invalid_display_name_reaching_enroll_is_rejected_not_failed(
     svc: VisiondService, monkeypatch: pytest.MonkeyPatch
 ) -> None:

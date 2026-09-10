@@ -124,6 +124,17 @@ class InvalidDisplayNameError(EnrollError):
         )
 
 
+class RecognitionDegradedError(EnrollError):
+    """The vision backend is degraded, so there is no embedder to enroll with (503).
+
+    Transient by design: recovery retries on its own (`_maybe_recover_backend`),
+    so the caller should try again shortly rather than treat this as final.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("recognition_degraded")
+
+
 class StaleConsentError(EnrollError):
     def __init__(self, current_version: str) -> None:
         self.current_version = current_version
@@ -147,6 +158,34 @@ class SelfEnrollClosedError(EnrollError):
         self.reason = reason
         self.retry_after_s = retry_after_s
         super().__init__(reason)
+
+
+class _DegradedEmbedder:
+    """Stands in for the Hailo embedder while the backend is degraded.
+
+    `_degrade_failed_backend` closes the shared face pipeline, but the embedder built
+    at startup held that same object — and `HailoFacePipeline._ensure_open` reopens
+    a closed instance. So an `/enroll` or a relay bundle in the recovery window
+    would open a second VDevice on the stale pipeline, and recovery then built a
+    third on the fresh one. The VDevice cannot be shared; the second open wedges
+    inference. Dropping the reference makes the reopen impossible; `enroll` refuses
+    before reaching here anyway, and recovery installs a real embedder again.
+    """
+
+    def __init__(self, *, dim: int, model_id: str) -> None:
+        self._dim = dim
+        self._model_id = model_id
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def embed(self, image_bytes: bytes) -> tuple[Embedding, float]:  # noqa: ARG002
+        raise RecognitionDegradedError
 
 
 @dataclass(frozen=True)
@@ -565,6 +604,13 @@ class VisiondService:
         # frames forever — a failure that actively hides itself, which is worse than
         # staying visibly degraded.
         self._hailo_pipeline = None
+        # The embedder holds that same closed pipeline. Same condition as the rebuild
+        # in `_maybe_recover_backend`, so a recovery that does not rebuild the embedder
+        # (an injected factory) never leaves the placeholder behind.
+        if self._owns_backend_construction and self._settings.vision_mode in _HARDWARE_MODES:
+            self._embedder = _DegradedEmbedder(
+                dim=self._settings.model_dim, model_id=self._settings.model_id
+            )
         self._emit_pipeline_status()
         logger.error(
             "vision_backend_degraded_to_disabled",
@@ -687,6 +733,10 @@ class VisiondService:
             raise EnrollmentLockedError
         if self._privacy_enabled:
             raise PrivacyModeActiveError
+        if self._runtime_degraded_detail is not None:
+            # No live pipeline to embed with; see `_DegradedEmbedder` for why touching
+            # the old one is worse than refusing. Recovery retries on its own.
+            raise RecognitionDegradedError
 
         # Normalised here, at the convergence point, so both paths store what the
         # wallboard will show. The at-door form sends the raw string (the admin UI
@@ -1012,6 +1062,10 @@ class VisiondService:
         except EnrollmentLockedError:
             return PickupAck(
                 bundle_id=bundle.bundle_id, outcome="failed", reason="enrollment_storage_locked"
+            )
+        except RecognitionDegradedError:
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="rejected", reason="recognition_degraded"
             )
         except Exception as exc:
             logger.error(

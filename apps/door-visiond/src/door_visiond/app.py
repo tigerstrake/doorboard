@@ -57,6 +57,7 @@ from door_visiond.service import (
     InvalidDisplayNameError,
     PrivacyModeActiveError,
     QualityTooLowError,
+    RecognitionDegradedError,
     SelfEnrollClosedError,
     StaleConsentError,
     VisiondService,
@@ -214,6 +215,10 @@ async def enroll(
         ) from None
     except PrivacyModeActiveError:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="privacy_mode") from None
+    except RecognitionDegradedError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="recognition_degraded"
+        ) from None
     except InvalidDisplayNameError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

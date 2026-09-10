@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from door_visiond.clock import FakeClock
-from door_visiond.embedder import MockEmbedder
+from door_visiond.embedder import HailoEmbedder, MockEmbedder
 from door_visiond.embedding import Embedding
 from door_visiond.enrollment import ProfileSpec
 from door_visiond.pipeline import BackendStatus, DisabledBackend, FrameCapture
@@ -16,6 +17,7 @@ from door_visiond.service import (
     InvalidDisplayNameError,
     PrivacyModeActiveError,
     QualityTooLowError,
+    RecognitionDegradedError,
     StaleConsentError,
     VisiondService,
 )
@@ -497,6 +499,113 @@ def test_health_states_which_camera_the_face_path_reads(
     svc = VisiondService(settings, backend=_FlakyBackend(fail_times=0))  # type: ignore[arg-type]
 
     assert str(svc.health()["face_frame_source"]).endswith("/snapshot/recognition")
+
+
+@dataclass(frozen=True)
+class _FakeFace:
+    vector: tuple[float, ...]
+    score: float
+    size_px: int
+
+
+class _CountingPipeline:
+    """A Hailo face pipeline double that counts device opens, like the real one
+    (`_ensure_open` reopens a closed instance on the next call)."""
+
+    def __init__(self) -> None:
+        self.opens = 0
+        self.opened = False
+        self.closed = False
+
+    def embed_primary(self, _image: bytes) -> _FakeFace:
+        if not self.opened:
+            self.opens += 1
+            self.opened = True
+        return _FakeFace(vector=tuple([0.25] * TEST_DIM), score=0.9, size_px=120)
+
+    def close(self) -> None:
+        self.closed = True
+        self.opened = False
+
+
+@pytest.mark.anyio
+async def test_enroll_during_the_recovery_window_never_reopens_the_closed_pipeline(
+    ssd_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Degrading closed the shared pipeline but the embedder kept holding it. An
+    enrollment in the 30 s recovery window called `embed` on that stale object, which
+    reopened a VDevice on it; recovery then built a second device for the fresh
+    pipeline. The VDevice cannot be shared, so the second open wedged inference.
+    Across degrade -> enroll -> recover there must be exactly one live pipeline."""
+    monkeypatch.setenv("VISION_MODE", "hardware")
+    monkeypatch.setenv("VISIOND_BACKEND_RECOVERY_DELAY_S", "0.1")
+    settings = Settings()
+
+    stale = _CountingPipeline()
+    built: list[_CountingPipeline] = []
+
+    def _fresh_pipeline() -> _CountingPipeline:
+        pipeline = _CountingPipeline()
+        built.append(pipeline)
+        return pipeline
+
+    class _FailingBackendHoldingPipeline(_FailingBackend):
+        async def close(self) -> None:
+            stale.close()  # HardwareBackend.close() closes the shared pipeline
+            await super().close()
+
+    # The embedder built at startup holds the same pipeline the backend does.
+    svc = VisiondService(
+        settings,
+        embedder=HailoEmbedder(dim=TEST_DIM, model_id=settings.model_id, pipeline=stale),  # type: ignore[arg-type]
+        backend=_FailingBackendHoldingPipeline(),
+    )
+    svc._hailo_pipeline = stale  # type: ignore[assignment]
+    monkeypatch.setattr(svc, "_get_hailo_pipeline", _fresh_pipeline)
+    # A healthy backend on recovery so the loop stays up; construction stays "owned".
+    monkeypatch.setattr(svc, "_backend_factory", lambda: _FlakyBackend(fail_times=0))
+
+    await svc.start()
+    try:
+        for _ in range(200):
+            if svc.health()["runtime_warning"]:
+                break
+            await asyncio.sleep(0.01)
+        assert svc.health()["runtime_warning"]
+        assert stale.closed
+
+        with pytest.raises(RecognitionDegradedError):
+            svc.enroll(
+                display_name="Alex",
+                consent_version=CONSENT_VERSION,
+                consent_confirmed=True,
+                images=[b"alex-photo-bytes"],
+                profile=_profile(),
+            )
+        assert stale.opens == 0, "the closed pipeline was reopened by an enrollment"
+        assert svc._store.person_count() == 0
+
+        for _ in range(400):
+            if svc.metrics_snapshot()["backend_recoveries"]:
+                break
+            await asyncio.sleep(0.01)
+        assert svc.metrics_snapshot()["backend_recoveries"] == 1
+
+        result = svc.enroll(
+            display_name="Alex",
+            consent_version=CONSENT_VERSION,
+            consent_confirmed=True,
+            images=[b"alex-photo-bytes"],
+            profile=_profile(),
+        )
+        assert result.embeddings_created == 1
+    finally:
+        await svc.stop()
+
+    live = [p for p in [stale, *built] if p.opened and not p.closed]
+    assert live == built == [built[0]]
+    assert stale.opens == 0
+    assert built[0].opens == 1
 
 
 @pytest.mark.anyio
