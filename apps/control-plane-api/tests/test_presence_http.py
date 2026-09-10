@@ -369,3 +369,47 @@ def test_retention_cap_is_configurable_and_trims_history(engine) -> None:
         ]
     assert len(history) == 2
     assert [h["label"] for h in history] == ["away", "sleeping"]
+
+
+def test_normalising_a_stored_expiry_to_utc(client: TestClient) -> None:
+    """Postgres renders `timestamptz` in the *session's* timezone, not UTC.
+
+    The instant is right, the tzinfo is not, and
+    `StatusPresenceChangedPayload.until` requires UTC — so resolving any source
+    that carried an expiry raised ValidationError and the request 500'd. It needed
+    both a stored `until` and a non-UTC server, so a UTC-configured CI never saw
+    it; the machine this was found on runs Postgres in Europe/Rome.
+
+    Asserted on the helper directly with an explicitly non-UTC input, so it keeps
+    testing something no matter how the runner's database is configured — an
+    end-to-end version would agree with itself on a UTC server and prove nothing.
+    """
+    from zoneinfo import ZoneInfo
+
+    from control_plane_api.presence_engine import _as_utc
+
+    instant = datetime(2026, 9, 10, 22, 0, tzinfo=ZoneInfo("Europe/Rome"))
+    normalised = _as_utc(instant)
+
+    assert normalised is not None
+    assert normalised.tzinfo is UTC, "the contract rejects any tzinfo that is not UTC"
+    assert normalised == instant, "same instant — this is a relabel, not a shift"
+    assert _as_utc(None) is None
+    # A naive value is assumed UTC rather than reinterpreted as local time, which
+    # would silently move the expiry by the server's offset.
+    naive = datetime(2026, 9, 10, 22, 0)
+    assert _as_utc(naive) == datetime(2026, 9, 10, 22, 0, tzinfo=UTC)
+
+
+def test_an_override_with_an_expiry_resolves_instead_of_500ing(client: TestClient) -> None:
+    """The end-to-end path that was broken: a stored expiry must survive resolution."""
+    resp = client.post(
+        "/status/presence/owner/override",
+        json={"label": "busy", "until": (datetime.now(UTC) + timedelta(hours=2)).isoformat()},
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+
+    status = client.get("/status/presence/owner", headers=ADMIN_HEADERS)
+    assert status.status_code == 200, status.text
+    assert status.json()["source"] == "manual"

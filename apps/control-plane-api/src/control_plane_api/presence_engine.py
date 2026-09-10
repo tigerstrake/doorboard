@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from doorboard_contracts import PresenceLabel
@@ -130,6 +130,28 @@ def list_source_rows(session: Session, subject_id: str) -> dict[str, PresenceSou
     stmt = select(PresenceSourceRow).where(PresenceSourceRow.subject_id == subject_id)
     rows = session.execute(stmt).scalars().all()
     return {row.source: row for row in rows}
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Normalise a stored timestamp to UTC.
+
+    Postgres `timestamptz` stores an instant but renders it in the *session's*
+    timezone, so a value written as UTC comes back tagged with whatever the server
+    is set to (this NUC's Postgres reports Europe/Rome). The instant is correct;
+    the tzinfo is not UTC. `StatusPresenceChangedPayload.until` requires UTC, so
+    resolving any source that carried an expiry raised ValidationError and the
+    request 500'd.
+
+    Latent until something routinely set an expiry: it needed a manual override or
+    a webhook that supplied `until`, *and* a non-UTC database server, so a
+    UTC-configured CI never saw it. Normalising here rather than at each call site
+    means everything downstream of resolution is UTC by construction.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def set_source_value(
@@ -254,7 +276,7 @@ def _build_entries(
         if row is None or not row.enabled or row.label is None:
             entries[source] = None
         else:
-            entries[source] = SourceEntry(label=PresenceLabel(row.label), until=row.until)
+            entries[source] = SourceEntry(label=PresenceLabel(row.label), until=_as_utc(row.until))
     return entries, tracking_enabled
 
 
