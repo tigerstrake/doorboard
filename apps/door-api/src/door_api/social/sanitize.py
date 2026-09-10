@@ -20,11 +20,22 @@ from __future__ import annotations
 import html
 import unicodedata
 
-# Strip C0/C1 control characters except tab/newline (which we also strip,
-# since none of our fields are multi-line) — keeps guestbook/checkin/poll
-# text to a single visual line and prevents terminal/log injection via
-# control sequences.
-_ALLOWED_CATEGORIES_EXCLUDED = {"Cc", "Cf"}
+# Strip C0/C1 control characters (Cc, tab/newline included since none of our
+# fields are multi-line) and format characters (Cf: bidi overrides, zero-width
+# spaces, isolates) — keeps guestbook/checkin/poll text to a single visual line
+# and prevents terminal/log injection via control sequences.
+_STRIPPED_CATEGORIES = {"Cc", "Cf"}
+# Two characters emoji sequences are made of, allow-listed through the strip:
+# U+200D ZERO WIDTH JOINER is Cf, and dropping it turned 👨‍👩‍👧 into three separate
+# people and 👩‍💻 into a woman beside a laptop; U+FE0F VARIATION SELECTOR-16 (Mn)
+# is what makes ❤️ and 1️⃣ render as emoji. Neither is a bidi control or a line
+# separator, and neither has a visual footprint of its own.
+_EMOJI_GLUE = {"‍", "️"}
+# Consecutive non-spacing combining marks (Mn) are capped so a "zalgo" line
+# cannot stack hundreds of diacritics on one base character and overflow the
+# wallboard tile vertically. Three covers every real orthography we would meet,
+# and NFC has already composed what it can before this is applied.
+_MAX_CONSECUTIVE_COMBINING = 3
 
 
 class SanitizationError(ValueError):
@@ -32,7 +43,7 @@ class SanitizationError(ValueError):
 
 
 def sanitize_text(raw: str, *, max_len: int, field_name: str = "text") -> str:
-    """Strip control characters and enforce a length cap.
+    """Strip control characters, normalise, clamp combining marks, cap the length.
 
     Raises SanitizationError on empty (post-strip) or over-length input.
     The caller is expected to turn this into a 422/400 response and count
@@ -41,10 +52,32 @@ def sanitize_text(raw: str, *, max_len: int, field_name: str = "text") -> str:
     if not isinstance(raw, str):
         raise SanitizationError(f"{field_name} must be a string")
 
-    cleaned = "".join(
-        ch for ch in raw if unicodedata.category(ch) not in _ALLOWED_CATEGORIES_EXCLUDED
+    stripped = "".join(
+        ch
+        for ch in raw
+        if ch in _EMOJI_GLUE or unicodedata.category(ch) not in _STRIPPED_CATEGORIES
     )
-    cleaned = cleaned.strip()
+    # NFC *after* the strip: a format character removed from between a base and its
+    # mark can expose a pair NFC composes, and the combining cap below should see the
+    # composed form — what actually renders — rather than the decomposed input.
+    composed = unicodedata.normalize("NFC", stripped)
+
+    kept: list[str] = []
+    combining_run = 0
+    for ch in composed:
+        if ch in _EMOJI_GLUE:
+            # Neither counted nor a run reset: interleaving glue must not let a
+            # zalgo line past the cap.
+            kept.append(ch)
+            continue
+        if unicodedata.category(ch) == "Mn":
+            combining_run += 1
+            if combining_run > _MAX_CONSECUTIVE_COMBINING:
+                continue
+        else:
+            combining_run = 0
+        kept.append(ch)
+    cleaned = "".join(kept).strip()
 
     if not cleaned:
         raise SanitizationError(f"{field_name} must not be empty")
