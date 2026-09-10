@@ -1077,18 +1077,32 @@ _INTERACTION_PATH_PREFIXES = (
     "/guestbook",
     "/polls",
 )
+# Only a write can re-arm the window. door-api cannot tell the doorpad from the
+# wallboard — both are kiosks on this Pi hitting the same routes — and the wallboard
+# polls GET /guestbook and GET /polls/current every 30 s, forever, with nobody at the
+# door. Counting reads meant that ambient poll landed inside the 120 s interaction
+# window every time, so a recognised identity never expired: the badge and the named
+# check-in button stayed up after the person left, and every later stranger's note,
+# vote and check-in was silently attributed to them (ADR-0018 §2, E-25; ADR-0020 says
+# the window is re-armed by *doorpad use*, not by anything that reads door-api).
+# Every doorpad action is a POST — including the explicit keepalive on touch,
+# /doorpad/activity — so nothing a person does at the panel is lost by this.
+_INTERACTION_METHODS = frozenset({"POST", "PATCH", "DELETE"})
 
 
 @app.middleware("http")
 async def _extend_identity_on_interaction(request: Request, call_next: Any) -> Any:
-    """Re-arm the identity window when the doorpad or a visitor surface is used.
+    """Re-arm the identity window when the doorpad or a visitor surface is *used*.
 
-    Reads (`GET`) count: paging through screens is interaction, and the doorpad polls
-    its own state as the visitor moves. Deliberately excludes `/admin` (the owner's
-    phone is not a person at the door) and `/internal/events` (recognition itself must
-    not extend its own window, or one match would hold a name indefinitely).
+    Writes only (see ``_INTERACTION_METHODS``): a ``GET`` on these prefixes may be the
+    wallboard's ambient poll, which is not a person at the door. Deliberately excludes
+    `/admin` (the owner's phone is not a person at the door) and `/internal/events`
+    (recognition itself must not extend its own window, or one match would hold a
+    name indefinitely).
     """
-    if request.method != "OPTIONS" and request.url.path.startswith(_INTERACTION_PATH_PREFIXES):
+    if request.method in _INTERACTION_METHODS and request.url.path.startswith(
+        _INTERACTION_PATH_PREFIXES
+    ):
         state.identity.touch()
     return await call_next(request)
 
