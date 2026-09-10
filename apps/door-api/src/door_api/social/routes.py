@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import secrets
 from collections.abc import Callable
+from typing import Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -452,7 +453,11 @@ def build_social_router(
 
     @router.get("/admin/guestbook", dependencies=[Depends(require_admin)])
     def admin_list_guestbook(
-        status: str = "pending", limit: int = 20, cursor: str | None = None
+        # Typed at the edge so an unknown value is a 422, not the service's ValueError
+        # surfacing as a 500.
+        status: Literal["pending", "approved"] = "pending",
+        limit: int = 20,
+        cursor: str | None = None,
     ) -> dict:
         service = get_service()
         limit = min(max(limit, 1), service.config.max_list_limit)
