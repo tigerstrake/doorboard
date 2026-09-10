@@ -156,6 +156,9 @@ class DoorApiState:
         self._visitor_relay_task: asyncio.Task[None] | None = None
         self._visitor_relay_token: str | None = None
         self._visitor_relay_applied: dict[str, VisitorActionOutcome] = {}
+        # The one token minted for the current session key: (key, token, expires_at).
+        # See visitor_token() for why there must be exactly one per session.
+        self._visitor_token_cache: tuple[UUID, str, int] | None = None
 
         def on_event(event: dict[str, Any]) -> None:
             self.broadcast.send_delta(event)
@@ -167,9 +170,10 @@ class DoorApiState:
                 self.visitor_relay_worker.request_push()
             if event["type"] == "session.ended":
                 # Stop advertising a finished session, and drop the applied-action
-                # memo so the next visitor starts clean.
+                # memo and the session's token so the next visitor starts clean.
                 self._visitor_relay_token = None
                 self._visitor_relay_applied.clear()
+                self._visitor_token_cache = None
 
         self.machine = SessionMachine(config=self.config, store=self.store, on_event=on_event)
         self.machine.set_identity_observer(
@@ -684,12 +688,27 @@ class DoorApiState:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="No active visitor session",
             )
-        expires_at = int(time.time() + self.config.visitor_token_ttl_s)
-        token = encode_visitor_token(
-            secret=self.config.visitor_token_secret,
-            session_id=session_key,
-            expires_at=expires_at,
-        )
+        # Exactly one token per session key, handed out again on every call until it
+        # expires or the session ends. A token is HMAC(session_id, expires_at) with no
+        # nonce, so minting fresh on each call produced a different token every second
+        # -- and the relay is keyed on sha256(token), replaced wholesale on every push
+        # (ADR-0017 §1). The wallboard mints on every state change and the doorpad
+        # mints on "show QR", so a phone that scanned at RINGING was orphaned the
+        # moment the owner answered: its snapshot read 404 and its note was refused
+        # with session_not_found. Reuse keeps the relay hash stable for the whole
+        # session, which is what a scanned QR needs.
+        now = int(time.time())
+        cached = self._visitor_token_cache
+        if cached is not None and cached[0] == session_key and cached[2] > now:
+            token, expires_at = cached[1], cached[2]
+        else:
+            expires_at = int(now + self.config.visitor_token_ttl_s)
+            token = encode_visitor_token(
+                secret=self.config.visitor_token_secret,
+                session_id=session_key,
+                expires_at=expires_at,
+            )
+            self._visitor_token_cache = (session_key, token, expires_at)
 
         # The QR must work for a phone on cellular, which cannot resolve the LAN
         # host — but it must also keep working with the internet down (E-19). So
