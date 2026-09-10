@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 
 from aircraft.enrichment import AircraftEnricher, EnrichmentConfig
@@ -41,6 +43,8 @@ class ScheduledJob:
     name: str
     interval_s: float
     run: Callable[[], object]
+    # Per-job deadline; None means the scheduler's default (WALLBOARD_JOB_TIMEOUT_S).
+    timeout_s: float | None = None
 
 
 class Scheduler:
@@ -60,6 +64,11 @@ class Scheduler:
         self._stopped = False
         # Consecutive failures per job name, driving the backoff in _next_delay.
         self._failures: dict[str, int] = {}
+        # One single-thread executor per job, so a job never overlaps itself, and the
+        # run that last overran its deadline, so the loop can tell "still hung" from
+        # "ready to try again" without ever queueing a second run behind a stuck one.
+        self._executors: dict[str, ThreadPoolExecutor] = {}
+        self._inflight: dict[str, Future[object]] = {}
 
     @property
     def job_names(self) -> tuple[str, ...]:
@@ -68,10 +77,20 @@ class Scheduler:
     def stop(self) -> None:
         self._stopped = True
 
+    def close(self) -> None:
+        """Release the worker threads. A run still hung past its deadline is abandoned."""
+        for executor in self._executors.values():
+            executor.shutdown(wait=False, cancel_futures=True)
+        self._executors.clear()
+        self._inflight.clear()
+
     def run_once(self) -> None:
         self._heartbeat()
-        for job in self._jobs:
-            self._run_isolated(job)
+        try:
+            for job in self._jobs:
+                self._run_isolated(job)
+        finally:
+            self.close()
 
     def run_forever(self) -> None:
         # Staggered rather than all at `now`. Every job firing in the same instant on
@@ -85,28 +104,60 @@ class Scheduler:
             for index, job in enumerate(self._jobs)
         }
         logger.info("scheduler_started", extra={"jobs": list(next_runs)})
-        while not self._stopped:
-            self._heartbeat()
-            now = self._monotonic()
-            for job in self._jobs:
-                if now >= next_runs[job.name]:
-                    ok = self._run_isolated(job)
-                    next_runs[job.name] = self._monotonic() + self._next_delay(job, ok=ok)
+        try:
+            while not self._stopped:
+                self._heartbeat()
+                now = self._monotonic()
+                for job in self._jobs:
+                    if now >= next_runs[job.name]:
+                        ok = self._run_isolated(job)
+                        next_runs[job.name] = self._monotonic() + self._next_delay(job, ok=ok)
 
-            if not next_runs:
-                self._sleep(10.0)
-                continue
-            wait_s = max(0.01, min(1.0, min(next_runs.values()) - self._monotonic()))
-            self._sleep(wait_s)
+                if not next_runs:
+                    self._sleep(10.0)
+                    continue
+                wait_s = max(0.01, min(1.0, min(next_runs.values()) - self._monotonic()))
+                self._sleep(wait_s)
+        finally:
+            self.close()
 
     def _run_isolated(self, job: ScheduledJob) -> bool:
-        """Run one job. False if it raised, which is what drives the backoff."""
+        """Run one job under its deadline. False if it raised or overran; both back off.
+
+        The job runs on its own thread and the loop waits on it for at most
+        `timeout_s`. A thread cannot be killed, so an overrun is *abandoned*, not
+        stopped: the loop moves on to the other tiles (the heartbeat keeps ticking, the
+        container stays healthy), and the next attempt is refused while the old run is
+        still going rather than queued behind it. Before this, every job ran inline and
+        one hung provider -- skyfield downloading an ephemeris with no timeout, a scrape
+        that never returned -- froze every tile at its last value, indefinitely, because
+        Compose does not restart a container for being unhealthy.
+        """
         started = self._monotonic()
+        pending = self._inflight.get(job.name)
+        if pending is not None and not pending.done():
+            logger.error("scheduled_job_still_running", extra={"job": job.name})
+            return False
+
+        timeout_s = job.timeout_s if job.timeout_s is not None else self._settings.job_timeout_s
+        executor = self._executors.get(job.name)
+        if executor is None:
+            executor = self._executors[job.name] = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix=f"job-{job.name}"
+            )
+        future = executor.submit(job.run)
+        self._inflight[job.name] = future
         try:
-            job.run()
+            future.result(timeout=timeout_s)
+        except FutureTimeoutError:
+            logger.error("scheduled_job_timed_out", extra={"job": job.name, "timeout_s": timeout_s})
+            return False
         except Exception:
             logger.exception("scheduled_job_failed", extra={"job": job.name})
             return False
+        finally:
+            if future.done():
+                self._inflight.pop(job.name, None)
         logger.info(
             "scheduled_job_completed",
             extra={"job": job.name, "duration_s": self._monotonic() - started},
@@ -269,6 +320,8 @@ def build_jobs(settings: Settings, *, force_mock: bool = False) -> list[Schedule
                 "food-recommendation",
                 settings.food_interval_s,
                 lambda: run_food_recommendation(settings, food),
+                # Scrapes every hall in series and may wait on an LLM: longer deadline.
+                timeout_s=settings.food_job_timeout_s,
             )
         )
     return jobs

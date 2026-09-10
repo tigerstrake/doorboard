@@ -102,6 +102,21 @@ def test_build_jobs_registers_only_enabled_features() -> None:
     }
 
 
+def test_build_jobs_gives_the_food_job_its_longer_deadline() -> None:
+    # The Stanford scrape is up to ~11 halls x 15 s in series plus an LLM call; the
+    # default deadline would abandon it every day. Every other job takes the default.
+    settings = Settings(
+        FEATURE_FOOD=True,
+        FEATURE_AIRCRAFT=True,
+        WALLBOARD_WORKER_INGEST_TOKEN="test-ingest-token",
+        WALLBOARD_FOOD_JOB_TIMEOUT_S=123.0,
+    )
+    jobs = {job.name: job for job in build_jobs(settings, force_mock=True)}
+
+    assert jobs["food-recommendation"].timeout_s == 123.0
+    assert jobs["aircraft-summary"].timeout_s is None
+
+
 @patch("httpx.post")
 def test_bootstrap_ingest_token_is_reused(mock_post: MagicMock) -> None:
     response = MagicMock(status_code=200)

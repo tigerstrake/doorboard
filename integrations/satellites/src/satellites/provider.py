@@ -107,18 +107,30 @@ class SkyfieldSatelliteProvider(SatelliteProvider):
             )
         return samples
 
+    # The JPL ephemeris the pass-visibility check needs. The worker image bundles it at
+    # the default SATELLITES_EPHEMERIS_DIR; it is never fetched at runtime.
+    EPHEMERIS_FILE = "de421.bsp"
+
     def _get_ephemeris(self) -> Any:
         if self._eph is None:
             # Lazy load ephemeris via an explicit Loader pointed at a writable
             # directory (the global `load` uses the CWD, which isn't writable by
-            # the container worker user). The Loader reads de421.bsp from the dir
-            # and only downloads it once, into that same writable dir, if missing.
+            # the container worker user).
             ephemeris_dir = Path(self.config.ephemeris_dir)
             ephemeris_dir.mkdir(parents=True, exist_ok=True)
-            # A Loader instance is callable: loader("de421.bsp") loads from its
-            # directory and only downloads (into that same dir) when missing.
+            # Fail fast if the file is absent rather than let the Loader fetch it. A
+            # Loader downloads a missing file from NAIF -- ~17 MB with no timeout -- and
+            # an operator-overridable dir mounted empty is enough to trigger that. It
+            # was the one unbounded path in the worker, and it ran on the loop thread.
+            ephemeris_path = ephemeris_dir / self.EPHEMERIS_FILE
+            if not ephemeris_path.is_file():
+                raise RuntimeError(
+                    f"ephemeris {ephemeris_path} is missing; the worker image bundles it at "
+                    "the default SATELLITES_EPHEMERIS_DIR and never downloads it at runtime"
+                )
+            # A Loader instance is callable: loader("de421.bsp") loads from its directory.
             loader = Loader(self.config.ephemeris_dir)
-            self._eph = loader("de421.bsp")
+            self._eph = loader(self.EPHEMERIS_FILE)
         return self._eph
 
     def _get_tles(

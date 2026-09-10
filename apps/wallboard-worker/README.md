@@ -26,7 +26,11 @@ Results are written to Postgres + pushed over MQTT/HTTP so control-plane-api can
 ## Runtime
 
 `wallboard-worker run` starts the monotonic scheduler. Only enabled jobs are
-registered; one job failure is logged and does not stop the others. Production
-uses a pre-issued `WALLBOARD_WORKER_INGEST_TOKEN`, which is reused for the life
-of the process. `CONTROL_PLANE_ADMIN_TOKEN` is accepted only as a dev bootstrap
-fallback and is not passed to the production container.
+registered; one job failure is logged and does not stop the others. Each run
+executes on the job's own thread under a deadline (`WALLBOARD_JOB_TIMEOUT_S`,
+default 60 s; the food job has `WALLBOARD_FOOD_JOB_TIMEOUT_S`, default 300 s):
+a run that overruns is abandoned, logged as `scheduled_job_timed_out`, and
+backed off like a failure, and the job is not retried while that run is still
+going. Production uses a pre-issued `WALLBOARD_WORKER_INGEST_TOKEN`, which is
+reused for the life of the process. `CONTROL_PLANE_ADMIN_TOKEN` is accepted only
+as a dev bootstrap fallback and is not passed to the production container.

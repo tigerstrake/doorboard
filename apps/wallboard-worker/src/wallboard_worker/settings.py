@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     scheduler_backoff_max_s: float = Field(
         default=1800.0, alias="WALLBOARD_SCHEDULER_BACKOFF_MAX_S", gt=0
     )
+    # Deadline for one run of a job. Every job runs on the loop thread, so a provider
+    # that hangs -- a download with no timeout, a scrape that never returns -- used to
+    # freeze every tile, and Compose does not restart an unhealthy container. A run
+    # that overruns counts as a failure and enters the backoff.
+    job_timeout_s: float = Field(default=60.0, alias="WALLBOARD_JOB_TIMEOUT_S", gt=0)
+    # The food job scrapes every hall in series (up to ~11 x 15 s) and may then wait
+    # on an LLM, so it gets its own, longer deadline.
+    food_job_timeout_s: float = Field(default=300.0, alias="WALLBOARD_FOOD_JOB_TIMEOUT_S", gt=0)
 
     bird_summary_interval_s: float = Field(default=300.0, alias="WALLBOARD_BIRD_INTERVAL_S", gt=0)
     satellite_interval_s: float = Field(

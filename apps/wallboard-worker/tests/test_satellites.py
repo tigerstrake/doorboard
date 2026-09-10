@@ -192,6 +192,9 @@ def test_ephemeris_uses_loader_pointed_at_configured_writable_dir(tmp_path) -> N
     # instead use a Loader pointed at the configured, writable ephemeris_dir and
     # create that dir before loading.
     eph_dir = tmp_path / "skyfield_cache"
+    # The file has to be there: the provider refuses to let the Loader download it.
+    eph_dir.mkdir()
+    (eph_dir / "de421.bsp").write_bytes(b"")
     config = SatelliteConfig(
         observer_lat=37.7749,
         observer_lon=-122.4194,
@@ -212,13 +215,32 @@ def test_ephemeris_uses_loader_pointed_at_configured_writable_dir(tmp_path) -> N
         mock_loader.assert_called_once_with("de421.bsp")
 
     assert eph is sentinel_eph
-    # The writable dir was created before loading.
     assert eph_dir.is_dir()
 
     # Second call is cached and does not reconstruct the Loader.
     with patch("satellites.provider.Loader") as mock_loader_again:
         assert provider._get_ephemeris() is sentinel_eph
         mock_loader_again.assert_not_called()
+
+
+def test_a_missing_ephemeris_fails_fast_instead_of_downloading(tmp_path) -> None:
+    """skyfield's Loader fetches a missing de421.bsp from NAIF: ~17 MB, no timeout.
+
+    SATELLITES_EPHEMERIS_DIR is operator-overridable, so a dir mounted empty was enough
+    to trigger it -- on the scheduler's loop thread, stalling every other tile. The
+    image bundles the file; the worker must never fetch it.
+    """
+    config = SatelliteConfig(
+        observer_lat=37.7749,
+        observer_lon=-122.4194,
+        ephemeris_dir=str(tmp_path / "empty"),
+    )
+    provider = SkyfieldSatelliteProvider(config)
+
+    with patch("satellites.provider.Loader") as mock_loader_cls:
+        with pytest.raises(RuntimeError, match="de421.bsp is missing"):
+            provider._get_ephemeris()
+        mock_loader_cls.assert_not_called()
 
 
 def test_skyfield_satellite_provider_stale_tle_raises_error(tmp_path) -> None:

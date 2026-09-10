@@ -270,6 +270,11 @@ services:
       # same instant; the cap bounds the per-job backoff when a feed is down.
       WALLBOARD_SCHEDULER_STAGGER_S: ${WALLBOARD_SCHEDULER_STAGGER_S:-2.0}
       WALLBOARD_SCHEDULER_BACKOFF_MAX_S: ${WALLBOARD_SCHEDULER_BACKOFF_MAX_S:-1800.0}
+      # Per-run deadline. A job that overruns is abandoned and backed off, so one
+      # hung provider degrades one tile instead of freezing all of them. The food
+      # job scrapes every hall in series and gets a longer one.
+      WALLBOARD_JOB_TIMEOUT_S: ${WALLBOARD_JOB_TIMEOUT_S:-60.0}
+      WALLBOARD_FOOD_JOB_TIMEOUT_S: ${WALLBOARD_FOOD_JOB_TIMEOUT_S:-300.0}
       WALLBOARD_AIRCRAFT_INTERVAL_S: ${WALLBOARD_AIRCRAFT_INTERVAL_S:-30.0}
       AIRCRAFT_POLL_COOLDOWN_SECONDS: ${AIRCRAFT_POLL_COOLDOWN_SECONDS:-30}
       AIRCRAFT_PROVIDER: ${AIRCRAFT_PROVIDER:-auto}
