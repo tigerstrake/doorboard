@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from birdnet.provider import BirdnetConfig, BirdnetGoProvider, MockBirdProvider
 from wallboard_worker.jobs import run_bird_summary
 from wallboard_worker.settings import Settings
+
+PACIFIC = "America/Los_Angeles"
 
 
 def test_mock_bird_provider() -> None:
@@ -24,6 +27,8 @@ def test_birdnet_go_provider_success() -> None:
         url="http://127.0.0.1:8080",
         confidence_threshold=0.70,
         species_filter=["House Finch", "Mourning Dove"],
+        # Pinned so the test does not depend on the host's TZ.
+        tz="UTC",
     )
     provider = BirdnetGoProvider(config)
     now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=UTC)
@@ -85,6 +90,58 @@ def test_birdnet_go_provider_success() -> None:
         assert top[1]["name"] == "Mourning Dove"
         assert top[1]["count"] == 1
         assert top[1]["confidence_avg"] == 0.78
+
+
+def _get_returning(detections: object) -> MagicMock:
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = detections
+    return response
+
+
+def test_today_is_the_local_calendar_day_not_the_utc_one() -> None:
+    """20:00 Pacific on 7 July is 03:00 UTC on 8 July.
+
+    The provider asked BirdNET-Go for the UTC date and then dropped anything whose
+    local date differed from it, so from ~17:00 local until midnight the tile said
+    nothing had sung today. "Today" is a local-calendar fact (ADR-0037, ADR-0039 —
+    the same bug class, fixed elsewhere in this worker and missed here).
+    """
+    now_utc = datetime(2026, 7, 7, 20, 0, tzinfo=ZoneInfo(PACIFIC)).astimezone(UTC)
+    assert now_utc.date().isoformat() == "2026-07-08", "the fixture must straddle midnight UTC"
+
+    # BirdNET-Go stamps `date` + `time` in the bird Pi's local zone, naive.
+    detections = [
+        {"commonName": "House Finch", "confidence": 0.9, "date": "2026-07-07", "time": "18:30:00"},
+        {"commonName": "Mourning Dove", "confidence": 0.9, "date": "2026-07-07 19:45:00"},
+    ]
+    provider = BirdnetGoProvider(BirdnetConfig(tz=PACIFIC))
+    with patch("httpx.get", return_value=_get_returning(detections)) as get:
+        total, top = provider.get_summary(now_utc)
+
+    assert get.call_args.kwargs["params"]["start_date"] == "2026-07-07"
+    assert total == 2
+    assert {s["name"] for s in top} == {"House Finch", "Mourning Dove"}
+
+
+def test_an_rfc3339_timestamp_is_preferred_and_its_zone_honoured() -> None:
+    # 23:30 Pacific on 7 July is 06:30 UTC on 8 July; it still counts as 7 July here.
+    now_utc = datetime(2026, 7, 7, 23, 45, tzinfo=ZoneInfo(PACIFIC)).astimezone(UTC)
+    detections = [
+        {
+            "commonName": "Barn Owl",
+            "confidence": 0.95,
+            "date": "2026-07-07",
+            "time": "23:30:00",
+            "timestamp": "2026-07-07T23:30:00-07:00",
+        },
+        # Yesterday, however you count it.
+        {"commonName": "Barn Owl", "confidence": 0.95, "timestamp": "2026-07-06T23:30:00-07:00"},
+    ]
+    provider = BirdnetGoProvider(BirdnetConfig(tz=PACIFIC))
+    with patch("httpx.get", return_value=_get_returning(detections)):
+        total, _top = provider.get_summary(now_utc)
+    assert total == 1
 
 
 def test_birdnet_go_provider_api_error_graceful() -> None:
