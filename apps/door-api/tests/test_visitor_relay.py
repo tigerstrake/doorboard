@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import Generator
 from typing import Any
 
@@ -571,3 +572,80 @@ def test_no_disclosure_name_without_recognition(relay_state: Any) -> None:
     assert relay_state.session_snapshot_dict()["attributed_to"] is None
     token = client.get("/visitor-token").json()["token"]
     assert client.get("/visitor-session", params={"token": token}).json()["attributed_to"] is None
+
+
+# -- one token per session (audit 2026-09, P1) ------------------------------
+
+
+def test_every_mint_in_one_session_returns_the_same_token(
+    relay_state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A token is HMAC(session_id, expires_at) with no nonce, so a fresh mint in a
+    different second is a different token — and the relay is keyed on sha256(token),
+    replaced wholesale on every push. The wallboard mints on every state change and
+    the doorpad on "show QR", so a phone that scanned at RINGING was orphaned the
+    moment the owner answered. One token per session keeps the hash stable.
+    """
+    client = TestClient(app)
+    first = _issue_token(relay_state, client)
+
+    real_time = time.time
+    monkeypatch.setattr(time, "time", lambda: real_time() + 5.0)
+    second = client.get("/visitor-token").json()["token"]
+
+    assert second == first
+    snapshot = relay_state.visitor_relay_snapshot()
+    assert snapshot is not None
+    assert snapshot.session_token_sha256 == sha256_b64url(first)
+
+
+@pytest.mark.anyio
+async def test_the_snapshot_pushed_after_a_second_mint_still_matches_the_first_token(
+    relay_state: Any, transport: FakeVisitorTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What the phone actually depends on: every push for the session carries the hash
+    of the token it scanned, so its reads and writes keep resolving."""
+    client = TestClient(app)
+    first = _issue_token(relay_state, client)
+    worker = VisitorRelayWorker(
+        transport=transport, handler=relay_state, poll_interval_s=0.01, backoff_max_s=0.05
+    )
+    relay_state.visitor_relay_worker = worker
+    await worker._tick()
+
+    real_time = time.time
+    monkeypatch.setattr(time, "time", lambda: real_time() + 5.0)
+    assert client.get("/visitor-token").json()["token"] == first
+    await worker._tick()
+
+    assert len(transport.pushed) == 2
+    assert {s.session_token_sha256 for s in transport.pushed} == {sha256_b64url(first)}
+
+
+def test_a_new_session_gets_a_new_token(relay_state: Any) -> None:
+    """Reuse is per session, never across one: a finished session's token must not be
+    handed to the next visitor."""
+    client = TestClient(app)
+    first = _issue_token(relay_state, client)
+    # "Done" twice: active -> SESSION_END -> IDLE.
+    assert client.post("/doorpad/session/end").json()["accepted"] is True
+    assert client.post("/doorpad/session/end").json()["accepted"] is True
+
+    second = _issue_token(relay_state, client)
+    assert second != first
+    assert client.get("/visitor-session", params={"token": first}).status_code == 401
+
+
+def test_an_expired_token_is_replaced_not_reissued(
+    relay_state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = TestClient(app)
+    first = _issue_token(relay_state, client)
+
+    real_time = time.time
+    ttl = relay_state.config.visitor_token_ttl_s
+    monkeypatch.setattr(time, "time", lambda: real_time() + ttl + 1.0)
+    second = client.get("/visitor-token").json()["token"]
+
+    assert second != first
+    assert client.get("/visitor-session", params={"token": second}).status_code == 200
