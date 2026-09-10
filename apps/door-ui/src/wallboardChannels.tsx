@@ -29,6 +29,10 @@ export interface VisitorCollageStats {
   distinct_visitors: number;
   guest_count: number;
   most_frequent: { label: string | null; count: number } | null;
+  // Consecutive local days that had at least one check-in. Counts over dates, so
+  // they carry no identity — safe next to the other aggregates here.
+  current_streak_days: number;
+  longest_streak_days: number;
   first_checkin_at: string | null;
   most_recent_checkin_at: string | null;
 }
@@ -99,6 +103,16 @@ function VisitorStatsPanel({ stats }: { stats: VisitorCollageStats }) {
         <span className="visitor-collage-chip">
           Most frequent: <strong>{stats.most_frequent.label?.trim() || "Guest"}</strong> (
           {stats.most_frequent.count})
+        </span>
+      )}
+      {stats.current_streak_days > 1 && (
+        <span className="visitor-collage-chip">
+          <strong>{stats.current_streak_days}</strong> days in a row
+        </span>
+      )}
+      {stats.longest_streak_days > 1 && (
+        <span className="visitor-collage-chip">
+          Best streak: <strong>{stats.longest_streak_days}</strong> days
         </span>
       )}
       {lastVisit && (

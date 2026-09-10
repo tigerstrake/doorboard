@@ -13,6 +13,8 @@ const COLLAGE: VisitorCollage = {
     distinct_visitors: 3,
     guest_count: 2,
     most_frequent: { label: "Alex", count: 4 },
+    current_streak_days: 3,
+    longest_streak_days: 6,
     first_checkin_at: "2026-01-02T10:00:00Z",
     most_recent_checkin_at: "2026-06-12T18:30:00Z",
   },

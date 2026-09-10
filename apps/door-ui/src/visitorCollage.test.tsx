@@ -19,6 +19,8 @@ const COLLAGE: VisitorCollage = {
     distinct_visitors: 3,
     guest_count: 2,
     most_frequent: { label: "Alex", count: 4 },
+    current_streak_days: 3,
+    longest_streak_days: 6,
     first_checkin_at: "2026-01-02T10:00:00Z",
     most_recent_checkin_at: "2026-07-18T18:30:00Z",
   },
@@ -84,6 +86,23 @@ describe("visitor collage tile", () => {
     expect(statsText()).toContain("5 visitor"); // stats still render
   });
 
+  it("shows both streaks when there is one to show", () => {
+    render(<VisitorCollageContent collage={COLLAGE} />);
+    expect(statsText()).toContain("3 days in a row");
+    expect(statsText()).toContain("Best streak: 6 days");
+  });
+
+  it("hides a streak of one, which is just 'someone came by'", () => {
+    // A permanent "1 day in a row" chip is noise, not an achievement.
+    const lonely: VisitorCollage = {
+      ...COLLAGE,
+      stats: { ...COLLAGE.stats, current_streak_days: 1, longest_streak_days: 1 },
+    };
+    render(<VisitorCollageContent collage={lonely} />);
+    expect(statsText()).not.toContain("in a row");
+    expect(statsText()).not.toContain("Best streak");
+  });
+
   it("shows the graceful empty state when nobody has checked in", () => {
     const empty: VisitorCollage = {
       stats: {
@@ -93,6 +112,8 @@ describe("visitor collage tile", () => {
         distinct_visitors: 0,
         guest_count: 0,
         most_frequent: null,
+        current_streak_days: 0,
+        longest_streak_days: 0,
         first_checkin_at: null,
         most_recent_checkin_at: null,
       },

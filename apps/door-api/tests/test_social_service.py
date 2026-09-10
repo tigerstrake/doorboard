@@ -11,6 +11,9 @@ Coverage targets from the T-403 brief:
 
 from __future__ import annotations
 
+import json
+import time
+from datetime import date
 from typing import Any
 
 import pytest
@@ -23,7 +26,7 @@ from door_api.social.errors import (
     UnsupportedDeletionTargetError,
 )
 from door_api.social.sanitize import SanitizationError, escape_for_render, sanitize_text
-from door_api.social.service import SocialService
+from door_api.social.service import SocialService, compute_day_streaks
 from door_api.social.store import SocialStore
 from doorboard_contracts.events import parse_event
 
@@ -669,3 +672,91 @@ class TestListCheckinPhotos:
             actor="admin",
         )
         assert service.list_checkin_photos(limit=10) == []
+
+
+# --- visitor streak (#19) ---------------------------------------------------
+#
+# Counts over *dates*, never over people: the streak says "someone came by on N
+# consecutive days", which is the celebratory fact, and needs no person_id to say
+# it (ARCHITECTURE.md §9, ADR-0018 E-24).
+
+
+class TestDayStreaks:
+    @staticmethod
+    def _stamps(*days: int, hour: int = 12) -> list[str]:
+        return [f"2026-09-{d:02d}T{hour:02d}:00:00.000Z" for d in days]
+
+    def test_counts_a_run_ending_today(self) -> None:
+        current, longest = compute_day_streaks(self._stamps(8, 9, 10), today=date(2026, 9, 10))
+        assert (current, longest) == (3, 3)
+
+    def test_a_run_through_yesterday_is_still_alive(self) -> None:
+        """A tile that resets at 00:01 every night reads as broken, not accurate."""
+        current, _ = compute_day_streaks(self._stamps(8, 9), today=date(2026, 9, 10))
+        assert current == 2
+
+    def test_two_empty_days_ends_the_current_streak(self) -> None:
+        current, longest = compute_day_streaks(self._stamps(1, 2, 3), today=date(2026, 9, 10))
+        assert current == 0, "the streak is over"
+        assert longest == 3, "but the record stands"
+
+    def test_the_longest_run_survives_a_later_gap(self) -> None:
+        current, longest = compute_day_streaks(
+            self._stamps(1, 2, 3, 4, 9, 10), today=date(2026, 9, 10)
+        )
+        assert (current, longest) == (2, 4)
+
+    def test_several_checkins_on_one_day_are_still_one_day(self) -> None:
+        stamps = self._stamps(9, hour=9) + self._stamps(9, hour=18) + self._stamps(10)
+        assert compute_day_streaks(stamps, today=date(2026, 9, 10)) == (2, 2)
+
+    def test_no_checkins_is_not_a_streak_of_one(self) -> None:
+        assert compute_day_streaks([], today=date(2026, 9, 10)) == (0, 0)
+
+    def test_one_unparseable_row_does_not_cost_the_streak(self) -> None:
+        """Same rule as ADR-0039's date table: skip the bad row, keep the rest."""
+        stamps = ["not-a-timestamp", *self._stamps(9, 10)]
+        assert compute_day_streaks(stamps, today=date(2026, 9, 10)) == (2, 2)
+
+    def test_days_are_counted_in_local_time_not_utc(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The off-by-one nobody notices until the morning the streak is wrong.
+
+        Two check-ins on one local evening, either side of UTC midnight. Grouped
+        locally that is ONE day and no streak; grouped by UTC it is two consecutive
+        days and the tile claims a 2-day run that never happened. ADR-0039 hit this
+        exact class of bug and made the rule local.
+
+        The timezone is pinned rather than inherited: on a UTC runner an inherited
+        one makes both groupings agree and this test quietly stops testing anything.
+        """
+        monkeypatch.setenv("TZ", "America/Los_Angeles")
+        time.tzset()
+        try:
+            # 17:00Z = 10:00 PDT Sep 9; 01:00Z next day = 18:00 PDT, still Sep 9.
+            stamps = ["2026-09-09T17:00:00.000Z", "2026-09-10T01:00:00.000Z"]
+            current, longest = compute_day_streaks(stamps, today=date(2026, 9, 9))
+            assert longest == 1, "one local evening is one day, not a 2-day streak"
+            assert current == 1
+        finally:
+            monkeypatch.undo()
+            time.tzset()
+
+
+class TestCollageStreakWiring:
+    def test_the_collage_reports_a_streak_and_no_person_id(self) -> None:
+        service = make_service()
+        service.create_checkin(
+            person_id="prs_alex", label="Alex", ip="10.0.0.1", session_token="s1", trace_id="t"
+        )
+        stats = service.visitor_collage_stats()
+
+        assert "current_streak_days" in stats
+        assert "longest_streak_days" in stats
+        assert stats["longest_streak_days"] == 1, "one check-in today is a one-day run"
+        # The streak must not smuggle identity onto a surface built from counts.
+        assert "person_id" not in json.dumps(stats)
+
+    def test_an_empty_door_reports_zero_not_one(self) -> None:
+        stats = make_service().visitor_collage_stats()
+        assert stats["current_streak_days"] == 0
+        assert stats["longest_streak_days"] == 0

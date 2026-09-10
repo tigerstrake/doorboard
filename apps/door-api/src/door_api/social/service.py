@@ -14,7 +14,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -55,6 +55,51 @@ type EventCallback = Callable[[dict[str, Any]], None]
 
 def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def compute_day_streaks(timestamps: list[str], *, today: date) -> tuple[int, int]:
+    """(current, longest) runs of consecutive days that had at least one check-in.
+
+    Days are **local**, not UTC. "Three days in a row" means the calendar the
+    household lived through; on a UTC-configured box the two differ for several
+    hours a day, which is exactly the off-by-one nobody notices until the morning
+    the streak is wrong (same rule as ADR-0039).
+
+    The current streak tolerates *today* being empty — a run through yesterday is
+    still alive until midnight, and a tile that resets at 00:01 every night would
+    read as broken. Two empty days ends it.
+
+    Unparseable timestamps are skipped rather than discarded wholesale, so one bad
+    row cannot cost the whole streak.
+    """
+    days: set[date] = set()
+    for raw in timestamps:
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        days.add(parsed.astimezone().date())
+
+    if not days:
+        return (0, 0)
+
+    ordered = sorted(days)
+    longest = run = 1
+    for previous, current in zip(ordered, ordered[1:], strict=False):
+        run = run + 1 if (current - previous).days == 1 else 1
+        longest = max(longest, run)
+
+    latest = ordered[-1]
+    if (today - latest).days > 1:
+        return (0, longest)
+    current_run = 1
+    for previous, following in zip(reversed(ordered[:-1]), reversed(ordered), strict=False):
+        if (following - previous).days != 1:
+            break
+        current_run += 1
+    return (current_run, longest)
 
 
 def hash_ip(ip: str) -> str:
@@ -442,7 +487,12 @@ class SocialService:
         year_start = f"{datetime.now(UTC).year}-01-01T00:00:00Z"
         stats = self.store.aggregate_checkin_stats(year_start=year_start)
         most_frequent = self.most_frequent_visitor_stat()
+        current_streak, longest_streak = compute_day_streaks(
+            self.store.checkin_timestamps(), today=datetime.now(UTC).astimezone().date()
+        )
         return {
+            "current_streak_days": current_streak,
+            "longest_streak_days": longest_streak,
             "total_checkins": stats.total_checkins,
             "checkins_this_year": stats.checkins_this_year,
             "unique_visitors": stats.unique_visitors,

@@ -586,6 +586,21 @@ class SocialStore:
             most_recent_checkin_at=bounds[1],
         )
 
+    def checkin_timestamps(self) -> list[str]:
+        """Every non-deleted check-in's ``created_at``, oldest first.
+
+        Deliberately just the timestamps: the streak is a property of *days that
+        had a visitor*, not of who visited, so nothing identifying needs to leave
+        the store. Grouping into local dates happens in the service, because the
+        stored value is UTC and "a day" means the day the household lived through
+        (the ADR-0039 rule).
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT created_at FROM checkins WHERE deleted_at IS NULL ORDER BY created_at"
+            ).fetchall()
+        return [r[0] for r in rows]
+
     def list_checkin_photos(self, *, limit: int) -> list[Checkin]:
         """Non-deleted check-ins that reference a photo, newest first.
 
