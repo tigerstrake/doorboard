@@ -649,3 +649,102 @@ def test_an_expired_token_is_replaced_not_reissued(
 
     assert second != first
     assert client.get("/visitor-session", params={"token": second}).status_code == 200
+
+
+# -- relay attribution binds the person advertised at push time (audit 2026-09, P2) --
+
+
+def _recognise(relay_state: Any, person_id: str, name: str) -> None:
+    relay_state.machine.handle_identity_stable(
+        person_id=person_id, display_name=name, profile_id="sunrise", consent_version="v3"
+    )
+    assert relay_state.attributable_person_id() == person_id
+
+
+def _note_for(snapshot: VisitorSessionSnapshot, text: str) -> VisitorQueuedAction:
+    return VisitorQueuedAction(
+        action_id=new_action_id(),
+        session_id=snapshot.session_id,
+        submitted_at=snapshot.pushed_at,
+        note=VisitorNoteAction(text=text),
+    )
+
+
+def _stored_person_id(relay_state: Any, outcome: VisitorActionOutcome) -> str | None:
+    assert outcome.status == "applied", outcome
+    entry = relay_state.social_store.get_guestbook_entry(outcome.entry_id)
+    assert entry is not None
+    return entry.person_id
+
+
+def test_a_relay_note_is_never_attributed_to_someone_recognised_after_the_push(
+    relay_state: Any,
+) -> None:
+    """The phone was told "your note will carry the recognised person's name" while A
+    was recognised. If B is recognised before the poll collects the note (same session,
+    so the session binding passes), the note must not be stored under B: B never
+    consented to that write and A's phone was not told about B (ADR-0018 E-23).
+    """
+    client = TestClient(app)
+    _issue_token(relay_state, client)
+    _recognise(relay_state, "prs_a", "Ada")
+    pushed = relay_state.visitor_relay_snapshot()
+    assert pushed is not None and pushed.attributed is True
+
+    _recognise(relay_state, "prs_b", "Bo")  # replaces the held identity
+    outcome = relay_state.visitor_relay_apply(_note_for(pushed, NOTE_SENTINEL))
+
+    stored = _stored_person_id(relay_state, outcome)
+    assert stored != "prs_b"
+    assert stored in (None, "prs_a")
+
+
+def test_a_relay_note_is_attributed_when_the_advertised_person_is_still_there(
+    relay_state: Any,
+) -> None:
+    client = TestClient(app)
+    _issue_token(relay_state, client)
+    _recognise(relay_state, "prs_a", "Ada")
+    pushed = relay_state.visitor_relay_snapshot()
+    assert pushed is not None and pushed.attributed is True
+
+    outcome = relay_state.visitor_relay_apply(_note_for(pushed, NOTE_SENTINEL))
+    assert _stored_person_id(relay_state, outcome) == "prs_a"
+
+
+def test_a_relay_note_stays_anonymous_when_nobody_was_advertised(relay_state: Any) -> None:
+    """Pushed with attributed=false, then A walks up before the poll: the phone-holder
+    was told the write is anonymous, so it is."""
+    client = TestClient(app)
+    _issue_token(relay_state, client)
+    pushed = relay_state.visitor_relay_snapshot()
+    assert pushed is not None and pushed.attributed is False
+
+    _recognise(relay_state, "prs_a", "Ada")
+    outcome = relay_state.visitor_relay_apply(_note_for(pushed, NOTE_SENTINEL))
+    assert _stored_person_id(relay_state, outcome) is None
+
+
+def test_a_relay_note_stays_anonymous_when_the_person_left_before_the_poll(
+    relay_state: Any,
+) -> None:
+    client = TestClient(app)
+    _issue_token(relay_state, client)
+    _recognise(relay_state, "prs_a", "Ada")
+    pushed = relay_state.visitor_relay_snapshot()
+    assert pushed is not None and pushed.attributed is True
+
+    relay_state.identity.forget()
+    outcome = relay_state.visitor_relay_apply(_note_for(pushed, NOTE_SENTINEL))
+    assert _stored_person_id(relay_state, outcome) is None
+
+
+def test_the_advertised_memo_is_dropped_with_the_session(relay_state: Any) -> None:
+    client = TestClient(app)
+    _issue_token(relay_state, client)
+    _recognise(relay_state, "prs_a", "Ada")
+    assert relay_state.visitor_relay_snapshot() is not None
+    assert relay_state._visitor_relay_advertised
+
+    client.post("/doorpad/session/end")
+    assert relay_state._visitor_relay_advertised == {}
