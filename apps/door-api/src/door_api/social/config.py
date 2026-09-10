@@ -51,6 +51,14 @@ class SocialConfig:
     default_list_limit: int = 20
     max_list_limit: int = 100
 
+    # Retention for the moderation audit log, in days. It gains a row for every
+    # public write and every moderation action and had no bound at all: an
+    # append-only, person-adjacent table growing forever on the stealable Pi's SSD
+    # (ADR-0009's threat model). Rows older than this are pruned at startup and then
+    # once per prune interval. 0 keeps everything (no pruning).
+    moderation_log_retention_days: int = 90
+    moderation_log_prune_interval_s: float = 86_400.0
+
     # Placeholder admin gate: shared-secret bearer token compared with
     # secrets.compare_digest. This is NOT the packages/auth session/token
     # mechanism (that package is unbuilt as of this task) — see PR description
@@ -78,5 +86,11 @@ class SocialConfig:
             poll_option_max_len=_env_int("DOOR_API_SOCIAL_POLL_OPTION_MAX_LEN", 80),
             default_list_limit=_env_int("DOOR_API_SOCIAL_DEFAULT_LIST_LIMIT", 20),
             max_list_limit=_env_int("DOOR_API_SOCIAL_MAX_LIST_LIMIT", 100),
+            moderation_log_retention_days=_env_int(
+                "DOOR_API_SOCIAL_MODERATION_LOG_RETENTION_DAYS", 90
+            ),
+            moderation_log_prune_interval_s=_env_float(
+                "DOOR_API_SOCIAL_MODERATION_LOG_PRUNE_INTERVAL_S", 86_400.0
+            ),
             admin_token=os.environ.get("DOOR_API_SOCIAL_ADMIN_TOKEN"),
         )

@@ -145,6 +145,7 @@ class DoorApiState:
         self._media_forward_task: asyncio.Task[None] | None = None
         self._sync_forward_task: asyncio.Task[None] | None = None
         self._identity_sweep_task: asyncio.Task[None] | None = None
+        self._moderation_prune_task: asyncio.Task[None] | None = None
         self.mqtt_bridge: MqttBridge | None = None
         self._mqtt_bridge_task: asyncio.Task[None] | None = None
         self.esp32_link: Esp32LinkSupervisor | None = None
@@ -262,9 +263,13 @@ class DoorApiState:
         self.start_identity_sweeper()
         self.start_mqtt_bridge()
         self.start_visitor_relay()
+        self.start_moderation_log_pruner()
 
     def shutdown(self) -> None:
         """Close resources."""
+        if self._moderation_prune_task is not None:
+            self._moderation_prune_task.cancel()
+            self._moderation_prune_task = None
         if self._esp32_event_task is not None:
             self._esp32_event_task.cancel()
         if self._esp32_link_task is not None:
@@ -508,6 +513,38 @@ class DoorApiState:
                 self.broadcast.update_snapshot(self.session_snapshot_dict())
                 logger.info("recognised_identity_expired")
             held = now_held
+
+    def start_moderation_log_pruner(self) -> None:
+        """Bound the moderation log: prune now, then once a day.
+
+        The log gained a row per public write and moderation action with no retention
+        at all — an append-only, person-adjacent table on the stealable Pi. Pruning is
+        best-effort and never in the door path: a failure is logged and startup
+        continues, and the daily task, like the other background loops, only exists
+        when there is an event loop to attach to.
+        """
+        try:
+            self.social_service.prune_moderation_log()
+        except Exception:
+            logger.warning("social_moderation_log_prune_failed", exc_info=True)
+        if self._moderation_prune_task is not None:
+            return
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+            self._moderation_prune_task = loop.create_task(
+                self._moderation_prune_loop(),
+                name="door-api-moderation-log-prune",
+            )
+
+    async def _moderation_prune_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.social_config.moderation_log_prune_interval_s)
+            try:
+                self.social_service.prune_moderation_log()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("social_moderation_log_prune_failed", exc_info=True)
 
     def start_media_forwarder(self) -> None:
         if self._media_forward_task is not None:
@@ -1312,6 +1349,9 @@ async def metrics() -> Response:
             "door_api_sync_outbox_depth": state.store.sync_outbox_depth(),
             "door_api_sync_outbox_dropped_total": state.store.sync_outbox_dropped_total(),
             "door_api_sync_outbox_dead_total": state.store.sync_outbox_dead_total(),
+            # Row count of the age-bounded moderation audit log, so unbounded growth
+            # on the SSD is visible rather than discovered by the storage floor.
+            "door_api_social_moderation_log_rows": state.social_store.moderation_log_count(),
             "door_api_mqtt_bridge_enabled": int(state.mqtt_bridge is not None),
             "door_api_mqtt_bridge_messages_received_total": (
                 state.mqtt_bridge.messages_received if state.mqtt_bridge else 0
@@ -1345,6 +1385,7 @@ async def metrics() -> Response:
     lines = [
         "# TYPE door_api_media_outbox_depth gauge",
         "# TYPE door_api_sync_outbox_depth gauge",
+        "# TYPE door_api_social_moderation_log_rows gauge",
         *[f"{name} {value}" for name, value in data.items()],
         "",
     ]
