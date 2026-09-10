@@ -352,13 +352,51 @@ describe("the poll", () => {
     ],
   };
 
-  it("records a vote and then shows the shares", async () => {
-    const { live, posted } = mockVisitorApi({ snapshot: snapshot({ poll: POLL }) });
+  /**
+   * door-api always sends `poll_results` as a list when a poll exists — `[]` until
+   * somebody votes (`SocialService.poll_results`), never `null`. The fixture used to
+   * seed `null`, which is a shape the producer never pushes, and the page gated the
+   * vote form on `results` being falsy: with the real `[]` nobody could vote at all.
+   */
+  it("shows the vote form for an open poll nobody has voted in yet", async () => {
+    mockVisitorApi({ snapshot: snapshot({ poll: POLL, poll_results: [] }) });
     render(<VisitorFlow token={TOKEN} />);
     await advance();
     expect(screen.getByText("Pizza or tacos?")).toBeTruthy();
 
-    // Nothing to vote for until an option is chosen.
+    expect(document.querySelectorAll('input[type="radio"]')).toHaveLength(2);
+    expect(screen.getByText("Vote")).toBeTruthy();
+    // No tallies for an empty poll — a row of 0% would only be noise.
+    expect(screen.queryByText("0%")).toBeNull();
+  });
+
+  it("still offers the form when others have voted but this visitor has not", async () => {
+    mockVisitorApi({
+      snapshot: snapshot({
+        poll: POLL,
+        poll_results: [
+          { option_id: "opt_a", votes: 2 },
+          { option_id: "opt_b", votes: 1 },
+        ],
+      }),
+    });
+    render(<VisitorFlow token={TOKEN} />);
+    await advance();
+
+    expect(document.querySelectorAll('input[type="radio"]')).toHaveLength(2);
+    expect(screen.getByText("Vote")).toBeTruthy();
+    // The running tallies sit under the form rather than replacing it.
+    expect(screen.getByText("67%")).toBeTruthy();
+  });
+
+  it("records a vote and then shows the shares", async () => {
+    const { live, posted } = mockVisitorApi({ snapshot: snapshot({ poll: POLL, poll_results: [] }) });
+    render(<VisitorFlow token={TOKEN} />);
+    await advance();
+    expect(screen.getByText("Pizza or tacos?")).toBeTruthy();
+
+    // The form is there before voting, and nothing to vote for until an option is chosen.
+    expect(document.querySelectorAll('input[type="radio"]')).toHaveLength(2);
     expect((screen.getByText("Vote") as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByLabelText("Tacos"));
     expect((screen.getByText("Vote") as HTMLButtonElement).disabled).toBe(false);
@@ -387,7 +425,7 @@ describe("the poll", () => {
   });
 
   it("explains a closed poll instead of losing the vote silently", async () => {
-    const { live } = mockVisitorApi({ snapshot: snapshot({ poll: POLL }) });
+    const { live } = mockVisitorApi({ snapshot: snapshot({ poll: POLL, poll_results: [] }) });
     render(<VisitorFlow token={TOKEN} />);
     await advance();
     expect(screen.getByText("Pizza or tacos?")).toBeTruthy();
@@ -419,7 +457,7 @@ describe("the poll", () => {
   });
 
   it("offers another attempt after a refusal that might not repeat", async () => {
-    const { live, posted } = mockVisitorApi({ snapshot: snapshot({ poll: POLL }) });
+    const { live, posted } = mockVisitorApi({ snapshot: snapshot({ poll: POLL, poll_results: [] }) });
     render(<VisitorFlow token={TOKEN} />);
     await advance();
     expect(screen.getByText("Pizza or tacos?")).toBeTruthy();

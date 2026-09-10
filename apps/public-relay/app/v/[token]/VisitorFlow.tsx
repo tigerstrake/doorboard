@@ -317,6 +317,44 @@ export default function VisitorFlow({ token: propToken }: { token?: string }) {
   const results = snapshot?.poll_results ?? null;
   const totalVotes = results?.reduce((sum, row) => sum + row.votes, 0) ?? 0;
 
+  // The tallies. Rendered on their own once this visitor's vote has been applied, and
+  // under the form before that. Gating the *form* on `results` used to hide it for
+  // everyone: door-api sends `poll_results: []` for an open poll nobody has voted in yet,
+  // and an empty array is truthy, so the radios never appeared and nobody could vote.
+  const shares = snapshot?.poll ? (
+    <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+      {snapshot.poll.options.map((option) => {
+        const votes = results?.find((row) => row.option_id === option.option_id)?.votes ?? 0;
+        const share = totalVotes > 0 ? Math.round((votes / totalVotes) * 100) : 0;
+        return (
+          <li key={option.option_id} style={{ marginBottom: "0.7rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>{option.label}</span>
+              <span style={{ color: "var(--text-dim)" }}>{share}%</span>
+            </div>
+            <div
+              style={{
+                height: "6px",
+                borderRadius: "999px",
+                background: "var(--border)",
+                marginTop: "0.25rem",
+              }}
+            >
+              <div
+                style={{
+                  width: `${share}%`,
+                  height: "100%",
+                  borderRadius: "999px",
+                  background: "var(--accent)",
+                }}
+              />
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  ) : null;
+
   return (
     <>
       <h1>At the door</h1>
@@ -401,38 +439,8 @@ export default function VisitorFlow({ token: propToken }: { token?: string }) {
       {snapshot?.poll ? (
         <div className="card">
           <h2>{snapshot.poll.question}</h2>
-          {voteOutcome?.status === "applied" || results ? (
-            <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-              {snapshot.poll.options.map((option) => {
-                const votes = results?.find((row) => row.option_id === option.option_id)?.votes ?? 0;
-                const share = totalVotes > 0 ? Math.round((votes / totalVotes) * 100) : 0;
-                return (
-                  <li key={option.option_id} style={{ marginBottom: "0.7rem" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <span>{option.label}</span>
-                      <span style={{ color: "var(--text-dim)" }}>{share}%</span>
-                    </div>
-                    <div
-                      style={{
-                        height: "6px",
-                        borderRadius: "999px",
-                        background: "var(--border)",
-                        marginTop: "0.25rem",
-                      }}
-                    >
-                      <div
-                        style={{
-                          width: `${share}%`,
-                          height: "100%",
-                          borderRadius: "999px",
-                          background: "var(--accent)",
-                        }}
-                      />
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+          {voteOutcome?.status === "applied" ? (
+            shares
           ) : (
             <>
               {/* A vote the door refused used to show nothing at all: the button
@@ -475,6 +483,12 @@ export default function VisitorFlow({ token: propToken }: { token?: string }) {
                         : "Vote"}
                   </button>
                 </div>
+              ) : null}
+              {totalVotes > 0 ? (
+                <>
+                  <p className="hint">So far</p>
+                  {shares}
+                </>
               ) : null}
             </>
           )}
