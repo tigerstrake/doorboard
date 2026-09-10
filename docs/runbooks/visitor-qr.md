@@ -8,6 +8,10 @@ Operating the wallboard QR that visitors scan (ADR-0017). Covers door-api's rela
 
 ```bash
 curl -s http://<door>:8080/visitor-relay-status
+# {"qr_target":"relay"}
+
+# The full worker diagnostics (counters, failure streak, last error) are owner-only:
+curl -s -H "Authorization: Bearer $DOOR_API_SOCIAL_ADMIN_TOKEN" http://<door>:8080/admin/visitor-relay-status
 # {"configured":true,"status":"ok","qr_target":"relay",...}
 ```
 
@@ -33,7 +37,7 @@ door-api picks this per QR render: `relay` only when an exchange succeeded withi
 The relay has no snapshot matching that token.
 
 - **Most likely benign:** the visitor token expired (`DOOR_API_VISITOR_TOKEN_TTL_S`, default 300 s) or the session ended. The QR is per-session and short-lived by design. Ring again.
-- Snapshot never pushed: check `qr_target`. If it says `relay` but the visitor page 404s, the push is failing — look at `polls_failed` and `last_error` in `/visitor-relay-status`.
+- Snapshot never pushed: check `qr_target`. If it says `relay` but the visitor page 404s, the push is failing — look at `polls_failed` and `last_error` in `/admin/visitor-relay-status`.
 
 ### The QR points at door.local and visitors on cellular can't load it
 

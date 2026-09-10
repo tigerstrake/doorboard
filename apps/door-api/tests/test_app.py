@@ -86,6 +86,7 @@ def test_admin_routes_fail_closed_without_configured_token() -> None:
         ("post", "/admin/session/cannot-answer"),
         ("post", "/admin/session/end"),
         ("get", "/admin/visitor-collage"),
+        ("get", "/admin/visitor-relay-status"),
     ):
         response = client.request(method, path)
         assert response.status_code == 503

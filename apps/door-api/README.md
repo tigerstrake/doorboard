@@ -29,7 +29,7 @@ phone (cellular) ──▶ relay ◀── this service (outbound poll, ~2 s)
 
 What crosses is deliberately narrow — ADR-0017 §2 lists eight fields and nothing else may be added without a superseding ADR. No enrolled person's name, no `person_id`, no vision event, no media, no admin or diagnostic state. Collected writes go through the existing `SocialService`, so the sanitiser and rate limits are the same ones the LAN path uses.
 
-**An internet outage does not kill the QR.** The URL is chosen at render time: the relay only when a successful exchange happened inside `DOOR_API_VISITOR_RELAY_FRESHNESS_S`, otherwise the LAN URL exactly as before. `GET /visitor-relay-status` reports which target is live.
+**An internet outage does not kill the QR.** The URL is chosen at render time: the relay only when a successful exchange happened inside `DOOR_API_VISITOR_RELAY_FRESHNESS_S`, otherwise the LAN URL exactly as before. `GET /visitor-relay-status` reports which target is live (`qr_target` only); the worker counters and last error are on the admin-gated `GET /admin/visitor-relay-status`.
 
 | Variable | Meaning |
 |---|---|
