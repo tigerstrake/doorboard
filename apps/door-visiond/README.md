@@ -67,6 +67,14 @@ Block button interaction; wait on the NUC; persist unknown embeddings; log biome
 
 `inference_ms` (p50/p95), `face_to_identity_ms`, `cache_hit_rate`, `fps`, `frame_drops`, `hailo_ok`.
 
+Recognition *state* is exported as 0/1 gauges so an operator is paged rather than
+reading `/health` by hand: `door_visiond_hailo_ok`, `door_visiond_privacy_enabled`,
+`door_visiond_enrollment_locked`, `door_visiond_event_forwarding_ok`,
+`door_visiond_esp32_profile_push_ok`, and the effective mode as a state set
+`door_visiond_mode{mode="disabled|mock|single-camera|dual-camera|hardware"}` (1 for the
+active mode). `infra/monitoring/alert.rules.yml` fires `VisiondRecognitionDown` when
+`hailo_ok == 0` for 10 minutes with privacy mode off.
+
 The ESP32 light leg (ADR-0040) is counted honestly: `esp32_profile_updates_relayed` /
 `esp32_profile_clears_relayed` count pushes door-api reported as `sent`; a 202 whose body
 says `unavailable` or `failed` is an `esp32_profile_send_failures` increment and degrades

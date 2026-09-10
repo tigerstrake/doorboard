@@ -45,6 +45,28 @@ def test_metrics(client: TestClient) -> None:
     assert "door_visiond_cache_hit_rate" in resp.text
 
 
+def test_metrics_export_recognition_state_gauges(client: TestClient) -> None:
+    """A door sitting in `disabled` mode was invisible to Prometheus: nothing to page on."""
+    lines = client.get("/metrics").text.splitlines()
+    assert "door_visiond_hailo_ok 0.0" in lines or "door_visiond_hailo_ok 1.0" in lines
+    assert "door_visiond_privacy_enabled 0.0" in lines
+    assert "door_visiond_enrollment_locked 0.0" in lines
+    # Neither hop is configured in mock, and that must read as "not ok", not as absent.
+    assert "door_visiond_event_forwarding_ok 0.0" in lines
+    assert "door_visiond_esp32_profile_push_ok 0.0" in lines
+    # The effective mode as a state set: exactly one series is 1.
+    assert 'door_visiond_mode{mode="mock"} 1' in lines
+    assert 'door_visiond_mode{mode="disabled"} 0' in lines
+    assert 'door_visiond_mode{mode="hardware"} 0' in lines
+
+    client.post("/privacy-mode", json={"enabled": True, "changed_by": "admin"})
+    lines = client.get("/metrics").text.splitlines()
+    assert "door_visiond_privacy_enabled 1.0" in lines
+    assert "door_visiond_hailo_ok 0.0" in lines
+    assert 'door_visiond_mode{mode="disabled"} 1' in lines
+    assert 'door_visiond_mode{mode="mock"} 0' in lines
+
+
 def test_admin_routes_fail_closed_without_configured_token(client: TestClient) -> None:
     cfg = cast(Any, client.app).state.cfg
     cfg.admin_token = ""

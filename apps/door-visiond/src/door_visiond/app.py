@@ -28,7 +28,7 @@ import secrets
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Annotated, Any
+from typing import Annotated, Any, get_args
 
 from fastapi import (
     Depends,
@@ -61,7 +61,7 @@ from door_visiond.service import (
     StaleConsentError,
     VisiondService,
 )
-from door_visiond.settings import Settings
+from door_visiond.settings import Settings, VisionMode
 from door_visiond.settings import settings as get_settings
 
 logger = get_logger("door_visiond.app")
@@ -144,6 +144,12 @@ async def metrics(request: Request) -> Response:
         metric = f"door_visiond_{key}"
         lines.append(f"# TYPE {metric} gauge")
         lines.append(f"{metric} {value}")
+    # The effective mode as a state set: one series per mode, 1 for the active one, so
+    # a rule can say `door_visiond_mode{mode="disabled"} == 1` without an enum table.
+    effective_mode = svc.effective_mode
+    lines.append("# TYPE door_visiond_mode gauge")
+    for mode in get_args(VisionMode):
+        lines.append(f'door_visiond_mode{{mode="{mode}"}} {1 if mode == effective_mode else 0}')
     lines.append("# TYPE door_visiond_uptime_s counter")
     lines.append(f"door_visiond_uptime_s {uptime_s:.1f}")
     lines.append("")

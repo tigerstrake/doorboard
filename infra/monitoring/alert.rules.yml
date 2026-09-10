@@ -79,3 +79,16 @@ groups:
           description: >-
             A door-api outbox event was retried past its cap and parked (dead-lettered): a
             recording/session mirror the NUC will never receive without operator action.
+
+      - alert: VisiondRecognitionDown
+        expr: door_visiond_hailo_ok == 0 and door_visiond_privacy_enabled == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "door-visiond recognition is down"
+          description: >-
+            door-visiond has reported hailo_ok == 0 for 10 minutes with privacy mode off: the
+            door is in `disabled` mode (a failed backend that never recovered, a HailoRT/model
+            compat mismatch, or a locked enrollment volume) and greets nobody by name. Check
+            `door_visiond_mode`, `door_visiond_enrollment_locked` and /health `runtime_warning`.

@@ -1380,7 +1380,18 @@ class VisiondService:
 
     def metrics_snapshot(self) -> dict[str, float]:
         snap = self._core.metrics_snapshot()
-        snap["snapshot_duplicate_frames"] = float(self._backend.status().duplicate_frames)
+        status = self._backend.status()
+        snap["snapshot_duplicate_frames"] = float(status.duplicate_frames)
+        # The state an operator needs paged on, as 0/1 gauges. Until these existed a
+        # door sitting in `disabled` mode (a backend that never recovered, a compat
+        # mismatch after an apt upgrade, a locked LUKS volume) was visible only by
+        # reading /health by hand; the alert rule keys on `hailo_ok` with
+        # `privacy_enabled` as the "this is on purpose" exclusion.
+        snap["hailo_ok"] = 1.0 if status.hailo_ok and not self._privacy_enabled else 0.0
+        snap["privacy_enabled"] = 1.0 if self._privacy_enabled else 0.0
+        snap["enrollment_locked"] = 1.0 if self._enrollment_locked else 0.0
+        snap["event_forwarding_ok"] = 1.0 if self._event_forwarding_status() == "ok" else 0.0
+        snap["esp32_profile_push_ok"] = 1.0 if self._esp32_profile_push_status()[0] == "ok" else 0.0
         snap["self_enrolled"] = float(
             self._store.count_consumed_invites(label=self.SELF_ENROLL_LABEL)
         )

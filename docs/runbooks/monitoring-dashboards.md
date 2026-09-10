@@ -67,6 +67,12 @@ This document provides a reference of the actual Prometheus metrics, health endp
   * `door_visiond_esp32_profile_updates_acked` (gauge) — Profile updates acknowledged by a local ESP32 transport (test seam only).
   * `door_visiond_esp32_profile_clears_acked` (gauge) — Profile clears acknowledged by a local ESP32 transport (test seam only).
   * `door_visiond_esp32_profile_send_failures` (gauge) — Pushes that did not reach the ESP32: hop errors, and door-api answering `unavailable`/`failed`.
+  * `door_visiond_hailo_ok` (gauge: 1/0) — Recognition backend live (0 in `disabled`, mock, and privacy mode). `VisiondRecognitionDown` alerts on 0 for 10 min with privacy off.
+  * `door_visiond_privacy_enabled` (gauge: 1/0) — Privacy kill switch state; the "this is on purpose" exclusion for the alert above.
+  * `door_visiond_enrollment_locked` (gauge: 1/0) — Encrypted enrollment volume still locked (recognition disabled until the NUC key release).
+  * `door_visiond_event_forwarding_ok` (gauge: 1/0) — Identity hop to door-api healthy (0 when disabled or failing: the wallboard greeting will not fire).
+  * `door_visiond_esp32_profile_push_ok` (gauge: 1/0) — ESP32 light leg healthy (0 when disabled or degraded).
+  * `door_visiond_mode{mode="disabled|mock|single-camera|dual-camera|hardware"}` (gauge state set) — 1 on the active effective mode, 0 elsewhere.
   * `door_visiond_uptime_s` (counter) — Uptime of the vision daemon.
 
 ---
