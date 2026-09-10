@@ -18,7 +18,6 @@ from satellites.provider import MockSatelliteProvider, SatelliteConfig, Skyfield
 from wallboard_worker.jobs import (
     run_aircraft_summary,
     run_bird_summary,
-    run_daily_collage,
     run_food_recommendation,
     run_printer_status,
     run_satellite_orbits,
@@ -73,13 +72,6 @@ def bird_summary(mock: bool) -> None:
         provider = BirdnetGoProvider(config)
 
     run_bird_summary(settings, provider)
-
-
-@cli.command()
-def daily_collage() -> None:
-    """Run the daily collage generation job."""
-    settings = Settings()
-    run_daily_collage(settings)
 
 
 def _build_satellite_provider(

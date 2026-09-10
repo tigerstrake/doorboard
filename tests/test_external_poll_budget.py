@@ -107,13 +107,6 @@ POLLERS: tuple[Poller, ...] = (
         note="Daily. A menu is a daily fact.",
     ),
     Poller(
-        setting="WALLBOARD_COLLAGE_INTERVAL_S",
-        target="bird collage image",
-        metered=False,
-        demand_gated=False,
-        note="Daily.",
-    ),
-    Poller(
         setting="WALLBOARD_ACADEMIC_INTERVAL_S",
         target="a local JSON date table — no network at all (ADR-0039)",
         metered=False,

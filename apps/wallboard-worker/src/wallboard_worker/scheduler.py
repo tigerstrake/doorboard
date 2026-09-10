@@ -27,7 +27,6 @@ from wallboard_worker.jobs import (
     run_academic_countdown,
     run_aircraft_summary,
     run_bird_summary,
-    run_daily_collage,
     run_food_recommendation,
     run_printer_status,
     run_satellite_orbits,
@@ -210,19 +209,12 @@ def build_jobs(settings: Settings, *, force_mock: bool = False) -> list[Schedule
                 )
             )
         )
-        jobs.extend(
-            [
-                ScheduledJob(
-                    "bird-summary",
-                    settings.bird_summary_interval_s,
-                    lambda: run_bird_summary(settings, bird),
-                ),
-                ScheduledJob(
-                    "daily-collage",
-                    settings.collage_interval_s,
-                    lambda: run_daily_collage(settings),
-                ),
-            ]
+        jobs.append(
+            ScheduledJob(
+                "bird-summary",
+                settings.bird_summary_interval_s,
+                lambda: run_bird_summary(settings, bird),
+            )
         )
 
     if settings.feature_satellites:

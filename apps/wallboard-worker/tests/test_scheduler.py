@@ -96,7 +96,6 @@ def test_build_jobs_registers_only_enabled_features() -> None:
 
     assert names == {
         "bird-summary",
-        "daily-collage",
         "aircraft-summary",
         "food-recommendation",
     }

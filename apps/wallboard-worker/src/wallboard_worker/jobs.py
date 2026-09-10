@@ -143,15 +143,6 @@ def run_bird_summary(
     return None
 
 
-def run_daily_collage(settings: Settings, now: datetime | None = None) -> None:
-    """Daily collage job stub.
-
-    Generates an image grid from detection thumbnails if BirdNET-Go exposes them,
-    else falls back to species list card.
-    """
-    logger.info("Daily collage job stub executed successfully.")
-
-
 def run_satellite_passes(
     settings: Settings, provider: SatelliteProvider, now: datetime | None = None
 ) -> dict | None:

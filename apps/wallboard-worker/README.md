@@ -8,7 +8,7 @@ Scheduled/async jobs that keep ambient data fresh so the wallboard only ever rea
 
 | Job | Source | Output |
 |---|---|---|
-| Bird summary | BirdNET-Go on bird Pi | `ambient.bird_summary`; daily collage generation (async) |
+| Bird summary | BirdNET-Go on bird Pi | `ambient.bird_summary`. The daily collage is **not implemented** here — the wallboard's bird tile shows an image the bird Pi serves (`VITE_BIRD_COLLAGE_URL`), and a stub that logged "executed successfully" every day has been removed. |
 | Satellite passes | Skyfield + CelesTrak TLE refresh (scheduled) | `ambient.satellite_pass` — next *selected* visible pass (elevation, darkness, illumination filters, observer coordinates from NUC-only config) |
 | Aircraft | OpenSky (bounded box, cached, rate-limit-respecting) — later RTL-SDR/dump1090 | `ambient.aircraft_summary` |
 | Printer | printer API adapter (read-only) | `ambient.printer_status` |

@@ -72,7 +72,6 @@ class Settings(BaseSettings):
         alias="WALLBOARD_ACADEMIC_CALENDAR_PATH",
     )
     feature_academic_countdown: bool = Field(default=False, alias="FEATURE_ACADEMIC_COUNTDOWN")
-    collage_interval_s: float = Field(default=86400.0, alias="WALLBOARD_COLLAGE_INTERVAL_S", gt=0)
 
     feature_birdnet: bool = Field(default=False, alias="FEATURE_BIRDNET")
     birdnet_url: str = Field(default="http://127.0.0.1:8080", alias="BIRDNET_URL")
