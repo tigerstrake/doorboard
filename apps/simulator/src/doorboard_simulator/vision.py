@@ -43,6 +43,11 @@ class FakeVisionPipeline:
         return event
 
     async def identity_stable(self, person: PersonScript) -> DoorboardEvent | None:
+        if not self._outages.hailo_ok:
+            # ARCHITECTURE.md §10: Hailo unavailable means a generic greeting and zero
+            # personalised behaviour. The face is still seen (face_visible fires) but no
+            # identity is ever produced, so nothing downstream can personalise.
+            return None
         last = self._last_stable_mono_ms.get(person.person_id)
         if last is not None and self._clock.monotonic_ms - last < self.cooldown_ms:
             return None

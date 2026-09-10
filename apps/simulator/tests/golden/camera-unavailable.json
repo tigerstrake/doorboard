@@ -1,0 +1,32 @@
+{
+  "events": [
+    {
+      "monotonic_ms": 50,
+      "payload": {
+        "detail": "simulated camera outage: MediaMTX stream not live",
+        "service": "door-media",
+        "status": "degraded"
+      },
+      "type": "system.service_health"
+    },
+    {
+      "monotonic_ms": 100,
+      "payload": {
+        "had_cached_profile": false,
+        "press_id": "00000000-0000-0000-0000-000000000001",
+        "profile_id": null
+      },
+      "type": "door.button_pressed"
+    },
+    {
+      "monotonic_ms": 500,
+      "payload": {
+        "detail": null,
+        "service": "door-media",
+        "status": "ok"
+      },
+      "type": "system.service_health"
+    }
+  ],
+  "scenario": "camera-unavailable"
+}

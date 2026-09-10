@@ -86,12 +86,21 @@ class ScenarioRunner:
             )
             return
         if action == "pi_heartbeat":
-            await self.esp32.send(
+            # Heartbeats are fire-and-forget on the wire (not in ACK_REQUIRED), so deliver
+            # them directly: send() waits for an ack that never comes.
+            self.esp32.receive_from_pi(
                 self.esp32.make_message(
                     "heartbeat",
                     {"uptime_s": self.clock.monotonic_ms // 1000, "fallback_active": False},
-                )
+                ),
+                sender_boot_id="pi-sim-boot",
             )
+            msg = await self.esp32.heartbeat_from_esp32()
+            self._emit(self.esp32.to_contract_event(msg))
+            return
+        if action == "esp32_heartbeat":
+            # The ESP32 reports on its own without a Pi heartbeat first, so a silent Pi
+            # shows up here as fallback_active=true (ARCHITECTURE.md §10, "Pi restart").
             msg = await self.esp32.heartbeat_from_esp32()
             self._emit(self.esp32.to_contract_event(msg))
             return
@@ -153,6 +162,16 @@ class ScenarioRunner:
             self.outages.set_hailo(True)
             self._emit(await self.vision.pipeline_status())
             return
+        if action == "camera_down":
+            self.outages.set_camera(False)
+            self._emit_service_health(
+                "door-media", "degraded", "simulated camera outage: MediaMTX stream not live"
+            )
+            return
+        if action == "camera_up":
+            self.outages.set_camera(True)
+            self._emit_service_health("door-media", "ok", None)
+            return
         if action == "nuc_down":
             self.outages.set_nuc(False)
             self._emit_service_health("control-plane-api", "down", "simulated NUC outage")
@@ -191,6 +210,10 @@ class ScenarioRunner:
             return
         if action == "record_bell":
             if not self.media.storage_status().recording_allowed:
+                return
+            if not await self.media.health_check():
+                # Camera unavailable: the button already worked; there is simply no
+                # stream to record (ARCHITECTURE.md §10).
                 return
             handle = await self.media.start_recording(
                 session_id=SESSION_ID,

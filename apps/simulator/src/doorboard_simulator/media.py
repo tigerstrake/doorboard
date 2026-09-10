@@ -71,6 +71,11 @@ class FakeMediaRouter:
             consent_context=consent_context,
         )
 
+    async def health_check(self) -> bool:
+        # Mirrors MediaRouter.health_check: False when the visitor stream is not live,
+        # which is what a missing camera looks like to door-media.
+        return self._outages.camera_ok
+
     def storage_status(self) -> MediaStorageStatus:
         if self._outages.storage_full:
             return MediaStorageStatus(

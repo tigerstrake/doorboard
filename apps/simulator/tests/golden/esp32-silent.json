@@ -1,0 +1,44 @@
+{
+  "events": [
+    {
+      "monotonic_ms": 1000,
+      "payload": {
+        "cached_profile_id": null,
+        "fallback_active": false,
+        "fw_version": "sim-0.1.0",
+        "uptime_s": 1
+      },
+      "type": "door.controller_health"
+    },
+    {
+      "monotonic_ms": 6500,
+      "payload": {
+        "cached_profile_id": null,
+        "fallback_active": true,
+        "fw_version": "sim-0.1.0",
+        "uptime_s": 6
+      },
+      "type": "door.controller_health"
+    },
+    {
+      "monotonic_ms": 6600,
+      "payload": {
+        "had_cached_profile": false,
+        "press_id": "00000000-0000-0000-0000-000000000001",
+        "profile_id": null
+      },
+      "type": "door.button_pressed"
+    },
+    {
+      "monotonic_ms": 7100,
+      "payload": {
+        "cached_profile_id": null,
+        "fallback_active": false,
+        "fw_version": "sim-0.1.0",
+        "uptime_s": 7
+      },
+      "type": "door.controller_health"
+    }
+  ],
+  "scenario": "esp32-silent"
+}

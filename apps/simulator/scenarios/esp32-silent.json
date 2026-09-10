@@ -1,0 +1,11 @@
+{
+  "name": "esp32-silent",
+  "steps": [
+    {"at_ms": 0, "action": "pi_hello"},
+    {"at_ms": 1000, "action": "pi_heartbeat"},
+    {"at_ms": 6500, "action": "esp32_heartbeat"},
+    {"at_ms": 6600, "action": "button"},
+    {"at_ms": 7000, "action": "pi_hello"},
+    {"at_ms": 7100, "action": "pi_heartbeat"}
+  ]
+}

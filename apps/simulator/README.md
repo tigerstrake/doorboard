@@ -7,11 +7,26 @@ Makes the entire door experience developable with zero hardware. The simulator s
 ## Capabilities
 
 - **Fake ESP32:** implements the wire protocol's `mock` transport — emits `button_event`/`knock_event`/heartbeats, accepts `profile_update`/`effect_play`, models the fallback state machine (heartbeat loss, reboot).
-- **Fake vision:** scripted sequences of `vision.face_visible` / `identity_stable` / `identity_expired` (e.g. "Alex approaches, stays 4 s, leaves"), honoring cooldown/TTL semantics.
+- **Fake vision:** scripted sequences of `vision.face_visible` / `identity_stable` / `identity_expired` (e.g. "Alex approaches, stays 4 s, leaves"), honoring cooldown/TTL semantics. While Hailo is down it still sees faces but never produces an identity (ARCHITECTURE.md §10).
 - **Fake media:** stub MediaRouter that "records" placeholder clips with real metadata/checksums so door-sync and retention logic run for real.
-- **Outage injection:** kill/restore simulated NUC and NAS reachability; degrade Hailo; fill storage — driving the failure table in ARCHITECTURE.md §10.
-- **Scenario runner:** YAML scenario files (`scenarios/`) so tests and demos replay identical sequences; used by integration/e2e suites.
-- **Control panel:** minimal local web page with buttons ("press bell", "Alex appears", "NUC down") for interactive dev.
+- **Outage injection:** kill/restore simulated NUC, NAS, and camera reachability; degrade Hailo; fill storage — driving the failure table in ARCHITECTURE.md §10.
+- **Scenario runner:** JSON scenario files (`scenarios/`) so tests and demos replay identical sequences; used by integration/e2e suites. Every scenario has a golden event log under `tests/golden/`.
+- **Control panel:** minimal local web page with one button per scenario; each runs that scenario headlessly and shows the resulting event log.
+
+## Scenarios and ARCHITECTURE.md §10
+
+| Scenario | Failure row / behaviour it pins |
+|---|---|
+| `basic-bell`, `known-visitor`, `unknown-visitor`, `full-happy-path` | Normal flows: generic then personalised feedback, bell clip, identity expiry |
+| `double-press-abuse`, `identity-churn-abuse`, `press-during-recording` | Abuse and re-entrancy: dedupe, cooldown, recording already in progress |
+| `nuc-outage` | NUC offline: button and local recording continue |
+| `nas-outage` | NAS offline: clips stay on the SSD, `media.storage_status` shows the backlog |
+| `hailo-down-known-visitor` | Hailo unavailable: a face is seen, no identity, no `profile_update`, generic feedback only |
+| `camera-unavailable` | Camera unavailable: door-media reports `degraded`, the button still works, nothing is recorded |
+| `esp32-silent` | Pi restart: the Pi stops heartbeating, the ESP32 reports `fallback_active`, a press still gives generic feedback, the Pi's `hello` restores it |
+| `storage-low` | Storage low: recording stops, the interaction is preserved, `system.storage_alert` is raised |
+
+Scenario actions: `pi_hello`, `pi_heartbeat`, `esp32_heartbeat`, `button`, `known_visitor`, `unknown_visitor`, `identity_expired`, `record_bell`, `hailo_down`/`hailo_up`, `camera_down`/`camera_up`, `nuc_down`/`nuc_up`, `nas_down`/`nas_up`, `storage_full`/`storage_ok`. Each step carries an `at_ms` on the simulated monotonic clock.
 
 ## Rules
 
@@ -29,6 +44,12 @@ List scenarios:
 
 ```bash
 uv run doorboard-sim list
+```
+
+Regenerate a golden log after an intentional change (then review the diff):
+
+```bash
+uv run doorboard-sim run basic-bell --output apps/simulator/tests/golden/basic-bell.json
 ```
 
 Start the local control panel:
