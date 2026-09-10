@@ -751,3 +751,18 @@ def test_vote_and_deletion_ids_are_bounded(client: TestClient) -> None:
         json={"target_kind": _FIVE_MIB, "target_id": "x", "session_token": token},
     )
     assert kind.status_code == 422
+
+
+def test_admin_guestbook_rejects_an_unknown_status_with_422(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``?status=bogus`` used to reach the service, whose ValueError became a 500."""
+    monkeypatch.setenv("DOOR_API_SOCIAL_ADMIN_TOKEN", "correct-token")
+    state.__init__()
+    state.startup()
+    auth = {"Authorization": "Bearer correct-token"}
+
+    assert client.get("/admin/guestbook?status=bogus", headers=auth).status_code == 422
+    assert client.get("/admin/guestbook?status=deleted", headers=auth).status_code == 422
+    for known in ("pending", "approved"):
+        assert client.get(f"/admin/guestbook?status={known}", headers=auth).status_code == 200
