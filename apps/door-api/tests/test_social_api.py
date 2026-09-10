@@ -155,14 +155,16 @@ def test_checkin_create_and_stats(client: TestClient, monkeypatch: pytest.Monkey
 
     resp = client.post("/checkins", json={"label": "Alex", "session_token": _visitor_token(client)})
     assert resp.status_code == 201
-    assert resp.json()["person_id"] == "prs_alex"
+    # Attribution is reported as a boolean. This asserted person_id == "prs_alex"
+    # until 2026-09-09, pinning the leak in place as though it were the contract.
+    assert resp.json()["is_recognized"] is True
+    assert "person_id" not in resp.json()
 
     # The frequency ranking is off by default at the owner's request, so this
     # test opts in explicitly to exercise the stat itself.
     monkeypatch.setenv("SOCIAL_FREQUENCY_STAT_ENABLED", "true")
     stats = client.get("/checkins/stats/most-frequent").json()["stat"]
-    assert stats["person_id"] == "prs_alex"
-    assert stats["count"] == 1
+    assert stats == {"label": "Alex", "count": 1}
 
 
 def test_recognised_person_can_check_in_with_no_active_session(client: TestClient) -> None:
@@ -194,7 +196,7 @@ def test_recognised_person_can_check_in_with_no_active_session(client: TestClien
 
     resp = client.post("/checkins", json={"label": "Alex", "session_token": token})
     assert resp.status_code == 201, resp.text
-    assert resp.json()["person_id"] == "prs_alex", "the check-in must be attributed"
+    assert resp.json()["is_recognized"] is True, "the check-in must be attributed"
 
 
 def test_visitor_token_is_refused_once_the_identity_is_forgotten(client: TestClient) -> None:
@@ -228,7 +230,8 @@ def test_checkin_ignores_client_supplied_person_id(client: TestClient) -> None:
         },
     )
     assert resp.status_code == 201
-    assert resp.json()["person_id"] is None
+    assert resp.json()["is_recognized"] is False
+    assert "person_id" not in resp.json(), "the opaque id has no place on a public route"
 
     # An anonymous check-in never counts toward the most-frequent-visitor stat.
     stats = client.get("/checkins/stats/most-frequent").json()["stat"]
@@ -537,12 +540,78 @@ def test_public_guestbook_never_exposes_the_internal_person_id(client: TestClien
     assert "person_id" not in json.dumps(listed)
 
 
-def test_public_routes_never_expose_arrival_history(client: TestClient) -> None:
-    """P-31: the visit log is door-visiond's, admin-only, and has no door-api route."""
+@pytest.mark.parametrize("frequency_enabled", [False, True])
+def test_public_routes_never_expose_arrival_history(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, frequency_enabled: bool
+) -> None:
+    """P-31: the visit log is door-visiond's, admin-only, and has no door-api route.
+
+    P-31 says "with the attribution flag both on and off", which this did not do: it
+    ran only in the default (off) state, where the stat body is null and the check
+    against it is vacuous. Parametrised so the enabled shape is actually exercised.
+
+    ``person_id`` is in the leak list now. It was not before, which is how a stable
+    opaque id sat on two unauthenticated routes under a test named "never expose".
+    """
+    monkeypatch.setenv("SOCIAL_FREQUENCY_STAT_ENABLED", "true" if frequency_enabled else "false")
+    _recognise("v3")
+    client.post("/checkins", json={"label": "Alex", "session_token": _visitor_token(client)})
+
     for path in ("/guestbook", "/polls/current", "/checkins", "/checkins/stats/most-frequent"):
         body = json.dumps(client.get(path).json())
-        for leaked in ("arrived_at", "last_seen_at", "visit_id", "visits"):
+        for leaked in ("arrived_at", "last_seen_at", "visit_id", "visits", "person_id"):
             assert leaked not in body, f"{path} exposed {leaked}"
+
+
+def test_enabling_the_ranking_does_not_widen_its_shape(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The flag decides whether the ranking is public, not what shape it is.
+
+    Before the projection split, turning it on served the admin body verbatim on an
+    unauthenticated route: person_id, label, count. "Off by default" was doing all
+    the privacy work, so a single env var was the distance between a playful tile
+    and publishing a stable identifier next to a visit count.
+    """
+    _recognise("v3")
+    client.post("/checkins", json={"label": "Alex", "session_token": _visitor_token(client)})
+    monkeypatch.setenv("SOCIAL_FREQUENCY_STAT_ENABLED", "true")
+
+    stat = client.get("/checkins/stats/most-frequent").json()["stat"]
+    assert stat == {"label": "Alex", "count": 1}, "public stat must be label + count only"
+
+
+def test_the_admin_ranking_still_carries_the_person_id(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Separating the projections must not blind the owner's own view."""
+    monkeypatch.setenv("DOOR_API_SOCIAL_ADMIN_TOKEN", "admin-secret")
+    state.__init__()
+    state.startup()
+    _recognise("v3")
+    client.post("/checkins", json={"label": "Alex", "session_token": _visitor_token(client)})
+
+    resp = client.get(
+        "/admin/checkins/stats/most-frequent",
+        headers={"Authorization": "Bearer admin-secret"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["stat"] == {"person_id": "prs_tiger", "label": "Alex", "count": 1}
+
+
+def test_public_checkin_list_cannot_be_joined_into_a_ranking(client: TestClient) -> None:
+    """GET /checkins is unauthenticated and paginated.
+
+    While it returned person_id, anyone in the hallway could page it, group by id
+    and count visits -- rebuilding by hand the ranking SOCIAL_FREQUENCY_STAT_ENABLED
+    exists to withhold. ADR-0018 E-24 says "never counts", unconditionally.
+    """
+    _recognise("v3")
+    client.post("/checkins", json={"label": "Alex", "session_token": _visitor_token(client)})
+
+    listed = client.get("/checkins").json()
+    assert "person_id" not in json.dumps(listed)
+    assert listed["checkins"][0]["is_recognized"] is True
 
 
 def test_frequency_ranking_is_off_by_default(client: TestClient) -> None:

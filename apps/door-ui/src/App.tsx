@@ -1618,7 +1618,7 @@ export function App() {
       const checkin = await socialApi.createCheckin(label, photoRecordingId);
       rememberMyContent({ kind: "checkin", id: checkin.id, label });
       triggerToast(
-        checkin.person_id
+        checkin.is_recognized
           ? "Recognized check-in saved."
           : `Checked in as ${label}`
       );

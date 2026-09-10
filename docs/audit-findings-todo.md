@@ -245,9 +245,22 @@ dead code/config.
     from door-media's own `min_free_bytes`, which is what enforcement actually reads at each
     storage check, so the two cannot diverge. Left in the schema with a comment saying where
     enforcement really lives, rather than churning a shared model.
-- `[FIX]` **`_frequency_stat_is_enabled()` off by default is correct, but enabling it makes the
-  public shape identical to admin** (publishes `person_id` + ranking). Keep the projections
-  separate even when enabled.
+- `[DONE]` **`_frequency_stat_is_enabled()` off by default is correct, but enabling it makes the
+  public shape identical to admin** (publishes `person_id` + ranking). Fixed: `_stat_to_public_dict`
+  (label + count) / `_stat_to_admin_dict` (adds `person_id`), mirroring the existing
+  `_guestbook_to_public_dict` / `_admin_dict` pair. **The finding understated it** — `person_id`
+  was also on public `POST /checkins` and `GET /checkins` via `_checkin_to_dict`, i.e. leaking
+  regardless of the flag, and `GET /checkins` is paginated, so the ranking was reconstructible by
+  hand with the feature switched off. Public check-ins now carry `is_recognized: bool` instead.
+  P-31's "flag both on and off" clause is now actually exercised (it was parametrised on nothing
+  and `person_id` was not in its leak list).
+- `[FIX]` **`photo_recording_id` is on the public `GET /checkins` list.** ADR-0013 §1 has the
+  reference round-trip through create and list, and the test asserts it — but ADR-0013 §2 holds
+  the photo *private* pending a separate owner approval ("a stored `photo_recording_id` is never
+  itself authorization to publish"), which is exactly the reasoning ADR-0033 uses to keep it off
+  the public guestbook shape. Listing it for every visitor's check-in reveals which ones carry a
+  face before that approval. Raised while fixing the `person_id` leak; deliberately not changed
+  in the same pass, since narrowing an ADR-asserted shape needs its own decision.
 
 ---
 

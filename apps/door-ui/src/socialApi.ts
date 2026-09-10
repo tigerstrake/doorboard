@@ -103,14 +103,15 @@ export interface Poll {
 
 export interface Checkin {
   id: string;
-  person_id: string | null;
   label: string | null;
   created_at: string;
-  photo_recording_id?: string | null;
+  // Whether door-api attributed this check-in to an enrolled person. A boolean,
+  // not the person_id: the public route no longer returns the opaque id, because
+  // GET /checkins is unauthenticated and paginated (ADR-0018 E-24).
+  is_recognized: boolean;
 }
 
 export interface MostFrequentVisitorStat {
-  person_id: string;
   label: string | null;
   count: number;
 }

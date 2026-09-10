@@ -158,14 +158,55 @@ def _poll_to_dict(poll: Poll) -> dict:
     }
 
 
-def _checkin_to_dict(checkin: Checkin) -> dict:
+def _checkin_to_public_dict(checkin: Checkin) -> dict:
+    """Public shape of a check-in.
+
+    ``person_id`` is deliberately NOT included, for the same reason as
+    ``_guestbook_to_public_dict``: it is a stable opaque id (ADR-0005 §8) and
+    ``GET /checkins`` is unauthenticated and paginated. Returning it let anyone in
+    the hallway join id to label and count visits by hand — reconstructing exactly
+    the frequency ranking that ``SOCIAL_FREQUENCY_STAT_ENABLED`` exists to withhold
+    (ADR-0018 E-24, "never counts"). The one thing the doorpad needs from it is
+    whether the check-in was attributed, which is a boolean, not an identifier.
+
+    ``photo_recording_id`` deliberately STAYS: ADR-0013 §1 has it round-trip through
+    create and list, and narrowing that is a separate decision from this one. (It is
+    arguably due the same treatment -- ADR-0013 §2 holds the photo private pending
+    owner approval, so listing the reference for *every* visitor's check-in reveals
+    which ones carry a face. Raised in docs/audit-findings-todo.md rather than
+    changed here on the way past.)
+    """
     return {
         "id": checkin.id,
-        "person_id": checkin.person_id,
         "label": checkin.label,
         "photo_recording_id": checkin.photo_recording_id,
         "created_at": checkin.created_at,
+        "is_recognized": checkin.person_id is not None,
     }
+
+
+def _checkin_to_admin_dict(checkin: Checkin) -> dict:
+    return {**_checkin_to_public_dict(checkin), "person_id": checkin.person_id}
+
+
+def _stat_to_public_dict(stat: dict) -> dict:
+    """Public shape of the most-frequent-visitor stat (ADR-0018 §3, E-24).
+
+    ``person_id`` is deliberately NOT included. The tile renders "Alex has checked
+    in 12 times", which needs the freeform label and the count and nothing else;
+    the opaque id turns a playful stat into a stable handle a hallway reader can
+    track across visits. Mirrors ``visitor_collage_stats``' ``most_frequent``,
+    which already got this right on an admin-only route.
+
+    The flag decides *whether* the ranking is public. It must not also decide
+    *what shape* it is: before this split, enabling it served the admin body
+    verbatim on the public route.
+    """
+    return {"label": stat["label"], "count": stat["count"]}
+
+
+def _stat_to_admin_dict(stat: dict) -> dict:
+    return {**_stat_to_public_dict(stat), "person_id": stat["person_id"]}
 
 
 def _attribution_is_public() -> bool:
@@ -344,14 +385,14 @@ def build_social_router(
         except (RateLimitedError, SanitizationError) as exc:
             _raise_for_domain_error(exc, trace_id)
             raise
-        return _checkin_to_dict(checkin)
+        return _checkin_to_public_dict(checkin)
 
     @router.get("/checkins")
     def list_checkins(limit: int = 20, cursor: str | None = None) -> dict:
         service = get_service()
         limit = min(max(limit, 1), service.config.max_list_limit)
         checkins = service.list_checkins(limit=limit, cursor=cursor)
-        return {"checkins": [_checkin_to_dict(c) for c in checkins]}
+        return {"checkins": [_checkin_to_public_dict(c) for c in checkins]}
 
     @router.get("/checkins/stats/most-frequent")
     def most_frequent_visitor() -> dict:
@@ -359,7 +400,8 @@ def build_social_router(
         # a config change rather than a redeploy (ADR-0018 §3).
         if not _frequency_stat_is_enabled():
             return {"stat": None}
-        return {"stat": get_service().most_frequent_visitor_stat()}
+        stat = get_service().most_frequent_visitor_stat()
+        return {"stat": _stat_to_public_dict(stat) if stat else None}
 
     # ------------------------------------------------------------------
     # Deletion requests (public, visitor-initiated)
@@ -460,7 +502,8 @@ def build_social_router(
 
     @router.get("/admin/checkins/stats/most-frequent", dependencies=[Depends(require_admin)])
     def admin_most_frequent_visitor() -> dict:
-        return {"stat": get_service().most_frequent_visitor_stat()}
+        stat = get_service().most_frequent_visitor_stat()
+        return {"stat": _stat_to_admin_dict(stat) if stat else None}
 
     @router.delete("/admin/checkins/{checkin_id}", dependencies=[Depends(require_admin)])
     def admin_delete_checkin(checkin_id: str, request: Request) -> dict:
