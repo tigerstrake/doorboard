@@ -9,6 +9,7 @@ This file is the HTTP surface admin UI / HA / the Pi actually talk to.
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta
 
 from control_plane_api.app import app
@@ -369,6 +370,91 @@ def test_retention_cap_is_configurable_and_trims_history(engine) -> None:
         ]
     assert len(history) == 2
     assert [h["label"] for h in history] == ["away", "sleeping"]
+
+
+# ---------------------------------------------------------------------------
+# A webhook label that arrives with no expiry must not live forever
+# ---------------------------------------------------------------------------
+
+
+def test_a_webhook_label_without_an_expiry_still_gets_one(client: TestClient) -> None:
+    """The phone is the only thing that can clear a Focus, and phones die.
+
+    `until` comes from the caller, so a label sent without one persisted until an
+    explicit `label: null` arrived. A phone that runs out of battery mid-Focus, or
+    a Shortcut that fails silently, pinned the door to that label indefinitely.
+    """
+    resp = client.post(
+        "/status/presence/webhook/focus-shortcut",
+        json={"subject_id": "owner", "label": "busy"},
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["until"] is not None, "an unbounded Focus never falls through"
+
+
+def test_an_explicit_expiry_from_the_caller_is_honoured(client: TestClient) -> None:
+    """The safety net is a floor for the careless case, not an override."""
+    explicit = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
+    resp = client.post(
+        "/status/presence/webhook/focus-shortcut",
+        json={"subject_id": "owner", "label": "busy", "until": explicit},
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    returned = datetime.fromisoformat(resp.json()["until"])
+    assert abs((returned - datetime.fromisoformat(explicit)).total_seconds()) < 1
+
+
+def test_clearing_a_source_does_not_invent_an_expiry(client: TestClient) -> None:
+    """`label: null` means gone now, not gone in 18 hours."""
+    client.post(
+        "/status/presence/webhook/focus-shortcut",
+        json={"subject_id": "owner", "label": "busy"},
+        headers=ADMIN_HEADERS,
+    )
+    resp = client.post(
+        "/status/presence/webhook/focus-shortcut",
+        json={"subject_id": "owner", "label": None},
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["source"] != "focus_shortcut", "clearing must hand control back at once"
+
+
+def test_a_stale_focus_stops_suppressing_the_nightly_window(client: TestClient) -> None:
+    """The bug this is really about (ADR-0037).
+
+    focus_shortcut outranks `schedule`, so a Focus label that never expires does
+    not merely go stale — it permanently cancels the nightly Recovery window. The
+    owner's stated design is "Recovery every night unless another Focus is on, and
+    when that Focus turns off Recovery comes back"; one missed clear turned that
+    into "Recovery never again" with nothing logged.
+    """
+
+    class ShortLivedWebhookSettings(_BaseTestSettings):
+        presence_webhook_max_age_s: float = 1.0
+        presence_schedule_window: str = "00:00-23:59"
+        presence_schedule_label: str = "sleeping"
+        presence_schedule_subjects: str = "owner"
+
+    override_settings(ShortLivedWebhookSettings())
+    with TestClient(app) as scoped:
+        scoped.post(
+            "/status/presence/webhook/focus-shortcut",
+            json={"subject_id": "owner", "label": "busy"},
+            headers=ADMIN_HEADERS,
+        )
+        held = scoped.get("/status/presence/owner", headers=ADMIN_HEADERS).json()
+        assert held["source"] == "focus_shortcut", "an active Focus should win while it lasts"
+
+        time.sleep(1.1)
+
+        after = scoped.get("/status/presence/owner", headers=ADMIN_HEADERS).json()
+        assert after["source"] == "schedule", (
+            "once the Focus expires the nightly window must come back, "
+            f"got source={after['source']!r} label={after['label']!r}"
+        )
 
 
 def test_normalising_a_stored_expiry_to_utc(client: TestClient) -> None:

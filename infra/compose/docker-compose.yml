@@ -89,6 +89,9 @@ services:
       PRESENCE_SCHEDULE_WINDOW: ${PRESENCE_SCHEDULE_WINDOW:-}
       PRESENCE_SCHEDULE_LABEL: ${PRESENCE_SCHEDULE_LABEL:-sleeping}
       PRESENCE_SCHEDULE_SUBJECTS: ${PRESENCE_SCHEDULE_SUBJECTS:-}
+      # Expiry for a webhook label that arrives without one, so a dead phone
+      # cannot pin the door to a stale Focus (and suppress the nightly window).
+      PRESENCE_WEBHOOK_MAX_AGE_S: ${PRESENCE_WEBHOOK_MAX_AGE_S:-64800}
       # Also never forwarded until 2026-08-22 — found by the generalised
       # every-setting-reaches-the-container guard, not by anyone noticing.
       DOORBELL_NOTIFY_ENABLED: ${DOORBELL_NOTIFY_ENABLED:-true}

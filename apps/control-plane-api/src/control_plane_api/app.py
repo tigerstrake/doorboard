@@ -43,7 +43,7 @@ import secrets
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from doorboard_auth import ServiceTokenRecord, ServiceTokenScope
@@ -566,13 +566,21 @@ def _handle_presence_webhook(request: Request, raw: dict, *, source: str) -> dic
 
     state = _state(request)
     now = datetime.now(UTC)
+    # A label with no expiry never falls through on its own. Give webhook-set
+    # labels a bounded life so a phone that dies mid-Focus decays to the next
+    # source instead of pinning the door (see PRESENCE_WEBHOOK_MAX_AGE_S). Only
+    # when setting: a clear (label=None) needs no expiry, and an explicit `until`
+    # from the caller is honoured as-is.
+    until = payload.until
+    if until is None and payload.label is not None:
+        until = now + timedelta(seconds=state.settings.presence_webhook_max_age_s)
     with session_scope(state.session_factory) as session:
         presence_engine.set_source_value(
             session,
             subject_id=payload.subject_id,
             source=source,
             label=payload.label,
-            until=payload.until,
+            until=until,
             now=now,
         )
         item = presence_engine.get_subject_status(

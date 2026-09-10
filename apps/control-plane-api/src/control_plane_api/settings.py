@@ -214,6 +214,17 @@ class Settings(BaseSettings):
     )
     # Age past which a Pi-cached presence bundle should be shown with a
     # staleness hint rather than trusted at face value (NUC-outage drill).
+    # Safety net for webhook-set sources (Focus shortcut, geofence label) that
+    # arrive with no explicit `until`. Without it a label persists until the phone
+    # explicitly clears it -- so a phone that dies, drops off the network, or runs
+    # a Shortcut that silently fails pins the door to a stale Focus forever. Worse,
+    # focus_shortcut outranks `schedule`, so one missed clear permanently suppresses
+    # the nightly Recovery window (ADR-0037), which is the exact behaviour the owner
+    # asked for. 18h: longer than any plausible real Focus, short enough that a
+    # stale one decays within the day. An explicit `until` from the caller always wins.
+    presence_webhook_max_age_s: float = Field(
+        default=18 * 3600.0, alias="PRESENCE_WEBHOOK_MAX_AGE_S", gt=0
+    )
     presence_stale_after_s: float = Field(
         default=1800.0, alias="CONTROL_PLANE_PRESENCE_STALE_AFTER_S"
     )
