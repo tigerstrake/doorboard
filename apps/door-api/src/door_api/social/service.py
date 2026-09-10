@@ -14,7 +14,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -125,6 +125,7 @@ class SocialMetrics:
     checkins_created: int = 0
     checkins_rejected: int = 0
     deletion_requests: int = 0
+    moderation_log_pruned: int = 0
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -136,6 +137,7 @@ class SocialMetrics:
             "social_checkins_created_total": self.checkins_created,
             "social_checkins_rejected_total": self.checkins_rejected,
             "social_deletion_requests_total": self.deletion_requests,
+            "social_moderation_log_pruned_total": self.moderation_log_pruned,
         }
 
 
@@ -578,3 +580,29 @@ class SocialService:
 
     def moderation_log(self, *, limit: int) -> list[dict[str, Any]]:
         return self.store.list_moderation_log(limit=limit)
+
+    def prune_moderation_log(self, *, now: datetime | None = None) -> int:
+        """Drop log rows older than the configured retention; returns how many.
+
+        Retention ``<= 0`` means keep everything. Only the count is logged — a log row
+        names a target id, and the point of pruning is to hold less, not to copy it.
+        """
+        days = self.config.moderation_log_retention_days
+        if days <= 0:
+            return 0
+        cutoff = (now or datetime.now(UTC)) - timedelta(days=days)
+        cutoff_iso = cutoff.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        deleted = self.store.prune_moderation_log(older_than=cutoff_iso)
+        self.metrics.moderation_log_pruned += deleted
+        if deleted:
+            logger.info(
+                json.dumps(
+                    {
+                        "service": "door-api",
+                        "event_id": "social_moderation_log_pruned",
+                        "deleted": deleted,
+                        "retention_days": days,
+                    }
+                )
+            )
+        return deleted

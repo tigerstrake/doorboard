@@ -629,7 +629,7 @@ class SocialStore:
         )
 
     # ------------------------------------------------------------------
-    # Moderation log (audit trail — append-only)
+    # Moderation log (audit trail — append-only, age-bounded by prune)
     # ------------------------------------------------------------------
 
     def append_moderation_log(
@@ -650,6 +650,25 @@ class SocialStore:
                 (log_id, target_kind, target_id, action, actor, created_at),
             )
             self._conn.commit()
+
+    def prune_moderation_log(self, *, older_than: str) -> int:
+        """Delete log rows created before ``older_than`` (ISO-8601 UTC, lexical compare).
+
+        Returns the number of rows removed. The log is an audit trail, not an erasure
+        record — nothing it references depends on these rows existing — so bounding it
+        by age loses only history the owner chose not to keep.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM moderation_log WHERE created_at < ?", (older_than,)
+            )
+            self._conn.commit()
+            return cur.rowcount
+
+    def moderation_log_count(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM moderation_log").fetchone()
+        return int(row[0]) if row else 0
 
     def list_moderation_log(self, *, limit: int) -> list[dict]:
         with self._lock:
