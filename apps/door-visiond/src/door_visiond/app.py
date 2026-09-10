@@ -23,6 +23,7 @@ None of these routes sit in the door button path.
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
 from collections.abc import AsyncGenerator
@@ -184,7 +185,14 @@ async def enroll(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
     try:
-        result = svc.enroll(
+        # Off the event loop: each image is a detect + embed on the Hailo, behind the
+        # pipeline lock the run loop's worker thread holds mid-frame. Run inline, five
+        # stills stalled the loop for hundreds of ms — no frames, no `tick()`, /health
+        # and /current-visitor unanswered — a self-inflicted recognition freeze on every
+        # enrollment. The store, pipeline and cache are lock-protected and the matcher
+        # swap is atomic, so a worker thread is safe.
+        result = await asyncio.to_thread(
+            svc.enroll,
             display_name=display_name,
             consent_version=consent_version,
             consent_confirmed=consent_confirmed,

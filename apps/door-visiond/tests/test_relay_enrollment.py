@@ -497,6 +497,45 @@ async def test_relay_outage_leaves_service_health_ok(
         await svc.stop()
 
 
+@pytest.mark.anyio
+async def test_bundle_handling_does_not_stall_the_event_loop(
+    svc: VisiondService, transport: FakeRelayTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`relay_handle_bundle` decrypts and embeds up to 15 stills on the Hailo. Called
+    inline from the worker's tick it froze the recognition loop sharing this event
+    loop for as long as that took; it has to run on a worker thread like every other
+    blocking call in the tick."""
+    import time
+
+    invite_id, secret, _ = _mint(svc)
+    transport.enqueue(_bundle(svc, invite_id=invite_id, secret=secret))
+
+    def _slow_handle(bundle: SealedBundle) -> PickupAck:
+        time.sleep(0.3)
+        return PickupAck(bundle_id=bundle.bundle_id, outcome="rejected", reason="test")
+
+    monkeypatch.setattr(svc, "relay_handle_bundle", _slow_handle)
+
+    ticks = 0
+
+    async def _heartbeat() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    worker = RelayWorker(transport=transport, handler=svc, poll_interval_s=0.01, backoff_max_s=0.05)
+    heartbeat = asyncio.create_task(_heartbeat())
+    try:
+        await worker._tick()
+    finally:
+        heartbeat.cancel()
+
+    assert [a.reason for a in transport.acks] == ["test"]
+    # ~30 heartbeats fit in 0.3 s; with the handler inline the loop would run none.
+    assert ticks >= 5, "the event loop stopped while a bundle was being handled"
+
+
 def test_relay_backoff_is_bounded(svc: VisiondService, transport: FakeRelayTransport) -> None:
     worker = RelayWorker(transport=transport, handler=svc, poll_interval_s=1.0, backoff_max_s=7.0)
     delays = [worker._register_failure(RelayTransportError("boom")) for _ in range(20)]

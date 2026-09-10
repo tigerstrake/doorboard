@@ -258,7 +258,10 @@ class RelayWorker:
 
         for item in batch.items:
             self._stats.bundles_collected += 1
-            ack = self._handler.relay_handle_bundle(item.bundle)
+            # Decrypt + up to 15 Hailo embeds per bundle: a worker thread, like every
+            # other blocking call in this loop, so the recognition loop sharing this
+            # event loop keeps processing frames while a phone enrollment runs.
+            ack = await asyncio.to_thread(self._handler.relay_handle_bundle, item.bundle)
             if ack.outcome == "enrolled":
                 self._stats.bundles_enrolled += 1
             else:

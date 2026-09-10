@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+import time
+from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qs
 
 import pytest
 from door_visiond.app import app
+from door_visiond.embedder import MockEmbedder
 from door_visiond.settings import Settings, override_settings, reset_settings
 from fastapi.testclient import TestClient
 
-from .conftest import CONSENT_VERSION
+from .conftest import CONSENT_VERSION, TEST_DIM
 
 
 def test_health(client: TestClient) -> None:
@@ -120,6 +123,69 @@ def test_enroll_normalises_display_name_whitespace(client: TestClient) -> None:
     resp = client.post("/enroll", data=data, files=files)
     assert resp.status_code == 201, resp.text
     assert [p["display_name"] for p in client.get("/people").json()] == ["Alex B"]
+
+
+class _SlowEmbedder:
+    """An embedder that takes as long as a few Hailo passes, recording whether the
+    run loop kept advancing while it worked."""
+
+    def __init__(self, svc: Any, *, hold_s: float) -> None:
+        self._inner = MockEmbedder(dim=TEST_DIM)
+        self._svc = svc
+        self._hold_s = hold_s
+        self.frames_at_start = -1
+        self.frames_at_end = -1
+
+    @property
+    def model_id(self) -> str:
+        return self._inner.model_id
+
+    @property
+    def dim(self) -> int:
+        return self._inner.dim
+
+    def embed(self, image_bytes: bytes) -> tuple[Any, float]:
+        self.frames_at_start = self._svc.core.frame_count
+        time.sleep(self._hold_s)
+        self.frames_at_end = self._svc.core.frame_count
+        return self._inner.embed(image_bytes)
+
+
+def test_enroll_inference_does_not_stall_the_recognition_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enrollment ran inline on the event loop: five stills at the door froze
+    recognition (no frames, no tick, /health unanswered) for as long as the Hailo took."""
+    monkeypatch.setenv("SSD_DATA_ROOT", str(tmp_path / "ssd"))
+    monkeypatch.setenv("VISION_MODE", "mock")
+    monkeypatch.setenv("DOOR_VISIOND_ADMIN_TOKEN", "test-admin-token")
+    monkeypatch.setenv("VISIOND_MODEL_DIM", str(TEST_DIM))
+    monkeypatch.setenv("VISIOND_FRAME_INTERVAL_MS", "10")
+    override_settings(Settings())
+    try:
+        with TestClient(app, headers={"Authorization": "Bearer test-admin-token"}) as c:
+            svc = cast(Any, c.app).state.service
+            slow = _SlowEmbedder(svc, hold_s=0.3)
+            svc._embedder = slow
+
+            files = [("images", ("a.bin", b"alex-photo-bytes", "application/octet-stream"))]
+            data = {
+                "display_name": "Alex",
+                "consent_version": CONSENT_VERSION,
+                "consent_confirmed": "true",
+                "profile_id": "blue_wave",
+                "color": "#0000ff",
+            }
+            resp = c.post("/enroll", data=data, files=files)
+            assert resp.status_code == 201, resp.text
+    finally:
+        reset_settings()
+
+    # ~30 frames fit in 0.3 s at a 10 ms interval; blocked, the counter would not move.
+    assert slow.frames_at_start >= 0
+    assert slow.frames_at_end - slow.frames_at_start >= 5, (
+        "the run loop stopped advancing while /enroll embedded"
+    )
 
 
 def test_privacy_mode_toggle_and_enroll_block(client: TestClient) -> None:
