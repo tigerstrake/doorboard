@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -256,6 +257,38 @@ def test_run_aircraft_summary_fields_verification(
         assert "destination" not in ac
         assert "registration" not in ac
         assert "photo_url" not in ac
+
+
+@patch("httpx.post")
+def test_run_aircraft_summary_observer_is_rounded_so_the_exact_location_never_leaks(
+    mock_post, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The satellites job pins that its observer never reaches the wire. The aircraft
+    job publishes one on purpose (ADR-0015, so a map can centre) -- and was sending the
+    identical setting at full float precision in every 30 s event, onto the public
+    wallboard, door-api's open /ws, a retained MQTT topic and the NUC archive. A map
+    needs ~1 km to centre; two decimals gives it that and nothing more.
+    """
+    lat, lon = "37.4275", "-122.1697"
+    monkeypatch.setenv("FEATURE_AIRCRAFT", "True")
+    monkeypatch.setenv("AIRCRAFT_OBSERVER_LAT", lat)
+    monkeypatch.setenv("AIRCRAFT_OBSERVER_LON", lon)
+    monkeypatch.setenv("CONTROL_PLANE_URL", "http://127.0.0.1:8090")
+    monkeypatch.setenv("WALLBOARD_WORKER_INGEST_TOKEN", "tok")
+
+    ingest_response = MagicMock()
+    ingest_response.status_code = 200
+    ingest_response.json.return_value = {"status": "stored"}
+    mock_post.return_value = ingest_response
+
+    assert run_aircraft_summary(Settings(), MockAircraftProvider()) is not None
+
+    body = mock_post.call_args.kwargs["json"]
+    serialized = json.dumps(body)
+    assert lat not in serialized, "the raw latitude setting reached the wire"
+    assert lon not in serialized, "the raw longitude setting reached the wire"
+    observer = body["events"][0]["payload"]["observer"]
+    assert observer == {"latitude": 37.43, "longitude": -122.17}
 
 
 @patch("httpx.post")

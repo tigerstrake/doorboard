@@ -71,3 +71,21 @@ changes require an ADR. This is a payload/schema change, hence this record.
   `manufacturer` field, would extend this ADR rather than overload the event.
 - door-ui is out of scope here; it may consume the new optional fields (map,
   photo, route) in a follow-up without any further contract change.
+
+## Precision (clarification, 2026-09-10)
+
+The `observer` field stays, for the reason above: a map has to centre on
+something. What this ADR never argued for is metre-level precision, and the
+worker was publishing the owner's exact `OBSERVER_LAT/LON` at full float
+precision in every 30 s event — onto the public wallboard, door-api's
+unauthenticated `/ws`, a retained MQTT topic and the NUC `events` archive —
+while the satellite channel treats the same two numbers as never-displayed
+config and tests that they are absent from its payload. The handoff lists
+"exact location display to the public" as a non-goal and ARCHITECTURE.md §9
+says no exact location on public routes.
+
+So the field's precision is bounded, not its presence: the worker publishes the
+observer rounded to **two decimal places** (~1.1 km), which is ample for
+centring a ±44 km map and not enough to find a door. The contract is unchanged;
+this is a producer-side bound, pinned by a test that the raw setting strings
+never reach the wire. Not a superseding change.

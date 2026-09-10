@@ -46,6 +46,10 @@ from wallboard_worker.uuid7 import uuid7
 
 logger = logging.getLogger("doorboard.wallboard_worker.jobs")
 
+# Decimal places the published aircraft observer keeps: 2 is ~1.1 km, enough to centre a
+# map and not enough to find a door (ADR-0015 "Precision").
+OBSERVER_DECIMALS = 2
+
 
 def get_ingest_token(settings: Settings) -> str:
     """Return one process-scoped ingest token, bootstrapping once in dev if needed."""
@@ -371,12 +375,19 @@ def run_aircraft_summary(
     # provider serves cache through cooldowns and outages, so as_of has to be the moment the
     # data was actually observed or the wallboard's staleness marker is decorative.
     observed_at = getattr(provider, "last_successful_time", None) or now
+    # The observer exists so a map can centre on it (ADR-0015), and that is all it needs
+    # to be good for. Two decimals is ~1 km, ample for centring a ±44 km map; the raw
+    # setting is the owner's exact location and was going out at full float precision in
+    # every 30 s event -- onto the public wallboard, door-api's open /ws, the retained
+    # MQTT topic and the NUC archive -- while the satellite channel treats the same two
+    # numbers as never-displayed config. "No exact location on public routes"
+    # (ARCHITECTURE.md §9; ADR-0015 "Precision").
     payload = AmbientAircraftSummaryPayload(
         nearby=nearby_models,
         as_of=observed_at,
         observer=AircraftObserver(
-            latitude=settings.aircraft_observer_lat,
-            longitude=settings.aircraft_observer_lon,
+            latitude=round(settings.aircraft_observer_lat, OBSERVER_DECIMALS),
+            longitude=round(settings.aircraft_observer_lon, OBSERVER_DECIMALS),
         ),
     )
 
