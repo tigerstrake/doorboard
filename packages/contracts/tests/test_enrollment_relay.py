@@ -120,6 +120,34 @@ def test_manifest_requires_affirmative_consent() -> None:
         SealedManifest.model_validate({**base, "consent_confirmed": False})
 
 
+def _manifest_fields(**overrides: object) -> dict[str, object]:
+    return {
+        "invite_secret": "c2VjcmV0",
+        "display_name": "Tiger",
+        "consent_version": "v2",
+        "consent_confirmed": True,
+        "profile": {"profile_id": "warm-amber", "color": "#ffb300"},
+        "captured_at": datetime.now(UTC).isoformat(),
+        "image_count": 3,
+        **overrides,
+    }
+
+
+@pytest.mark.parametrize("bad_name", ["", " ", "   \t\n", "x" * 65, " " + "x" * 65 + " "])
+def test_manifest_rejects_a_blank_or_oversized_display_name(bad_name: str) -> None:
+    """`min_length=1` alone accepted `" "`, which enrolled and greeted nobody by name."""
+    with pytest.raises(ValidationError):
+        SealedManifest.model_validate(_manifest_fields(display_name=bad_name))
+
+
+def test_manifest_strips_display_name_whitespace() -> None:
+    manifest = SealedManifest.model_validate(_manifest_fields(display_name="  Tiger \t"))
+    assert manifest.display_name == "Tiger"
+    # 64 characters after stripping is the boundary and is accepted.
+    edge = SealedManifest.model_validate(_manifest_fields(display_name=" " + "y" * 64 + " "))
+    assert len(edge.display_name) == 64
+
+
 def test_sealed_bundle_round_trips_through_json() -> None:
     bundle = SealedBundle(
         bundle_id="bnd_" + "a" * 20,

@@ -87,6 +87,11 @@ logger = get_logger("door_visiond.service")
 
 _HARDWARE_MODES = frozenset({"single-camera", "dual-camera", "hardware"})
 
+# Longest display name either enrollment path accepts. Matches the sealed manifest's
+# `display_name` bound in packages/contracts so a phone cannot send what the door
+# would refuse.
+MAX_DISPLAY_NAME_LEN = 64
+
 
 # ---------------------------------------------------------------------------
 # Errors (mapped to HTTP status codes by the app)
@@ -103,6 +108,20 @@ class PrivacyModeActiveError(EnrollError):
 
 class EnrollmentLockedError(EnrollError):
     """Encrypted enrollment storage is unavailable (503)."""
+
+
+class InvalidDisplayNameError(EnrollError):
+    """The display name is empty after whitespace normalisation, or too long (422).
+
+    The name is a public-surface string (wallboard greeting, Telegram, the
+    doorpad), so what gets stored is what gets shown: ``"   "`` would greet
+    nobody by name and collide with every other blank name.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"display_name must be 1-{MAX_DISPLAY_NAME_LEN} characters after collapsing whitespace"
+        )
 
 
 class StaleConsentError(EnrollError):
@@ -669,6 +688,14 @@ class VisiondService:
         if self._privacy_enabled:
             raise PrivacyModeActiveError
 
+        # Normalised here, at the convergence point, so both paths store what the
+        # wallboard will show. The at-door form sends the raw string (the admin UI
+        # only disables its button on blank input) and the manifest bound is a
+        # contract check, not a stored value.
+        display_name = " ".join(display_name.split())
+        if not display_name or len(display_name) > MAX_DISPLAY_NAME_LEN:
+            raise InvalidDisplayNameError
+
         expected = load_consent_statement(self._settings.consent_statement_path).version
         if not consent_confirmed or consent_version != expected:
             raise StaleConsentError(expected)
@@ -956,6 +983,12 @@ class VisiondService:
         except InvalidAccentColorError:
             return PickupAck(
                 bundle_id=bundle.bundle_id, outcome="rejected", reason="invalid_accent_color"
+            )
+        except InvalidDisplayNameError:
+            # The manifest contract already strips and bounds the name, so this is
+            # defence in depth; "rejected" because the bundle can never succeed as-is.
+            return PickupAck(
+                bundle_id=bundle.bundle_id, outcome="rejected", reason="invalid_display_name"
             )
         except NoProfileAvailableError:
             return PickupAck(

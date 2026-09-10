@@ -24,6 +24,8 @@ from doorboard_contracts.enrollment_relay import (
     PickupBatch,
     PickupItem,
     SealedBundle,
+    SealedManifest,
+    SealedProfile,
 )
 
 from .conftest import CONSENT_VERSION, capture_logs, scan_tree_for, sentinel
@@ -272,6 +274,64 @@ def test_stale_consent_version_is_rejected(svc: VisiondService) -> None:
     assert svc._store.person_count() == 0
     # A rejected invite is NOT consumed — the enrollee can retry with current text.
     assert svc.list_invites()[0]["status"] == "open"
+
+
+def test_whitespace_only_display_name_in_a_manifest_is_rejected(svc: VisiondService) -> None:
+    """The manifest contract strips and re-checks the name, so `"   "` — which the old
+    `min_length=1` accepted — fails at the seal boundary and never reaches enroll."""
+    invite_id, secret, _ = _mint(svc)
+    keyring = svc._keyring()
+    # Built with validation bypassed, the way a hostile or buggy phone would produce it.
+    manifest = SealedManifest.model_construct(
+        invite_secret=secret,
+        display_name="   ",
+        consent_version=CONSENT_VERSION,
+        consent_confirmed=True,
+        profile=SealedProfile(profile_id="sunrise", color="#ffb300", sound=None),
+        captured_at=datetime.now(UTC),
+        image_count=1,
+    )
+    bundle = seal_bundle(
+        door_public_key=keyring.active_public_key,
+        door_key_id=keyring.active_key_id,
+        invite_id=invite_id,
+        bundle_id="bnd_" + "e" * 22,
+        manifest=manifest,
+        images=[b"a-photo"],
+    )
+
+    ack = svc.relay_handle_bundle(bundle)
+    assert (ack.outcome, ack.reason) == ("rejected", "seal_payload_invalid")
+    assert svc._store.person_count() == 0
+
+
+def test_remote_display_name_is_whitespace_normalised(svc: VisiondService) -> None:
+    """Both paths converge in enroll(), so a phone's `"Zaphod  Beeblebrox"` is stored
+    the way the wallboard will show it."""
+    invite_id, secret, _ = _mint(svc)
+    ack = svc.relay_handle_bundle(
+        _bundle(svc, invite_id=invite_id, secret=secret, display_name=" Zaphod \t Beeblebrox ")
+    )
+    assert ack.outcome == "enrolled", ack.reason
+    assert [p["display_name"] for p in svc._store.list_people()] == ["Zaphod Beeblebrox"]
+
+
+def test_an_invalid_display_name_reaching_enroll_is_rejected_not_failed(
+    svc: VisiondService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defence in depth behind the contract check: the bundle can never succeed as-is,
+    so the phone must be told "rejected" rather than left waiting on a retry."""
+    from door_visiond.service import InvalidDisplayNameError
+
+    invite_id, secret, _ = _mint(svc)
+    bundle = _bundle(svc, invite_id=invite_id, secret=secret)
+
+    def _refuse(**_kwargs: object) -> object:
+        raise InvalidDisplayNameError
+
+    monkeypatch.setattr(svc, "enroll", _refuse)
+    ack = svc.relay_handle_bundle(bundle)
+    assert (ack.outcome, ack.reason) == ("rejected", "invalid_display_name")
 
 
 # -- P-16: decrypted plaintext is transient --------------------------------

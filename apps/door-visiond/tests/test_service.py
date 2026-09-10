@@ -13,6 +13,7 @@ from door_visiond.enrollment import ProfileSpec
 from door_visiond.pipeline import BackendStatus, DisabledBackend, FrameCapture
 from door_visiond.service import (
     EnrollmentLockedError,
+    InvalidDisplayNameError,
     PrivacyModeActiveError,
     QualityTooLowError,
     StaleConsentError,
@@ -172,6 +173,44 @@ def test_enroll_rejects_low_quality(ssd_settings: Settings) -> None:
             images=[b"aa"],  # too small → quality below threshold
             profile=_profile(),
         )
+
+
+@pytest.mark.parametrize("bad_name", ["", "   ", "\t\n", "x" * 65, " " + "x" * 65 + " "])
+def test_enroll_rejects_an_empty_or_oversized_display_name(
+    ssd_settings: Settings, bad_name: str
+) -> None:
+    """`"   "` used to enroll and greet "Welcome,   " on the wallboard."""
+    svc = _svc(ssd_settings)
+    with pytest.raises(InvalidDisplayNameError):
+        svc.enroll(
+            display_name=bad_name,
+            consent_version=CONSENT_VERSION,
+            consent_confirmed=True,
+            images=[b"alex-photo-bytes"],
+            profile=_profile(),
+        )
+    assert svc._store.person_count() == 0
+
+
+def test_enroll_stores_the_whitespace_normalised_display_name(ssd_settings: Settings) -> None:
+    svc = _svc(ssd_settings)
+    svc.enroll(
+        display_name="  Alex \t  B  ",
+        consent_version=CONSENT_VERSION,
+        consent_confirmed=True,
+        images=[b"alex-photo-bytes"],
+        profile=_profile(),
+    )
+    assert [p["display_name"] for p in svc._store.list_people()] == ["Alex B"]
+    # 64 characters after normalisation is the boundary and is accepted.
+    svc.enroll(
+        display_name=" " + "y" * 64 + " ",
+        consent_version=CONSENT_VERSION,
+        consent_confirmed=True,
+        images=[b"other-photo-bytes"],
+        profile=ProfileSpec(profile_id="red_pulse", color="#f00", sound=None),
+    )
+    assert svc._store.person_count() == 2
 
 
 def test_enroll_blocked_during_privacy_mode(ssd_settings: Settings) -> None:

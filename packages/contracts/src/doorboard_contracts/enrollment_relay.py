@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints
+from pydantic import Field, StringConstraints, field_validator
 
 from doorboard_contracts.events import StrictModel, UTCDateTime
 
@@ -95,6 +95,13 @@ class SealedManifest(StrictModel):
     compromised relay — which stores only ``sha256(secret)`` — cannot construct a
     bundle the Pi will accept, even though sealing needs only the public key
     (ADR-0016 §4, E-11).
+
+    ``display_name`` is validated, not merely bounded: it is stripped of leading
+    and trailing whitespace and must then be 1-64 characters, so a whitespace-only
+    name (which ``min_length=1`` alone accepts) fails at the seal boundary rather
+    than being enrolled and greeted as "Welcome,   ". This is additive validation
+    on an existing field — the wire shape is unchanged and the TypeScript type is
+    unaffected — and the door service collapses internal whitespace on top of it.
     """
 
     invite_secret: Base64Url
@@ -104,6 +111,14 @@ class SealedManifest(StrictModel):
     profile: SealedProfile
     captured_at: UTCDateTime
     image_count: int = Field(ge=1, le=15)
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def _strip_display_name(cls, value: object) -> object:
+        # Before the field constraints so `min_length`/`max_length` judge the
+        # stripped value: `"   "` is then empty and refused, and a 64-character
+        # name with surrounding whitespace is accepted rather than counted as 66.
+        return value.strip() if isinstance(value, str) else value
 
 
 class DoorKeyPublication(StrictModel):

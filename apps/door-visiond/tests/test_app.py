@@ -92,6 +92,36 @@ def test_enroll_stale_consent_is_409(client: TestClient) -> None:
     assert resp.status_code == 409
 
 
+@pytest.mark.parametrize("bad_name", ["   ", "x" * 65])
+def test_enroll_invalid_display_name_is_422(client: TestClient, bad_name: str) -> None:
+    files = [("images", ("a.bin", b"alex-photo-bytes", "application/octet-stream"))]
+    data = {
+        "display_name": bad_name,
+        "consent_version": CONSENT_VERSION,
+        "consent_confirmed": "true",
+        "profile_id": "blue_wave",
+        "color": "#0000ff",
+    }
+    resp = client.post("/enroll", data=data, files=files)
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["error"] == "invalid_display_name"
+    assert client.get("/people").json() == []
+
+
+def test_enroll_normalises_display_name_whitespace(client: TestClient) -> None:
+    files = [("images", ("a.bin", b"alex-photo-bytes", "application/octet-stream"))]
+    data = {
+        "display_name": "  Alex   B ",
+        "consent_version": CONSENT_VERSION,
+        "consent_confirmed": "true",
+        "profile_id": "blue_wave",
+        "color": "#0000ff",
+    }
+    resp = client.post("/enroll", data=data, files=files)
+    assert resp.status_code == 201, resp.text
+    assert [p["display_name"] for p in client.get("/people").json()] == ["Alex B"]
+
+
 def test_privacy_mode_toggle_and_enroll_block(client: TestClient) -> None:
     resp = client.post("/privacy-mode", json={"enabled": True, "changed_by": "admin"})
     assert resp.status_code == 200

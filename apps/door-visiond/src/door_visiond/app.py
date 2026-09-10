@@ -53,6 +53,7 @@ from door_visiond.logging_setup import get_logger
 from door_visiond.service import (
     DisplayNameTakenError,
     EnrollmentLockedError,
+    InvalidDisplayNameError,
     PrivacyModeActiveError,
     QualityTooLowError,
     SelfEnrollClosedError,
@@ -199,6 +200,11 @@ async def enroll(
         ) from None
     except PrivacyModeActiveError:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="privacy_mode") from None
+    except InvalidDisplayNameError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "invalid_display_name", "message": str(exc)},
+        ) from None
     except StaleConsentError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
