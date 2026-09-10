@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import time
+import unicodedata
 from datetime import date
 from typing import Any
 
@@ -111,6 +112,75 @@ class TestInjectionCorpus:
             )
         assert service.metrics.guestbook_rejected_invalid == 1
         assert service.metrics.guestbook_created == 0
+
+
+# ---------------------------------------------------------------------------
+# Unicode: emoji survive, controls go, zalgo is clamped (audit 2026-09, P3)
+# ---------------------------------------------------------------------------
+
+
+def _combining_runs(text: str) -> list[int]:
+    """Lengths of every run of consecutive non-spacing marks in *text*."""
+    runs: list[int] = []
+    run = 0
+    for ch in text:
+        if unicodedata.category(ch) == "Mn" and ch != "\ufe0f":
+            run += 1
+        else:
+            if run:
+                runs.append(run)
+            run = 0
+    if run:
+        runs.append(run)
+    return runs
+
+
+class TestUnicodeSanitisation:
+    def test_family_emoji_round_trips(self) -> None:
+        """U+200D ZWJ is Cf and used to be stripped, turning one family into three
+        separate people on the wallboard."""
+        family = "👨\u200d👩\u200d👧\u200d👦"
+        assert sanitize_text(family, max_len=100) == family
+
+    def test_profession_and_flag_style_sequences_round_trip(self) -> None:
+        for seq in ("👩\u200d💻", "🏳\ufe0f\u200d🌈", "👍🏽"):
+            assert sanitize_text(seq, max_len=100) == seq
+
+    def test_variation_selector_and_keycap_survive(self) -> None:
+        text = "I ❤\ufe0f 1\ufe0f\u20e3"
+        assert sanitize_text(text, max_len=100) == text
+
+    def test_bidi_override_is_still_stripped(self) -> None:
+        # RLO, LRE, FSI/PDI: all Cf, all gone, text order preserved.
+        assert sanitize_text("abc\u202edef\u202a\u2068x\u2069", max_len=100) == "abcdefx"
+
+    def test_zero_width_space_is_still_stripped(self) -> None:
+        assert sanitize_text("a\u200bb\ufeffc", max_len=100) == "abc"
+
+    def test_control_characters_are_still_stripped(self) -> None:
+        assert sanitize_text("hi\x00\x1b[31mthere\r\n", max_len=100) == "hi[31mthere"
+
+    def test_decomposed_input_is_nfc_normalised(self) -> None:
+        assert sanitize_text("cafe\u0301", max_len=100) == "café"
+        # And the cap sees the composed form: one precomposed é plus one mark, not three.
+        assert sanitize_text("e\u0301\u0302", max_len=100) == "é\u0302"
+
+    def test_zalgo_is_clamped_to_three_marks_per_base(self) -> None:
+        marks = "\u0300\u0301\u0302\u0303\u0304\u0305\u0306\u0307"
+        zalgo = "x" + marks * 5 + "q" + marks * 5 + "z"
+        clean = sanitize_text(zalgo, max_len=1000)
+        assert clean == "x\u0300\u0301\u0302q\u0300\u0301\u0302z"
+        assert max(_combining_runs(clean)) <= 3
+
+    def test_interleaved_glue_does_not_defeat_the_clamp(self) -> None:
+        zalgo = "x" + "\u0301\ufe0f" * 20 + "y"
+        clean = sanitize_text(zalgo, max_len=1000)
+        assert max(_combining_runs(clean)) <= 3
+        assert clean.startswith("x") and clean.endswith("y")
+
+    def test_real_orthographies_are_untouched(self) -> None:
+        for text in ("naïve façade", "Việt Nam", "हिन्दी", "العربية", "ไทย", "🇳🇿 kia ora"):
+            assert sanitize_text(text, max_len=100) == unicodedata.normalize("NFC", text)
 
 
 # ---------------------------------------------------------------------------
