@@ -73,6 +73,17 @@ def _raise_for_domain_error(exc: Exception, trace_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Shape of an id a public write may *reference* (a door-media recording id is a UUID;
+# poll option and entry ids are UUIDs too). Bounded and shape-checked at the edge because
+# these fields were stored or echoed verbatim: a 5 MiB photo_recording_id was accepted
+# with a 201 and written to social.sqlite on the SSD, so a hallway client could fill the
+# disk at the write rate limit and trip the storage floor that stops recording
+# (ARCHITECTURE.md §10). Ids are looked up or joined, never rendered, so the alphabet is
+# the narrow one every real id fits in.
+_ID_MAX_LEN = 64
+_ID_PATTERN = r"^[A-Za-z0-9_-]+$"
+
+
 class GuestbookCreateRequest(BaseModel):
     text: str
     author_label: str | None = None
@@ -80,12 +91,14 @@ class GuestbookCreateRequest(BaseModel):
     # Optional here but mandatory-offer on check-ins, which is the owner's
     # intent: a note may carry a photo, a check-in always offers one. The photo
     # stays private in the photo-booth pipeline; this is only the reference.
-    photo_recording_id: str | None = None
+    photo_recording_id: str | None = Field(
+        default=None, max_length=_ID_MAX_LEN, pattern=_ID_PATTERN
+    )
     session_token: str = Field(min_length=1, max_length=200)
 
 
 class PollVoteRequest(BaseModel):
-    option_id: str
+    option_id: str = Field(min_length=1, max_length=_ID_MAX_LEN)
     session_token: str = Field(min_length=1, max_length=200)
 
 
@@ -99,13 +112,16 @@ class CheckinCreateRequest(BaseModel):
     # Optional reference to a visitor-captured photo_booth recording
     # (see ADR-0013). The photo itself lives in the photo-booth/gallery
     # pipeline; the check-in only stores the reference.
-    photo_recording_id: str | None = None
+    photo_recording_id: str | None = Field(
+        default=None, max_length=_ID_MAX_LEN, pattern=_ID_PATTERN
+    )
     session_token: str = Field(min_length=1, max_length=200)
 
 
 class DeletionRequest(BaseModel):
-    target_kind: str
-    target_id: str
+    # Echoed back in the 400 for an unsupported kind, so bounded too.
+    target_kind: str = Field(min_length=1, max_length=32)
+    target_id: str = Field(min_length=1, max_length=_ID_MAX_LEN)
     session_token: str = Field(min_length=1, max_length=200)
 
 
