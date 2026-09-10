@@ -73,6 +73,7 @@ from door_api.visitor_relay import (
     VisitorRelayTransport,
     VisitorRelayWorker,
     opaque_session_id,
+    sha256_b64url,
 )
 from door_api.visitor_relay import build_snapshot as build_visitor_snapshot
 from door_api.visitor_tokens import (
@@ -156,6 +157,11 @@ class DoorApiState:
         self._visitor_relay_task: asyncio.Task[None] | None = None
         self._visitor_relay_token: str | None = None
         self._visitor_relay_applied: dict[str, VisitorActionOutcome] = {}
+        # sha256(token) -> the attributable person_id (or None) the last push for that
+        # token advertised to the phone. See visitor_relay_apply for why attribution
+        # binds to what was disclosed at push time, not to whoever is recognised when
+        # the write is finally collected.
+        self._visitor_relay_advertised: dict[str, str | None] = {}
         # The one token minted for the current session key: (key, token, expires_at).
         # See visitor_token() for why there must be exactly one per session.
         self._visitor_token_cache: tuple[UUID, str, int] | None = None
@@ -173,6 +179,7 @@ class DoorApiState:
                 # memo and the session's token so the next visitor starts clean.
                 self._visitor_relay_token = None
                 self._visitor_relay_applied.clear()
+                self._visitor_relay_advertised.clear()
                 self._visitor_token_cache = None
 
         self.machine = SessionMachine(config=self.config, store=self.store, on_event=on_event)
@@ -825,6 +832,17 @@ class DoorApiState:
             with contextlib.suppress(Exception):
                 results = self.social_service.poll_results(poll.id)
 
+        # Remember what this push tells the phone about attribution, keyed on the
+        # token hash the phone will present its writes under. The apply path
+        # attributes only to this person; anyone recognised later is not who the
+        # phone-holder was told about. Bounded: one entry per token, and there is
+        # one token per session (visitor_token), cleared on session end.
+        attributable = self.attributable_person_id()
+        self._visitor_relay_advertised[sha256_b64url(token)] = attributable
+        if len(self._visitor_relay_advertised) > 8:
+            for stale in list(self._visitor_relay_advertised)[:-8]:
+                del self._visitor_relay_advertised[stale]
+
         return build_visitor_snapshot(
             session_token=token,
             session_id=str(snapshot.session_id),
@@ -840,7 +858,7 @@ class DoorApiState:
             # A boolean, never the name (ADR-0044): the relay never receives a display
             # name. True only when consent covers attribution, so an unattributed visitor
             # is never told a write will be attributed (ADR-0018 §2, E-23).
-            attributed=self.attributed_display_name() is not None,
+            attributed=attributable is not None,
         )
 
     def visitor_relay_apply(self, action: VisitorQueuedAction) -> VisitorActionOutcome:
@@ -910,9 +928,25 @@ class DoorApiState:
             # rather not collect them anyway.
             pseudo_ip = f"relay:{action.session_id}"
 
-            # Safe now: the action provably belongs to the live session, so the
-            # recognised person (if any) is that session's, not a later one's.
-            attributed = self.attributable_person_id()
+            # The action provably belongs to the live session -- but the session is
+            # not the person. A write is attributed only to the person the phone was
+            # *told* about (E-23): the push that carried `attributed=true` recorded who
+            # that was, keyed on this token's hash. If somebody else has been recognised
+            # since (same session, a poll interval later), or nobody was advertised at
+            # push time, the write is stored anonymously rather than under a name its
+            # author never saw disclosed. Fails toward anonymous: no memo (a restart
+            # between push and poll, which also forgets the identity) means None.
+            advertised = self._visitor_relay_advertised.get(sha256_b64url(token))
+            current = self.attributable_person_id()
+            attributed = current if current is not None and current == advertised else None
+            if current != advertised:
+                logger.info(
+                    "visitor_relay_attribution_dropped",
+                    extra={
+                        "action_id": action.action_id,
+                        "reason": "person_changed" if advertised is not None else "unadvertised",
+                    },
+                )
 
             if action.note is not None:
                 kind = "note"
