@@ -133,55 +133,10 @@ class SkyfieldSatelliteProvider(SatelliteProvider):
             self._eph = loader(self.EPHEMERIS_FILE)
         return self._eph
 
-    def _get_tles(
-        self, url: str | None = None, cache_path: str | None = None
-    ) -> dict[str, tuple[str, str]]:
-        # url/cache_path default to the pass (stations) source; get_orbits passes the orbit
-        # (visual) source so the two feeds cache independently and neither hammers CelesTrak.
-        tle_url = url or self.config.tle_url
-        cache_file = Path(cache_path or self.config.tle_cache_path)
-        use_cache = False
-
-        # Check if cache is fresh
-        if cache_file.exists():
-            age = time.time() - cache_file.stat().st_mtime
-            if age < 24 * 3600:
-                use_cache = True
-            elif age < 7 * 24 * 3600:
-                # Cache is stale but within 7 days, we can fall back to it if network fails
-                pass
-            else:
-                # Cache is older than 7 days, treat as degraded/stale
-                logger.warning(f"TLE cache is too old ({age / 3600:.1f} hours).")
-
-        tle_text = ""
-        if not use_cache:
-            try:
-                resp = httpx.get(tle_url, timeout=10.0)
-                if resp.status_code == 200:
-                    tle_text = resp.text
-                    # Write to cache
-                    cache_file.parent.mkdir(parents=True, exist_ok=True)
-                    cache_file.write_text(tle_text, encoding="utf-8")
-                else:
-                    logger.warning(
-                        f"CelesTrak returned status {resp.status_code}. Using cache fallback."
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to fetch TLEs: {e}. Using cache fallback.")
-
-        if not tle_text and cache_file.exists():
-            # Fall back to cache (as long as it exists)
-            age = time.time() - cache_file.stat().st_mtime
-            if age > 7 * 24 * 3600:
-                raise RuntimeError("TLE data is older than 7 days and cannot be trusted.")
-            tle_text = cache_file.read_text(encoding="utf-8")
-
-        if not tle_text:
-            raise RuntimeError("No TLE data available (fetch failed and no cache exists).")
-
-        # Parse TLEs
-        tles = {}
+    @staticmethod
+    def _parse_tles(tle_text: str) -> dict[str, tuple[str, str]]:
+        """Name -> (line1, line2) for every three-line TLE in the text; {} for anything else."""
+        tles: dict[str, tuple[str, str]] = {}
         lines = tle_text.strip().splitlines()
         i = 0
         while i < len(lines):
@@ -197,6 +152,64 @@ class SkyfieldSatelliteProvider(SatelliteProvider):
             else:
                 i += 1
         return tles
+
+    def _get_tles(
+        self, url: str | None = None, cache_path: str | None = None
+    ) -> dict[str, tuple[str, str]]:
+        # url/cache_path default to the pass (stations) source; get_orbits passes the orbit
+        # (visual) source so the two feeds cache independently and neither hammers CelesTrak.
+        tle_url = url or self.config.tle_url
+        cache_file = Path(cache_path or self.config.tle_cache_path)
+
+        cache_age: float | None = None
+        if cache_file.exists():
+            cache_age = time.time() - cache_file.stat().st_mtime
+            if cache_age < 24 * 3600:
+                cached = self._parse_tles(cache_file.read_text(encoding="utf-8"))
+                if cached:
+                    return cached
+                # A fresh cache with nothing in it is a poisoned one (written by a worker
+                # that trusted any 200). Ignore it and fetch, rather than serve an empty
+                # sky for the rest of the day.
+                logger.warning(f"TLE cache {cache_file} holds no TLEs; refetching.")
+            elif cache_age >= 7 * 24 * 3600:
+                # Cache is older than 7 days, treat as degraded/stale
+                logger.warning(f"TLE cache is too old ({cache_age / 3600:.1f} hours).")
+            # else: stale but within 7 days -- fetch, and fall back to it if that fails.
+
+        try:
+            resp = httpx.get(tle_url, timeout=10.0)
+            if resp.status_code == 200:
+                # Parse before writing. CelesTrak answers HTTP 200 with a plain-text
+                # "No GP data found" or an HTML maintenance page; that body used to
+                # overwrite the cache, parse to zero satellites, and the fresh-cache rule
+                # then served it for 24 h -- a blank tile with nothing at error level.
+                # Only a body that actually holds TLEs may replace what we have.
+                fetched = self._parse_tles(resp.text)
+                if fetched:
+                    cache_file.parent.mkdir(parents=True, exist_ok=True)
+                    cache_file.write_text(resp.text, encoding="utf-8")
+                    return fetched
+                logger.warning(
+                    f"CelesTrak returned 200 with no TLEs ({resp.text.strip()[:60]!r}). "
+                    "Keeping the existing cache."
+                )
+            else:
+                logger.warning(
+                    f"CelesTrak returned status {resp.status_code}. Using cache fallback."
+                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch TLEs: {e}. Using cache fallback.")
+
+        if cache_age is not None:
+            # Fall back to cache (as long as it exists)
+            if cache_age > 7 * 24 * 3600:
+                raise RuntimeError("TLE data is older than 7 days and cannot be trusted.")
+            cached = self._parse_tles(cache_file.read_text(encoding="utf-8"))
+            if cached:
+                return cached
+
+        raise RuntimeError("No TLE data available (fetch failed and no cache exists).")
 
     def get_next_pass(self, now: datetime) -> dict[str, Any] | None:
         # Load timescale

@@ -9,6 +9,11 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 # ISS, Tiangong/CSS, Hubble, and two bright NOAA birds — the default full-orbit set (ADR-0041).
 DEFAULT_ORBIT_NORAD_IDS: tuple[int, ...] = (25544, 48274, 20580, 25338, 28654)
 
+# Where the worker keeps what should survive a restart: TLE caches and the food fallback.
+# The image creates it owned by the worker user and compose mounts a named volume there.
+# The heartbeat and the bundled ephemeris stay in /tmp on purpose.
+CACHE_DIR = "/var/cache/wallboard-worker"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -95,8 +100,11 @@ class Settings(BaseSettings):
         default="https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
         alias="SATELLITES_TLE_URL",
     )
+    # The caches below live under CACHE_DIR, which compose mounts as a named volume. In
+    # container /tmp they vanished on every restart, so a crash-looping worker re-fetched
+    # two CelesTrak groups per restart -- CelesTrak asks for <= 1 fetch per 2 h per query.
     satellites_tle_cache_path: str = Field(
-        default="/tmp/satellite_tle_cache.txt",
+        default=f"{CACHE_DIR}/satellite_tle_cache.txt",
         alias="SATELLITES_TLE_CACHE_PATH",
     )
     # Writable dir for skyfield's ephemeris (de421.bsp). Must be writable by the
@@ -121,7 +129,7 @@ class Settings(BaseSettings):
         alias="SATELLITES_ORBIT_TLE_URL",
     )
     satellites_orbit_tle_cache_path: str = Field(
-        default="/tmp/orbit_tle_cache.txt",
+        default=f"{CACHE_DIR}/orbit_tle_cache.txt",
         alias="SATELLITES_ORBIT_TLE_CACHE_PATH",
     )
     satellites_orbit_samples: int = Field(default=120, alias="SATELLITES_ORBIT_SAMPLES", gt=0)
@@ -152,7 +160,7 @@ class Settings(BaseSettings):
 
     feature_food: bool = Field(default=False, alias="FEATURE_FOOD")
     food_cache_path: str = Field(
-        default="/tmp/doorboard_food_recommendation_cache.json",
+        default=f"{CACHE_DIR}/food_recommendation_cache.json",
         alias="FOOD_RECOMMENDATION_CACHE_PATH",
     )
     # "mock" (default) or "stanford" for the real Stanford R&DE dining provider.

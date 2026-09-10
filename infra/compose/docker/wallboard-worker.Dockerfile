@@ -39,6 +39,11 @@ COPY --from=builder /app/integrations/academic-calendar /app/integrations/academ
 # reads it from this worker-owned, writable dir (avoids the CWD [Errno 13] crash).
 COPY --chown=doorboard:doorboard de421.bsp /tmp/skyfield/de421.bsp
 
+# What should survive a restart: TLE caches and the food fallback. Compose mounts a
+# named volume here; it has to exist in the image owned by the worker user so the
+# fresh volume inherits that ownership and the (non-root) worker can write to it.
+RUN mkdir -p /var/cache/wallboard-worker && chown doorboard:doorboard /var/cache/wallboard-worker
+
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 

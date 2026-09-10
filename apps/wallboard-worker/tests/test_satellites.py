@@ -243,6 +243,64 @@ def test_a_missing_ephemeris_fails_fast_instead_of_downloading(tmp_path) -> None
         mock_loader_cls.assert_not_called()
 
 
+def _tle_provider(cache_file: Path) -> SkyfieldSatelliteProvider:
+    return SkyfieldSatelliteProvider(
+        SatelliteConfig(
+            observer_lat=37.7749,
+            observer_lon=-122.4194,
+            tle_cache_path=str(cache_file),
+            tle_url="http://example.test/tle.txt",
+        )
+    )
+
+
+def _age(path: Path, *, days: float) -> None:
+    mtime = (datetime.now() - timedelta(days=days)).timestamp()
+    os.utime(path, (mtime, mtime))
+
+
+@pytest.mark.parametrize(
+    "body", ["No GP data found", "<html><body><h1>Down for maintenance</h1></body></html>"]
+)
+def test_an_empty_200_does_not_poison_a_good_tle_cache(tmp_path, body: str) -> None:
+    """CelesTrak answers HTTP 200 with a plain-text "No GP data found" or an HTML
+    maintenance page. That body used to overwrite the cache before anything looked at
+    it, parse to zero satellites, and the fresh-cache rule then served it for 24 h:
+    a blank tile for a day, with nothing at error level.
+    """
+    cache_file = tmp_path / "tle.txt"
+    cache_file.write_text(ISS_TLE, encoding="utf-8")
+    _age(cache_file, days=2)  # stale enough to refetch, young enough to fall back on
+    provider = _tle_provider(cache_file)
+
+    empty = MagicMock()
+    empty.status_code = 200
+    empty.text = body
+    with patch("httpx.get", return_value=empty):
+        tles = provider._get_tles()
+
+    assert "ISS (ZARYA)" in tles, "the prior good cache was not served"
+    assert cache_file.read_text(encoding="utf-8") == ISS_TLE, "the empty body overwrote it"
+
+
+def test_a_fresh_cache_holding_no_tles_is_refetched(tmp_path) -> None:
+    # A cache poisoned by a worker that trusted any 200 must not be honoured for the
+    # rest of its 24 h just because it is young.
+    cache_file = tmp_path / "tle.txt"
+    cache_file.write_text("No GP data found", encoding="utf-8")
+    provider = _tle_provider(cache_file)
+
+    good = MagicMock()
+    good.status_code = 200
+    good.text = ISS_TLE
+    with patch("httpx.get", return_value=good) as get:
+        tles = provider._get_tles()
+
+    get.assert_called_once()
+    assert "ISS (ZARYA)" in tles
+    assert cache_file.read_text(encoding="utf-8") == ISS_TLE
+
+
 def test_skyfield_satellite_provider_stale_tle_raises_error(tmp_path) -> None:
     cache_file = tmp_path / "tle_cache.txt"
     cache_file.write_text(ISS_TLE, encoding="utf-8")
