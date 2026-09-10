@@ -168,8 +168,13 @@ class VisiondService:
         self._esp32_profile_relay = esp32_profile_relay
         self._last_profile_relay_ms = 0
         self._esp32_seq = 0
+        # `acked` counts pushes the local transport confirmed on the wire; `relayed`
+        # counts pushes door-api reported as sent (ADR-0040). Separate on purpose: a
+        # relayed push is confirmed by door-api's body, not by an ESP32 ack.
         self._esp32_profile_updates_acked = 0
         self._esp32_profile_clears_acked = 0
+        self._esp32_profile_updates_relayed = 0
+        self._esp32_profile_clears_relayed = 0
         self._esp32_profile_send_failures = 0
         self._esp32_profile_last_error: str | None = None
         self._esp32_tasks: set[asyncio.Task[None]] = set()
@@ -1199,7 +1204,9 @@ class VisiondService:
             await asyncio.to_thread(self._esp32_profile_relay.send, event)
         except Exception as exc:
             self._esp32_profile_send_failures += 1
-            self._esp32_profile_last_error = exc.__class__.__name__
+            # The message carries what door-api reported (`unavailable` / `failed`),
+            # which is the difference between "no ESP32 configured" and "ESP32 offline".
+            self._esp32_profile_last_error = f"{exc.__class__.__name__}: {exc}"
             logger.warning(
                 "esp32_profile_relay_failed",
                 extra={"event_type": event.type, "error_class": exc.__class__.__name__},
@@ -1207,9 +1214,9 @@ class VisiondService:
             return
         self._esp32_profile_last_error = None
         if event.type == "door.profile_update":
-            self._esp32_profile_updates_acked += 1
+            self._esp32_profile_updates_relayed += 1
         elif event.type == "door.profile_clear":
-            self._esp32_profile_clears_acked += 1
+            self._esp32_profile_clears_relayed += 1
 
     async def _send_esp32_profile_event(self, event: DoorboardEvent) -> None:
         assert self._esp32_transport is not None
@@ -1259,13 +1266,9 @@ class VisiondService:
         hailo_ok = status.hailo_ok and not self._privacy_enabled
         enrollment_locked = self._enrollment_locked
         esp32_status = self._esp32_transport.status() if self._esp32_transport is not None else None
-        esp32_profile_warning = (
-            f"profile push failed: {self._esp32_profile_last_error}"
-            if self._esp32_profile_last_error is not None
-            else None
-        )
+        esp32_profile_push_status, esp32_profile_warning = self._esp32_profile_push_status()
         healthy = (
-            esp32_profile_warning is None
+            self._esp32_profile_last_error is None
             and not self._privacy_state_degraded
             and self._runtime_degraded_detail is None
             and not self._enrollment_locked
@@ -1288,7 +1291,7 @@ class VisiondService:
             "runtime_warning": self._runtime_degraded_detail,
             "door_id": self._settings.door_id,
             "esp32_connected": esp32_status.connected if esp32_status is not None else None,
-            "esp32_profile_push_status": "degraded" if esp32_profile_warning else "ok",
+            "esp32_profile_push_status": esp32_profile_push_status,
             "esp32_profile_warning": esp32_profile_warning,
             "privacy_state_status": "invalid_fail_closed" if self._privacy_state_degraded else "ok",
             # How many of the enrolled people added themselves at the doorpad
@@ -1322,6 +1325,26 @@ class VisiondService:
             return "failing"
         return "ok"
 
+    def _esp32_profile_push_status(self) -> tuple[str, str | None]:
+        """The light leg's state, as ``(status, warning)``.
+
+        ``disabled`` is reported, not degraded — like the event forwarder, a door with
+        no ESP32 path is a supported configuration (mock, CI). But it must be *said*:
+        with neither a local transport nor the door-api relay every profile push was
+        dropped in `_submit_esp32_profile_event` and /health still answered ``ok``,
+        which is a leg that silently does nothing (ARCHITECTURE.md §5).
+        """
+        if self._esp32_profile_last_error is not None:
+            return "degraded", f"profile push failed: {self._esp32_profile_last_error}"
+        if self._esp32_transport is None and self._esp32_profile_relay is None:
+            return (
+                "disabled",
+                "profile push disabled: no ESP32 transport and no door-api relay "
+                "(DOOR_API_INTERNAL_EVENT_TOKEN unset), so the door light never "
+                "personalises",
+            )
+        return "ok", None
+
     def metrics_snapshot(self) -> dict[str, float]:
         snap = self._core.metrics_snapshot()
         snap["snapshot_duplicate_frames"] = float(self._backend.status().duplicate_frames)
@@ -1332,6 +1355,8 @@ class VisiondService:
         snap["enrolled"] = float(self._matcher.enrolled_count)
         snap["esp32_profile_updates_acked"] = float(self._esp32_profile_updates_acked)
         snap["esp32_profile_clears_acked"] = float(self._esp32_profile_clears_acked)
+        snap["esp32_profile_updates_relayed"] = float(self._esp32_profile_updates_relayed)
+        snap["esp32_profile_clears_relayed"] = float(self._esp32_profile_clears_relayed)
         snap["esp32_profile_send_failures"] = float(self._esp32_profile_send_failures)
         snap["archive_purge_queue_depth"] = float(self._purge_outbox.depth())
         snap["archive_purges_delivered"] = float(self._purges_delivered)

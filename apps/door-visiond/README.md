@@ -66,3 +66,11 @@ Block button interaction; wait on the NUC; persist unknown embeddings; log biome
 ## Key metrics
 
 `inference_ms` (p50/p95), `face_to_identity_ms`, `cache_hit_rate`, `fps`, `frame_drops`, `hailo_ok`.
+
+The ESP32 light leg (ADR-0040) is counted honestly: `esp32_profile_updates_relayed` /
+`esp32_profile_clears_relayed` count pushes door-api reported as `sent`; a 202 whose body
+says `unavailable` or `failed` is an `esp32_profile_send_failures` increment and degrades
+`/health` (`esp32_profile_push_status: degraded`). `esp32_profile_updates_acked` counts only
+pushes a local transport acknowledged (tests). With neither a transport nor the door-api
+relay configured, `/health` reports `esp32_profile_push_status: disabled` with a warning —
+reported, not degraded, like `event_forwarding`.

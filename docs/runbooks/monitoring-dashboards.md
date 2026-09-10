@@ -47,8 +47,8 @@ This document provides a reference of the actual Prometheus metrics, health endp
     * `privacy_enabled`: boolean
     * `enrolled`: count of enrolled face profiles
     * `esp32_connected`: boolean
-    * `esp32_profile_push_status`: `"ok"` or `"degraded"`
-    * `esp32_profile_warning`: error details if push failed
+    * `esp32_profile_push_status`: `"ok"`, `"degraded"` (door-api reported a push as `unavailable`/`failed`, or the hop errored), or `"disabled"` (no local transport and no door-api relay configured — reported, not degraded)
+    * `esp32_profile_warning`: error details if push failed, or why the push is disabled
 * **Prometheus Metrics (`GET /metrics`):**
   * `door_visiond_frame_count` (gauge) — Number of frames ingested from CSI camera.
   * `door_visiond_face_visible_count` (gauge) — Number of frames with visible faces.
@@ -62,9 +62,11 @@ This document provides a reference of the actual Prometheus metrics, health endp
   * `door_visiond_face_to_identity_ms_p95` (gauge) — p95 face matching processing latency (Budget: <600 ms).
   * `door_visiond_cache_hit_rate` (gauge) — Identity cache lookup hits.
   * `door_visiond_enrolled` (gauge) — Current database size of enrolled profiles.
-  * `door_visiond_esp32_profile_updates_acked` (gauge) — Successful profile updates pushed to ESP32.
-  * `door_visiond_esp32_profile_clears_acked` (gauge) — Successful profile clears pushed to ESP32.
-  * `door_visiond_esp32_profile_send_failures` (gauge) — Failed UART pushes to ESP32.
+  * `door_visiond_esp32_profile_updates_relayed` (gauge) — Profile updates door-api reported as put on the ESP32 wire (ADR-0040; the production path).
+  * `door_visiond_esp32_profile_clears_relayed` (gauge) — Profile clears door-api reported as sent.
+  * `door_visiond_esp32_profile_updates_acked` (gauge) — Profile updates acknowledged by a local ESP32 transport (test seam only).
+  * `door_visiond_esp32_profile_clears_acked` (gauge) — Profile clears acknowledged by a local ESP32 transport (test seam only).
+  * `door_visiond_esp32_profile_send_failures` (gauge) — Pushes that did not reach the ESP32: hop errors, and door-api answering `unavailable`/`failed`.
   * `door_visiond_uptime_s` (counter) — Uptime of the vision daemon.
 
 ---

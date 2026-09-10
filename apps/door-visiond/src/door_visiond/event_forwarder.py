@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import urllib.request
 from typing import Protocol
 
@@ -85,6 +86,16 @@ class ProfileTransport(Protocol):
         ...
 
 
+class ProfileRelayNotSent(RuntimeError):
+    """door-api accepted the push but did not put it on the ESP32 wire.
+
+    The relay route answers 202 whatever the ESP32 does and reports what happened in
+    the body (``sent`` / ``unavailable`` / ``failed``). A 2xx alone therefore proves
+    nothing about the light, and counting it as delivered is the silent leg
+    ARCHITECTURE.md §5 warns about.
+    """
+
+
 class HttpProfileTransport:
     """POST a recognition profile push to door-api's ESP32 relay, blocking.
 
@@ -93,6 +104,9 @@ class HttpProfileTransport:
     sent direct (ADR-0040). Same loopback, same best-effort semantics, and — unlike
     the ESP32 wire — no seq or expiry conversion here: the raw contract event goes
     over, and door-api does the conversion when it owns the wire.
+
+    Success means door-api reported ``status: "sent"``; anything else raises so the
+    caller's failure counter and health warning engage.
     """
 
     def __init__(self, *, base_url: str, token: str, timeout_s: float = 1.0) -> None:
@@ -115,6 +129,16 @@ class HttpProfileTransport:
             if not 200 <= response.status < 300:
                 msg = f"door-api esp32 profile relay returned HTTP {response.status}"
                 raise RuntimeError(msg)
+            raw = response.read()
+        try:
+            reported = json.loads(raw)
+        except ValueError as exc:
+            msg = "door-api esp32 profile relay returned a non-JSON body"
+            raise ProfileRelayNotSent(msg) from exc
+        status = reported.get("status") if isinstance(reported, dict) else None
+        if status != "sent":
+            msg = f"door-api esp32 profile relay reported status {status!r}"
+            raise ProfileRelayNotSent(msg)
 
 
 class EventForwarder:
