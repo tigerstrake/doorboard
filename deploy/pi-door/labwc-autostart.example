@@ -1,0 +1,40 @@
+#!/bin/sh
+# labwc autostart for the door Pi's two kiosks — install as
+# ~/.config/labwc/autostart (mode 0755) for the user whose Wayland session
+# owns the displays. labwc runs it once when the session starts.
+#
+# This is the live layout's counterpart of infra/systemd/chromium-kiosk@.service:
+# the boot contract (deploy/pi-door/README.md) says a kiosk launches only after
+# door-api's /health answers, and nothing enforced that when the kiosks were
+# started by the session — the doorpad came up before door-api and showed its
+# reconnecting state on every boot. Each kiosk here waits on door-api and the
+# UI server (bounded), then relaunches Chromium whenever it exits.
+#
+# Needs on-device verification: which output each window lands on is a labwc
+# window rule (rc.xml <windowRules>, matched by title), not a Chromium flag;
+# HDMI-A-1 is the 7" touchscreen on the live Pi.
+
+REPO="${DOORBOARD_REPO:-$HOME/doorboard}"
+WAIT_HTTP="$REPO/scripts/wait-http"
+PROFILES="${DOORBOARD_KIOSK_PROFILES:-/mnt/ssd/doorboard}"   # ADR-0007: not the microSD
+
+# No back-swipe, no pinch-zoom, no error dialogs a visitor could get stuck behind.
+FLAGS="--kiosk --ozone-platform=wayland --no-first-run --noerrdialogs \
+  --disable-session-crashed-bubble --disable-infobars \
+  --overscroll-history-navigation=0 --disable-pinch --touch-events=enabled"
+
+kiosk() {
+	# $1 = name (doorpad|wallboard), $2 = URL
+	(
+		python3 "$WAIT_HTTP" http://127.0.0.1:8080/health --deadline-s 90
+		python3 "$WAIT_HTTP" http://127.0.0.1:5173/healthz --deadline-s 90
+		while :; do
+			# shellcheck disable=SC2086
+			chromium $FLAGS --user-data-dir="$PROFILES/kiosk-$1" "$2"
+			sleep 3
+		done
+	) &
+}
+
+kiosk doorpad http://127.0.0.1:5173/doorpad
+kiosk wallboard http://127.0.0.1:5173/wallboard

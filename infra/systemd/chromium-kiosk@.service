@@ -1,21 +1,35 @@
 [Unit]
 Description=Doorboard Chromium kiosk (%i)
 Wants=door-api.service door-ui.service
-After=door-api.service door-ui.service graphical.target
+# After= the display manager, not graphical.target: a target implicitly gains
+# After= on every unit it Wants=, so `WantedBy=graphical.target` plus
+# `After=graphical.target` was an ordering cycle systemd broke by dropping a
+# job — usually this one. The live Pi launches the kiosks from labwc's
+# autostart instead (deploy/pi-door/labwc-autostart.example); this unit is
+# the canonical alternative for a display-manager session.
+After=door-api.service door-ui.service display-manager.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=doorboard
 Group=doorboard
-Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/doorboard/.Xauthority
+# Wayland (labwc) session. XDG_RUNTIME_DIR is /run/user/<uid of User=>; set
+# both in /etc/doorboard/kiosk-%i.env when they differ from these defaults.
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
 EnvironmentFile=/etc/doorboard/kiosk-%i.env
-ExecStartPre=/opt/doorboard/.venv/bin/python /opt/doorboard/scripts/wait-http http://127.0.0.1:8080/health --deadline-s 60
-ExecStartPre=/opt/doorboard/.venv/bin/python /opt/doorboard/scripts/wait-http http://127.0.0.1:5173/healthz --deadline-s 60
-ExecStart=/usr/bin/chromium --kiosk --no-first-run --disable-session-crashed-bubble --disable-infobars --user-data-dir=/var/lib/doorboard/kiosk-%i ${KIOSK_URL}
-Restart=on-failure
+# Boot contract: the kiosk launches only after door-api /health and the UI
+# server answer, bounded so a dead service still gets a (reconnecting) screen.
+ExecStartPre=/usr/bin/python3 /opt/doorboard/scripts/wait-http http://127.0.0.1:8080/health --deadline-s 60
+ExecStartPre=/usr/bin/python3 /opt/doorboard/scripts/wait-http http://127.0.0.1:5173/healthz --deadline-s 60
+# Profile on the SSD (ADR-0007): Chromium's cache/IndexedDB is a continuous
+# writer and does not belong on the microSD. No back-swipe, no pinch-zoom, no
+# error dialogs a visitor could get stuck behind.
+ExecStart=/usr/bin/chromium --kiosk --ozone-platform=wayland --no-first-run --noerrdialogs --disable-session-crashed-bubble --disable-infobars --overscroll-history-navigation=0 --disable-pinch --touch-events=enabled --user-data-dir=/mnt/ssd/doorboard/kiosk-%i ${KIOSK_URL}
+Restart=always
 RestartSec=3s
 NoNewPrivileges=yes
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target

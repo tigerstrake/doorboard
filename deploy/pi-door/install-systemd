@@ -37,6 +37,13 @@ install -d -m 0755 /etc/doorboard /var/lib/doorboard
 install -m 0644 "$repo_root"/infra/systemd/*.service /etc/systemd/system/
 install -m 0644 "$repo_root"/infra/systemd/*.timer /etc/systemd/system/
 
+# The two scripts root runs (LUKS unlock, health agent) execute from a
+# root-owned copy, never from the checkout: a writable script run as root is
+# a privilege escalation for anything that compromises a door service.
+install -d -m 0755 -o root -g root /usr/local/lib/doorboard
+install -m 0755 -o root -g root "$repo_root"/scripts/doorboard-enrollment-unlock /usr/local/lib/doorboard/
+install -m 0755 -o root -g root "$repo_root"/scripts/doorboard-health-agent /usr/local/lib/doorboard/
+
 # The Pi's only LAN listener (ADR-0047): Caddy on :80 forwarding the allow-list
 # in deploy/pi-door/Caddyfile. The Debian package enables its own caddy.service
 # with a placeholder site on :80; that one must not hold the port.
@@ -66,8 +73,11 @@ systemctl enable \
   door-visiond.service \
   door-api.service \
   door-sync.service \
+  door-voice.service \
   door-proxy.service \
   node-exporter.service \
+  doorboard-enrollment-unlock.service \
+  doorboard-enrollment-unlock.timer \
   doorboard-health-agent.timer
 
 echo "Units installed. Start with: systemctl start door-ui door-api door-sync doorboard-health-agent.timer"

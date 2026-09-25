@@ -49,9 +49,14 @@ Raspberry Pi OS 64-bit on the Pi 5. Hardware-facing services run under **systemd
    It contains only Pi-scoped and local service credentials, never NUC admin,
    NAS admin, Home Assistant, or worker secrets.
 5. Create the two kiosk environment files from the examples, then run
-   `sudo bash deploy/pi-door/install-systemd /opt/doorboard`. Enable the kiosk
-   instances after the graphical session is configured:
-   `sudo systemctl enable chromium-kiosk@wallboard chromium-kiosk@doorpad`.
+   `sudo bash deploy/pi-door/install-systemd /opt/doorboard`. It also copies
+   the two scripts root runs (LUKS unlock, health agent) to
+   `/usr/local/lib/doorboard/` and enables the unlock timer. Kiosks: either
+   enable the units after the graphical session is configured
+   (`sudo systemctl enable chromium-kiosk@wallboard chromium-kiosk@doorpad`;
+   Wayland env in `kiosk-*.env`), or, on a labwc session as the live Pi runs,
+   install `labwc-autostart.example` as `~/.config/labwc/autostart` — it waits
+   for door-api `/health` and relaunches each kiosk on exit.
 6. Reboot with the NUC/network disconnected and verify the four loopback
    `/health` endpoints, both kiosks, UART feedback, and local recording.
 

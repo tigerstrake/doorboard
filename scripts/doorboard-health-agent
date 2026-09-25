@@ -14,6 +14,9 @@ SERVICES = {
     "door-visiond.service": "http://127.0.0.1:8081/health",
     "door-media.service": "http://127.0.0.1:8082/health",
     "door-sync.service": "http://127.0.0.1:8083/health",
+    # Probed only while the unit is active (the loop skips inactive units), so
+    # a door with FEATURE_VOICE_GREETING off is not restarted for being quiet.
+    "door-voice.service": "http://127.0.0.1:8084/health",
 }
 STATE_PATH = Path("/run/doorboard/health-failures.json")
 

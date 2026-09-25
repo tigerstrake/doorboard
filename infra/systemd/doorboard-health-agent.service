@@ -4,7 +4,11 @@ After=door-api.service door-media.service door-visiond.service door-sync.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/doorboard/.venv/bin/python /opt/doorboard/scripts/doorboard-health-agent
+# Root (it restarts units), so: the system interpreter and a root-owned copy
+# of the script (installed by deploy/pi-door/install-*), never a venv or a
+# file in the checkout that the service user can write. The agent is stdlib.
+ExecStart=/usr/bin/python3 /usr/local/lib/doorboard/doorboard-health-agent
+Environment=PYTHONUNBUFFERED=1
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict

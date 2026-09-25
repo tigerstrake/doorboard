@@ -17,9 +17,12 @@ Before=door-visiond.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# Runs as root: cryptsetup luksOpen + mount require it.
+# Runs as root: cryptsetup luksOpen + mount require it. The script is the
+# root-owned copy the installers place under /usr/local/lib/doorboard, not
+# the one in the checkout: root must not execute a file the service user
+# (or anything that compromises a door service) can write.
 EnvironmentFile=-/etc/doorboard/enrollment-unlock.env
-ExecStart=/opt/doorboard/scripts/doorboard-enrollment-unlock
+ExecStart=/usr/local/lib/doorboard/doorboard-enrollment-unlock
 ExecStop=/bin/sh -c 'umount /mnt/vision-enrollment 2>/dev/null; cryptsetup luksClose vision-enrollment 2>/dev/null; true'
 
 [Install]

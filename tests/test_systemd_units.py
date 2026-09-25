@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 UNIT_DIR = REPO_ROOT / "infra/systemd"
 
@@ -102,7 +104,7 @@ def test_door_api_does_not_wait_for_visiond() -> None:
     assert "door-visiond.service" not in after
 
 
-_CRASH_LOOP_UNITS = re.compile(r"^(door-[a-z-]+|mediamtx)\.service$")
+_CRASH_LOOP_UNITS = re.compile(r"^(door-[a-z-]+|mediamtx|chromium-kiosk@)\.service$")
 
 
 def test_every_door_unit_survives_a_crash_loop() -> None:
@@ -130,3 +132,89 @@ def test_the_health_agent_restarts_a_failed_unit() -> None:
     agent = (REPO_ROOT / "scripts/doorboard-health-agent").read_text()
     assert '"is-failed"' in agent
     assert '"reset-failed"' in agent
+
+
+# --- installers ------------------------------------------------------------------
+
+INSTALLERS = {
+    name: REPO_ROOT / "deploy/pi-door" / name for name in ("install-systemd", "install-home-layout")
+}
+
+
+def _enable_list(installer: Path) -> set[str]:
+    text = installer.read_text()
+    match = re.search(r"systemctl enable \\\n((?:\s+\S+ \\\n)*\s+\S+\n)", text)
+    assert match, f"{installer.name}: no `systemctl enable \\` block"
+    return {line.strip().rstrip("\\").strip() for line in match.group(1).splitlines()}
+
+
+@pytest.mark.parametrize("installer", sorted(INSTALLERS))
+def test_every_timer_is_enabled_by_the_installer(installer: str) -> None:
+    # doorboard-enrollment-unlock.timer is the documented cure for the cold-boot race
+    # (enrollment-encrypted-volume.md), and neither installer enabled it: a rebuilt Pi
+    # booted without the NUC stayed enrollment_locked until someone noticed.
+    timers = {path.name for path in UNIT_DIR.glob("*.timer")}
+    assert timers, "no timers under infra/systemd"
+    enabled = _enable_list(INSTALLERS[installer])
+    missing = sorted(timers - enabled)
+    assert not missing, f"{installer} does not enable: {missing}"
+    assert "door-voice.service" in enabled, f"{installer} does not enable door-voice"
+
+
+def test_root_runs_only_root_owned_copies_of_its_scripts() -> None:
+    units = _units()
+    for name in ("doorboard-enrollment-unlock.service", "doorboard-health-agent.service"):
+        exec_start = " ".join(units[name]["Service"]["ExecStart"])
+        assert "/usr/local/lib/doorboard/" in exec_start, f"{name}: {exec_start}"
+        assert "/opt/doorboard/scripts" not in exec_start, f"{name}: {exec_start}"
+    for installer, path in INSTALLERS.items():
+        text = path.read_text()
+        for script in ("doorboard-enrollment-unlock", "doorboard-health-agent"):
+            assert f'scripts/{script}" /usr/local/lib/doorboard/' in text or (
+                f"scripts/{script} /usr/local/lib/doorboard/" in text
+            ), f"{installer} does not install a root-owned copy of {script}"
+
+
+def test_the_home_layout_no_longer_sources_dotenv_in_bash() -> None:
+    text = INSTALLERS["install-home-layout"].read_text()
+    assert "set -a; ." not in text, "bash-sourcing .env evaluates every value as shell"
+    assert "render-systemd-env" in text
+    assert "EnvironmentFile=$rendered_env" in text
+    assert (
+        "ReadWritePaths=$repo\nEnvironment=PYTHONUNBUFFERED=1\nEnvironmentFile=\nExecStart="
+        not in text
+    )
+
+
+def test_the_kiosk_unit_has_no_ordering_cycle_and_speaks_wayland() -> None:
+    unit = _units()["chromium-kiosk@.service"]
+    after = _words(unit, "Unit", "After")
+    wanted_by = _words(unit, "Install", "WantedBy")
+    # A target implicitly gains After= on every unit it Wants=, so After=graphical.target
+    # together with WantedBy=graphical.target is a cycle systemd resolves by dropping a job.
+    assert "graphical.target" not in after
+    assert "graphical.target" not in wanted_by
+    assert "display-manager.service" in after
+
+    exec_start = " ".join(unit["Service"]["ExecStart"])
+    for flag in (
+        "--ozone-platform=wayland",
+        "--overscroll-history-navigation=0",
+        "--disable-pinch",
+        "--noerrdialogs",
+        "--touch-events=enabled",
+        "--user-data-dir=/mnt/ssd/doorboard/kiosk-%i",
+    ):
+        assert flag in exec_start, flag
+    env = " ".join(unit["Service"].get("Environment", []))
+    assert "WAYLAND_DISPLAY=" in env and "XDG_RUNTIME_DIR=" in env
+    assert "DISPLAY=:0" not in env
+
+
+def test_the_labwc_autostart_waits_for_door_api_before_each_kiosk() -> None:
+    text = (REPO_ROOT / "deploy/pi-door/labwc-autostart.example").read_text()
+    assert "wait-http" in text
+    assert "http://127.0.0.1:8080/health" in text
+    for kiosk in ("doorpad", "wallboard"):
+        assert f"http://127.0.0.1:5173/{kiosk}" in text
+    assert "--user-data-dir=" in text and "/mnt/ssd/doorboard" in text
