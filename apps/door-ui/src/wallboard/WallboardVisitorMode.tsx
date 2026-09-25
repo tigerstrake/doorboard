@@ -19,12 +19,12 @@ export interface WallboardVisitorModeProps {
   profileId: string | null;
   /** Display name from vision.identity_stable — only ever set for enrolled identities. */
   displayName: string | null;
-  presence: {
-    owner: { label: PresenceLabel };
-    roommate: { label: PresenceLabel };
-  };
-  /** Resident names in presence order (from VITE_RESIDENTS); falls back to "Owner"/"Roommate". */
-  residents?: string[];
+  /**
+   * One row per configured presence subject, in configured order, already mapped by
+   * subject_id and with `until` honoured — the same rows the ambient Presence tile shows
+   * (ADR-0048), so the two tiles cannot disagree about who is which.
+   */
+  presence: ReadonlyArray<{ subjectId: string; name: string; label: PresenceLabel }>;
   pollQuestion: string;
   visitorUrl: string | null;
 }
@@ -61,7 +61,6 @@ export function WallboardVisitorMode({
   profileId,
   displayName,
   presence,
-  residents = [],
   pollQuestion,
   visitorUrl,
 }: WallboardVisitorModeProps) {
@@ -134,14 +133,13 @@ export function WallboardVisitorMode({
 
         <Tile title="Availability State">
           <div className="status-display-box">
-            <div className="status-display-row">
-              <span className="person-name">{residents[0] ?? "Owner"}</span>
-              <StatusBadge label={presence.owner.label} />
-            </div>
-            <div className="status-display-row">
-              <span className="person-name">{residents[1] ?? "Roommate"}</span>
-              <StatusBadge label={presence.roommate.label} />
-            </div>
+            {presence.map((row) => (
+              <div className="status-display-row" key={row.subjectId} data-subject={row.subjectId}>
+                <span className="person-name">{row.name}</span>
+                <StatusBadge label={row.label} />
+              </div>
+            ))}
+            {presence.length === 0 && <p>Availability unknown.</p>}
           </div>
         </Tile>
 

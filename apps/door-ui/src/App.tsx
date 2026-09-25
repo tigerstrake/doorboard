@@ -194,8 +194,43 @@ const AIRCRAFT_ALERT_DISTANCE_KM =
   Number.isFinite(configuredAircraftAlertDistanceKm) && configuredAircraftAlertDistanceKm > 0
     ? configuredAircraftAlertDistanceKm
     : 3;
-const MAX_PRESENCE_SUBJECTS = 8;
+// Which presence subjects the board shows, in row order, parallel to VITE_RESIDENTS:
+// RESIDENTS[i] names PRESENCE_SUBJECTS[i] (ADR-0048). Defaults to the control plane's own
+// subject ids. A row exists per configured subject and reads "unknown" until an event for
+// THAT subject arrives — never assigned by arrival order, which put the roommate's label
+// on the owner's name whenever the roommate's status moved first after a reload.
+const PRESENCE_SUBJECTS = (
+  (import.meta.env.VITE_PRESENCE_SUBJECTS as string | undefined) ?? "owner,roommate"
+)
+  .split(",")
+  .map((subject) => subject.trim())
+  .filter((subject) => subject.length > 0);
+// The control plane's own freshness contract (CONTROL_PLANE_PRESENCE_STALE_AFTER_S,
+// 30 min). door-api replays a label only while it is younger than this, so the tile's
+// amber badge must not disagree with the system that decides what "fresh" means.
+const PRESENCE_STALE_AFTER_MS = 30 * 60 * 1000;
 const MAX_SCOREBOARD_ENTRIES = 16;
+
+interface PresenceEntry {
+  label: PresenceLabel;
+  occurredAt: string;
+  /** Contract `until`: when the label stops being true. Honoured locally (ADR-0048 §3). */
+  until: string | null;
+}
+
+/**
+ * The label to show for a subject right now. A time-bounded label ("busy until 15:00",
+ * the ADR-0037 Recovery window) expires on screen even if the resolver never re-publishes:
+ * the resolver only emits on change, and nothing pokes it at 07:00.
+ */
+export function presenceLabelAt(entry: PresenceEntry | undefined, nowMs: number): PresenceLabel {
+  if (!entry) return "unknown";
+  if (entry.until) {
+    const untilMs = Date.parse(entry.until);
+    if (Number.isFinite(untilMs) && untilMs <= nowMs) return "unknown";
+  }
+  return entry.label;
+}
 
 function safeDisplayText(value: unknown, maxLength = 80): string {
   if (typeof value !== "string") return "";
@@ -621,22 +656,27 @@ export function App() {
     "idle"
   );
 
-  const [presenceState, setPresenceState] = useState<
-    Record<string, { label: PresenceLabel; occurredAt: string }>
-  >(() =>
-    MOCK_AMBIENT_ENABLED
-      ? {
-          resident_1: {
-            label: presenceFixture.owner.label,
-            occurredAt: presenceFixture.owner.occurred_at,
-          },
-          resident_2: {
-            label: presenceFixture.roommate.label,
-            occurredAt: presenceFixture.roommate.occurred_at,
-          },
-        }
-      : ({} as Record<string, { label: PresenceLabel; occurredAt: string }>)
-  );
+  // Keyed by subject_id (ADR-0048). The mock seeds the first two configured subjects.
+  const [presenceState, setPresenceState] = useState<Record<string, PresenceEntry>>(() => {
+    if (!MOCK_AMBIENT_ENABLED) return {};
+    const seeded: Record<string, PresenceEntry> = {};
+    const [first, second] = PRESENCE_SUBJECTS;
+    if (first) {
+      seeded[first] = {
+        label: presenceFixture.owner.label,
+        occurredAt: presenceFixture.owner.occurred_at,
+        until: null,
+      };
+    }
+    if (second) {
+      seeded[second] = {
+        label: presenceFixture.roommate.label,
+        occurredAt: presenceFixture.roommate.occurred_at,
+        until: null,
+      };
+    }
+    return seeded;
+  });
   const [birdSummary, setBirdSummary] = useState<TimedAmbient<AmbientBirdSummaryPayload> | null>(
     () =>
       MOCK_AMBIENT_ENABLED
@@ -966,21 +1006,17 @@ export function App() {
     const unsubscribePresence = client.subscribe("status.presence_changed", (event: DoorboardEvent) => {
       if (event.type !== "status.presence_changed") return;
       const subjectKey = safeDisplayText(event.payload.subject_id, 128);
-      if (!subjectKey || subjectKey === "__proto__" || subjectKey === "constructor") return;
-      setPresenceState((previous) => {
-        const next = { ...previous };
-        if (!(subjectKey in next) && Object.keys(next).length >= MAX_PRESENCE_SUBJECTS) {
-          const oldest = Object.entries(next).sort(
-            ([, left], [, right]) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt)
-          )[0];
-          if (oldest) delete next[oldest[0]];
-        }
-        next[subjectKey] = {
+      // Only configured subjects have a row; anything else is dropped rather than shown
+      // under a name that is not theirs. This also bounds the map to the configuration.
+      if (!subjectKey || !PRESENCE_SUBJECTS.includes(subjectKey)) return;
+      setPresenceState((previous) => ({
+        ...previous,
+        [subjectKey]: {
           label: event.payload.label,
           occurredAt: event.occurred_at,
-        };
-        return next;
-      });
+          until: typeof event.payload.until === "string" ? event.payload.until : null,
+        },
+      }));
     });
 
     const unsubscribeBirds = client.subscribe("ambient.bird_summary", (event: DoorboardEvent) => {
@@ -1856,12 +1892,25 @@ export function App() {
   // --- WALLBOARD SURFACE ---
   const renderWallboard = () => {
     const isVisitorMode = WALLBOARD_TAKEOVER_STATES.includes(sessionState);
-    const presenceEntries = Object.values(presenceState);
+    // One row per configured subject, by subject_id, recomputed on the 1 s clock tick so a
+    // label past its `until` drops to unknown on screen (ADR-0048). Shared by the ambient
+    // tile and the visitor-mode Availability tile so the two can never disagree.
+    const nowMs = currentTime.getTime();
+    const presenceRows = PRESENCE_SUBJECTS.map((subjectId, index) => ({
+      subjectId,
+      // Name the residents when VITE_RESIDENTS is configured (e.g. "Tiger, Adam"); fall
+      // back to the anonymous "Resident N" when it isn't.
+      name: RESIDENTS[index] ?? `Resident ${index + 1}`,
+      label: presenceLabelAt(presenceState[subjectId], nowMs),
+      occurredAt: presenceState[subjectId]?.occurredAt ?? null,
+    }));
+    const presenceAsOf =
+      presenceRows
+        .map((row) => row.occurredAt)
+        .filter((value): value is string => value !== null)
+        .sort()
+        .at(-1) ?? null;
     const scoreboardRows = Object.values(scoreboardEntries).sort((left, right) => right.score - left.score);
-    const visitorPresence = {
-      owner: { label: presenceEntries[0]?.label ?? ("unknown" as const) },
-      roommate: { label: presenceEntries[1]?.label ?? ("unknown" as const) },
-    };
     const focusedChannel =
       !isVisitorMode &&
       wallboardFocusRequest?.mode === "focus" &&
@@ -1884,17 +1933,15 @@ export function App() {
         key: "presence",
         channel: null,
         node: (
-          <Tile title="Presence" asOf={presenceEntries[0]?.occurredAt ?? null} staleAfterMs={15 * 60 * 1000}>
+          <Tile title="Presence" asOf={presenceAsOf} staleAfterMs={PRESENCE_STALE_AFTER_MS}>
             <div className="presence-tile-content">
-              {presenceEntries.slice(0, 2).map((presence, index) => (
-                <div className="presence-row" key={index}>
-                  {/* Name the residents when VITE_RESIDENTS is configured (e.g. "Tiger,
-                      Adam"); fall back to the anonymous "Resident N" when it isn't. */}
-                  <span>{RESIDENTS[index] ?? `Resident ${index + 1}`}:</span>
-                  <StatusBadge label={presence.label} />
+              {presenceRows.map((row) => (
+                <div className="presence-row" key={row.subjectId} data-subject={row.subjectId}>
+                  <span>{row.name}:</span>
+                  <StatusBadge label={row.label} />
                 </div>
               ))}
-              {presenceEntries.length === 0 && <p>Presence unavailable.</p>}
+              {presenceRows.length === 0 && <p>Presence unavailable.</p>}
             </div>
           </Tile>
         ),
@@ -2181,8 +2228,7 @@ export function App() {
             sessionId={mockSessionId}
             profileId={activeProfile}
             displayName={activeDisplayName}
-            presence={visitorPresence}
-            residents={RESIDENTS}
+            presence={presenceRows}
             pollQuestion={currentPoll?.question ?? "No poll running right now."}
             visitorUrl={visitorQrUrl}
           />
