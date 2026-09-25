@@ -3,6 +3,7 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { RevealPage } from "./RevealPage";
+import { API_BASE } from "./apiBase";
 import type { VisitorCollage } from "./wallboardChannels";
 
 const COLLAGE: VisitorCollage = {
@@ -55,7 +56,11 @@ describe("RevealPage (owner-only secret reveal)", () => {
     // The token was passed as a Bearer header to the admin endpoint — never a
     // query string.
     const [url, init] = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(String(url)).toContain("/admin/visitor-collage");
+    // The same door-api base as every other surface (page-derived :8080), not a private
+    // default on :8000 that nothing listens on — that default is why the reveal always
+    // said "Nothing to see here".
+    expect(String(url).startsWith(API_BASE)).toBe(true);
+    expect(String(url)).toBe(`${API_BASE}/admin/visitor-collage`);
     expect(String(url)).not.toContain("super-secret-owner-token");
     expect((init as RequestInit).headers).toMatchObject({
       Authorization: "Bearer super-secret-owner-token",

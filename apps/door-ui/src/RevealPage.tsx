@@ -1,13 +1,16 @@
 import React, { useEffect, useState } from "react";
 import { VisitorCollageContent } from "./wallboardChannels";
 import type { VisitorCollage } from "./wallboardChannels";
+// The same host-derived door-api base every other surface uses. This page had its own
+// copy defaulting to port 8000, which nothing configures away and door-api does not
+// listen on — so the reveal answered "Nothing to see here" to the owner's own token.
+import { API_BASE } from "./apiBase";
 
 // The owner-only "class year in review" reveal. This page is intentionally
 // SECRET: it is never linked from the doorpad or wallboard UI and is only
 // reachable by typing `/reveal#<owner-token>`. The visitor collage collects
 // silently all year and is only shown here, on-demand (e.g. the last day of
 // school), as a surprise. It must never appear on the public 27" wallboard.
-const API_BASE = import.meta.env.VITE_DOOR_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 type RevealStatus = "loading" | "revealed" | "denied";
 
