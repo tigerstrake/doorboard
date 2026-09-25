@@ -29,15 +29,12 @@ from typing import Any
 
 import httpx
 
+from aircraft.provider import DEFAULT_USER_AGENT
+
 logger = logging.getLogger("doorboard.aircraft.enrichment")
 
 ADSBDB_BASE = "https://api.adsbdb.com/v0"
 PLANESPOTTERS_HEX_BASE = "https://api.planespotters.net/pub/photos/hex"
-
-DEFAULT_USER_AGENT = (
-    "doorboard-wallboard-worker/1.0 "
-    "(+https://github.com/tigerstrake/doorboard; ambient aircraft enrichment)"
-)
 
 
 @dataclass(frozen=True)

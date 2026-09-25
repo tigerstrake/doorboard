@@ -12,10 +12,12 @@ Field shapes below are copied from a real response.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 import pytest
 from aircraft.provider import (
+    DEFAULT_USER_AGENT,
     AdsbFiAircraftProvider,
     AircraftConfig,
     AircraftDataUnavailable,
@@ -256,3 +258,56 @@ def test_the_mapped_shape_actually_validates_as_a_payload(
         aircraft_type=mapped[0].get("aircraft_type"),
     )
     assert model.callsign == "FDX1865"
+
+
+def test_adsbfi_requests_identify_the_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The enricher sends a User-Agent naming this project and where to write; the feed
+    request did not, so adsb.fi saw a bare python-httpx from an anonymous IP every 30 s.
+    One identity on every public feed the worker asks, and the same one.
+    """
+    from aircraft.enrichment import EnrichmentConfig
+
+    seen: dict[str, Any] = {}
+
+    def fake_get(url: str, **kwargs: Any) -> httpx.Response:
+        seen.update(kwargs)
+        return httpx.Response(200, json={"resultCount": 0, "aircraft": []})
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    provider = AdsbFiAircraftProvider(AircraftConfig(observer_lat=37.422, observer_lon=-122.172))
+    provider.get_nearby_aircraft(NOW)
+
+    assert seen["headers"]["User-Agent"] == DEFAULT_USER_AGENT
+    assert seen["headers"]["User-Agent"] == EnrichmentConfig().user_agent
+    assert "doorboard" in DEFAULT_USER_AGENT
+
+
+@pytest.mark.parametrize("baro_rate", [832, 831.7, -1216.0, "64"])
+def test_adsbfi_vertical_rate_lands_as_the_contract_int(
+    monkeypatch: pytest.MonkeyPatch, baro_rate: Any
+) -> None:
+    """`baro_rate` went onto the wire as received. adsb.fi does not promise an int, and
+    `vertical_rate_fpm` is one in the contract -- the exact shape of the ground-speed
+    bug, one field over.
+    """
+    from doorboard_contracts.events import AmbientAircraftNearby
+
+    entry = dict(REAL_RESPONSE["aircraft"][0])  # type: ignore[index]
+    entry["baro_rate"] = baro_rate
+    monkeypatch.setattr(
+        "httpx.get",
+        lambda *a, **k: httpx.Response(200, json={"resultCount": 1, "aircraft": [entry]}),
+    )
+    provider = AdsbFiAircraftProvider(AircraftConfig(observer_lat=37.422, observer_lon=-122.172))
+    mapped = provider.get_nearby_aircraft(NOW)
+    assert len(mapped) == 1
+    assert isinstance(mapped[0]["vertical_rate_fpm"], int)
+    assert mapped[0]["vertical_rate_fpm"] == round(float(baro_rate))
+    model = AmbientAircraftNearby(
+        callsign=mapped[0]["callsign"],
+        altitude_ft=mapped[0]["altitude_ft"],
+        distance_km=mapped[0]["distance_km"],
+        heading=mapped[0]["heading"],
+        vertical_rate_fpm=mapped[0]["vertical_rate_fpm"],
+    )
+    assert model.vertical_rate_fpm == round(float(baro_rate))

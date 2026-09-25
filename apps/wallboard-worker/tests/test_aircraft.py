@@ -481,3 +481,129 @@ def test_a_later_failure_serves_cache_and_keeps_the_original_observation_time(mo
         "the timestamp must stay at the observation, or the staleness marker is decorative "
         "and cached data reads as current"
     )
+
+
+# --- edge cases in the OpenSky state vector --------------------------------
+
+
+def _state(**overrides: Any) -> list[Any]:
+    """A full 17-field OpenSky state vector, airborne over the bay, overridable by name."""
+    fields: dict[str, Any] = {
+        "icao24": "4b1812",
+        "callsign": "SWR123  ",
+        "origin_country": "Switzerland",
+        "time_position": 1696250000,
+        "last_contact": 1696250000,
+        "longitude": -122.3,
+        "latitude": 37.8,
+        "baro_altitude": 3048.0,
+        "on_ground": False,
+        "velocity": 200.0,
+        "true_track": 90.0,
+        "vertical_rate": 0.0,
+        "sensors": None,
+        "geo_altitude": 3048.0,
+        "squawk": "1000",
+        "spi": False,
+        "position_source": 0,
+    }
+    fields.update(overrides)
+    return list(fields.values())
+
+
+def _opensky(mock_get: MagicMock, states: list[list[Any]]) -> list[dict[str, Any]]:
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"time": 1696250000, "states": states}
+    mock_get.return_value = resp
+    provider = OpenSkyAircraftProvider(
+        AircraftConfig(observer_lat=37.7749, observer_lon=-122.4194, poll_cooldown_seconds=0)
+    )
+    return provider.get_nearby_aircraft(datetime(2026, 7, 7, 12, 0, 0, tzinfo=UTC))
+
+
+@patch("httpx.get")
+def test_opensky_altitude_unknown_is_not_published_as_airborne_at_zero_feet(mock_get) -> None:
+    """OpenSky nulls both altitudes for an aircraft it has only a position for.
+
+    That mapped to `altitude_ft: 0` with on_ground False -- and nearest-first sorting put
+    "0 ft, 3 km away" at the top of the tile. The adsb.fi mapper already refuses an
+    unknown altitude; the two feeds must answer "is it overhead" the same way.
+    """
+    res = _opensky(
+        mock_get,
+        [
+            _state(
+                icao24="aaa001",
+                callsign="NOALT  ",
+                latitude=37.79,
+                longitude=-122.40,
+                baro_altitude=None,
+                geo_altitude=None,
+            ),
+            _state(),
+        ],
+    )
+    assert [ac["callsign"] for ac in res] == ["SWR123"]
+    assert res[0]["altitude_ft"] > 0
+
+
+@patch("httpx.get")
+def test_opensky_geo_altitude_still_stands_in_for_a_missing_baro_altitude(mock_get) -> None:
+    res = _opensky(mock_get, [_state(baro_altitude=None, geo_altitude=3048.0)])
+    assert len(res) == 1
+    assert res[0]["altitude_ft"] == pytest.approx(10000, abs=10)
+
+
+@patch("httpx.get")
+def test_opensky_applies_the_same_ground_gate_as_adsbfi(mock_get) -> None:
+    """on_ground False at 30 m (~98 ft) is a jet on a taxiway, not one overhead."""
+    assert _opensky(mock_get, [_state(baro_altitude=30.0, geo_altitude=None)]) == []
+
+
+@patch("httpx.get")
+def test_opensky_short_state_vector_costs_one_aircraft_not_the_response(mock_get) -> None:
+    """A vector shorter than the documented 17 fields raised IndexError at s[13]; the
+    outer except caught it and the whole poll was served from cache as "fetch failed".
+    One bad entry must not discard the other fifty.
+    """
+    short = ["bad001", "SHORT  ", "Nowhere", 1696250000, 1696250000, -122.3, 37.8]
+    res = _opensky(mock_get, [short, _state()])
+    assert [ac["callsign"] for ac in res] == ["SWR123"]
+
+
+@patch("httpx.get")
+def test_opensky_malformed_value_is_skipped_not_fatal(mock_get) -> None:
+    res = _opensky(mock_get, [_state(velocity="fast"), _state()])
+    assert [ac["callsign"] for ac in res] == ["SWR123"]
+
+
+@pytest.mark.parametrize("vertical_rate", [2.54, -5.08, "2.54"])
+@patch("httpx.get")
+def test_opensky_vertical_rate_lands_as_the_contract_int(mock_get, vertical_rate: Any) -> None:
+    """`vertical_rate_fpm` is `int` in the contract. A float m/s reading, or a numeric
+    string, has to come out as an int or the whole summary job dies on int_from_float --
+    the failure the adsb.fi ground speed already had once.
+    """
+    from doorboard_contracts.events import AmbientAircraftNearby
+
+    res = _opensky(mock_get, [_state(vertical_rate=vertical_rate)])
+    assert len(res) == 1
+    ac = res[0]
+    assert isinstance(ac["vertical_rate_fpm"], int)
+    assert ac["vertical_rate_fpm"] == round(float(vertical_rate) * 196.85)
+    # Construct it exactly as run_aircraft_summary does.
+    model = AmbientAircraftNearby(
+        callsign=ac["callsign"],
+        altitude_ft=ac["altitude_ft"],
+        distance_km=ac["distance_km"],
+        heading=ac["heading"],
+        icao24=ac["icao24"],
+        latitude=ac["latitude"],
+        longitude=ac["longitude"],
+        ground_speed_kmh=ac["ground_speed_kmh"],
+        vertical_rate_fpm=ac["vertical_rate_fpm"],
+        on_ground=ac["on_ground"],
+        origin_country=ac["origin_country"],
+    )
+    assert model.vertical_rate_fpm == ac["vertical_rate_fpm"]

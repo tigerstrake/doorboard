@@ -3,6 +3,7 @@ from __future__ import annotations
 import abc
 import logging
 import math
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -10,6 +11,17 @@ import httpx
 from pydantic import BaseModel
 
 logger = logging.getLogger("doorboard.aircraft")
+
+# Sent on every request to a public feed, so an operator on the other end can see who is
+# asking and where to write. Also the enricher's (aircraft.enrichment) -- one identity.
+DEFAULT_USER_AGENT = (
+    "doorboard-wallboard-worker/1.0 "
+    "(+https://github.com/tigerstrake/doorboard; ambient aircraft enrichment)"
+)
+
+# Below this, an aircraft is taxiing or parked rather than overhead. Nothing meaningfully
+# "nearby and in the sky" is under a couple of hundred feet. Applied by both feeds.
+GROUND_ALTITUDE_GATE_FT = 200.0
 
 # OpenSky's OAuth2 client-credentials token endpoint. Basic auth (username/
 # password) is no longer accepted by OpenSky, so credentials go through here.
@@ -176,53 +188,18 @@ class OpenSkyAircraftProvider(AircraftProvider):
             if resp.status_code == 200:
                 data = resp.json()
                 states = data.get("states") or []
-                nearby = []
+                nearby: list[dict[str, Any]] = []
                 for s in states:
-                    # OpenSky state-vector indices (see states/all API doc):
-                    # 0: icao24, 1: callsign, 2: origin_country, 5: longitude,
-                    # 6: latitude, 7: baro_altitude, 8: on_ground, 9: velocity
-                    # (m/s), 10: true_track, 11: vertical_rate (m/s),
-                    # 13: geo_altitude.
-                    icao24 = (s[0] or "").strip().lower() or None
-                    callsign = (s[1] or "").strip()
-                    origin_country = s[2]
-                    lon = s[5]
-                    lat = s[6]
-                    alt_m = s[7] if s[7] is not None else s[13]  # Fallback to geo_altitude
-                    on_ground = s[8]
-                    velocity = s[9]
-                    track = s[10]
-                    vertical_rate = s[11]
-
-                    if lat is None or lon is None or on_ground:
+                    # One bad vector must cost one aircraft, not the response. Before
+                    # this, an IndexError or TypeError from a single entry fell through
+                    # to the outer except and served the cache as "fetch failed".
+                    try:
+                        mapped = self._map_state_vector(s)
+                    except (TypeError, ValueError):
+                        logger.debug("Skipping malformed OpenSky state vector: %r", s)
                         continue
-
-                    dist = haversine_distance(
-                        self.config.observer_lat, self.config.observer_lon, lat, lon
-                    )
-                    alt_ft = int(alt_m * 3.28084) if alt_m is not None else 0
-                    heading = int(track) if track is not None else 0
-                    # velocity m/s -> km/h; vertical_rate m/s -> feet/min.
-                    ground_speed_kmh = round(velocity * 3.6) if velocity is not None else None
-                    vertical_rate_fpm = (
-                        round(vertical_rate * 196.85) if vertical_rate is not None else None
-                    )
-
-                    nearby.append(
-                        {
-                            "callsign": callsign,
-                            "altitude_ft": alt_ft,
-                            "distance_km": round(dist, 2),
-                            "heading": heading,
-                            "icao24": icao24,
-                            "latitude": lat,
-                            "longitude": lon,
-                            "ground_speed_kmh": ground_speed_kmh,
-                            "vertical_rate_fpm": vertical_rate_fpm,
-                            "on_ground": bool(on_ground),
-                            "origin_country": origin_country,
-                        }
-                    )
+                    if mapped is not None:
+                        nearby.append(mapped)
 
                 # Sort by distance
                 nearby.sort(key=lambda x: x["distance_km"])
@@ -241,6 +218,65 @@ class OpenSkyAircraftProvider(AircraftProvider):
             logger.warning(f"Error fetching from OpenSky API: {e}. Serving cached aircraft data.")
 
         return self._serve_cache("fetch failed")
+
+    # OpenSky state-vector indices (see the states/all API doc): 0 icao24, 1 callsign,
+    # 2 origin_country, 5 longitude, 6 latitude, 7 baro_altitude, 8 on_ground,
+    # 9 velocity (m/s), 10 true_track, 11 vertical_rate (m/s), 13 geo_altitude. A vector
+    # is documented at 17 entries; 13 is the highest index read here.
+    _STATE_VECTOR_MIN_LEN = 14
+
+    def _map_state_vector(self, s: Sequence[Any]) -> dict[str, Any] | None:
+        """Map one OpenSky state vector onto the shape the summary job expects.
+
+        None for anything that cannot be placed, is on the ground, or -- like the adsb.fi
+        path -- has no usable altitude. Raises TypeError/ValueError on a malformed value;
+        the caller skips that entry.
+        """
+        if len(s) < self._STATE_VECTOR_MIN_LEN:
+            logger.debug("Skipping short OpenSky state vector (%d fields)", len(s))
+            return None
+
+        icao24 = (s[0] or "").strip().lower() or None
+        callsign = (s[1] or "").strip()
+        origin_country = s[2]
+        lon = s[5]
+        lat = s[6]
+        alt_m = s[7] if s[7] is not None else s[13]  # baro first, geo as the fallback
+        on_ground = s[8]
+        velocity = s[9]
+        track = s[10]
+        vertical_rate = s[11]
+
+        if lat is None or lon is None or on_ground:
+            return None
+        # OpenSky sends both altitudes as null for an aircraft it has only a position for.
+        # That used to publish as airborne at 0 ft -- and nearest-first sorting put "0 ft,
+        # a few km away" at the top of the tile. The adsb.fi mapper already refuses an
+        # unknown altitude and anything under the ground gate; OpenSky now does the same.
+        if alt_m is None:
+            return None
+        alt_ft = float(alt_m) * 3.28084
+        if alt_ft < GROUND_ALTITUDE_GATE_FT:
+            return None
+
+        dist = haversine_distance(self.config.observer_lat, self.config.observer_lon, lat, lon)
+        return {
+            "callsign": callsign,
+            "altitude_ft": int(alt_ft),
+            "distance_km": round(dist, 2),
+            "heading": int(track) if track is not None else 0,
+            "icao24": icao24,
+            "latitude": lat,
+            "longitude": lon,
+            # velocity m/s -> km/h; vertical_rate m/s -> feet/min. Both are int in the
+            # contract; round(float(...)) lands there from a float or a numeric string.
+            "ground_speed_kmh": round(float(velocity) * 3.6) if velocity is not None else None,
+            "vertical_rate_fpm": (
+                round(float(vertical_rate) * 196.85) if vertical_rate is not None else None
+            ),
+            "on_ground": bool(on_ground),
+            "origin_country": origin_country,
+        }
 
     @property
     def last_successful_time(self) -> datetime | None:
@@ -276,11 +312,6 @@ class MockAircraftProvider(AircraftProvider):
                 "heading": 95,
             },
         ]
-
-
-# Below this, an aircraft is taxiing or parked rather than overhead. Nothing meaningfully
-# "nearby and in the sky" is under a couple of hundred feet.
-GROUND_ALTITUDE_GATE_FT = 200.0
 
 
 class AdsbFiAircraftProvider(AircraftProvider):
@@ -327,7 +358,11 @@ class AdsbFiAircraftProvider(AircraftProvider):
         )
         self._last_request_time = now
         try:
-            resp = httpx.get(url, timeout=self.config.request_timeout_s)
+            resp = httpx.get(
+                url,
+                headers={"User-Agent": DEFAULT_USER_AGENT},
+                timeout=self.config.request_timeout_s,
+            )
             if resp.status_code != 200:
                 logger.warning(
                     f"adsb.fi returned HTTP {resp.status_code}. Serving cached aircraft data."
@@ -370,6 +405,7 @@ class AdsbFiAircraftProvider(AircraftProvider):
 
         callsign = (entry.get("flight") or "").strip()
         ground_speed_kt = entry.get("gs")
+        baro_rate = entry.get("baro_rate")
         return {
             "callsign": callsign or (entry.get("hex") or "unknown"),
             "altitude_ft": int(altitude),
@@ -385,7 +421,9 @@ class AdsbFiAircraftProvider(AircraftProvider):
             "ground_speed_kmh": (
                 round(float(ground_speed_kt) * 1.852) if ground_speed_kt is not None else None
             ),
-            "vertical_rate_fpm": entry.get("baro_rate"),
+            # Already feet per minute, but the contract wants an int and the feed does not
+            # promise one; the ground speed above found that out the hard way.
+            "vertical_rate_fpm": round(float(baro_rate)) if baro_rate is not None else None,
             "on_ground": False,
             # Inline, where OpenSky needs two more services to supply them.
             "registration": entry.get("r"),
