@@ -58,6 +58,7 @@ from control_plane_api import presence_engine
 from control_plane_api import tokens as token_store
 from control_plane_api.bundles import get_or_create_bundle, update_bundle
 from control_plane_api.db import session_scope
+from control_plane_api.deletion import scrub_social_item
 from control_plane_api.http_limits import BodySizeLimitMiddleware
 from control_plane_api.models import EventRow, SocialItemRow
 from control_plane_api.presence import CoordinatePayloadError, reject_coordinate_payload
@@ -667,11 +668,9 @@ def _delete_social_item(request: Request, kind: str, item_id: str) -> dict:
         row = session.get(SocialItemRow, (kind, item_id))
         if row is None:
             raise HTTPException(status_code=404, detail="not found")
-        now = datetime.now(UTC)
-        row.status = "deleted"
-        row.deleted_at = now
-        row.deleted_reason = "moderation"
-        row.updated_at = now
+        # Erase, don't flag: the mirror's text/label and the raw event payload both
+        # go, exactly as a visitor's own deletion request does (ADR-0005 §6).
+        scrub_social_item(session, row, now=datetime.now(UTC), reason="moderation")
     return {"kind": kind, "item_id": item_id, "status": "deleted"}
 
 
