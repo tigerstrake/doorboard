@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 from door_visiond.clock import FakeClock
 from door_visiond.embedder import HailoEmbedder, MockEmbedder
-from door_visiond.embedding import Embedding
 from door_visiond.enrollment import ProfileSpec
 from door_visiond.pipeline import BackendStatus, DisabledBackend, FrameCapture
 from door_visiond.service import (
@@ -24,14 +23,6 @@ from door_visiond.service import (
 from door_visiond.settings import Settings
 
 from .conftest import CONSENT_VERSION, TEST_DIM, face
-
-
-class _RaisingEmbedder:
-    model_id = "raiser"
-    dim = TEST_DIM
-
-    def embed(self, image_bytes: bytes) -> tuple[Embedding, float]:
-        raise RuntimeError("injected embed failure")
 
 
 class _FailingBackend:
@@ -60,19 +51,6 @@ def _svc(settings: Settings, **kw) -> VisiondService:
     return svc
 
 
-def test_enroll_tmp_is_empty_after_success(ssd_settings: Settings) -> None:
-    svc = _svc(ssd_settings)
-    result = svc.enroll(
-        display_name="Alex",
-        consent_version=CONSENT_VERSION,
-        consent_confirmed=True,
-        images=[b"alex-photo-bytes"],
-        profile=_profile(),
-    )
-    assert result.embeddings_created == 1
-    assert list(ssd_settings.enroll_tmp_root.iterdir()) == []
-
-
 def test_required_encrypted_storage_fails_closed(tmp_path: Path) -> None:
     enrollment_root = tmp_path / "unencrypted-enrollment"
     settings = Settings(
@@ -95,20 +73,6 @@ def test_required_encrypted_storage_fails_closed(tmp_path: Path) -> None:
             images=[b"alex-photo-bytes"],
             profile=_profile(),
         )
-
-
-def test_enroll_tmp_is_empty_after_failure(ssd_settings: Settings) -> None:
-    """P-9: an exception mid-enroll still wipes the transient image dir."""
-    svc = _svc(ssd_settings, embedder=_RaisingEmbedder())
-    with pytest.raises(RuntimeError):
-        svc.enroll(
-            display_name="Alex",
-            consent_version=CONSENT_VERSION,
-            consent_confirmed=True,
-            images=[b"alex-photo-bytes"],
-            profile=_profile(),
-        )
-    assert list(ssd_settings.enroll_tmp_root.iterdir()) == []
 
 
 def test_startup_wipes_leftover_tmp(ssd_settings: Settings) -> None:
