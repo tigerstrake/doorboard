@@ -200,6 +200,12 @@ class EventEmitter:
         self._door_id = door_id
 
     def emit(self, event: DoorboardEvent) -> None:
+        # Vision payloads are counts/ids/timestamps only — never biometric. The log line is
+        # the long-lived audit copy, though, and `display_name` is still a person's name:
+        # `person_id` alone correlates it with the enrollment record, so the name stays out
+        # of the journal. Subscribers get the unmodified contract event.
+        payload = event.payload.model_dump(mode="json")
+        payload.pop("display_name", None)
         logger.info(
             "event",
             extra={
@@ -208,8 +214,7 @@ class EventEmitter:
                 "event_id": str(event.event_id),
                 "trace_id": str(event.trace_id),
                 "door_id": event.door_id,
-                # Vision payloads are counts/ids/timestamps only — never biometric.
-                "payload": event.payload.model_dump(mode="json"),
+                "payload": payload,
             },
         )
         q = get_broadcast_queue()

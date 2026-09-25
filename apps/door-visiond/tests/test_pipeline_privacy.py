@@ -118,6 +118,36 @@ def test_logs_are_biometric_clean(ssd_settings: Settings, clock, collected) -> N
                 assert len(value) <= 16
 
 
+def test_event_log_copy_carries_person_id_not_display_name(ssd_settings: Settings, clock) -> None:
+    """The journal copy of an identity event names the person by id, never by name."""
+    from uuid import uuid4
+
+    from door_visiond.events import make_identity_stable
+
+    emitter = EventEmitter(ssd_settings.door_id)
+    event = make_identity_stable(
+        clock=clock,
+        door_id="primary",
+        trace_id=uuid4(),
+        person_id="person-1",
+        display_name="Alex Example",
+        confidence=0.9,
+        expires_at=clock.utc_now(),
+        expires_at_monotonic_ms=clock.monotonic_ms() + 2500,
+        profile_id="blue_wave",
+    )
+    with capture_logs("door_visiond.events") as records:
+        emitter.emit(event)
+
+    assert len(records) == 1
+    logged = vars(records[0])["payload"]
+    assert logged["person_id"] == "person-1"
+    assert "display_name" not in logged
+    assert "Alex Example" not in repr(vars(records[0]))
+    # The broadcast copy is the contract event itself: door-api still receives the name.
+    assert event.payload.display_name == "Alex Example"
+
+
 def test_unknown_faces_never_key_any_collection(core_env) -> None:
     """E-1: no structure is keyed by an unknown identity (no unbounded growth)."""
     core, _matcher, _cache = core_env
