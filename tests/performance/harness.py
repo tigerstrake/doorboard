@@ -39,8 +39,9 @@ from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import httpx
 from doorboard_contracts import DoorboardEvent, parse_event
 from doorboard_esp32_link import Esp32TransportStatus, WireMessage
 from doorboard_esp32_link.esp32 import uuid7_now
@@ -218,6 +219,149 @@ def measure_bell_to_visitor_mode(iterations: int, data_dir: Path) -> list[float]
 
 
 # ---------------------------------------------------------------------------
+# bell_to_recording_event: door-media, in-process
+# ---------------------------------------------------------------------------
+
+
+def _mediamtx_api(cfg: Any) -> Callable[[httpx.Request], httpx.Response]:
+    """A MediaMTX control API whose visitor path is live — the §4 precondition."""
+    live_path = f"/v3/paths/get/{cfg.visitor_cam_stream}"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == live_path:
+            return httpx.Response(
+                200,
+                json={"name": cfg.visitor_cam_stream, "ready": True, "readers": []},
+            )
+        return httpx.Response(404, json={"error": "path not found"})
+
+    return handle
+
+
+def _button_pressed_state_change(session_id: UUID) -> dict[str, Any]:
+    """The ``session.state_changed`` door-api forwards to door-media on a press."""
+    return {
+        "event_id": str(uuid7_now()),
+        "type": "session.state_changed",
+        "source": "door-api",
+        "occurred_at": datetime.now(UTC).isoformat(),
+        "monotonic_ms": time.monotonic_ns() // 1_000_000,
+        "door_id": "primary",
+        "trace_id": str(uuid4()),
+        "payload": {
+            "session_id": str(session_id),
+            "from_state": "IDLE",
+            "to_state": "BUTTON_PRESSED",
+            "trigger": "door.button_pressed",
+        },
+    }
+
+
+async def measure_bell_to_recording_event(iterations: int, data_dir: Path) -> list[float]:
+    """Time the session event reaching door-media → ``media.recording_started`` emitted.
+
+    What runs: door-media's real FastAPI app on an in-loop ASGI transport (so the
+    route, the admin-token dependency and the Pydantic body validation are all on
+    the path), the real ``MediaMTXRouter`` with its MediaMTX control API mocked to
+    report the visitor stream live, the real ``RecordingDB`` on disk in ``data_dir``
+    (WAL, ``synchronous=FULL``), and the real ``RecordingService``. The clock starts
+    as ``POST /internal/session_event`` is issued with the ``BUTTON_PRESSED``
+    transition door-api forwards on a press, and stops when the response is back —
+    by which point ``media.recording_started`` has been put on the broadcast queue
+    (asserted) and the processed-event mark committed after it in the same handler.
+
+    Not on the path: uvicorn and the loopback HTTP hop door-api's forwarder pays
+    (ASGITransport calls the app directly), and MediaMTX itself — it writes segments
+    continuously and ``start_recording`` only opens a window over them, so nothing
+    is asked of it here. Audio capture is off, as it is by default.
+
+    Each window is discarded after its sample so the active-recording cap never
+    turns a later press into a refused one.
+    """
+    from door_media.app import app
+    from door_media.db import RecordingDB
+    from door_media.emitter import subscribe_broadcast_queue, unsubscribe_broadcast_queue
+    from door_media.mediamtx_router import MediaMTXRouter
+    from door_media.service import RecordingService
+    from door_media.settings import Settings
+
+    admin_token = secrets.token_urlsafe(16)
+    cfg = Settings(
+        **{
+            "MEDIA_MODE": "mediamtx",
+            "SSD_DATA_ROOT": str(data_dir),
+            "DOOR_MEDIA_MIN_FREE_BYTES": "1",
+            "DOOR_MEDIA_ADMIN_TOKEN": admin_token,
+            "DOOR_API_INTERNAL_EVENT_TOKEN": "",
+            "MEDIA_AUDIO_ENABLED": "false",
+            "MEDIAMTX_API": "http://mediamtx.harness.invalid",
+        }
+    )
+    router = MediaMTXRouter(cfg)
+    # The router's control-API client is the only thing that would reach a real
+    # MediaMTX; swap it for the mock before anything is asked of it.
+    await router._http.aclose()
+    router._http = httpx.AsyncClient(
+        base_url=cfg.mediamtx_api, transport=httpx.MockTransport(_mediamtx_api(cfg))
+    )
+    if not await router.health_check():
+        raise RuntimeError("the mocked MediaMTX API did not report the visitor stream live")
+
+    db = RecordingDB(cfg.ssd_data_root / "door_media.db")
+    service = RecordingService(router=router, db=db, settings=cfg)
+    # What _lifespan installs, minus router.start(): that spawns the MediaMTX
+    # binary and the camera pipeline, neither of which this path touches.
+    app.state.cfg = cfg
+    app.state.router = router
+    app.state.db = db
+    app.state.service = service
+
+    emitted = subscribe_broadcast_queue()
+    samples: list[float] = []
+    await service.start()
+    try:
+        headers = {"Authorization": f"Bearer {admin_token}"}
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://door-media.local"
+        ) as client:
+            for _ in range(iterations):
+                session_id = uuid4()
+                body = {"event": _button_pressed_state_change(session_id)}
+
+                t0 = time.perf_counter()
+                response = await client.post("/internal/session_event", json=body, headers=headers)
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+                if response.status_code != 200 or response.json().get("duplicate"):
+                    raise RuntimeError(f"session event not accepted: {response.text}")
+                started = _drain_recording_started(emitted)
+                if started is None or started.payload.session_id != session_id:
+                    raise RuntimeError("media.recording_started was not emitted for the press")
+                samples.append(elapsed_ms)
+
+                await service.discard_recording(
+                    started.payload.recording_id, trace_id=started.trace_id
+                )
+    finally:
+        await service.stop()
+        unsubscribe_broadcast_queue(emitted)
+        await router._http.aclose()
+        db.close()
+    return samples
+
+
+def _drain_recording_started(queue: asyncio.Queue[Any]) -> Any | None:
+    """The ``media.recording_started`` event now on the queue, skipping telemetry."""
+    while True:
+        try:
+            event = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
+        if event.type == "media.recording_started":
+            return event
+
+
+# ---------------------------------------------------------------------------
 # Simulator-based measurement
 # ---------------------------------------------------------------------------
 
@@ -228,31 +372,22 @@ def collect_samples(iterations: int = ITERATIONS) -> dict[str, list[float]]:
 
     with tempfile.TemporaryDirectory(prefix="doorboard-harness-") as tmpdir:
         root = Path(tmpdir)
-        asyncio.run(
-            _run_simulator_loop(
-                iterations=iterations,
-                artifact_root=root / "simulator",
-                samples=samples,
-            )
-        )
+        asyncio.run(_run_simulator_loop(iterations=iterations, samples=samples))
         samples["bell_to_visitor_mode"] = measure_bell_to_visitor_mode(
             iterations, root / "door-api"
+        )
+        samples["bell_to_recording_event"] = asyncio.run(
+            measure_bell_to_recording_event(iterations, root / "door-media")
         )
 
     return samples
 
 
-async def _run_simulator_loop(
-    iterations: int,
-    artifact_root: Path,
-    samples: dict[str, list[float]],
-) -> None:
+async def _run_simulator_loop(iterations: int, samples: dict[str, list[float]]) -> None:
     """Simulator-only sections: no service code runs here."""
     from doorboard_simulator.clock import SimClock
     from doorboard_simulator.esp32 import FakeEsp32Transport
     from doorboard_simulator.events import EventFactory
-    from doorboard_simulator.ids import SESSION_ID
-    from doorboard_simulator.media import FakeMediaRouter
     from doorboard_simulator.outages import OutageState
     from doorboard_simulator.vision import FakeVisionPipeline, PersonScript
 
@@ -322,26 +457,7 @@ async def _run_simulator_loop(
         samples["face_to_stable_identity"].append(0.0)
 
         # ----------------------------------------------------------------
-        # 4. bell_to_recording_event
-        #    start_recording + finalize_recording (1 s clip).
-        #    SimClock advances 1000 ms inside; wall-clock is processing only.
-        # ----------------------------------------------------------------
-        clock4 = SimClock(monotonic_ms=(i + 300) * 10_000)
-        events4 = EventFactory(clock4)
-        media4 = FakeMediaRouter(clock4, events4, outages, artifact_root=artifact_root)
-
-        t0 = time.monotonic()
-        handle = await media4.start_recording(
-            session_id=SESSION_ID,
-            kind="bell_clip",
-            stream="visitor-main",
-        )
-        clock4.advance_by(1000)
-        _ = await media4.finalize_recording(handle, consent_context="bell_event")
-        samples["bell_to_recording_event"].append((time.monotonic() - t0) * 1000.0)
-
-        # ----------------------------------------------------------------
-        # 5. tap_to_local_response
+        # 4. tap_to_local_response
         #    No touchscreen in simulator — measures event creation overhead.
         # ----------------------------------------------------------------
         t0 = time.monotonic()
@@ -358,7 +474,7 @@ async def _run_simulator_loop(
         samples["tap_to_local_response"].append((time.monotonic() - t0) * 1000.0)
 
         # ----------------------------------------------------------------
-        # 6. webrtc_glass_to_glass
+        # 5. webrtc_glass_to_glass
         #    Requires MediaMTX + WebRTC — not simulatable.
         #    Sentinel 0.0 → "simulator N/A" in the report.
         # ----------------------------------------------------------------
