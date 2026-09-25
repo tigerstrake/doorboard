@@ -42,9 +42,11 @@ export function Tile({
         setStalenessText("Just now");
       } else if (diffMins < 60) {
         setStalenessText(`${diffMins}m ago`);
+      } else if (diffMins < 24 * 60) {
+        setStalenessText(`${Math.floor(diffMins / 60)}h ago`);
       } else {
-        const diffHours = Math.floor(diffMins / 60);
-        setStalenessText(`${diffHours}h ago`);
+        // "1641h ago" is 68 days; nobody in a corridor does that division.
+        setStalenessText(`${Math.floor(diffMins / (24 * 60))}d ago`);
       }
     };
 

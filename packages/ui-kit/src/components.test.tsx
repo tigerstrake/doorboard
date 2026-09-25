@@ -67,6 +67,36 @@ describe("Component Security and Escaping", () => {
   });
 });
 
+describe("Tile staleness badge", () => {
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("rolls hours into days so an old reading is legible at a glance", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-25T12:00:00Z"));
+    const twoDaysAgo = new Date("2026-09-23T09:30:00Z").toISOString();
+    render(<Tile title="Birds" asOf={twoDaysAgo} />);
+    const badge = screen.getByTitle(`Updated: ${twoDaysAgo}`);
+    expect(badge.textContent).toBe("Stale · 2d ago");
+
+    cleanup();
+    const fiveHoursAgo = new Date("2026-09-25T06:45:00Z").toISOString();
+    render(<Tile title="Birds" asOf={fiveHoursAgo} />);
+    expect(screen.getByTitle(`Updated: ${fiveHoursAgo}`).textContent).toBe("Stale · 5h ago");
+  });
+
+  it("is not stale while the reading is younger than staleAfterMs", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-25T12:00:00Z"));
+    const thirtySecondsAgo = new Date("2026-09-25T11:59:30Z").toISOString();
+    render(<Tile title="Guestbook" asOf={thirtySecondsAgo} />);
+    expect(screen.getByTestId("tile").getAttribute("data-stale")).toBe("false");
+    expect(screen.getByTitle(`Updated: ${thirtySecondsAgo}`).textContent).toBe("Just now");
+  });
+});
+
 describe("RingStatus", () => {
   afterEach(() => {
     cleanup();

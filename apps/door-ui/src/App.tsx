@@ -332,6 +332,8 @@ interface TimedAmbient<T> {
 interface ScoreboardEntry {
   score: number;
   occurredAt: string;
+  /** When this kiosk received the last delta — the tile's honest "as of", not the event's. */
+  receivedAt: string;
 }
 
 interface AmbientAlert {
@@ -550,12 +552,14 @@ export function App() {
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
   const [wallboardFocusRequest, setWallboardFocusRequest] = useState<WallboardFocusRequest | null>(null);
   const [wallboardLaunchStatus, setWallboardLaunchStatus] = useState<string>("Ambient grid");
-  const [eventConnection, setEventConnection] = useState<"connecting" | "connected" | "disconnected">(
+  // Raw socket status. Nothing renders it any more: the header and the connection dot both
+  // read `wallboardLiveness`, because a socket can be "connected" yet silent.
+  const [, setEventConnection] = useState<"connecting" | "connected" | "disconnected">(
     "connecting"
   );
-  // Liveness for the wallboard connection dot: "live" | "reconnecting" | "stale". Distinct
-  // from `eventConnection` (raw socket status) because a socket can stay open while the
-  // server has silently dropped us — the case the staleness watchdog exists to catch.
+  // Liveness for the wallboard: "live" | "reconnecting" | "stale". Distinct from the raw
+  // socket status because a socket can stay open while the server has silently dropped
+  // us — the case the staleness watchdog exists to catch.
   const [wallboardLiveness, setWallboardLiveness] = useState<ConnectionLiveness>("reconnecting");
   const [ringRequestState, setRingRequestState] = useState<"idle" | "sending" | "sent" | "failed">(
     "idle"
@@ -655,6 +659,13 @@ export function App() {
   const [pollAmbientState, setPollAmbientState] = useState<"idle" | "ready" | "unavailable">(
     "idle"
   );
+  // When each re-fetched feed last answered. This — not a note's creation time or a
+  // photo's approval time — is what the tile's staleness badge measures: a 20-minute-old
+  // note on a feed that answered 30 s ago is fresh, and saying "Stale" there trains
+  // passers-by to ignore the badge that matters (the NUC-outage case).
+  const [guestbookAsOf, setGuestbookAsOf] = useState<string | null>(null);
+  const [pollAsOf, setPollAsOf] = useState<string | null>(null);
+  const [momentsAsOf, setMomentsAsOf] = useState<string | null>(null);
 
   // Keyed by subject_id (ADR-0048). The mock seeds the first two configured subjects.
   const [presenceState, setPresenceState] = useState<Record<string, PresenceEntry>>(() => {
@@ -772,7 +783,11 @@ export function App() {
       ? Object.fromEntries(
           scoreboardFixture.scores.map((entry, index) => [
             `fixture-${index}`,
-            { score: entry.score, occurredAt: scoreboardFixture.occurred_at },
+            {
+              score: entry.score,
+              occurredAt: scoreboardFixture.occurred_at,
+              receivedAt: scoreboardFixture.occurred_at,
+            },
           ])
         )
       : {}
@@ -1128,6 +1143,7 @@ export function App() {
           next[entryKey] = {
             score: Math.min(Number.MAX_SAFE_INTEGER, Math.max(Number.MIN_SAFE_INTEGER, nextScore)),
             occurredAt: event.occurred_at,
+            receivedAt: new Date().toISOString(),
           };
           return next;
         });
@@ -1470,6 +1486,7 @@ export function App() {
           if (!cancelled) {
             setApprovedGuestbook(entries);
             setGuestbookAmbientState("ready");
+            setGuestbookAsOf(new Date().toISOString());
           }
         })
         .catch(() => {
@@ -1481,6 +1498,7 @@ export function App() {
           if (cancelled) return;
           setCurrentPoll(poll);
           setPollAmbientState("ready");
+          setPollAsOf(new Date().toISOString());
           if (poll) {
             return socialApi.getPollResults(poll.id).then((results) => {
               if (!cancelled) setPollResults(results);
@@ -1495,7 +1513,9 @@ export function App() {
         fetch(`${API_BASE}/wallboard/moments`)
           .then((response) => (response.ok ? response.json() : { photos: [] }))
           .then((data: { photos?: WallboardMoment[] }) => {
-            if (!cancelled) setWallboardMoments(data.photos ?? []);
+            if (cancelled) return;
+            setWallboardMoments(data.photos ?? []);
+            setMomentsAsOf(new Date().toISOString());
           })
           .catch(() => {
             // Private gallery unavailable — keep the last approved moment list.
@@ -1911,6 +1931,12 @@ export function App() {
         .sort()
         .at(-1) ?? null;
     const scoreboardRows = Object.values(scoreboardEntries).sort((left, right) => right.score - left.score);
+    // The tile is as current as the last delta this kiosk received, whoever scored it.
+    const scoreboardAsOf =
+      scoreboardRows
+        .map((row) => row.receivedAt)
+        .sort()
+        .at(-1) ?? null;
     const focusedChannel =
       !isVisitorMode &&
       wallboardFocusRequest?.mode === "focus" &&
@@ -2037,7 +2063,7 @@ export function App() {
         key: "scoreboard",
         channel: "scoreboard",
         node: (
-          <Tile title="Scoreboard" asOf={scoreboardRows[0]?.occurredAt ?? null}>
+          <Tile title="Scoreboard" asOf={scoreboardAsOf}>
             <div className="scoreboard-tile-content">
               {scoreboardRows.length > 0 ? scoreboardRows.slice(0, 8).map((entry, idx) => (
                 <div key={idx} className="score-row">
@@ -2109,7 +2135,7 @@ export function App() {
         key: "poll",
         channel: "poll",
         node: (
-          <Tile title="Active Room Poll">
+          <Tile title="Active Room Poll" asOf={pollAsOf}>
             <div className="poll-tile-content">
               {pollAmbientState === "unavailable" && <p>Poll service unavailable; showing no new results.</p>}
               {pollAmbientState === "ready" && !currentPoll && <p>No poll running right now.</p>}
@@ -2167,10 +2193,7 @@ export function App() {
         key: "guestbook",
         channel: "guestbook",
         node: (
-          <Tile
-            title="Guestbook Highlights"
-            asOf={approvedGuestbook[0]?.created_at ?? null}
-          >
+          <Tile title="Guestbook Highlights" asOf={guestbookAsOf}>
             <div className="guestbook-tile-content">
               {guestbookAmbientState === "unavailable" && <p>Guestbook unavailable; the note below may be stale.</p>}
               {guestbookAmbientState === "idle" && <p>Loading approved notes…</p>}
@@ -2189,7 +2212,7 @@ export function App() {
               key: "moments",
               channel: "moments" as const,
               node: (
-                <Tile title="Moments" asOf={wallboardMoments[0]?.approved_at ?? null}>
+                <Tile title="Moments" asOf={momentsAsOf}>
                   <div className="moments-tile-content">
                     {wallboardMoments.slice(0, 3).map((photo) => (
                       <div className="moment-row" key={photo.recording_id}>
@@ -2263,7 +2286,9 @@ export function App() {
               <div className="ambient-header-left">
                 <h1 className="ambient-header-title">Room {ROOM_LABEL} Wallboard</h1>
                 <span className="ambient-header-subtitle">
-                  {RESIDENTS_LABEL ? `${RESIDENTS_LABEL} · ` : ""}Dorm Hallway Display · {eventConnection === "connected" ? "Live updates" : "Using last-known data"}
+                  {/* Same source as the connection dot: an OPEN-but-silent socket is
+                      "connected" yet not live, and the two must not disagree. */}
+                  {RESIDENTS_LABEL ? `${RESIDENTS_LABEL} · ` : ""}Dorm Hallway Display · {wallboardLiveness === "live" ? "Live updates" : "Using last-known data"}
                 </span>
               </div>
               <div className="ambient-clock">
