@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from control_plane_api.models import NotificationStateRow
 from control_plane_api.notify import (
     MultiNotifier,
     NotifyEngine,
@@ -16,6 +17,7 @@ from control_plane_api.notify import (
     notification_for_alert,
 )
 from doorboard_contracts import parse_event
+from sqlalchemy import select
 
 from .factories import build_event
 
@@ -43,6 +45,36 @@ def test_unanswered_session_triggers_missed_bell() -> None:
     notification = evaluate_rules(parse_event(event), sync_stall_alert_s=14400)
     assert notification is not None
     assert notification.rule_key.startswith("missed_bell:")
+
+
+def test_two_unanswered_visitors_in_an_hour_both_notify(session_factory) -> None:
+    """`missed_bell` was keyed per door under a 1 h cooldown: the second visitor who
+    rang and left inside that hour was never reported."""
+    notifier = RecordingNotifier()
+    engine = NotifyEngine(notifier, cooldown_s=3600, sync_stall_alert_s=14400)
+
+    def ended(session_id: str):
+        return parse_event(
+            build_event(
+                "session.ended",
+                payload_overrides={"session_id": session_id, "outcome": "unanswered_timeout"},
+            )
+        )
+
+    # One session per event, as the fan-out worker does in production.
+    with session_factory() as session:
+        engine.on_event(session, ended(SESSION_A), now=NOW)
+        session.commit()
+    with session_factory() as session:
+        engine.on_event(session, ended(SESSION_B), now=NOW + timedelta(minutes=10))
+        session.commit()
+    with session_factory() as session:  # a redelivered session.ended is still one bell
+        engine.on_event(session, ended(SESSION_A), now=NOW + timedelta(minutes=11))
+        session.commit()
+    assert [n.rule_key for n in notifier.sent] == [
+        f"missed_bell:primary:{SESSION_A}",
+        f"missed_bell:primary:{SESSION_B}",
+    ]
 
 
 def test_answered_session_does_not_trigger_missed_bell() -> None:
@@ -380,3 +412,64 @@ def test_alert_mapping_survives_missing_labels_and_truncates_long_text() -> None
         status="firing", labels={"alertname": "x"}, annotations={"summary": "y" * 5000}
     )
     assert len(long.message) == 1000
+
+
+# ── notification_state housekeeping ────────────────────────────────────────
+
+
+def test_prune_removes_only_rows_older_than_the_longest_cooldown(session_factory) -> None:
+    engine = NotifyEngine(
+        RecordingNotifier(),
+        cooldown_s=3600,
+        sync_stall_alert_s=14400,
+        aircraft_alert_cooldown_s=600,
+        bird_new_species_cooldown_s=7 * 24 * 3600,
+    )
+    assert engine.longest_cooldown == timedelta(days=7)
+
+    with session_factory() as session:
+        session.add_all(
+            [
+                NotificationStateRow(rule_key="old", last_notified_at=NOW - timedelta(days=8)),
+                NotificationStateRow(rule_key="edge", last_notified_at=NOW - timedelta(days=7)),
+                NotificationStateRow(rule_key="recent", last_notified_at=NOW - timedelta(hours=1)),
+            ]
+        )
+        session.commit()
+        pruned = engine.prune_state(session, now=NOW)
+        session.commit()
+        remaining = set(session.execute(select(NotificationStateRow.rule_key)).scalars())
+    assert pruned == 1
+    assert remaining == {"edge", "recent"}
+
+
+def test_app_state_prunes_at_startup(engine) -> None:
+    from control_plane_api.db import make_session_factory
+    from control_plane_api.state import AppState
+
+    from .conftest import TestSettings
+
+    factory = make_session_factory(engine)
+    with factory() as session:
+        session.add(
+            NotificationStateRow(
+                rule_key="doorbell_rang:primary:ancient",
+                last_notified_at=datetime.now(UTC) - timedelta(days=400),
+            )
+        )
+        session.commit()
+
+    state = AppState(TestSettings())
+    try:
+        import time
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            with factory() as session:
+                left = session.execute(select(NotificationStateRow)).scalars().all()
+            if not left:
+                break
+            time.sleep(0.05)
+        assert left == []
+    finally:
+        state.dispose()

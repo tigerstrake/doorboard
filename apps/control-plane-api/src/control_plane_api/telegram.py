@@ -24,6 +24,7 @@ falling back to ``NullNotifier``.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import Protocol
 
@@ -39,6 +40,13 @@ logger = logging.getLogger("control_plane_api.telegram")
 _SAVED_STATE = "VIDEO_MESSAGE_SAVED"
 _VIDEO_KIND = "video_message"
 _BELL_KIND = "bell_clip"
+
+# A video upload is the one Telegram call worth a second try: it is the
+# largest request, the slowest, the most likely to hit a transient upstream
+# error — and the visitor's message is not resent by anything else. One retry
+# after a short pause; a text alert is cheap enough that its rule will simply
+# fire again next time.
+_VIDEO_RETRY_BACKOFF_S = 2.0
 
 
 class TelegramSender(Protocol):
@@ -124,19 +132,26 @@ class TelegramClient:
         import httpx
 
         for chat_id in self._targets(chat_ids):
-            try:
-                resp = httpx.post(
-                    self._method_url("sendVideo"),
-                    data={"chat_id": chat_id, "caption": caption},
-                    files={"video": (filename, video, "video/mp4")},
-                    timeout=self._timeout_s,
-                )
-                self._log_non_ok(resp, chat_id, "sendVideo")
-            except Exception:
-                metrics.inc(NOTIFICATIONS, channel="telegram", outcome="failed")
-                logger.warning(
-                    "telegram_send_video_failed", extra={"chat_id": chat_id}, exc_info=True
-                )
+            for attempt in (1, 2):
+                try:
+                    resp = httpx.post(
+                        self._method_url("sendVideo"),
+                        data={"chat_id": chat_id, "caption": caption},
+                        files={"video": (filename, video, "video/mp4")},
+                        timeout=self._timeout_s,
+                    )
+                    if self._log_non_ok(resp, chat_id, "sendVideo"):
+                        break
+                except Exception:
+                    metrics.inc(NOTIFICATIONS, channel="telegram", outcome="failed")
+                    logger.warning(
+                        "telegram_send_video_failed",
+                        extra={"chat_id": chat_id, "attempt": attempt},
+                        exc_info=True,
+                    )
+                if attempt == 1:
+                    logger.info("telegram_send_video_retry", extra={"chat_id": chat_id})
+                    time.sleep(_VIDEO_RETRY_BACKOFF_S)
 
     def send_photo(
         self, *, photo: bytes, filename: str, caption: str, chat_ids: list[str] | None = None

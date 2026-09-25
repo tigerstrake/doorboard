@@ -428,3 +428,70 @@ def test_video_message_recipient_map_parsing() -> None:
     # Whitespace, a bare key, and case are all normalized.
     cfg2 = Settings(VIDEO_MESSAGE_RECIPIENTS=" Tiger : 8397445760 , adam ")
     assert cfg2.video_message_recipient_map == {"tiger": "8397445760", "adam": ""}
+
+
+# ── sendVideo retries once, with backoff ─────────────────────────────────
+
+
+def _retry_client(monkeypatch, outcomes: list) -> tuple[TelegramClient, list, list]:
+    """`outcomes` are per-attempt: an Exception to raise, or a _Resp to return."""
+    import httpx
+
+    calls: list[dict[str, Any]] = []
+    sleeps: list[float] = []
+    queue = list(outcomes)
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        outcome = queue.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr("control_plane_api.telegram.time.sleep", lambda s: sleeps.append(s))
+    client = TelegramClient(bot_token="t", chat_ids=["1"], api_base_url="https://tg.example")
+    return client, calls, sleeps
+
+
+def test_send_video_retries_once_after_a_transport_error(monkeypatch) -> None:
+    import httpx
+
+    client, calls, sleeps = _retry_client(monkeypatch, [httpx.ConnectError("reset"), _Resp()])
+    client.send_video(video=b"MP4", filename="c.mp4", caption="hi")
+    assert len(calls) == 2
+    assert sleeps == [2.0]  # backed off before the second attempt
+
+
+def test_send_video_retries_once_after_an_api_level_failure(monkeypatch) -> None:
+    client, calls, sleeps = _retry_client(
+        monkeypatch, [_Resp(payload={"ok": False, "description": "Bad Request"}), _Resp()]
+    )
+    client.send_video(video=b"MP4", filename="c.mp4", caption="hi")
+    assert len(calls) == 2
+    assert sleeps == [2.0]
+
+
+def test_send_video_does_not_retry_a_success_and_gives_up_after_two_failures(
+    monkeypatch,
+) -> None:
+    import httpx
+
+    client, calls, sleeps = _retry_client(monkeypatch, [_Resp()])
+    client.send_video(video=b"MP4", filename="c.mp4", caption="hi")
+    assert len(calls) == 1 and sleeps == []
+
+    client, calls, sleeps = _retry_client(
+        monkeypatch, [httpx.ConnectError("down"), httpx.ConnectError("still down")]
+    )
+    client.send_video(video=b"MP4", filename="c.mp4", caption="hi")  # must not raise
+    assert len(calls) == 2 and sleeps == [2.0]
+
+
+def test_send_message_and_photo_are_single_attempt(monkeypatch) -> None:
+    import httpx
+
+    client, calls, sleeps = _retry_client(monkeypatch, [httpx.ConnectError("x")] * 2)
+    client.send_message(text="hi")
+    client.send_photo(photo=b"J", filename="p.jpg", caption="c")
+    assert len(calls) == 2 and sleeps == []

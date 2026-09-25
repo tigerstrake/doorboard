@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from doorboard_contracts import PresenceLabel
 
 from control_plane_api import presence_engine
+from control_plane_api.background import PeriodicThread
 from control_plane_api.calendar_ics import IcsCalendarProvider, parse_subject_urls
 from control_plane_api.db import make_engine, make_session_factory, session_scope
 from control_plane_api.fanout import FanoutWorker
@@ -118,6 +119,14 @@ class AppState:
             ring_photo_delivery=self.ring_photo_delivery,
         )
         self.fanout.start()
+        # `notification_state` grew a row per ring forever. Prune what no rule can
+        # still consult, once at startup and then daily, off the request path.
+        self.housekeeping = PeriodicThread(
+            "notification-state-prune",
+            interval_s=24 * 3600,
+            fn=self.prune_notification_state,
+        )
+        self.housekeeping.start()
         # An injected provider always wins (tests). Otherwise: a real .ics provider
         # when feeds are configured, else the mock, which always answers "no signal"
         # so the calendar source simply never wins precedence (ADR-0036).
@@ -203,7 +212,14 @@ class AppState:
         except Exception:
             logger.warning("presence_republish_on_connect_failed", exc_info=True)
 
+    def prune_notification_state(self) -> int:
+        with session_scope(self.session_factory) as session:
+            pruned = self.notify_engine.prune_state(session, now=datetime.now(UTC))
+        logger.info("notification_state_pruned", extra={"rows": pruned})
+        return pruned
+
     def dispose(self) -> None:
+        self.housekeeping.stop()
         self.fanout.stop()
         stop_calendar = getattr(self.calendar_provider, "stop", None)
         if callable(stop_calendar):

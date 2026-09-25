@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from typing import Protocol
 
 from doorboard_contracts import DoorboardEvent
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from control_plane_api.metrics import NOTIFICATIONS, metrics
@@ -75,8 +76,10 @@ def evaluate_rules(
             message=f"{recognised} is here." if recognised else "Someone's at the door.",
         )
     if event.type == "session.ended" and event.payload.outcome == "unanswered_timeout":
+        # Keyed by session, like the ring itself: a per-door key under the 1 h
+        # cooldown swallowed the second unanswered visitor of the hour.
         return Notification(
-            rule_key=f"missed_bell:{event.door_id}",
+            rule_key=f"missed_bell:{event.door_id}:{event.payload.session_id}",
             title="Missed bell",
             message=f"A visitor rang and left no message (session {event.payload.session_id}).",
         )
@@ -319,6 +322,28 @@ class NotifyEngine:
     def notifier(self) -> Notifier:
         """The configured channel(s), for senders that manage their own cadence."""
         return self._notifier
+
+    @property
+    def longest_cooldown(self) -> timedelta:
+        """The longest window any rule looks back over; older state rows are inert."""
+        return max(
+            self._cooldown,
+            timedelta(seconds=self._aircraft_alert_cooldown_s),
+            timedelta(seconds=self._bird_new_species_cooldown_s),
+        )
+
+    def prune_state(self, session: Session, *, now: datetime) -> int:
+        """Delete `notification_state` rows no rule can still consult.
+
+        The per-ring keys (`doorbell_rang:...:<session_id>`, `missed_bell:...`) add a
+        row per visitor and nothing ever removed them. A row older than the longest
+        cooldown cannot suppress anything, so it is only growth. Returns the count.
+        """
+        cutoff = now - self.longest_cooldown
+        result = session.execute(
+            delete(NotificationStateRow).where(NotificationStateRow.last_notified_at < cutoff)
+        )
+        return int(result.rowcount or 0)
 
     def on_event(self, session: Session, event: DoorboardEvent, *, now: datetime) -> None:
         notification = evaluate_rules(
