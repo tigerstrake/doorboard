@@ -24,6 +24,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections import deque
 from collections.abc import Callable, Sequence
 
 logger = logging.getLogger("door_media.frame_reader")
@@ -31,6 +32,12 @@ logger = logging.getLogger("door_media.frame_reader")
 # JPEG delimiters. MJPEG is complete JPEGs back to back.
 _SOI = b"\xff\xd8"
 _EOI = b"\xff\xd9"
+
+# How much of a dead producer's stderr to keep for the failure log: enough for
+# ffmpeg's "Connection refused" or libcamera's "no cameras available", not a
+# transcript.
+_STDERR_TAIL_LINES = 5
+_STDERR_LINE_CHARS = 200
 
 
 class MjpegFrameReader:
@@ -140,15 +147,29 @@ class MjpegFrameReader:
                 backoff = min(self._restart_backoff_max_s, backoff * 2)
 
     async def _read_once(self) -> None:
-        """Run one producer until it exits, publishing each complete JPEG."""
+        """Run one producer until it exits, publishing each complete JPEG.
+
+        Raises when the producer exits with a non-zero status or without having
+        published a single frame. Before it did, a producer that exited cleanly with
+        nothing on stdout -- ffmpeg against a MediaMTX that is down, ``rpicam-vid``
+        with the module unplugged -- returned normally, ``_loop`` reset its backoff,
+        and the next spawn followed immediately: ~600 process starts a second for as
+        long as the outage lasted, on the same four cores door-api and door-visiond
+        need, and ``restarts`` stayed at 0 so nothing said so. Raising routes it
+        through the existing backoff, and the stderr tail says why.
+        """
         argv = list(self._argv_factory())
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
         logger.info("frame_reader_started", extra={"reader": self._name, "argv0": argv[0]})
+        stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+        drain = asyncio.create_task(_drain_stderr(proc.stderr, stderr_tail))
+        frames_at_start = self.frames
+        stopped_for_idle = False
         try:
             assert proc.stdout is not None
             buffer = bytearray()
@@ -159,8 +180,24 @@ class MjpegFrameReader:
                 buffer.extend(chunk)
                 self._drain_frames(buffer)
                 if time.monotonic() - self._last_request_at > self._idle_stop_s:
+                    stopped_for_idle = True
                     break
+            if stopped_for_idle:
+                return
+            # EOF: the producer went away on its own. Reap it so the status is real.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            published = self.frames - frames_at_start
+            returncode = proc.returncode
+            if published == 0 or returncode not in (0, None):
+                raise RuntimeError(
+                    f"{argv[0]} exited rc={returncode} after {published} frames: "
+                    + (" | ".join(stderr_tail) or "<no stderr>")
+                )
         finally:
+            drain.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await drain
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(Exception):
@@ -191,3 +228,21 @@ class MjpegFrameReader:
             self._latest_frame_at = time.monotonic()
             self.frames += 1
             del buffer[: end + 2]
+
+
+async def _drain_stderr(stream: asyncio.StreamReader | None, tail: deque[str]) -> None:
+    """Keep the producer's stderr pipe from filling; remember the last few lines."""
+    if stream is None:
+        return
+    try:
+        while True:
+            line = await stream.readline()
+            if not line:
+                return
+            text = line.decode("utf-8", errors="replace").rstrip()
+            if text:
+                tail.append(text[:_STDERR_LINE_CHARS])
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - a logging aid must never take the reader down
+        return

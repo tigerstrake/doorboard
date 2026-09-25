@@ -200,12 +200,15 @@ class TestSharedReader:
         class _Proc:
             def __init__(self) -> None:
                 self.stdout = _Stdout()
+                self.stderr = None
+                self.returncode: int | None = None
                 self.killed = False
 
             def kill(self) -> None:
                 self.killed = True
 
             async def wait(self) -> int:
+                self.returncode = 0
                 return 0
 
         proc = _Proc()
