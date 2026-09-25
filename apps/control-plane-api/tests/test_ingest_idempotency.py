@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from control_plane_api.fanout import FanoutWorker
-from control_plane_api.models import EventRow, MediaMirrorRow, SessionMirrorRow
+from control_plane_api.models import EventRow, MediaMirrorRow, SessionMirrorRow, SocialItemRow
 from control_plane_api.mqtt import RecordingMqttPublisher
 from control_plane_api.notify import NotifyEngine, RecordingNotifier
 from control_plane_api.service import ingest_batch
@@ -135,3 +135,69 @@ def test_malformed_event_is_rejected_without_touching_other_batch_items(session_
     with session_factory() as session:
         count = session.execute(select(func.count()).select_from(EventRow)).scalar_one()
     assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# The database refusing a contract-valid event is a `rejected` result, not a 500
+# ---------------------------------------------------------------------------
+
+
+def _worker(session_factory) -> FanoutWorker:
+    return FanoutWorker(
+        session_factory,
+        notify_engine=NotifyEngine(RecordingNotifier(), cooldown_s=3600, sync_stall_alert_s=14400),
+    )
+
+
+def test_a_nul_byte_is_stripped_before_validation_and_the_event_is_stored(
+    session_factory,
+) -> None:
+    """Postgres text cannot hold U+0000; a NUL in a guestbook note is never content."""
+    entry = build_event("social.guestbook_entry_created", payload_overrides={"text": "hi\x00there"})
+    results = ingest_batch(
+        session_factory,
+        [entry],
+        batch_id="nul",
+        now=datetime.now(UTC),
+        mqtt_publisher=RecordingMqttPublisher(),
+        fanout=_worker(session_factory),
+    )
+    assert results[0]["status"] == "stored", results
+    with session_factory() as session:
+        row = session.get(SocialItemRow, ("guestbook", entry["payload"]["entry_id"]))
+        stored = session.get(EventRow, entry["event_id"])
+    assert row is not None and row.text == "hithere"
+    assert stored is not None and "\x00" not in stored.payload["text"]
+
+
+def test_a_value_the_database_refuses_is_rejected_and_the_rest_of_the_batch_lands(
+    session_factory,
+) -> None:
+    """`social_items.text` is String(2048); the contract does not bound `text`.
+
+    The insert of the raw row succeeds and the mirror projection raises DataError.
+    That used to propagate as a 500 — door-sync treated it as transient and burned
+    its retry budget on an event that could never land. Now: `rejected`, with the
+    raw row rolled back too, and the neighbours stored.
+    """
+    good_before = build_event("system.service_health")
+    oversized = build_event(
+        "social.guestbook_entry_created", payload_overrides={"text": "x" * 3000}
+    )
+    good_after = build_event("system.service_health")
+    results = ingest_batch(
+        session_factory,
+        [good_before, oversized, good_after],
+        batch_id="refused",
+        now=datetime.now(UTC),
+        mqtt_publisher=RecordingMqttPublisher(),
+        fanout=_worker(session_factory),
+    )
+    assert [r["status"] for r in results] == ["stored", "rejected", "stored"]
+    assert results[1]["error"].startswith("database refused the event (DataError")
+    assert "xxxx" not in results[1]["error"]  # never echoes the content
+    with session_factory() as session:
+        assert session.get(EventRow, oversized["event_id"]) is None  # rolled back with the mirror
+        assert session.get(SocialItemRow, ("guestbook", oversized["payload"]["entry_id"])) is None
+        count = session.execute(select(func.count()).select_from(EventRow)).scalar_one()
+    assert count == 2
