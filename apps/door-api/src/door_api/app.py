@@ -7,7 +7,10 @@ visitor-flow HTTP surface used by the local kiosk UI.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import hashlib
+import hmac
 import json
 import logging
 import secrets
@@ -85,6 +88,38 @@ from door_api.visitor_tokens import (
 )
 
 logger = logging.getLogger("door_api.app")
+
+# How long a DoorPad playback link stays valid. The review screen plays the clip back
+# right after recording; five minutes covers a slow visitor without leaving a durable
+# capability on a public route.
+_PLAYBACK_TOKEN_TTL_S = 300
+
+
+def _mint_playback_token(
+    admin_token: str, *, recording_id: str, session_id: str, expires_at: int
+) -> str:
+    """A short-lived capability for one recording's file, derived from door-media's token.
+
+    ``GET /doorpad/video-message/latest`` is a public doorpad route, and the playback
+    URL it returns used to be usable by anyone who guessed a recording id and session
+    id. The token binds the URL to one recording, one session and a deadline; door-
+    media verifies it against the same derivation of its admin token, which never
+    leaves either service. The algorithm is ``doorboard_auth.playback_tokens``'s,
+    restated here only until that module lands (see the import below).
+    """
+    key = hashlib.sha256(b"doorboard-playback:" + admin_token.encode()).digest()
+    signature = hmac.new(
+        key, f"{recording_id}|{session_id}|{expires_at}".encode(), hashlib.sha256
+    ).digest()
+    return f"{expires_at}.{base64.urlsafe_b64encode(signature).decode().rstrip('=')}"
+
+
+try:
+    from doorboard_auth.playback_tokens import (  # pyright: ignore[reportMissingImports]
+        mint_playback_token,
+    )
+except ImportError:  # pragma: no cover — the shared module is being added in parallel
+    mint_playback_token = _mint_playback_token
 
 
 def _classify_forward_failure(exc: Exception) -> tuple[str, bool]:
@@ -2017,11 +2052,28 @@ async def latest_video_message() -> dict[str, Any]:
     recording = _latest_video_message_recording(rows, snapshot.session_id)
     if recording is None:
         return {"recording": None}
-    recording["playback_url"] = (
-        f"{state.config.media_public_base_url.rstrip('/')}/recordings/"
-        f"{recording['recording_id']}/file?session_id={snapshot.session_id}"
+    # A projection, never door-media's raw row: the row carries the SSD file path
+    # and the sha256, and this is a public doorpad route. The playback URL carries
+    # a short-lived token so the file itself needs a capability, not a guess.
+    recording_id = str(recording["recording_id"])
+    session_id = str(snapshot.session_id)
+    token = mint_playback_token(
+        state.config.media_admin_token,
+        recording_id=recording_id,
+        session_id=session_id,
+        expires_at=int(time.time()) + _PLAYBACK_TOKEN_TTL_S,
     )
-    return {"recording": recording}
+    return {
+        "recording": {
+            "recording_id": recording_id,
+            "playback_url": (
+                f"{state.config.media_public_base_url.rstrip('/')}/recordings/"
+                f"{recording_id}/file?session_id={session_id}&token={token}"
+            ),
+            "duration_s": recording.get("duration_s"),
+            "finalized_at_utc": recording.get("finalized_at_utc"),
+        }
+    }
 
 
 @app.post("/doorpad/photo-booth/capture")
