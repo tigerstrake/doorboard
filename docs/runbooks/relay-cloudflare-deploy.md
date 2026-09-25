@@ -1,5 +1,7 @@
 # Runbook: deploy the relay to Cloudflare Pages (`door.tigerstrake.com`)
 
+**Verified-on:** not yet recorded — fill in (date, wrangler version) after the next deploy walk.
+
 Deploys `apps/public-relay` to Cloudflare Pages on a subdomain of `tigerstrake.com`, off Vercel
 and Upstash (ADR-0043). The relay is a blind courier — ciphertext and opaque ids only — so
 this changes *where* it runs, not what it holds. The door side changes only its relay URL.
@@ -39,12 +41,15 @@ follows, and the verification + rollback detail.
 wrangler d1 create doorboard-relay
 ```
 Copy the printed `database_id` into `wrangler.toml` (`database_id = "…"`, replacing the
-placeholder). Then create the schema (idempotent):
+placeholder). Then apply **every** migration, in order (each is idempotent; skipping one is
+not — a route that needs a missing table answers 500 by design until it lands):
 ```bash
-wrangler d1 execute doorboard-relay --remote --file=./migrations/0001_init.sql
+for f in $(ls migrations/*.sql | sort); do
+  wrangler d1 execute doorboard-relay --remote --file="./$f"
+done
 ```
-`migrations/0001_init.sql` mirrors `lib/d1/schema.ts`. Confirm five tables plus the two indexes
-exist:
+`migrations/0001_init.sql` mirrors `lib/d1/schema.ts`; later files add to it. Confirm the
+tables exist (five from `0001`, plus whatever later migrations add):
 ```bash
 wrangler d1 execute doorboard-relay --remote --command \
   "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -53,8 +58,9 @@ wrangler d1 execute doorboard-relay --remote --command \
 
 ## 2. Set the two device-token secrets
 
-These must match what the door presents. They are the SAME values the Vercel deployment used —
-copy them from there, or rotate both (and update the door, step 6):
+These must match what the door presents. Generate **fresh** values (`openssl rand -hex 32`
+each) and set the same two on the door (step 7) — do not carry the Vercel-era tokens over;
+two relays honouring one token pair is the situation *Decommissioning* below removes:
 ```bash
 wrangler pages secret put RELAY_DEVICE_TOKEN          # door-visiond's token (enrollment routes)
 wrangler pages secret put RELAY_VISITOR_DEVICE_TOKEN  # door-api's token (visitor routes)
@@ -94,7 +100,8 @@ untouched). Wait for the certificate to go active.
 
 ```bash
 BASE=https://door.tigerstrake.com
-curl -s $BASE/api/health                     # {"...":"ok"...} with pending counts, no enrollee data
+curl -s $BASE/api/health                     # {"service":"public-relay","status":"ok"} — public body only;
+                                             # pending counts / door_checked_in need the door-visiond device token
 curl -s -o /dev/null -w '%{http_code}' $BASE/api/pickup           # 401 (device token required)
 curl -s -H "Authorization: Bearer $RELAY_DEVICE_TOKEN" $BASE/api/pickup   # {"items":[]}
 ```
@@ -116,8 +123,35 @@ On the door hosts, set the relay URLs to the new origin (no code change — ADR-
 Restart both services. The QR the wallboard renders and the enrollment link the DoorPad shows
 now point at Cloudflare. door-api's fail-safe LAN fallback (E-19) is unaffected.
 
-Once verified, the old Vercel deployment is superseded and can be deleted from Vercel; its
-Upstash database can be removed too.
+Once verified, decommission the old deployment — see below. Until that is done two relays
+accept the door's tokens.
+
+## 8. Decommissioning the Vercel deployment (owner actions)
+
+The Vercel/Upstash relay is superseded, not gone. Until these are done, the door's device
+tokens open two relays and a laptop file holds credentials to a datastore that once held
+enrollment ciphertext and visitor snapshots. In this order:
+
+1. **Rotate both device tokens.** New `RELAY_DEVICE_TOKEN` and `RELAY_VISITOR_DEVICE_TOKEN`
+   on Cloudflare (`wrangler pages secret put …`), the same new values on the door
+   (`VISIOND_RELAY_DEVICE_TOKEN`, `DOOR_API_VISITOR_RELAY_DEVICE_TOKEN`), restart
+   door-visiond and door-api, confirm `door_checked_in` on the Cloudflare relay (`/api/health`
+   presented with the new door-visiond device token). The old
+   pair — the one Vercel still honours — is now dead everywhere.
+2. **Delete the Vercel project** (dashboard → project → Settings → Delete, or
+   `vercel remove <project>`). Its `*.vercel.app` origin stops serving.
+3. **Delete the Upstash database** (Upstash console → the relay's Redis DB → Delete). Its
+   contents were TTL-bounded ciphertext, hashes and snapshots, but the credentials to it
+   should stop working regardless.
+4. **Delete `apps/public-relay/.env.local`** on the laptop. It is git-ignored and never
+   committed, but it still carries the Upstash URL/tokens, the old device tokens and a
+   Vercel OIDC token in plaintext: `rm apps/public-relay/.env.local`. Nothing in the
+   Cloudflare deploy reads it.
+5. Update `docs/runbooks/security-checklist.md`'s relay rows if anything above changed
+   what the relay's environment holds.
+
+After step 2 the rollback note below no longer applies: rollback is a redeploy of the
+previous git revision to Cloudflare, not a URL switch back to Vercel.
 
 ## Notes and known-manual bits
 
@@ -135,8 +169,10 @@ Upstash database can be removed too.
      DELETE FROM visitor_snapshot WHERE expires_ms<=unixepoch()*1000;
      DELETE FROM visitor_action WHERE expires_ms<=unixepoch()*1000;"
   ```
-- **Rollback.** The door URL env is the switch: point it back at the Vercel origin (kept live
-  until step 7 is verified) and restart the two services. Nothing on the door changed but a URL.
+- **Rollback.** Before decommissioning (§8): the door URL env is the switch — point it back at
+  the Vercel origin and restart the two services. After: check out the previous revision of
+  `apps/public-relay` and run the deploy script again (it refuses a dirty tree, so commit or
+  stash first).
 - **The code-level relay bugs** the move already fixed: the invite secret is out of the URL
   (ADR-0043 §2) and the visitor page no longer carries a name (ADR-0044). The deeper
   seal-the-secret hardening remains deferred (needs on-Pi testing) — see the audit backlog.

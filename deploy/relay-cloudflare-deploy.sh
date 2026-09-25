@@ -38,6 +38,15 @@ echo "Using wrangler: ${WRANGLER[*]}"
 command -v python3 >/dev/null 2>&1 || die "python3 is needed to read the D1 id."
 "${WRANGLER[@]}" whoami >/dev/null 2>&1 || die "Not logged in. Run: npx wrangler login"
 
+# Deploy what is committed, not what happens to be in the working tree: a
+# production relay built from uncommitted edits cannot be audited against git
+# (ADR-0043's whole point is the owner controls the source). This used to pass
+# --commit-dirty=true to wrangler, which deploys anyway and merely labels it.
+if [ -n "$(git status --porcelain -- .)" ]; then
+  git status --short -- . >&2
+  die "apps/public-relay has uncommitted changes; commit or stash them before deploying."
+fi
+
 # --- 1. D1 database ---------------------------------------------------------
 say "Ensuring the D1 database '$DB_NAME' exists"
 "${WRANGLER[@]}" d1 create "$DB_NAME" >/dev/null 2>&1 && echo "created." || echo "already exists — reusing."
@@ -60,8 +69,14 @@ else
 fi
 
 # --- 3. Apply the schema (idempotent) ---------------------------------------
-say "Applying the D1 schema (migrations/0001_init.sql)"
-"${WRANGLER[@]}" d1 execute "$DB_NAME" --remote --yes --file=./migrations/0001_init.sql
+# Every migration, in order — not just 0001. Each is IF NOT EXISTS throughout, so
+# re-running is safe; skipping one is not (the routes that need its tables answer
+# 500 by design until it lands).
+say "Applying the D1 schema (migrations/*.sql, in order)"
+for migration in $(ls migrations/*.sql | sort); do
+  echo "  $migration"
+  "${WRANGLER[@]}" d1 execute "$DB_NAME" --remote --yes --file="./$migration"
+done
 echo "Tables now present:"
 "${WRANGLER[@]}" d1 execute "$DB_NAME" --remote --yes --command \
   "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name" || true
@@ -85,13 +100,15 @@ echo "Export OK (placeholder shells + _redirects present)."
 # RELAY_PRODUCTION_BRANCH if you ever change it in the Cloudflare dashboard.
 PROD_BRANCH="${RELAY_PRODUCTION_BRANCH:-main}"
 say "Deploying to Cloudflare Pages ($PROJECT), production branch: $PROD_BRANCH"
-"${WRANGLER[@]}" pages deploy out --project-name "$PROJECT" --branch="$PROD_BRANCH" --commit-dirty=true
+"${WRANGLER[@]}" pages deploy out --project-name "$PROJECT" --branch="$PROD_BRANCH"
 
 # --- 6. Device-token secrets (you paste them; nothing else sees them) -------
 say "Setting the two device-token secrets"
 cat <<EOF
-Use the SAME two values the Vercel deployment used, so the (currently offline) door still
-matches. wrangler will prompt you to paste each one; it is read directly by wrangler.
+Use FRESH values (openssl rand -hex 32 each) and put the same two on the door as
+VISIOND_RELAY_DEVICE_TOKEN / DOOR_API_VISITOR_RELAY_DEVICE_TOKEN — do not reuse the
+Vercel-era tokens (docs/runbooks/relay-cloudflare-deploy.md, Decommissioning). wrangler
+will prompt you to paste each one; it is read directly by wrangler.
 Press Enter to set RELAY_DEVICE_TOKEN, then RELAY_VISITOR_DEVICE_TOKEN. (Ctrl-C to skip and
 set them later.)
 EOF
