@@ -28,6 +28,19 @@ def _active(unit: str) -> bool:
     )
 
 
+def _failed(unit: str) -> bool:
+    # `inactive` is an operator's stop and is left alone; `failed` is systemd
+    # giving up on the unit (a start limit reached on an installed unit, a
+    # oneshot that exited non-zero) and nothing else will ever retry it.
+    return (
+        subprocess.run(  # noqa: S603
+            ["systemctl", "is-failed", "--quiet", unit],
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
 def _healthy(url: str) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=2.0) as response:  # noqa: S310
@@ -48,6 +61,12 @@ def main() -> int:
     for unit, url in SERVICES.items():
         if not _active(unit):
             failures.pop(unit, None)
+            if _failed(unit):
+                # try-restart does nothing for a failed unit, which is exactly
+                # the state a crash-loop used to leave a door service in until
+                # someone logged in. Clear the failure and start it.
+                subprocess.run(["systemctl", "reset-failed", unit], check=False)  # noqa: S603
+                subprocess.run(["systemctl", "start", "--no-block", unit], check=False)  # noqa: S603
             continue
         if _healthy(url):
             failures[unit] = 0

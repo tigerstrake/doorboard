@@ -1,9 +1,14 @@
 [Unit]
 Description=Unlock Doorboard encrypted enrollment volume (ADR-0009 §6)
 Documentation=file:/opt/doorboard/docs/runbooks/enrollment-encrypted-volume.md
-# Needs the network to reach the NUC key-release endpoint.
-After=network-online.target
-Wants=network-online.target
+# Reaches the NUC key-release endpoint, so it wants the network stack up — but
+# NOT network-online.target. That target is NetworkManager-wait-online, which
+# can hold for a minute when the router is down after a power cut, and this
+# unit is Before= door-visiond, which door-api used to be After=. Waiting here
+# was the whole door waiting for DHCP. Offline boot is required (ARCHITECTURE
+# §10/§11): a cold boot with no network fails this unit fast (curl --max-time)
+# and the retry timer picks it up once the NUC answers.
+After=network.target
 # Must open + mount before visiond checks whether the enrollment root is
 # LUKS-backed. This is ordering only — a failed unlock does NOT block visiond
 # (fail-closed: visiond starts and reports enrollment_locked instead).

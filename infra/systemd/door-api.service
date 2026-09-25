@@ -2,7 +2,15 @@
 Description=Doorboard local API and session service
 Requires=doorboard-storage-ready.service
 Wants=door-media.service door-visiond.service
-After=doorboard-storage-ready.service door-media.service door-visiond.service
+# Pulls visiond in but does not wait for it: recognition is a best-effort
+# loopback hop into door-api (ARCHITECTURE §5), and visiond is ordered after
+# the enrollment unlock, which talks to the NUC. The kiosks wait on door-api's
+# /health, so anything door-api waits for is dark screens.
+After=doorboard-storage-ready.service door-media.service
+# No start-rate limit: a door unit that crash-loops keeps retrying (RestartSec
+# paces it) instead of being parked in `failed` after five tries in 10 s. The
+# health agent handles the hung-but-active case; this handles the dead one.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
