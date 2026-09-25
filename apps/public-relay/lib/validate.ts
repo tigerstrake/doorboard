@@ -251,7 +251,7 @@ export function parseVisitorSnapshot(value: unknown): {
     expires_at: isoTimestamp(raw.expires_at, "snapshot.expires_at"),
     poll: raw.poll === undefined ? null : parsePollOrNull(raw.poll),
     poll_results: raw.poll_results === undefined ? null : parseResultsOrNull(raw.poll_results),
-    outcomes: Array.isArray(raw.outcomes) ? raw.outcomes.slice(0, 16) : [],
+    outcomes: raw.outcomes === undefined ? [] : parseOutcomes(raw.outcomes),
     // Whether a write will be attributed — a boolean, never a name (ADR-0044). The
     // relay never receives a display name; the page discloses attribution without one.
     attributed: raw.attributed === true,
@@ -330,13 +330,53 @@ export function parseVisitorWrite(value: unknown): VisitorWrite {
   return fail("write.kind must be note, vote, or deletion_request");
 }
 
-export interface VisitorAckOutcome {
+/** What became of one queued action — the contract's `VisitorActionOutcome`, no more. */
+export interface VisitorOutcome {
   action_id: string;
-  session_id: string;
   kind: string;
   status: string;
   reason: string | null;
   entry_id: string | null;
+}
+
+export interface VisitorAckOutcome extends VisitorOutcome {
+  session_id: string;
+}
+
+const OUTCOME_FIELDS = ["action_id", "kind", "status", "reason", "entry_id"] as const;
+
+/**
+ * The per-entry allow-list an outcome passes, wherever it arrives. A pickup ack and a
+ * snapshot's `outcomes[]` carry the same shape and both end up served verbatim to whoever
+ * holds the token, so they share one parser: the snapshot cannot become the un-allow-listed
+ * copy of the ack (E-15). Strings are bounded so a `reason` cannot become a channel.
+ */
+function outcomeFields(outcome: Record<string, unknown>, where: string): VisitorOutcome {
+  if (outcome.status !== "applied" && outcome.status !== "rejected") {
+    fail(`${where}.status must be applied or rejected`);
+  }
+  return {
+    action_id: opaqueId(outcome.action_id, `${where}.action_id`),
+    kind: boundedString(outcome.kind, `${where}.kind`, 32),
+    status: outcome.status,
+    reason:
+      outcome.reason === undefined || outcome.reason === null
+        ? null
+        : boundedString(outcome.reason, `${where}.reason`, 200),
+    entry_id:
+      outcome.entry_id === undefined || outcome.entry_id === null
+        ? null
+        : boundedString(outcome.entry_id, `${where}.entry_id`, 64),
+  };
+}
+
+/** `snapshot.outcomes`: 0-16 outcomes, each exactly the contract shape. */
+function parseOutcomes(value: unknown): VisitorOutcome[] {
+  if (!Array.isArray(value) || value.length > 16) fail("snapshot.outcomes must hold 0-16 entries");
+  return value.map((entry, index) => {
+    const where = `snapshot.outcomes[${index}]`;
+    return outcomeFields(object(entry, OUTCOME_FIELDS, where), where);
+  });
 }
 
 export function parseVisitorAck(value: unknown): VisitorAckOutcome[] {
@@ -345,27 +385,12 @@ export function parseVisitorAck(value: unknown): VisitorAckOutcome[] {
     fail("ack.outcomes must hold 1-16 entries");
   }
   return raw.outcomes.map((entry, index) => {
-    const outcome = object(
-      entry,
-      ["action_id", "session_id", "kind", "status", "reason", "entry_id"],
-      `ack.outcomes[${index}]`,
-    );
-    if (outcome.status !== "applied" && outcome.status !== "rejected") {
-      fail(`ack.outcomes[${index}].status must be applied or rejected`);
-    }
+    const where = `ack.outcomes[${index}]`;
+    // The ack alone names the session, so the relay knows which snapshot to fold into.
+    const outcome = object(entry, [...OUTCOME_FIELDS, "session_id"], where);
     return {
-      action_id: opaqueId(outcome.action_id, `ack.outcomes[${index}].action_id`),
-      session_id: opaqueId(outcome.session_id, `ack.outcomes[${index}].session_id`),
-      kind: boundedString(outcome.kind, "kind", 32),
-      status: outcome.status,
-      reason:
-        outcome.reason === undefined || outcome.reason === null
-          ? null
-          : boundedString(outcome.reason, "reason", 200),
-      entry_id:
-        outcome.entry_id === undefined || outcome.entry_id === null
-          ? null
-          : boundedString(outcome.entry_id, "entry_id", 64),
+      ...outcomeFields(outcome, where),
+      session_id: opaqueId(outcome.session_id, `${where}.session_id`),
     };
   });
 }

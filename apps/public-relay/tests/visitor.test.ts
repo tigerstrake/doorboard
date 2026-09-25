@@ -218,6 +218,77 @@ describe("E-15 the snapshot is an allow-list", () => {
     );
     expect(resp.status).toBe(422);
   });
+
+  const OUTCOME = {
+    action_id: `act_${"a".repeat(22)}`,
+    kind: "note",
+    status: "applied",
+    reason: null,
+    entry_id: "gb_1",
+  };
+
+  it("rejects identity fields nested inside an outcome, not just at the top level", async () => {
+    // `outcomes[]` is served verbatim to any token-holder; it used to be stored unparsed, so
+    // a door-api refactor widening an outcome would have published through the relay.
+    for (const smuggled of [
+      { display_name: "Tiger" },
+      { person_id: "prs_x" },
+      { media_path: "/nas/clip.mp4" },
+      { session_id: SESSION_ID }, // not in the contract's outcome shape either
+    ]) {
+      const resp = await pushSnapshot(
+        req("https://relay.test/api/visitor/session", "PUT", {
+          body: snapshotBody({ outcomes: [{ ...OUTCOME, ...smuggled }] }),
+          token: VISITOR_DEVICE_TOKEN,
+        }),
+        resolveStore(),
+      );
+      expect(resp.status, JSON.stringify(smuggled)).toBe(422);
+    }
+  });
+
+  it("bounds every outcome string rather than storing a blob under `reason`", async () => {
+    for (const oversized of [
+      { reason: "x".repeat(201) },
+      { entry_id: "x".repeat(65) },
+      { kind: "x".repeat(33) },
+      { status: "pending_review" },
+    ]) {
+      const resp = await pushSnapshot(
+        req("https://relay.test/api/visitor/session", "PUT", {
+          body: snapshotBody({ outcomes: [{ ...OUTCOME, ...oversized }] }),
+          token: VISITOR_DEVICE_TOKEN,
+        }),
+        resolveStore(),
+      );
+      expect(resp.status, JSON.stringify(Object.keys(oversized))).toBe(422);
+    }
+  });
+
+  it("rejects more outcomes than the contract allows, and a non-list", async () => {
+    for (const outcomes of [Array.from({ length: 17 }, () => OUTCOME), "not-a-list", null]) {
+      const resp = await pushSnapshot(
+        req("https://relay.test/api/visitor/session", "PUT", {
+          body: snapshotBody({ outcomes }),
+          token: VISITOR_DEVICE_TOKEN,
+        }),
+        resolveStore(),
+      );
+      expect(resp.status).toBe(422);
+    }
+  });
+
+  it("still serves a well-formed outcome door-api pushed", async () => {
+    await seedSnapshot({ outcomes: [OUTCOME] });
+    const body = (await (
+      await readVisitor(
+        req(`https://relay.test/api/visitor/${VISITOR_TOKEN}`, "GET"),
+        resolveStore(),
+        { token: VISITOR_TOKEN },
+      )
+    ).json()) as { outcomes: unknown[] };
+    expect(body.outcomes).toEqual([OUTCOME]);
+  });
 });
 
 // -- the write path -------------------------------------------------------
