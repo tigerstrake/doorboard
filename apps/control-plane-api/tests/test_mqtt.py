@@ -10,6 +10,7 @@ import logging
 from typing import Any
 
 import pytest
+from control_plane_api.metrics import MQTT_CONNECTED, MQTT_PUBLISH_FAILURES, metrics
 from control_plane_api.mqtt import (
     PRESENCE_TOPIC,
     NullMqttPublisher,
@@ -64,8 +65,23 @@ class FakeReasonCode:
         return self._text
 
 
+class FakeMessageInfo:
+    """Stand-in for paho's `MQTTMessageInfo`: only `rc` matters to the publisher."""
+
+    def __init__(self, rc: int) -> None:
+        self.rc = rc
+
+
+MQTT_ERR_SUCCESS = 0
+MQTT_ERR_NO_CONN = 4
+
+
 class FakeClient:
-    """Records what `PahoMqttPublisher` does to the paho client, no networking."""
+    """Records what `PahoMqttPublisher` does to the paho client, no networking.
+
+    Like real paho 2.1, a QoS-0 `publish()` while the socket is down is accepted by
+    the API but returns `rc == MQTT_ERR_NO_CONN` and the message is dropped.
+    """
 
     def __init__(self) -> None:
         self.on_connect: Any = None
@@ -101,9 +117,11 @@ class FakeClient:
     def publish(self, topic: str, payload: Any = None, *args: Any, **kwargs: Any) -> Any:
         if self.publish_raises:
             raise RuntimeError("boom")
+        if not self.connected:
+            return FakeMessageInfo(MQTT_ERR_NO_CONN)
         self.published.append((topic, payload))
         self.retained[topic] = bool(kwargs.get("retain", False))
-        return None
+        return FakeMessageInfo(MQTT_ERR_SUCCESS)
 
     def disconnect(self, *args: Any, **kwargs: Any) -> None:
         self.disconnected = True
@@ -212,10 +230,18 @@ def test_on_disconnect_logs_warning(
 def test_publish_while_disconnected_warns_throttled_and_never_raises(
     fake_clients: list[FakeClient], caplog: pytest.LogCaptureFixture
 ) -> None:
+    """A publish while the link is down is DROPPED by paho, and that is now counted.
+
+    The earlier version of this test asserted the opposite belief — that the events
+    were "still handed to paho" — against a fake that accepted them. Real paho 2.1
+    returns `MQTT_ERR_NO_CONN` for a QoS-0 publish before the socket exists and
+    discards the message, which is how the startup presence republish was lost.
+    """
     publisher = PahoMqttPublisher(url="mqtt://localhost")
     client = fake_clients[0]
     client.connected = False
     event = parse_event(build_event("system.service_health"))
+    dropped_before = metrics.counter(MQTT_PUBLISH_FAILURES)
 
     with caplog.at_level(logging.WARNING, logger=_MQTT_LOGGER):
         publisher.publish_event(event)  # must not raise
@@ -225,8 +251,12 @@ def test_publish_while_disconnected_warns_throttled_and_never_raises(
     # Throttled: the second call within the window stays silent.
     assert len(warnings) == 1
     assert warnings[0].levelno == logging.WARNING
-    # Best-effort: events are still handed to paho even while disconnected.
-    assert len(client.published) == 2
+    # Nothing reached the broker, and both drops are visible in the metrics.
+    assert client.published == []
+    assert metrics.counter(MQTT_PUBLISH_FAILURES) - dropped_before == 2
+    dropped = [r for r in caplog.records if r.getMessage() == "mqtt_publish_dropped"]
+    assert len(dropped) == 1  # throttled like the disconnected warning
+    assert dropped[0].rc == MQTT_ERR_NO_CONN  # type: ignore[attr-defined]
 
 
 def test_publish_while_connected_does_not_warn(
@@ -405,3 +435,110 @@ def test_recording_publisher_records_every_topic_but_one_entry_per_event() -> No
     publisher.publish_event(event)
     assert publisher.published == [("doorboard/status/presence_changed/owner", event)]
     assert publisher.topics == ["doorboard/status/presence_changed/owner", PRESENCE_TOPIC]
+
+
+# ---------------------------------------------------------------------------
+# on_connected hook: the republish runs AFTER the socket is up, and on reconnect
+# ---------------------------------------------------------------------------
+
+
+def _connect(client: FakeClient) -> None:
+    client.connected = True
+    client.on_connect(client, None, {}, FakeReasonCode(is_failure=False, text="Success"))
+
+
+def test_on_connected_hook_publishes_after_connect_and_again_on_reconnect(
+    fake_clients: list[FakeClient],
+) -> None:
+    """The startup republish used to run in the lifespan turn, before paho had a socket.
+
+    20/20 probes: `MQTT_ERR_NO_CONN`, message gone, log silent. Running it from the
+    connect callback means it lands — and runs again after every broker restart, which
+    matters because mosquitto autosaves retained state only every 30 minutes.
+    """
+    event = parse_event(
+        build_event("status.presence_changed", payload_overrides={"subject_id": "owner"})
+    )
+    fired: list[PahoMqttPublisher] = []
+
+    def republish(publisher: PahoMqttPublisher) -> None:
+        fired.append(publisher)
+        publisher.publish_event(event)
+
+    publisher = PahoMqttPublisher(url="mqtt://localhost", on_connected=republish)
+    client = fake_clients[0]
+    dropped_before = metrics.counter(MQTT_PUBLISH_FAILURES)
+
+    # Before the socket exists: a direct publish is dropped, the hook has not run.
+    # (Presence fans out to its per-subject topic AND the legacy one: two drops.)
+    publisher.publish_event(event)
+    assert client.published == []
+    assert metrics.counter(MQTT_PUBLISH_FAILURES) - dropped_before == 2
+    assert fired == []
+
+    _connect(client)
+    assert fired == [publisher]
+    assert presence_topic_for("owner") in {t for t, _ in client.published}
+    assert metrics.counter(MQTT_PUBLISH_FAILURES) - dropped_before == 2  # nothing new dropped
+
+    # Broker restart -> paho reconnects -> the hook re-states presence again.
+    landed_before = len(client.published)
+    client.on_disconnect(client, None, {}, FakeReasonCode(is_failure=True, text="Connection lost"))
+    _connect(client)
+    assert fired == [publisher, publisher]
+    assert len(client.published) == 2 * landed_before
+
+
+def test_on_connected_hook_failure_is_swallowed(
+    fake_clients: list[FakeClient], caplog: pytest.LogCaptureFixture
+) -> None:
+    def boom(publisher: PahoMqttPublisher) -> None:
+        raise RuntimeError("db down")
+
+    publisher = PahoMqttPublisher(url="mqtt://localhost", on_connected=boom)
+    with caplog.at_level(logging.WARNING, logger=_MQTT_LOGGER):
+        _connect(fake_clients[0])  # must not raise into paho's loop
+    assert any(r.getMessage() == "mqtt_on_connected_hook_failed" for r in caplog.records)
+    assert publisher.connected is True
+
+
+def test_mqtt_connected_gauge_follows_the_link(fake_clients: list[FakeClient]) -> None:
+    publisher = PahoMqttPublisher(url="mqtt://localhost")
+    client = fake_clients[0]
+    assert metrics.gauge(MQTT_CONNECTED) == 0
+    assert publisher.connected is False
+    _connect(client)
+    assert metrics.gauge(MQTT_CONNECTED) == 1
+    assert publisher.connected is True
+    client.on_disconnect(client, None, {}, FakeReasonCode(is_failure=True, text="Connection lost"))
+    assert metrics.gauge(MQTT_CONNECTED) == 0
+    assert NullMqttPublisher().connected is None  # not configured != down
+
+
+def test_app_state_republishes_every_subject_on_each_connect(
+    fake_clients: list[FakeClient], engine
+) -> None:
+    """End to end through `AppState`: the hook is wired, and it covers all subjects."""
+    from control_plane_api.state import AppState
+
+    from .conftest import TestSettings
+
+    class MqttSettings(TestSettings):
+        mqtt_url: str = "mqtt://localhost:1883"
+
+    state = AppState(MqttSettings())
+    try:
+        client = fake_clients[0]
+        assert client.published == []  # nothing attempted before the socket exists
+
+        _connect(client)
+        topics = [t for t, _ in client.published]
+        assert presence_topic_for("owner") in topics
+        assert presence_topic_for("roommate") in topics
+        assert all(client.retained[t] for t in topics)
+
+        first = len(client.published)
+        _connect(client)  # reconnect after a broker restart
+        assert len(client.published) == 2 * first
+    finally:
+        state.dispose()

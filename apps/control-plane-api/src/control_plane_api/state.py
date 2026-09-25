@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 from doorboard_contracts import PresenceLabel
 
+from control_plane_api import presence_engine
 from control_plane_api.calendar_ics import IcsCalendarProvider, parse_subject_urls
-from control_plane_api.db import make_engine, make_session_factory
+from control_plane_api.db import make_engine, make_session_factory, session_scope
 from control_plane_api.mqtt import MqttPublisher, build_publisher
 from control_plane_api.notify import NotifyEngine, build_notifier
 from control_plane_api.presence import (
@@ -41,9 +42,6 @@ class AppState:
         self.settings = cfg
         self.engine = make_engine(cfg.postgres_dsn)
         self.session_factory = make_session_factory(self.engine)
-        self.mqtt_publisher = mqtt_publisher or build_publisher(
-            url=cfg.mqtt_url, username=cfg.mqtt_username, password=cfg.mqtt_password
-        )
         # Owner notifications go to whichever channels are configured — ntfy
         # and/or Telegram (the T-609 bot). The aircraft-proximity rule (T-610)
         # is gated by AIRCRAFT_ALERT_RADIUS_MI (0 = off).
@@ -151,6 +149,41 @@ class AppState:
                     "utc_offset": local_now.strftime("%z"),
                 },
             )
+
+        # Built LAST: `on_connected` fires on paho's thread the moment the socket
+        # is up, and the presence republish it runs needs every provider above.
+        # The publisher is handed to the hook as an argument rather than read
+        # from `self.mqtt_publisher`, which may not be assigned yet when the
+        # first connect completes.
+        self.mqtt_publisher = mqtt_publisher or build_publisher(
+            url=cfg.mqtt_url,
+            username=cfg.mqtt_username,
+            password=cfg.mqtt_password,
+            on_connected=self.republish_presence,
+        )
+
+    def republish_presence(self, publisher: MqttPublisher) -> None:
+        """Re-state every subject's presence on its retained topic.
+
+        Runs after every broker (re)connect, not once at startup: the startup
+        publish raced `connect_async` and was dropped with `MQTT_ERR_NO_CONN`
+        every time, and nothing repopulated the broker after a mosquitto
+        restart (it autosaves retained state only every 30 min). Best-effort —
+        a failure here is logged and never propagates into paho's loop.
+        """
+        try:
+            with session_scope(self.session_factory) as session:
+                republished = presence_engine.republish_current_presence(
+                    session,
+                    now=datetime.now(UTC),
+                    door_id=self.settings.door_id,
+                    calendar_provider=self.calendar_provider,
+                    schedule_provider=self.schedule_provider,
+                    mqtt_publisher=publisher,
+                )
+            logger.info("presence_republished_on_mqtt_connect", extra={"subjects": republished})
+        except Exception:
+            logger.warning("presence_republish_on_connect_failed", exc_info=True)
 
     def dispose(self) -> None:
         self.engine.dispose()

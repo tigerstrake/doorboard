@@ -75,24 +75,11 @@ logger = logging.getLogger("control_plane_api.app")
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     cfg = get_settings()
+    # The retained-presence republish is NOT done here: it runs from the MQTT
+    # publisher's on_connected hook (`AppState.republish_presence`), because in
+    # this lifespan turn the socket does not exist yet and paho drops the
+    # publish — and the hook also covers every broker reconnect.
     app.state.app_state = AppState(cfg)
-    # Re-publish current presence (retained) so a wallboard connecting after any
-    # restart gets it — presence otherwise emits only on change (measured against
-    # persisted history), so a restart alone would leave the public tile "unavailable".
-    state = app.state.app_state
-    try:
-        with session_scope(state.session_factory) as session:
-            republished = presence_engine.republish_current_presence(
-                session,
-                now=datetime.now(UTC),
-                door_id=cfg.door_id,
-                calendar_provider=state.calendar_provider,
-                schedule_provider=state.schedule_provider,
-                mqtt_publisher=state.mqtt_publisher,
-            )
-        logger.info("presence_republished_on_startup", extra={"subjects": republished})
-    except Exception:
-        logger.warning("presence_republish_on_startup_failed", exc_info=True)
     logger.info("control_plane_api_ready", extra={"door_id": cfg.door_id})
     yield
     app.state.app_state.dispose()

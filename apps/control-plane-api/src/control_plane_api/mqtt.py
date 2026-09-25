@@ -13,18 +13,37 @@ observable: an earlier production incident had the publisher go
 dead-but-silent after a broker restart — `publish()` kept returning success
 while nothing reached the broker and nothing was logged. The callbacks plus a
 throttled "publishing while disconnected" warning close that visibility gap.
+
+Two more things the callbacks carry (found by the 2026-09 audit):
+
+- paho's QoS-0 `publish()` while the socket is not up returns
+  `MQTT_ERR_NO_CONN` and drops the message. The return code is checked and
+  counted (`control_plane_api_mqtt_publish_failures_total`) instead of thrown
+  away, so "published" in the log means the broker actually took it.
+- `on_connected` fires from `_on_connect` on every (re)connect. The presence
+  republish runs from it, so it happens after the socket exists (not in the
+  same lifespan turn as `connect_async`, which raced and lost 20/20 times) and
+  again after every broker restart — mosquitto autosaves retained state only
+  every 30 min, so a crash could otherwise lose the last half hour of it.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from doorboard_contracts import DoorboardEvent
 from doorboard_contracts.events import StatusPresenceChangedEvent
 
+from control_plane_api.metrics import MQTT_CONNECTED, MQTT_PUBLISH_FAILURES, metrics
+
 logger = logging.getLogger("control_plane_api.mqtt")
+
+# paho's `MQTT_ERR_SUCCESS`, spelled out so the fake client in tests and the
+# real one agree without importing paho at module import time.
+_RC_SUCCESS = 0
 
 # When publishing while the broker link is down, warn at most this often so a
 # dead link is visible in logs without flooding them per-event.
@@ -64,12 +83,21 @@ def topics_for(event: DoorboardEvent) -> tuple[str, ...]:
 class MqttPublisher(Protocol):
     def publish_event(self, event: DoorboardEvent) -> None: ...
 
+    @property
+    def connected(self) -> bool | None:
+        """True/False for a real link; None when MQTT is not configured at all."""
+        ...
+
 
 class NullMqttPublisher:
     """No-op publisher used when MQTT_URL is unset (dev/CI/mock mode)."""
 
     def publish_event(self, event: DoorboardEvent) -> None:
         logger.debug("mqtt_disabled_skip_publish", extra={"type": event.type})
+
+    @property
+    def connected(self) -> bool | None:
+        return None
 
 
 class RecordingMqttPublisher:
@@ -86,6 +114,10 @@ class RecordingMqttPublisher:
         self.published.append((topics[0], event))
         self.topics.extend(topics)
 
+    @property
+    def connected(self) -> bool | None:
+        return True
+
 
 class PahoMqttPublisher:
     """Production publisher backed by `paho-mqtt`.
@@ -98,7 +130,14 @@ class PahoMqttPublisher:
     raising.
     """
 
-    def __init__(self, *, url: str, username: str = "", password: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        url: str,
+        username: str = "",
+        password: str = "",
+        on_connected: Callable[[PahoMqttPublisher], None] | None = None,
+    ) -> None:
         from urllib.parse import urlparse
 
         import paho.mqtt.client as mqtt
@@ -107,6 +146,12 @@ class PahoMqttPublisher:
         parsed = urlparse(url)
         self._connected = False
         self._last_disconnected_warn = 0.0
+        self._last_dropped_warn = 0.0
+        # Runs on paho's network thread after every successful (re)connect, with
+        # this publisher as its argument so the caller never races the
+        # constructor's own attribute assignment.
+        self._on_connected = on_connected
+        metrics.set_gauge(MQTT_CONNECTED, 0)
         self._client = mqtt.Client(CallbackAPIVersion.VERSION2)
         if username:
             self._client.username_pw_set(username, password or None)
@@ -133,10 +178,17 @@ class PahoMqttPublisher:
     ) -> None:
         if getattr(reason_code, "is_failure", False):
             self._connected = False
+            metrics.set_gauge(MQTT_CONNECTED, 0)
             logger.warning("mqtt_connect_refused", extra={"reason": str(reason_code)})
-        else:
-            self._connected = True
-            logger.info("mqtt_connected", extra={"reason": str(reason_code)})
+            return
+        self._connected = True
+        metrics.set_gauge(MQTT_CONNECTED, 1)
+        logger.info("mqtt_connected", extra={"reason": str(reason_code)})
+        if self._on_connected is not None:
+            try:
+                self._on_connected(self)
+            except Exception:
+                logger.warning("mqtt_on_connected_hook_failed", exc_info=True)
 
     def _on_disconnect(
         self,
@@ -147,6 +199,7 @@ class PahoMqttPublisher:
         properties: Any = None,
     ) -> None:
         self._connected = False
+        metrics.set_gauge(MQTT_CONNECTED, 0)
         logger.warning(
             "mqtt_disconnected_will_reconnect",
             extra={"reason": str(reason_code)},
@@ -160,11 +213,26 @@ class PahoMqttPublisher:
         except Exception:
             return self._connected
 
+    @property
+    def connected(self) -> bool | None:
+        return self._is_connected()
+
     def _warn_disconnected(self, event: DoorboardEvent) -> None:
         now = time.monotonic()
         if now - self._last_disconnected_warn >= _DISCONNECTED_WARN_INTERVAL_S:
             self._last_disconnected_warn = now
             logger.warning("mqtt_publish_while_disconnected", extra={"type": event.type})
+
+    def _record_dropped(self, event: DoorboardEvent, topic: str, rc: int) -> None:
+        # Counted every time; logged at most once per interval so a long outage
+        # is one warning line per 30 s, not one per event.
+        metrics.inc(MQTT_PUBLISH_FAILURES)
+        now = time.monotonic()
+        if now - self._last_dropped_warn >= _DISCONNECTED_WARN_INTERVAL_S:
+            self._last_dropped_warn = now
+            logger.warning(
+                "mqtt_publish_dropped", extra={"type": event.type, "topic": topic, "rc": rc}
+            )
 
     def publish_event(self, event: DoorboardEvent) -> None:
         try:
@@ -188,7 +256,12 @@ class PahoMqttPublisher:
             retain = event.type.startswith(("ambient.", "status."))
             payload = event.model_dump_json()
             for topic in topics_for(event):
-                self._client.publish(topic, payload, retain=retain)
+                info = self._client.publish(topic, payload, retain=retain)
+                # paho returns MQTTMessageInfo; rc != 0 means it did NOT queue the
+                # message (NO_CONN while the socket is down, queue full, ...).
+                rc = int(getattr(info, "rc", _RC_SUCCESS) or _RC_SUCCESS)
+                if rc != _RC_SUCCESS:
+                    self._record_dropped(event, topic, rc)
         except Exception:
             logger.warning("mqtt_publish_failed", extra={"type": event.type}, exc_info=True)
 
@@ -200,7 +273,13 @@ class PahoMqttPublisher:
         self._client.loop_stop()
 
 
-def build_publisher(*, url: str, username: str = "", password: str = "") -> MqttPublisher:
+def build_publisher(
+    *,
+    url: str,
+    username: str = "",
+    password: str = "",
+    on_connected: Callable[[PahoMqttPublisher], None] | None = None,
+) -> MqttPublisher:
     if not url:
         return NullMqttPublisher()
     try:
@@ -208,7 +287,9 @@ def build_publisher(*, url: str, username: str = "", password: str = "") -> Mqtt
         # publisher is returned even if the broker is briefly unavailable at
         # boot; it connects when the broker is reachable. The Null fallback is
         # reserved for a genuinely fatal client-construction error.
-        return PahoMqttPublisher(url=url, username=username, password=password)
+        return PahoMqttPublisher(
+            url=url, username=username, password=password, on_connected=on_connected
+        )
     except Exception:
         logger.warning("mqtt_client_construction_failed_falling_back_to_null", exc_info=True)
         return NullMqttPublisher()
