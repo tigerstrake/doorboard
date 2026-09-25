@@ -25,6 +25,7 @@ from doorboard_contracts.enrollment_relay import (
 )
 from doorboard_contracts.events import (
     DoorboardEvent,
+    DoorControllerHealthPayload,
     HealthPayload,
     HealthStatus,
     SocialDeletionRequestedEvent,
@@ -172,6 +173,14 @@ class DoorApiState:
         self._esp32_handler_last_error_mono: float | None = None
         self.esp32_consumer_deaths = 0
         self.esp32_consumer_restarts = 0
+        # The controller's 1 Hz heartbeat, as the transport translates it. It used
+        # to be dropped on the floor: fw_version, fallback_active, cached_profile_id
+        # and uptime never reached a log, a metric or an admin surface, so a live
+        # controller claiming fallback was invisible and a rebooting one looked
+        # exactly like a cut cable.
+        self.esp32_controller_health: DoorControllerHealthPayload | None = None
+        self._esp32_controller_health_mono: float | None = None
+        self.esp32_controller_health_events = 0
         self._esp32_event_task: asyncio.Task[None] | None = None
         self._media_forward_task: asyncio.Task[None] | None = None
         self._sync_forward_task: asyncio.Task[None] | None = None
@@ -501,6 +510,12 @@ class DoorApiState:
         a green health check must not paper over (ARCHITECTURE.md §10).
         """
         problems: list[str] = []
+        # A real transport is configured and the controller is not talking: the
+        # bell's physical feedback is on its own (ARCHITECTURE.md §10, "ESP32
+        # offline -> Pi surfaces admin error"). Previously only /metrics knew.
+        link = self.esp32_link
+        if link is not None and not link.connected:
+            problems.append(f"esp32 link down (open_failures={link.open_failures})")
         if self.esp32_transport is not None and not self.esp32_consumer_alive():
             problems.append("esp32 event consumer is not running; the bell is not being read")
         if self._esp32_handler_error_is_recent():
@@ -520,6 +535,29 @@ class DoorApiState:
                 "these mirrors will not reach the NUC without operator action"
             )
         return problems
+
+    def esp32_controller_health_age_s(self) -> float:
+        """Seconds since the controller's last heartbeat reached us; -1 for never."""
+        if self._esp32_controller_health_mono is None:
+            return -1.0
+        return round(time.monotonic() - self._esp32_controller_health_mono, 1)
+
+    def esp32_transport_metrics_text(self) -> str:
+        """The attached transport's own counters, when it has them.
+
+        ``Esp32ProtocolTransport.metrics_text()`` (rx_errors, tx_timeouts,
+        duplicate_rx, event_queue_drops, ...) existed and was never scraped; the
+        protocol doc promised those counters. Optional on the Protocol, so a fake or
+        the simulator's transport simply contributes nothing.
+        """
+        metrics_text = getattr(self.esp32_transport, "metrics_text", None)
+        if not callable(metrics_text):
+            return ""
+        try:
+            return str(metrics_text())
+        except Exception:
+            logger.warning("esp32_transport_metrics_failed", exc_info=True)
+            return ""
 
     def handle_contract_event(self, event: DoorboardEvent) -> bool:
         # `event` is a discriminated union keyed on `type`; read `event.payload`
@@ -588,6 +626,31 @@ class DoorApiState:
         elif event.type == "door.contact_changed":
             payload = event.payload
             changed = self.machine.handle_contact_changed(state=payload.state)
+        elif event.type == "door.controller_health":
+            payload = event.payload
+            previous = self.esp32_controller_health
+            self.esp32_controller_health = payload
+            self._esp32_controller_health_mono = time.monotonic()
+            self.esp32_controller_health_events += 1
+            # 1 Hz: one line per change, not per beat. Fallback flipping on with the
+            # Pi alive is the case worth a line (ARCHITECTURE.md §10 wants an offline
+            # controller surfaced, and this is the controller saying it thinks *we*
+            # are offline).
+            if (
+                previous is None
+                or previous.fallback_active != payload.fallback_active
+                or previous.fw_version != payload.fw_version
+            ):
+                logger.info(
+                    "esp32_controller_health",
+                    extra={
+                        "fw_version": payload.fw_version,
+                        "fallback_active": payload.fallback_active,
+                        "cached_profile_id": payload.cached_profile_id,
+                        "uptime_s": payload.uptime_s,
+                        "trace_id": str(event.trace_id),
+                    },
+                )
         elif event.type == "media.storage_status":
             # Pure pass-through, to two places. The session machine has no opinion about disk
             # space, but two surfaces are waiting on this and neither could receive it:
@@ -1545,9 +1608,18 @@ async def health() -> HealthPayload:
     return HealthPayload(service="door-api", status=HealthStatus.OK, detail=None)
 
 
+def _metric_label(value: str) -> str:
+    """Escape a Prometheus label value (text exposition format)."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 @app.get("/metrics")
 async def metrics() -> Response:
-    data = {**state.machine.metrics.to_dict(), **state.social_service.metrics.to_dict()}
+    controller_health = state.esp32_controller_health
+    data: dict[str, int | float] = {
+        **state.machine.metrics.to_dict(),
+        **state.social_service.metrics.to_dict(),
+    }
     data.update(
         {
             "door_api_doorpad_effect_requests_total": state.effect_requests,
@@ -1592,6 +1664,16 @@ async def metrics() -> Response:
             "door_api_esp32_consumer_alive": int(state.esp32_consumer_alive()),
             "door_api_esp32_consumer_restarts_total": state.esp32_consumer_restarts,
             "door_api_esp32_handler_errors_total": state.esp32_handler_errors,
+            # What the controller itself last said, and how long ago. fallback_active
+            # with the link up means the controller thinks the Pi is gone.
+            "door_api_esp32_controller_health_events_total": (state.esp32_controller_health_events),
+            "door_api_esp32_fallback_active": int(
+                controller_health.fallback_active if controller_health is not None else 0
+            ),
+            "door_api_esp32_uptime_s": (
+                controller_health.uptime_s if controller_health is not None else 0
+            ),
+            "door_api_esp32_controller_health_age_s": state.esp32_controller_health_age_s(),
             **(
                 state.esp32_link.metrics()
                 if state.esp32_link is not None
@@ -1610,9 +1692,19 @@ async def metrics() -> Response:
         "# TYPE door_api_sync_outbox_depth gauge",
         "# TYPE door_api_social_moderation_log_rows gauge",
         "# TYPE door_api_esp32_consumer_alive gauge",
+        "# TYPE door_api_esp32_fallback_active gauge",
+        "# TYPE door_api_esp32_uptime_s gauge",
+        "# TYPE door_api_esp32_controller_health_age_s gauge",
         *[f"{name} {value}" for name, value in data.items()],
-        "",
+        # An info metric: the value is the label, the sample is 1 when known.
+        'door_api_esp32_fw_info{fw_version="'
+        + _metric_label(controller_health.fw_version if controller_health else "unknown")
+        + f'"}} {int(controller_health is not None)}',
     ]
+    transport_text = state.esp32_transport_metrics_text().rstrip("\n")
+    if transport_text:
+        lines.append(transport_text)
+    lines.append("")
     return Response(
         content="\n".join(lines),
         media_type="text/plain; version=0.0.4; charset=utf-8",
