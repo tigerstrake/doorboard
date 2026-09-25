@@ -330,6 +330,16 @@ class Settings(BaseSettings):
         alias="DOOR_MEDIA_SEGMENT_CLEANUP_INTERVAL_S",
         ge=1,
     )
+    # Hard cap on the raw segment tree that no open recording window can pin.
+    # Age-based pruning defers to active windows; this does not, because a window
+    # older than segment_retention_s cannot be finalized anyway (its segments are
+    # gone) and a tree that outgrows this is a bug filling the SSD, not a visit.
+    # An hour at 6 Mbps is ~2.7 GB; 8 GiB leaves room for a higher bitrate.
+    segment_max_bytes: int = Field(
+        default=8 * 1024**3,
+        alias="DOOR_MEDIA_SEGMENT_MAX_BYTES",
+        ge=1024**2,
+    )
     max_active_recordings: int = Field(
         default=8,
         alias="DOOR_MEDIA_MAX_ACTIVE_RECORDINGS",

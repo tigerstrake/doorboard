@@ -54,7 +54,7 @@ from door_media._uuid7 import uuid7
 from door_media.adapters import MediaRouter, StreamInfo
 from door_media.db import RecordingDB
 from door_media.emitter import subscribe_broadcast_queue, unsubscribe_broadcast_queue
-from door_media.mediamtx_router import MediaMTXRouter
+from door_media.mediamtx_router import MediaMTXRouter, segment_tree_bytes
 from door_media.mock_router import MockMediaRouter
 from door_media.service import RecordingService
 from door_media.settings import Settings
@@ -283,8 +283,13 @@ async def metrics(request: Request) -> Response:
     svc: RecordingService = request.app.state.service
 
     stream_up = await router.health_check()
-    streams = router.stream_info()
+    # The live count, not the router's sync stub: `stream_info()` on the MediaMTX
+    # router is a cached view that always said 0 readers, so the kiosk-viewer gauge
+    # never moved on the door and a wallboard that lost its WebRTC session was
+    # indistinguishable from one that never had it.
+    streams = await _stream_infos(router)
     webrtc_clients = sum(s.webrtc_clients for s in streams)
+    segment_bytes = segment_tree_bytes(cfg.segments_root)
 
     pending = db.list_finalized_pending_sync()
     oldest_age = db.oldest_unsynced_age_s()
@@ -328,6 +333,38 @@ async def metrics(request: Request) -> Response:
         "# TYPE door_media_finalize_failures_total counter",
         f"door_media_finalize_failures_total {svc.finalize_failures}",
         "",
+        # A full SSD has two very different causes -- unsynced clips (NAS down, an
+        # ADR-0007 condition) and the raw segment tree (a bug) -- and until this
+        # gauge existed both presented as recording_skipped_storage_full.
+        "# HELP door_media_segment_bytes Bytes of raw MediaMTX segments on the SSD",
+        "# TYPE door_media_segment_bytes gauge",
+        f"door_media_segment_bytes {segment_bytes}",
+        "",
+        "# HELP door_media_reader_restarts_total Visitor frame reader producer restarts",
+        "# TYPE door_media_reader_restarts_total counter",
+        f"door_media_reader_restarts_total {getattr(router, 'reader_restarts', 0)}",
+        "",
+        "# HELP door_media_recognition_reader_restarts_total Recognition frame reader restarts",
+        "# TYPE door_media_recognition_reader_restarts_total counter",
+        "door_media_recognition_reader_restarts_total "
+        f"{getattr(router, 'recognition_reader_restarts', 0)}",
+        "",
+        "# HELP door_media_snapshot_cache_hits_total /snapshot answered from the reader",
+        "# TYPE door_media_snapshot_cache_hits_total counter",
+        f"door_media_snapshot_cache_hits_total {getattr(router, 'snapshot_cache_hits', 0)}",
+        "",
+        "# HELP door_media_snapshot_cache_misses_total /snapshot fell back to a one-shot grab",
+        "# TYPE door_media_snapshot_cache_misses_total counter",
+        f"door_media_snapshot_cache_misses_total {getattr(router, 'snapshot_cache_misses', 0)}",
+        "",
+        "# HELP door_media_snapshot_grabs_refused_total One-shot grabs refused at the cap",
+        "# TYPE door_media_snapshot_grabs_refused_total counter",
+        f"door_media_snapshot_grabs_refused_total {getattr(router, 'snapshot_grabs_refused', 0)}",
+        "",
+        "# HELP door_media_recognition_cold_starts_total Recognition frames that waited on warm-up",
+        "# TYPE door_media_recognition_cold_starts_total counter",
+        f"door_media_recognition_cold_starts_total {getattr(router, 'recognition_cold_starts', 0)}",
+        "",
         "# HELP door_media_uptime_s Service uptime in seconds",
         "# TYPE door_media_uptime_s counter",
         f"door_media_uptime_s {uptime_s:.1f}",
@@ -344,15 +381,19 @@ async def metrics(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/streams")
-async def streams(request: Request) -> list[dict]:
-    router: MediaRouter = request.app.state.router
+async def _stream_infos(router: MediaRouter) -> list[StreamInfo]:
+    """Live stream state where the router can query it, the sync view otherwise."""
     stream_info_async = getattr(router, "stream_info_async", None)
     if callable(stream_info_async):
         async_stream_info = cast(Callable[[], Awaitable[list[StreamInfo]]], stream_info_async)
-        infos = await async_stream_info()
-    else:
-        infos = router.stream_info()
+        return await async_stream_info()
+    return router.stream_info()
+
+
+@app.get("/streams")
+async def streams(request: Request) -> list[dict]:
+    router: MediaRouter = request.app.state.router
+    infos = await _stream_infos(router)
     return [
         {
             "name": s.name,

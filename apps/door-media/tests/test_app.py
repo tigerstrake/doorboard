@@ -49,9 +49,48 @@ def test_metrics(client: TestClient):
     resp = client.get("/metrics")
     assert resp.status_code == 200
     assert "door_media_uptime_s" in resp.text
-    # A full SSD has to be explainable from /metrics: open windows and failed cuts.
+    # A full SSD has to be explainable from /metrics: open windows, failed cuts, and
+    # the raw segment tree (the one thing that grows without a DB row).
     assert "door_media_active_recordings 0" in resp.text
     assert "door_media_finalize_failures_total 0" in resp.text
+    assert "door_media_segment_bytes 0" in resp.text
+    for counter in (
+        "door_media_reader_restarts_total",
+        "door_media_recognition_reader_restarts_total",
+        "door_media_snapshot_cache_hits_total",
+        "door_media_snapshot_cache_misses_total",
+        "door_media_snapshot_grabs_refused_total",
+        "door_media_recognition_cold_starts_total",
+    ):
+        assert f"{counter} 0" in resp.text, counter
+
+
+def test_metrics_counts_segment_bytes(client: TestClient) -> None:
+    cfg = cast(Any, client.app).state.cfg
+    seg = cfg.segments_root / "visitor" / "2026" / "09" / "25" / "10" / "00" / "00-000000.mp4"
+    seg.parent.mkdir(parents=True, exist_ok=True)
+    seg.write_bytes(b"x" * 1234)
+    (cfg.segments_root / "visitor" / "not-a-segment.txt").write_bytes(b"y" * 100)
+
+    assert "door_media_segment_bytes 1234" in client.get("/metrics").text
+
+
+def test_metrics_reports_webrtc_clients_from_the_live_stream_query(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gauge read the MediaMTX router's sync stub, which is hard-coded to 0
+    readers; the live count is only available from the async API query."""
+    from door_media.adapters import StreamInfo
+
+    async def two_viewers() -> list[StreamInfo]:
+        return [
+            StreamInfo(name="visitor", whep_url="http://x/whep", stream_up=True, webrtc_clients=2)
+        ]
+
+    router = cast(Any, client.app).state.router
+    monkeypatch.setattr(router, "stream_info_async", two_viewers, raising=False)
+
+    assert "door_media_webrtc_clients 2" in client.get("/metrics").text
 
 
 def test_admin_routes_fail_closed_without_configured_token(client: TestClient) -> None:

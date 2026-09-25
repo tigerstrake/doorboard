@@ -477,16 +477,35 @@ class MediaMTXRouter:
                 logger.exception("segment_cleanup_failed")
 
     def prune_segments(self, *, now_epoch: float | None = None) -> int:
-        """Delete expired raw segments without touching active windows."""
+        """Delete expired raw segments without touching active windows, then enforce
+        a size cap that active windows cannot pin.
+
+        The age pass defers to the oldest open window. The size pass does not: a
+        window old enough to hold the tree past ``segment_max_bytes`` has segments
+        older than retention behind it, which could never be finalized anyway, and
+        a tree that size is the SSD filling, not a visit being recorded.
+        """
         now = time.time() if now_epoch is None else now_epoch
         cutoff = now - self._settings.segment_retention_s
         if self._active:
             earliest_active = min(item.started_epoch for item in self._active.values())
             cutoff = min(cutoff, earliest_active - self._settings.segment_s)
-        deleted = _prune_segments(self._settings.segments_root, older_than_epoch=cutoff)
+        root = self._settings.segments_root
+        deleted = _prune_segments(root, older_than_epoch=cutoff)
+        capped = _prune_segments_to_size(root, max_bytes=self._settings.segment_max_bytes)
+        if capped:
+            logger.warning(
+                "segments_over_size_cap",
+                extra={"count": capped, "max_bytes": self._settings.segment_max_bytes},
+            )
+        deleted += capped
         if deleted:
             logger.info("segments_pruned", extra={"count": deleted, "cutoff_epoch": cutoff})
         return deleted
+
+    @property
+    def active_recordings(self) -> int:
+        return len(self._active)
 
     def _write_config(self) -> None:
         cfg_path = self._settings.mediamtx_config_path
@@ -1162,6 +1181,48 @@ def _find_segments(
         if started_epoch <= modified <= ended_epoch:
             segments.append((modified, path))
     return [path for _, path in sorted(segments)]
+
+
+def segment_tree_bytes(root: Path) -> int:
+    """Bytes of raw MediaMTX segments under ``root`` (0 if it does not exist)."""
+    total = 0
+    if not root.exists():
+        return total
+    for path in root.rglob("*.mp4"):
+        with contextlib.suppress(OSError):
+            total += path.stat().st_size
+    return total
+
+
+def _prune_segments_to_size(root: Path, *, max_bytes: int) -> int:
+    """Delete the oldest segments until the tree is within ``max_bytes``."""
+    if not root.exists():
+        return 0
+    entries: list[tuple[float, int, Path]] = []
+    for path in root.rglob("*.mp4"):
+        with contextlib.suppress(OSError):
+            stat = path.stat()
+            entries.append((stat.st_mtime, stat.st_size, path))
+    total = sum(size for _, size, _ in entries)
+    if total <= max_bytes:
+        return 0
+    deleted = 0
+    for _, size, path in sorted(entries):
+        if total <= max_bytes:
+            break
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("segment_delete_failed", extra={"path": str(path), "error": str(exc)})
+            continue
+        total -= size
+        deleted += 1
+    for directory in sorted((p for p in root.rglob("*") if p.is_dir()), reverse=True):
+        with contextlib.suppress(OSError):
+            directory.rmdir()
+    return deleted
 
 
 def _prune_segments(root: Path, *, older_than_epoch: float) -> int:

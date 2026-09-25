@@ -1245,3 +1245,51 @@ async def test_one_shot_snapshot_grabs_are_capped_at_two(
     assert results.count(jpeg) == 2
     assert results.count(None) == 3, "the excess is refused now, not queued"
     assert router.snapshot_grabs_refused == 3
+
+
+# ---------------------------------------------------------------------------
+# Segment size cap: no window can pin the tree past it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_segment_size_cap_prunes_oldest_first_even_inside_an_active_window(
+    tmp_path: Path,
+) -> None:
+    """Age pruning defers to the oldest open window; the size cap must not, or one
+    stuck window fills the SSD (~65 GB/day at 6 Mbps) and nothing stops it."""
+    now = time.time()
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_SEGMENT_RETENTION_S=24 * 3600,
+        DOOR_MEDIA_SEGMENT_MAX_BYTES=1024**2,
+    )
+    router = MediaMTXRouter(cfg)
+    handle = await router.start_recording(
+        session_id=uuid.uuid4(), kind="bell_clip", stream="visitor"
+    )
+    router._active[handle.recording_id].started_epoch = now - 600  # window covers everything
+    segments = []
+    for i in range(6):  # 6 x 256 KiB = 1.5 MiB, cap is 1 MiB
+        seg = cfg.segments_root / "visitor" / f"seg{i}.mp4"
+        seg.parent.mkdir(parents=True, exist_ok=True)
+        seg.write_bytes(b"s" * (256 * 1024))
+        os.utime(seg, (now - 60 + i, now - 60 + i))
+        segments.append(seg)
+
+    assert router.prune_segments(now_epoch=now) == 2
+    assert [s.exists() for s in segments] == [False, False, True, True, True, True]
+    assert router.active_recordings == 1, "the cap deletes bytes, not the window"
+    await router.stop()
+
+
+def test_segment_tree_bytes_counts_only_segments(tmp_path: Path) -> None:
+    from door_media.mediamtx_router import segment_tree_bytes
+
+    assert segment_tree_bytes(tmp_path / "absent") == 0
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "one.mp4").write_bytes(b"x" * 10)
+    (tmp_path / "a" / "two.mp4").write_bytes(b"x" * 5)
+    (tmp_path / "a" / "list.txt").write_bytes(b"x" * 100)
+    assert segment_tree_bytes(tmp_path) == 15
