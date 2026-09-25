@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from control_plane_api.fanout import FanoutWorker
 from control_plane_api.models import EventRow, MediaMirrorRow, SessionMirrorRow
 from control_plane_api.mqtt import RecordingMqttPublisher
 from control_plane_api.notify import NotifyEngine, RecordingNotifier
@@ -54,7 +55,12 @@ def test_replaying_a_batch_ten_times_is_a_no_op_after_the_first(session_factory)
     now = datetime.now(UTC)
 
     first_results = ingest_batch(
-        session_factory, batch, batch_id="b1", now=now, mqtt_publisher=mqtt, notify_engine=notify
+        session_factory,
+        batch,
+        batch_id="b1",
+        now=now,
+        mqtt_publisher=mqtt,
+        fanout=FanoutWorker(session_factory, notify_engine=notify),
     )
     assert [r["status"] for r in first_results] == ["stored", "stored", "stored", "stored"]
     snapshot_after_first = _snapshot(session_factory)
@@ -68,7 +74,7 @@ def test_replaying_a_batch_ten_times_is_a_no_op_after_the_first(session_factory)
             batch_id="b1-replay",
             now=now,
             mqtt_publisher=mqtt,
-            notify_engine=notify,
+            fanout=FanoutWorker(session_factory, notify_engine=notify),
         )
         assert [r["status"] for r in results] == ["duplicate"] * 4
         assert _snapshot(session_factory) == snapshot_after_first
@@ -84,10 +90,20 @@ def test_duplicate_events_across_separate_batches_are_still_caught(session_facto
     now = datetime.now(UTC)
 
     r1 = ingest_batch(
-        session_factory, [event], batch_id="a", now=now, mqtt_publisher=mqtt, notify_engine=notify
+        session_factory,
+        [event],
+        batch_id="a",
+        now=now,
+        mqtt_publisher=mqtt,
+        fanout=FanoutWorker(session_factory, notify_engine=notify),
     )
     r2 = ingest_batch(
-        session_factory, [event], batch_id="b", now=now, mqtt_publisher=mqtt, notify_engine=notify
+        session_factory,
+        [event],
+        batch_id="b",
+        now=now,
+        mqtt_publisher=mqtt,
+        fanout=FanoutWorker(session_factory, notify_engine=notify),
     )
 
     assert r1[0]["status"] == "stored"
@@ -110,7 +126,7 @@ def test_malformed_event_is_rejected_without_touching_other_batch_items(session_
         batch_id="c",
         now=now,
         mqtt_publisher=mqtt,
-        notify_engine=notify,
+        fanout=FanoutWorker(session_factory, notify_engine=notify),
     )
     assert results[0]["status"] == "stored"
     assert results[1]["status"] == "rejected"

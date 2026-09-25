@@ -8,6 +8,7 @@ exercises the actual shapes door-sync would batch-upload in production.
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 from control_plane_api.models import MediaMirrorRow, NotificationStateRow
@@ -70,14 +71,21 @@ def test_storage_low_scenario_ingests_and_fires_storage_alert_notification(
     assert resp.status_code == 200, resp.text
     assert all(r["status"] == "stored" for r in resp.json()["results"])
 
-    with session_factory() as session:
-        fired = (
-            session.execute(
-                select(NotificationStateRow).where(
-                    NotificationStateRow.rule_key.like("storage_alert:%")
+    # Notifications are delivered by the fan-out worker after the ingest request
+    # has already returned, so the bookkeeping row lands a moment later.
+    deadline = time.monotonic() + 5
+    while True:
+        with session_factory() as session:
+            fired = (
+                session.execute(
+                    select(NotificationStateRow).where(
+                        NotificationStateRow.rule_key.like("storage_alert:%")
+                    )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
+        if fired or time.monotonic() > deadline:
+            break
+        time.sleep(0.05)
     assert len(fired) == 1

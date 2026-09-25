@@ -10,6 +10,7 @@ from doorboard_contracts import PresenceLabel
 from control_plane_api import presence_engine
 from control_plane_api.calendar_ics import IcsCalendarProvider, parse_subject_urls
 from control_plane_api.db import make_engine, make_session_factory, session_scope
+from control_plane_api.fanout import FanoutWorker
 from control_plane_api.mqtt import MqttPublisher, build_publisher
 from control_plane_api.notify import NotifyEngine, build_notifier
 from control_plane_api.presence import (
@@ -103,6 +104,16 @@ class AppState:
                 door_api_admin_token=cfg.door_api_admin_token,
             ),
         )
+        # Everything that does real I/O after an event is committed — ntfy,
+        # Telegram, the door-api media pull — runs on this worker's thread, so
+        # `/ingest` returns as soon as the rows are durable.
+        self.fanout = FanoutWorker(
+            self.session_factory,
+            notify_engine=self.notify_engine,
+            video_delivery=self.video_message_delivery,
+            ring_photo_delivery=self.ring_photo_delivery,
+        )
+        self.fanout.start()
         # An injected provider always wins (tests). Otherwise: a real .ics provider
         # when feeds are configured, else the mock, which always answers "no signal"
         # so the calendar source simply never wins precedence (ADR-0036).
@@ -111,11 +122,14 @@ class AppState:
         else:
             subject_urls = parse_subject_urls(cfg.presence_calendar_ics_urls)
             if subject_urls:
-                self.calendar_provider = IcsCalendarProvider(
+                ics = IcsCalendarProvider(
                     subject_urls,
                     refresh_s=cfg.presence_calendar_refresh_s,
                     timeout_s=cfg.presence_calendar_timeout_s,
                 )
+                # Prefetched on a timer so a presence GET never waits on the feed.
+                ics.start_background_refresh()
+                self.calendar_provider = ics
                 logger.info(
                     "calendar_source_enabled",
                     extra={"subjects": sorted(subject_urls)},  # names only, never the URLs
@@ -186,4 +200,8 @@ class AppState:
             logger.warning("presence_republish_on_connect_failed", exc_info=True)
 
     def dispose(self) -> None:
+        self.fanout.stop()
+        stop_calendar = getattr(self.calendar_provider, "stop", None)
+        if callable(stop_calendar):
+            stop_calendar()
         self.engine.dispose()

@@ -25,6 +25,14 @@ Routes:
   DELETE /admin/tokens/{token_id}     — revoke a service token (admin)
   GET    /admin/tokens                — list active service tokens (admin)
 
+Every route is a plain `def`: Starlette runs those on its threadpool, so the
+synchronous SQLAlchemy/httpx work inside them cannot stall the event loop the
+way it did when they were `async def` (one Telegram video upload froze
+`/health` and door-sync's next batch for up to a minute). Sessions are
+per-request (`session_scope`), the engine pool and paho's `publish` are
+thread-safe, and anything slower than a DB round-trip is handed to
+`AppState.fanout`.
+
 Admin auth note: see packages/auth README — session-based admin auth doesn't
 exist yet, so `/admin/*` is gated by a shared bearer secret
 (`CONTROL_PLANE_ADMIN_TOKEN`), same stopgap door-api's social panel uses.
@@ -166,13 +174,13 @@ _config_auth = _scoped_token_auth("config")
 
 
 @app.get("/health")
-async def health(request: Request) -> dict[str, Any]:
+def health(request: Request) -> dict[str, Any]:
     cfg = _state(request).settings
     return {"service": "control-plane-api", "status": "ok", "detail": None, "door_id": cfg.door_id}
 
 
 @app.get("/status/keys/enrollment")
-async def enrollment_key(request: Request, _auth: EnrollmentKeyAuth) -> dict[str, str]:
+def enrollment_key(request: Request, _auth: EnrollmentKeyAuth) -> dict[str, str]:
     """Release the door Pi's LUKS enrollment passphrase (ADR-0009 §6, Option C).
 
     The Pi calls this once at boot to unlock its encrypted visiond/ volume and
@@ -189,7 +197,7 @@ _start_time = time.monotonic()
 
 
 @app.get("/metrics")
-async def metrics(request: Request) -> Response:
+def metrics(request: Request) -> Response:
     with session_scope(_state(request).session_factory) as session:
         event_count = session.execute(select(func.count()).select_from(EventRow)).scalar_one()
 
@@ -220,7 +228,7 @@ class IngestRequest(BaseModel):
 
 
 @app.post("/ingest")
-async def ingest(
+def ingest(
     body: IngestRequest,
     request: Request,
     token: Annotated[ServiceTokenRecord, Depends(_ingest_auth)],
@@ -238,9 +246,7 @@ async def ingest(
         batch_id=body.batch_id,
         now=now,
         mqtt_publisher=state.mqtt_publisher,
-        notify_engine=state.notify_engine,
-        video_delivery=state.video_message_delivery,
-        ring_photo_delivery=state.ring_photo_delivery,
+        fanout=state.fanout,
     )
     return {"batch_id": body.batch_id, "results": results}
 
@@ -251,7 +257,7 @@ async def ingest(
 
 
 @app.get("/config/door/{door_id}")
-async def get_config(
+def get_config(
     door_id: str,
     request: Request,
     token: Annotated[ServiceTokenRecord, Depends(_config_auth)],
@@ -265,7 +271,7 @@ async def get_config(
 
 
 @app.put("/config/door/{door_id}")
-async def put_config(door_id: str, body: dict, request: Request, _auth: AdminAuth) -> dict:
+def put_config(door_id: str, body: dict, request: Request, _auth: AdminAuth) -> dict:
     try:
         new_settings = DoorConfigSettings.model_validate(body)
     except ValidationError as exc:
@@ -360,7 +366,7 @@ class PresenceWebhookRequest(BaseModel):
 
 
 @app.get("/status/presence")
-async def list_presence(request: Request, _auth: AdminAuth) -> dict:
+def list_presence(request: Request, _auth: AdminAuth) -> dict:
     state = _state(request)
     now = datetime.now(UTC)
     with session_scope(state.session_factory) as session:
@@ -377,7 +383,7 @@ async def list_presence(request: Request, _auth: AdminAuth) -> dict:
 
 
 @app.get("/status/presence/bundle")
-async def get_presence_bundle(
+def get_presence_bundle(
     request: Request,
     token: Annotated[ServiceTokenRecord, Depends(_config_auth)],
 ) -> dict:
@@ -409,7 +415,7 @@ async def get_presence_bundle(
 
 
 @app.get("/status/presence/{subject_id}")
-async def get_presence(subject_id: str, request: Request, _auth: AdminAuth) -> dict:
+def get_presence(subject_id: str, request: Request, _auth: AdminAuth) -> dict:
     state = _state(request)
     with session_scope(state.session_factory) as session:
         item = presence_engine.get_subject_status(
@@ -426,7 +432,7 @@ async def get_presence(subject_id: str, request: Request, _auth: AdminAuth) -> d
 
 
 @app.get("/status/presence/{subject_id}/history")
-async def get_presence_history(
+def get_presence_history(
     subject_id: str, request: Request, _auth: AdminAuth, limit: int = 100
 ) -> dict:
     state = _state(request)
@@ -447,7 +453,7 @@ async def get_presence_history(
 
 
 @app.patch("/status/presence/{subject_id}")
-async def patch_presence_subject(
+def patch_presence_subject(
     subject_id: str, body: PresenceSubjectConfigRequest, request: Request, _auth: AdminAuth
 ) -> dict:
     state = _state(request)
@@ -470,7 +476,7 @@ async def patch_presence_subject(
 
 
 @app.post("/status/presence/{subject_id}/override")
-async def set_presence_override(
+def set_presence_override(
     subject_id: str, body: PresenceOverrideRequest, request: Request, _auth: AdminAuth
 ) -> dict:
     """Manual override endpoint — admin UI and one-tap phone shortcut both hit this."""
@@ -494,7 +500,7 @@ async def set_presence_override(
 
 
 @app.delete("/status/presence/{subject_id}/override")
-async def clear_presence_override(subject_id: str, request: Request, _auth: AdminAuth) -> dict:
+def clear_presence_override(subject_id: str, request: Request, _auth: AdminAuth) -> dict:
     state = _state(request)
     now = datetime.now(UTC)
     with session_scope(state.session_factory) as session:
@@ -513,7 +519,7 @@ async def clear_presence_override(subject_id: str, request: Request, _auth: Admi
 
 
 @app.patch("/status/presence/{subject_id}/sources/{source}")
-async def patch_presence_source(
+def patch_presence_source(
     subject_id: str,
     source: str,
     body: PresenceSourceToggleRequest,
@@ -585,12 +591,12 @@ def _handle_presence_webhook(request: Request, raw: dict, *, source: str) -> dic
 
 
 @app.post("/status/presence/webhook/focus-shortcut")
-async def presence_webhook_focus_shortcut(body: dict, request: Request, _auth: AdminAuth) -> dict:
+def presence_webhook_focus_shortcut(body: dict, request: Request, _auth: AdminAuth) -> dict:
     return _handle_presence_webhook(request, body, source="focus_shortcut")
 
 
 @app.post("/status/presence/webhook/geofence-label")
-async def presence_webhook_geofence_label(body: dict, request: Request, _auth: AdminAuth) -> dict:
+def presence_webhook_geofence_label(body: dict, request: Request, _auth: AdminAuth) -> dict:
     return _handle_presence_webhook(request, body, source="geofence_label")
 
 
@@ -600,7 +606,7 @@ async def presence_webhook_geofence_label(body: dict, request: Request, _auth: A
 
 
 @app.delete("/people/{person_id}/events")
-async def delete_person_events(
+def delete_person_events(
     person_id: str,
     request: Request,
     _token: Annotated[ServiceTokenRecord, Depends(_ingest_auth)],
@@ -662,22 +668,22 @@ def _delete_social_item(request: Request, kind: str, item_id: str) -> dict:
 
 
 @app.get("/admin/social/guestbook")
-async def admin_list_guestbook(request: Request, _auth: AdminAuth) -> dict:
+def admin_list_guestbook(request: Request, _auth: AdminAuth) -> dict:
     return _list_social_items(request, "guestbook")
 
 
 @app.delete("/admin/social/guestbook/{item_id}")
-async def admin_delete_guestbook(item_id: str, request: Request, _auth: AdminAuth) -> dict:
+def admin_delete_guestbook(item_id: str, request: Request, _auth: AdminAuth) -> dict:
     return _delete_social_item(request, "guestbook", item_id)
 
 
 @app.get("/admin/social/checkins")
-async def admin_list_checkins(request: Request, _auth: AdminAuth) -> dict:
+def admin_list_checkins(request: Request, _auth: AdminAuth) -> dict:
     return _list_social_items(request, "checkin")
 
 
 @app.delete("/admin/social/checkins/{item_id}")
-async def admin_delete_checkin(item_id: str, request: Request, _auth: AdminAuth) -> dict:
+def admin_delete_checkin(item_id: str, request: Request, _auth: AdminAuth) -> dict:
     return _delete_social_item(request, "checkin", item_id)
 
 
@@ -693,7 +699,7 @@ class IssueTokenRequest(BaseModel):
 
 
 @app.post("/admin/tokens", status_code=201)
-async def admin_issue_token(body: IssueTokenRequest, request: Request, _auth: AdminAuth) -> dict:
+def admin_issue_token(body: IssueTokenRequest, request: Request, _auth: AdminAuth) -> dict:
     state = _state(request)
     with session_scope(state.session_factory) as session:
         issued = token_store.issue_and_store(
@@ -703,7 +709,7 @@ async def admin_issue_token(body: IssueTokenRequest, request: Request, _auth: Ad
 
 
 @app.delete("/admin/tokens/{token_id}")
-async def admin_revoke_token(token_id: str, request: Request, _auth: AdminAuth) -> dict:
+def admin_revoke_token(token_id: str, request: Request, _auth: AdminAuth) -> dict:
     state = _state(request)
     with session_scope(state.session_factory) as session:
         revoked = token_store.revoke(session, token_id=token_id)
@@ -713,7 +719,7 @@ async def admin_revoke_token(token_id: str, request: Request, _auth: AdminAuth) 
 
 
 @app.get("/admin/tokens")
-async def admin_list_tokens(request: Request, _auth: AdminAuth) -> dict:
+def admin_list_tokens(request: Request, _auth: AdminAuth) -> dict:
     state = _state(request)
     with session_scope(state.session_factory) as session:
         records = token_store.list_active(session)

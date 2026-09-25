@@ -5,6 +5,11 @@ batch) so a later event's failure can never roll back an earlier event's
 already-reported "stored" result, and so MQTT/notify fan-out — which must
 never block or fail ingestion — only ever fires for durably committed
 writes.
+
+MQTT is published inline (paho's `publish` hands the message to its network
+thread and returns). Everything that does real I/O — ntfy, Telegram, the
+door-api media pull — goes through `FanoutWorker`, which delivers from a
+background thread so the request returns as soon as the rows are committed.
 """
 
 from __future__ import annotations
@@ -15,10 +20,9 @@ from datetime import datetime
 from sqlalchemy.orm import Session, sessionmaker
 
 from control_plane_api.db import session_scope
+from control_plane_api.fanout import FanoutWorker
 from control_plane_api.ingest import ingest_one
 from control_plane_api.mqtt import MqttPublisher
-from control_plane_api.notify import NotifyEngine
-from control_plane_api.telegram import RingPhotoDelivery, VideoMessageDelivery
 
 logger = logging.getLogger("control_plane_api.service")
 
@@ -30,9 +34,7 @@ def ingest_batch(
     batch_id: str | None,
     now: datetime,
     mqtt_publisher: MqttPublisher,
-    notify_engine: NotifyEngine,
-    video_delivery: VideoMessageDelivery | None = None,
-    ring_photo_delivery: RingPhotoDelivery | None = None,
+    fanout: FanoutWorker,
 ) -> list[dict]:
     results = []
     for raw in raw_events:
@@ -49,24 +51,6 @@ def ingest_batch(
                 mqtt_publisher.publish_event(outcome.event)
             except Exception:
                 logger.warning("mqtt_fanout_failed", exc_info=True)
-            try:
-                with session_scope(session_factory) as notify_session:
-                    notify_engine.on_event(notify_session, outcome.event, now=now)
-            except Exception:
-                logger.warning("notify_fanout_failed", exc_info=True)
-            if video_delivery is not None:
-                try:
-                    with session_scope(session_factory) as delivery_session:
-                        video_delivery.on_event(delivery_session, outcome.event, now=now)
-                except Exception:
-                    logger.warning("video_delivery_fanout_failed", exc_info=True)
-            if ring_photo_delivery is not None:
-                # Its own try/except: a Telegram failure here must not cost the video
-                # delivery above or the ingest result below (ADR-0022).
-                try:
-                    with session_scope(session_factory) as photo_session:
-                        ring_photo_delivery.on_event(photo_session, outcome.event, now=now)
-                except Exception:
-                    logger.warning("ring_photo_delivery_fanout_failed", exc_info=True)
+            fanout.enqueue_event(outcome.event, now=now)
 
     return results

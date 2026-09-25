@@ -16,6 +16,13 @@ locations, descriptions and attendees are read to find the current event and the
 discarded — they are never returned, logged, or persisted. A presence system that
 quietly accumulated someone's course list, with room numbers, would be a different
 and much worse thing than a door that says "At Class". There is a test for this.
+
+FETCHING. In the service the feeds are prefetched on a timer
+(`start_background_refresh`) and `get_label` only ever reads the cache, so a
+presence GET never waits on the network — it used to block the request (and,
+being on the event loop, every other request) for up to 10 s whenever the
+15-minute cache expired. Without the background thread (tests, the CLI) the
+provider fetches lazily on the first miss, as before.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ import icalendar
 import recurring_ical_events
 from doorboard_contracts import PresenceLabel
 
+from control_plane_api.background import PeriodicThread
 from control_plane_api.presence import SourceEntry
 
 logger = logging.getLogger("control_plane_api.calendar_ics")
@@ -88,6 +96,37 @@ class IcsCalendarProvider:
         self._timeout_s = timeout_s
         self._client = client
         self._cache: dict[str, _Cached] = {}
+        self._refresher: PeriodicThread | None = None
+
+    # -- background prefetch -------------------------------------------------
+
+    def refresh_all(self, *, now: datetime | None = None) -> None:
+        """Fetch every configured feed once. Failures are cached like successes."""
+        fetched_at = now or datetime.now(UTC)
+        for subject_id, url in self._urls.items():
+            self._cache[subject_id] = _Cached(calendar=self._fetch(url), fetched_at=fetched_at)
+
+    def start_background_refresh(self) -> None:
+        """Keep the cache warm from a daemon thread; `get_label` then never fetches."""
+        if self._refresher is not None:
+            return
+        self._refresher = PeriodicThread(
+            "calendar-ics-refresh", interval_s=self._refresh_s, fn=self.refresh_all
+        )
+        self._refresher.start()
+
+    def stop(self) -> None:
+        if self._refresher is not None:
+            self._refresher.stop()
+            self._refresher = None
+
+    @property
+    def healthy(self) -> bool:
+        """False when any configured feed's last fetch failed (for /health)."""
+        return all(
+            cached is not None and cached.calendar is not None
+            for cached in (self._cache.get(subject) for subject in self._urls)
+        )
 
     # -- fetching ----------------------------------------------------------
 
@@ -123,6 +162,11 @@ class IcsCalendarProvider:
         cached = self._cache.get(subject_id)
         if cached is not None and (now - cached.fetched_at) < timedelta(seconds=self._refresh_s):
             return cached.calendar
+        if self._refresher is not None:
+            # The timer owns fetching; a request must never wait on the network.
+            # Until the first refresh lands (or while a feed is broken) this is
+            # "no signal", which degrades to the next source down — never an error.
+            return cached.calendar if cached is not None else None
         calendar = self._fetch(url)
         # Cache failures too, so a broken feed is retried on the refresh interval
         # rather than on every single presence resolution.
