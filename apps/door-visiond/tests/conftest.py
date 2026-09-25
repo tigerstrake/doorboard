@@ -58,6 +58,9 @@ def ssd_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("VISION_MODE", "mock")
     monkeypatch.setenv("DOOR_VISIOND_ADMIN_TOKEN", "test-admin-token")
     monkeypatch.setenv("VISIOND_MODEL_DIM", str(TEST_DIM))
+    # The setting's default is relative to the cwd (the unit's WorkingDirectory is the
+    # repo); pin the absolute path so the suite also passes run from apps/door-visiond.
+    monkeypatch.setenv("VISIOND_CONSENT_STATEMENT_PATH", str(CONSENT_STATEMENT_PATH))
     return Settings()
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qs
 
@@ -193,15 +192,13 @@ class _SlowEmbedder:
         return self._inner.embed(image_bytes)
 
 
+@pytest.mark.usefixtures("ssd_settings")
 def test_enroll_inference_does_not_stall_the_recognition_loop(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Enrollment ran inline on the event loop: five stills at the door froze
     recognition (no frames, no tick, /health unanswered) for as long as the Hailo took."""
-    monkeypatch.setenv("SSD_DATA_ROOT", str(tmp_path / "ssd"))
-    monkeypatch.setenv("VISION_MODE", "mock")
-    monkeypatch.setenv("DOOR_VISIOND_ADMIN_TOKEN", "test-admin-token")
-    monkeypatch.setenv("VISIOND_MODEL_DIM", str(TEST_DIM))
+    # The fixture's environment plus a fast frame interval (~30 frames in 0.3 s).
     monkeypatch.setenv("VISIOND_FRAME_INTERVAL_MS", "10")
     override_settings(Settings())
     try:
