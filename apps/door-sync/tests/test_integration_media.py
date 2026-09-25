@@ -79,15 +79,18 @@ async def test_finalized_clip_syncs_and_is_licensed_for_deletion(tmp_path: Path,
                 media_client=media_client,
             )
             try:
-                # Reconcile picks up the finalized-but-unsynced clip, then drain.
+                # Reconcile picks up the finalized-but-unsynced clip and its
+                # thumbnail, then drain.
                 added = await engine.reconcile_from_media()
-                assert added == 1
+                assert added == 2
                 await engine.run_once()
 
-                # Archive holds a verified copy.
+                # Archive holds a verified copy of both.
                 dest = nas_root / row.path
                 assert dest.exists()
                 assert helpers.sha256_file(dest) == row.sha256
+                assert row.thumbnail_path is not None
+                assert (nas_root / row.thumbnail_path).exists()
 
                 # door-media now considers it synced → deletion is licensed.
                 refreshed = svc._db.get(rid)  # noqa: SLF001

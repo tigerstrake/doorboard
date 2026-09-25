@@ -366,3 +366,83 @@ async def test_a_bookkeeping_error_on_one_item_does_not_abort_the_pass(
         assert media.upload_calls == [rel_a, rel_b]
     finally:
         queue.close()
+
+
+async def test_reconcile_re_derives_thumbnails_as_well_as_clips(tmp_path: Path, helpers) -> None:
+    """A media.thumbnail_ready missed during a door-sync outage was never archived:
+    reconcile re-derived the clip from door-media's pending list but not its still."""
+    from door_sync.engine import _thumb_item_id
+
+    settings = helpers.make_settings(tmp_path)
+    queue = UploadQueue(settings.queue_db_path)
+    try:
+        rid = "00000000-0000-7000-8000-00000000ad01"
+        rel, sha, _ = helpers.make_recording_file(settings.ssd_data_root, name=f"{rid}.mp4")
+        thumb_rel = f"thumbnails/{rid}.jpg"
+        (settings.ssd_data_root / thumb_rel).parent.mkdir(parents=True, exist_ok=True)
+        (settings.ssd_data_root / thumb_rel).write_bytes(b"jpeg")
+        door_media = helpers.RecordingMediaClient()
+        door_media.pending = [
+            {"recording_id": rid, "path": rel, "sha256": sha, "thumbnail_path": thumb_rel},
+            {"recording_id": "00000000-0000-7000-8000-00000000ad02", "path": rel, "sha256": sha},
+        ]
+        engine = SyncEngine(
+            queue=queue,
+            settings=settings,
+            media_target=helpers.MockMediaTarget(),
+            nuc_target=helpers.MockNucTarget(),
+            media_client=door_media,
+        )
+
+        assert await engine.reconcile_from_media() == 3  # two clips, one thumbnail
+
+        thumb = queue.get(_thumb_item_id(rid))
+        assert thumb is not None
+        assert (thumb.kind, thumb.local_path, thumb.recording_id) == ("thumbnail", thumb_rel, rid)
+        # Idempotent: a second reconcile adds nothing.
+        assert await engine.reconcile_from_media() == 0
+    finally:
+        queue.close()
+
+
+async def test_startup_clamps_a_backoff_scheduled_in_the_far_future(
+    tmp_path: Path, helpers
+) -> None:
+    """next_attempt_at is wall-clock; the Pi's clock starts at 1970 every boot. A
+    backoff recorded after a step back (or before a step forward, read after it)
+    must not leave an item un-due for decades or due in a herd."""
+    now = [1_800_000_000.0]
+    settings = helpers.make_settings(tmp_path, backoff_base_s=2.0, backoff_max_s=300.0)
+    queue = UploadQueue(settings.queue_db_path)
+    try:
+        engine = SyncEngine(
+            queue=queue,
+            settings=settings,
+            media_target=helpers.MockMediaTarget(),
+            nuc_target=helpers.MockNucTarget(),
+            media_client=helpers.RecordingMediaClient(),
+            clock=lambda: now[0],
+        )
+        far = "00000000-0000-7000-8000-00000000ae01"
+        soon = "00000000-0000-7000-8000-00000000ae02"
+        rel, sha, _ = helpers.make_recording_file(settings.ssd_data_root)
+        engine.enqueue_recording(recording_id=far, local_path=rel, sha256=sha, trace_id=far)
+        engine.enqueue_recording(recording_id=soon, local_path=rel, sha256=sha, trace_id=soon)
+        queue._conn.execute(  # noqa: SLF001
+            "UPDATE queue_item SET next_attempt_at=? WHERE item_id=?",
+            (now[0] + 56 * 365 * 24 * 3600, far),
+        )
+        queue._conn.execute(  # noqa: SLF001
+            "UPDATE queue_item SET next_attempt_at=? WHERE item_id=?", (now[0] + 100.0, soon)
+        )
+        queue._conn.commit()  # noqa: SLF001
+
+        assert engine.clamp_schedule() == 1
+
+        far_item = queue.get(far)
+        soon_item = queue.get(soon)
+        assert far_item is not None and far_item.next_attempt_at == now[0] + 300.0
+        assert soon_item is not None and soon_item.next_attempt_at == now[0] + 100.0
+        assert engine.clamp_schedule() == 0
+    finally:
+        queue.close()

@@ -362,10 +362,14 @@ class SyncEngine:
     # ------------------------------------------------------------------
 
     async def reconcile_from_media(self) -> int:
-        """Enqueue finalized-but-unsynced clips door-media still holds.
+        """Enqueue finalized-but-unsynced clips (and their thumbnails) door-media
+        still holds.
 
         The backstop for a missed real-time event. Best-effort: a door-media
-        outage just means we try again next startup — nothing is lost.
+        outage just means we try again next startup — nothing is lost. The
+        thumbnail is re-derived too: a ``media.thumbnail_ready`` missed during a
+        door-sync outage would otherwise never be archived, since nothing else
+        ever re-sends it.
         """
         try:
             pending = await self._media_client.list_pending_clips()
@@ -379,17 +383,40 @@ class SyncEngine:
             rid = rec.get("recording_id")
             if not path or not sha or not rid:
                 continue
+            trace_id = str(_uuid7_str())
             try:
                 if self.enqueue_recording(
                     recording_id=rid,
                     local_path=path,
                     sha256=sha,
-                    trace_id=str(_uuid7_str()),
+                    trace_id=trace_id,
+                ):
+                    added += 1
+                thumbnail = rec.get("thumbnail_path")
+                if thumbnail and self.enqueue_thumbnail(
+                    recording_id=rid, local_path=thumbnail, trace_id=trace_id
                 ):
                     added += 1
             except Exception:  # fence violation or bad row — skip, never crash startup
                 logger.warning("reconcile_item_skipped", extra={"recording_id": rid})
         return added
+
+    def clamp_schedule(self) -> int:
+        """Bound every pending backoff to ``now + backoff_max_s``.
+
+        ``next_attempt_at`` is wall-clock and the door Pi's clock starts at 1970
+        every boot until NTP steps it. Items scheduled before the step are all due
+        the instant after it (a herd, bounded by queue size); an item scheduled
+        after a step *back* would not be due for decades. Nothing legitimate is
+        ever scheduled further out than one maximum backoff, so at startup
+        anything beyond that is pulled in.
+        """
+        clamped = self._queue.clamp_next_attempts(
+            max_epoch=self._now_epoch() + self._settings.backoff_max_s
+        )
+        if clamped:
+            logger.warning("backoff_schedule_clamped", extra={"items": clamped})
+        return clamped
 
     async def run_once(self) -> int:
         now = self._now_epoch()
@@ -419,6 +446,7 @@ class SyncEngine:
 
     async def run(self) -> None:
         self._running = True
+        self.clamp_schedule()
         await self.finalize_licenses()
         last_prune = 0.0
         while self._running:

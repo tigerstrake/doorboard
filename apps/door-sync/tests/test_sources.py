@@ -196,3 +196,21 @@ async def test_a_reconcile_failure_does_not_kill_the_stream() -> None:
     await source._on_connected()  # first connect
     await source._on_connected()  # reconnect — reconcile raises internally, must not propagate
     engine.reconcile_from_media.assert_awaited_once()
+
+
+# -- the SSE client must notice a wedged-but-open door-media --------------------
+
+
+def test_the_sse_client_has_a_read_timeout_longer_than_the_keepalive() -> None:
+    """door-media keepalives every 30 s. `timeout=None` meant a door-media that was
+    wedged but still had the socket open (the MediaMTX pipe-deadlock class) never
+    tripped the reconnect, so the reconcile that recovers missed finalizes never ran."""
+    from door_sync.sources import SSE_KEEPALIVE_S, SSE_READ_TIMEOUT_S
+
+    source, _engine = _make_source()
+    timeout = source._client().timeout  # noqa: SLF001
+
+    assert SSE_KEEPALIVE_S == 30.0
+    assert timeout.read == SSE_READ_TIMEOUT_S == 90.0
+    assert timeout.read > SSE_KEEPALIVE_S, "a timeout shorter than the keepalive reconnects forever"
+    assert timeout.connect is not None

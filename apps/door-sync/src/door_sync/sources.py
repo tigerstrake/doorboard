@@ -33,6 +33,13 @@ from door_sync.engine import SyncEngine
 
 logger = logging.getLogger("door_sync.sources")
 
+# door-media sends an SSE keepalive comment every 30 s (its /events generator).
+# Three missed keepalives is a wedged-but-open door-media -- the MediaMTX pipe
+# deadlock class already seen on this door -- and without a read timeout the
+# stream stayed open forever, so the reconnect-and-reconcile never ran.
+SSE_KEEPALIVE_S = 30.0
+SSE_READ_TIMEOUT_S = 3 * SSE_KEEPALIVE_S
+
 
 class MediaEventSource:
     def __init__(
@@ -133,9 +140,14 @@ class MediaEventSource:
                 )
         self._connected_once = True
 
+    def _client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=SSE_READ_TIMEOUT_S, write=10.0, pool=10.0)
+        )
+
     async def _consume_once(self) -> None:
         async with (
-            httpx.AsyncClient(timeout=None) as client,
+            self._client() as client,
             client.stream("GET", f"{self._base_url}/events", headers=self._headers) as resp,
         ):
             resp.raise_for_status()

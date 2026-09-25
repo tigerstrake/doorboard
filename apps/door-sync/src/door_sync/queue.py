@@ -308,6 +308,25 @@ class UploadQueue:
     # Maintenance
     # ------------------------------------------------------------------
 
+    def clamp_next_attempts(self, *, max_epoch: float) -> int:
+        """Pull every pending item's ``next_attempt_at`` down to ``max_epoch``.
+
+        ``next_attempt_at`` is wall-clock. The Pi boots with its clock at 1970
+        until NTP steps it, and a backoff scheduled *after* a step from the far
+        future (or before one from the far past) is either a thundering herd or
+        an item that is never due again. Called at startup with
+        ``now + backoff_max_s``: nothing legitimate is scheduled further out.
+        """
+        now = _now_iso()
+        with self._lock:
+            cur = self._conn.execute(
+                """UPDATE queue_item SET next_attempt_at=?, updated_at=?
+                   WHERE status='pending' AND next_attempt_at > ?""",
+                (max_epoch, now, max_epoch),
+            )
+            self._conn.commit()
+            return cur.rowcount
+
     def prune_completed(self, *, older_than_iso: str) -> int:
         """Delete finalized-completed items older than a cutoff to bound growth.
 
