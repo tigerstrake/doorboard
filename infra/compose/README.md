@@ -91,7 +91,10 @@ in this repo — only the static YAML files under
 ## Optional internal HTTPS (Caddy)
 
 Disabled by default. Enable with `--profile https` once `DOORBOARD_INTERNAL_DOMAIN`
-is set in `.env` to a LAN-only hostname (never a public one). See
+is set in `.env` to a LAN-only hostname (never a public one), and set
+`PLAIN_BIND_ADDR=127.0.0.1` at the same time so the plain `8090`/`8123` ports
+leave the LAN — a port binding cannot be profile-aware, so without it HTTPS
+encrypts nothing a client does not opt into. See
 [infra/caddy/README.md](../caddy/README.md).
 
 ## Postgres backups

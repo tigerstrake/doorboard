@@ -14,8 +14,6 @@ We pin the BirdNET-Go deployment to a stable version (e.g., `v1.4.0`) to prevent
 Create `/opt/birdnet-go/docker-compose.yml`:
 
 ```yaml
-version: "3.8"
-
 services:
   birdnet-go:
     image: tphakala/birdnet-go:v1.4.0

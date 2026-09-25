@@ -5,12 +5,22 @@ Caddy reverse-proxy config for the NUC if internal HTTPS is adopted (optional). 
 ## T-503 status (this task)
 
 [`Caddyfile`](Caddyfile) routes `/ingest`, `/config/*`, `/people/*`,
-`/admin/*`, `/health`, `/metrics`, and `/webhooks/*` to control-plane-api and
+`/admin/*`, `/status/*`, `/health` and `/metrics` to control-plane-api and
 everything else to Home Assistant, both by Docker service name on the
-compose network. Wired up as the `caddy` service in
+compose network (`tests/test_nuc_caddy_routes.py` keeps that list equal to
+the routes the app registers). Wired up as the `caddy` service in
 [infra/compose/docker-compose.yml](../compose/docker-compose.yml), behind the
 `https` profile — disabled by default, since most deployments stay on plain
 HTTP within the LAN.
+
+**With the profile on, close the plain ports.** Compose cannot make a port
+binding profile-aware, so the `8090`/`8123` publications stay wherever
+`LAN_BIND_ADDR` puts them unless you also set `PLAIN_BIND_ADDR=127.0.0.1` in
+`.env`. Do that when you enable `--profile https`: the LAN then reaches the
+control plane and HA only through Caddy on `:443`, which is the point — the
+Pi's `ENROLLMENT_KEY_URL` can move to `https://<domain>/status/keys/enrollment`
+and the LUKS passphrase stops crossing the LAN in clear. `1883` (MQTT) is not
+fronted by Caddy and keeps following `LAN_BIND_ADDR`.
 
 `{$DOORBOARD_INTERNAL_DOMAIN}` must be a LAN-only hostname (router/Pi-hole
 DNS entry or an mDNS `.local` name), never a publicly routable domain.

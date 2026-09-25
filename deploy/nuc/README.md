@@ -32,8 +32,11 @@ why" overview the handoff's trust model expects a reader to find first.
 4. Copy the root `.env.example` to `.env`; fill in every NUC variable with
    freshly generated random values — **never** reuse the placeholder text,
    and never commit this file (enforced by `.gitignore` and a CI check).
-5. Start the token authority first:
-   `docker compose -f infra/compose/docker-compose.yml --env-file .env up -d postgres mosquitto control-plane-api`.
+5. Start the token authority first. `WALLBOARD_WORKER_INGEST_TOKEN` is required
+   by the compose file (an empty token made the worker start and 401 forever),
+   and it does not exist yet, so pass a placeholder on this one command only —
+   never write it into `.env`:
+   `WALLBOARD_WORKER_INGEST_TOKEN=bootstrap docker compose -f infra/compose/docker-compose.yml --env-file .env up -d postgres mosquitto control-plane-api`.
 6. Issue the wallboard worker's scoped token with
    `docker compose ... exec control-plane-api control-plane-api-admin issue-token --door-id primary --scope ingest`,
    put the printed value in the NUC `.env` as `WALLBOARD_WORKER_INGEST_TOKEN`,

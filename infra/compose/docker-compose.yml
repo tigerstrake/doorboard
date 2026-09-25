@@ -13,7 +13,7 @@ name: doorboard-nuc
 
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16.15
     restart: unless-stopped
     environment:
       POSTGRES_USER: doorboard
@@ -32,7 +32,7 @@ services:
     # active database ever leaves the trust boundary).
 
   mosquitto:
-    image: eclipse-mosquitto:2
+    image: eclipse-mosquitto:2.0.22
     restart: unless-stopped
     entrypoint: ["/mosquitto-entrypoint.sh"]
     environment:
@@ -131,8 +131,10 @@ services:
       BIRD_NEW_SPECIES_ALERT: ${BIRD_NEW_SPECIES_ALERT:-false}
       BIRD_KNOWN_SPECIES: ${BIRD_KNOWN_SPECIES:-}
       BIRD_NEW_SPECIES_COOLDOWN_S: ${BIRD_NEW_SPECIES_COOLDOWN_S:-2592000}
+    # PLAIN_BIND_ADDR=127.0.0.1 with `--profile https` keeps the plain port off
+    # the LAN so Caddy on :443 is the only way in (infra/caddy/README.md).
     ports:
-      - "${LAN_BIND_ADDR:-0.0.0.0}:8090:8090"
+      - "${PLAIN_BIND_ADDR:-${LAN_BIND_ADDR:-0.0.0.0}}:8090:8090"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3).status == 200 else 1)"]
       interval: 15s
@@ -141,7 +143,7 @@ services:
       start_period: 15s
 
   postgres-backup:
-    image: postgres:16
+    image: postgres:16.15
     restart: unless-stopped
     depends_on:
       postgres:
@@ -175,7 +177,10 @@ services:
       start_period: 15m
 
   home-assistant:
-    image: "ghcr.io/home-assistant/home-assistant:stable"
+    # Pinned to a minor: `stable` moves monthly and can change HA's storage
+    # schema under the read-only YAML mounts on a routine `compose pull`. Bump
+    # deliberately (HA does not downgrade).
+    image: "ghcr.io/home-assistant/home-assistant:2026.9"
     restart: unless-stopped
     depends_on:
       mosquitto:
@@ -203,11 +208,11 @@ services:
     # to HA directly (ADR-0002) — this port is for the owner's browser/app
     # and for the Caddy profile below.
     ports:
-      - "${LAN_BIND_ADDR:-0.0.0.0}:8123:8123"
+      - "${PLAIN_BIND_ADDR:-${LAN_BIND_ADDR:-0.0.0.0}}:8123:8123"
     # The official image ships its own HEALTHCHECK; not overridden here.
 
   ha-discovery-publisher:
-    image: eclipse-mosquitto:2
+    image: eclipse-mosquitto:2.0.22
     restart: "no"
     depends_on:
       mosquitto:
@@ -230,7 +235,11 @@ services:
     environment:
       DOORBOARD_DOOR_ID: ${DOORBOARD_DOOR_ID:-primary}
       CONTROL_PLANE_URL: http://control-plane-api:8090
-      WALLBOARD_WORKER_INGEST_TOKEN: ${WALLBOARD_WORKER_INGEST_TOKEN:-}
+      # Required: with an empty token the worker starts and every publish 401s
+      # until deploy/nuc/README.md step 6 is done — silently. Bootstrapping the
+      # token authority first is documented there (a placeholder on the command
+      # line, not in .env).
+      WALLBOARD_WORKER_INGEST_TOKEN: ${WALLBOARD_WORKER_INGEST_TOKEN:?WALLBOARD_WORKER_INGEST_TOKEN must be set in .env (deploy/nuc/README.md step 6)}
       # The academic countdown job (ADR-0039) reads the container's local zone
       # for "today". Without this it silently runs in UTC, which is wrong for
       # hours a day (see control-plane-api's TZ above for the same pattern).
@@ -311,7 +320,7 @@ services:
       WALLBOARD_WORKER_HEARTBEAT_PATH: ${WALLBOARD_WORKER_HEARTBEAT_PATH:-/tmp/wallboard-worker-heartbeat}
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.4-alpine
     restart: unless-stopped
     profiles: ["https"]
     depends_on:

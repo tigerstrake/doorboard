@@ -13,7 +13,11 @@
 # hostnames, so this stays LAN-only even with HTTPS on.
 {$DOORBOARD_INTERNAL_DOMAIN:doorboard.internal} {
 	# control-plane-api: the door Pi and the owner's browser/admin panel.
-	@control_plane_api path /ingest* /config/* /people/* /admin/* /health /metrics /webhooks/*
+	# /status/* carries the LUKS key release (/status/keys/enrollment) and the
+	# presence routes + HA webhooks; it was missing, so the one endpoint the
+	# enrollment runbook wants behind TLS fell through to Home Assistant.
+	# tests/test_nuc_caddy_routes.py checks this list against the app's routes.
+	@control_plane_api path /ingest* /config/* /people/* /admin/* /status/* /health /metrics
 	handle @control_plane_api {
 		reverse_proxy control-plane-api:8090
 	}
