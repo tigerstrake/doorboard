@@ -1,9 +1,13 @@
 """Outage endurance — T-502 acceptance.
 
 "Simulated 48 h NAS outage under continuous recording → queue grows bounded,
-drains completely on recovery, dead-letters only per policy."
+drains completely on recovery, dead-letters only per policy." The outage is now
+seven days, at a step short enough that every item passes 1024 attempts: at that
+count ``base * 2**attempts`` overflowed a float before the cap was applied, the
+drain pass died on the oldest item every time, and a long weekend with the NUC
+off wedged door-sync until someone reset ``attempts`` by hand.
 
-Time is warped via an injected clock so the 48 h passes instantly. The archive
+Time is warped via an injected clock so the week passes instantly. The archive
 target is ``down`` for the whole outage; the key properties asserted are:
 
   - the queue never grows past what was enqueued (no duplication, no runaway),
@@ -25,7 +29,7 @@ from door_sync.queue import UploadQueue
 pytestmark = pytest.mark.anyio
 
 
-async def test_48h_nas_outage_drains_on_recovery(tmp_path: Path, helpers) -> None:
+async def test_7_day_nas_outage_drains_on_recovery(tmp_path: Path, helpers) -> None:
     now = [1_000_000.0]
     settings = helpers.make_settings(
         tmp_path,
@@ -48,7 +52,7 @@ async def test_48h_nas_outage_drains_on_recovery(tmp_path: Path, helpers) -> Non
     )
 
     try:
-        n_clips = 20
+        n_clips = 8
         clips = []
         for i in range(n_clips):
             rid = f"00000000-0000-7000-8000-{i:012d}"
@@ -56,9 +60,11 @@ async def test_48h_nas_outage_drains_on_recovery(tmp_path: Path, helpers) -> Non
             engine.enqueue_recording(recording_id=rid, local_path=rel, sha256=sha, trace_id=rid)
             clips.append((rid, sha))
 
-        # --- 48h outage: retry storm, advancing the clock past each backoff ---
-        step_s = 900.0
-        steps = int((48 * 3600) / step_s) + 1
+        # --- 7-day outage: retry storm, advancing the clock past each backoff.
+        # 450 s > the 300 s cap, so every item is due on every pass and crosses
+        # 1024 attempts well inside the week (the float-overflow boundary).
+        step_s = 450.0
+        steps = int((7 * 24 * 3600) / step_s) + 1
         max_depth = 0
         for _ in range(steps):
             now[0] += step_s
@@ -72,6 +78,10 @@ async def test_48h_nas_outage_drains_on_recovery(tmp_path: Path, helpers) -> Non
         assert max_depth == n_clips
         assert queue.stats(now_epoch=now[0]).pending == n_clips
         assert door_media.synced == []
+        # Every item was tried on every pass: none was starved behind another.
+        for rid, _ in clips:
+            item = queue.get(rid)
+            assert item is not None and item.attempts > 1024, (rid, item and item.attempts)
 
         # --- recovery: NAS back; drain completely ---
         media.down = False

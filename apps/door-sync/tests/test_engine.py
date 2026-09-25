@@ -282,3 +282,87 @@ async def test_gallery_delete_removes_photo_across_nas_tiers(tmp_path: Path, hel
     assert store.list_wallboard_moments() == []
     deleted = store.list_photos(include_deleted=True)[0]
     assert deleted.status == "deleted"
+
+
+async def test_backoff_cannot_overflow_and_a_wedged_item_cannot_starve_the_pass(
+    tmp_path: Path, helpers
+) -> None:
+    """`base * 2**attempts` overflowed a float at attempts=1024, raised out of
+    `_on_failure`, and aborted every pass on the oldest item: next_attempt_at
+    never advanced, so it was due on every pass, first, forever. Nothing behind
+    it was ever attempted -- including items for a NUC that was back up."""
+    settings = helpers.make_settings(tmp_path, backoff_base_s=2.0, backoff_max_s=300.0)
+    queue = UploadQueue(settings.queue_db_path)
+    media = helpers.MockMediaTarget()
+    media.down = True
+    now = [1_000_000.0]
+    try:
+        engine = SyncEngine(
+            queue=queue,
+            settings=settings,
+            media_target=media,
+            nuc_target=helpers.MockNucTarget(),
+            media_client=helpers.RecordingMediaClient(),
+            clock=lambda: now[0],
+        )
+        wedged = "00000000-0000-7000-8000-00000000ab01"
+        behind = "00000000-0000-7000-8000-00000000ab02"
+        rel_a, sha_a, _ = helpers.make_recording_file(settings.ssd_data_root, name="a.mp4")
+        rel_b, sha_b, _ = helpers.make_recording_file(settings.ssd_data_root, name="b.mp4")
+        engine.enqueue_recording(
+            recording_id=wedged, local_path=rel_a, sha256=sha_a, trace_id=wedged
+        )
+        engine.enqueue_recording(
+            recording_id=behind, local_path=rel_b, sha256=sha_b, trace_id=behind
+        )
+        # 2.7 days of NAS outage, in one UPDATE.
+        queue._conn.execute("UPDATE queue_item SET attempts=1024 WHERE item_id=?", (wedged,))  # noqa: SLF001
+        queue._conn.commit()  # noqa: SLF001
+
+        assert engine._backoff_delay(1024) <= settings.backoff_max_s  # noqa: SLF001
+        assert engine._backoff_delay(10**6) <= settings.backoff_max_s  # noqa: SLF001
+
+        await engine.run_once()  # returns, rather than raising OverflowError
+
+        assert media.upload_calls == [rel_a, rel_b], "the second item was attempted"
+        first = queue.get(wedged)
+        assert first is not None and first.attempts == 1025
+        assert first.next_attempt_at > now[0], "backoff advanced instead of staying due"
+    finally:
+        queue.close()
+
+
+async def test_a_bookkeeping_error_on_one_item_does_not_abort_the_pass(
+    tmp_path: Path, helpers, monkeypatch
+) -> None:
+    """process_item classifies every upload error, but its own failure path can
+    raise; run_once must isolate that too."""
+    settings = helpers.make_settings(tmp_path)
+    queue = UploadQueue(settings.queue_db_path)
+    media = helpers.MockMediaTarget()
+    media.down = True
+    try:
+        engine = SyncEngine(
+            queue=queue,
+            settings=settings,
+            media_target=media,
+            nuc_target=helpers.MockNucTarget(),
+            media_client=helpers.RecordingMediaClient(),
+        )
+        a = "00000000-0000-7000-8000-00000000ac01"
+        b = "00000000-0000-7000-8000-00000000ac02"
+        rel_a, sha_a, _ = helpers.make_recording_file(settings.ssd_data_root, name="a.mp4")
+        rel_b, sha_b, _ = helpers.make_recording_file(settings.ssd_data_root, name="b.mp4")
+        engine.enqueue_recording(recording_id=a, local_path=rel_a, sha256=sha_a, trace_id=a)
+        engine.enqueue_recording(recording_id=b, local_path=rel_b, sha256=sha_b, trace_id=b)
+
+        def explode(_prior_attempts: int) -> float:
+            raise OverflowError("int too large to convert to float")
+
+        monkeypatch.setattr(engine, "_backoff_delay", explode)
+        processed = await engine.run_once()
+
+        assert processed == 2
+        assert media.upload_calls == [rel_a, rel_b]
+    finally:
+        queue.close()

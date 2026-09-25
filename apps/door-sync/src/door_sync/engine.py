@@ -21,6 +21,7 @@ Correctness contract (T-502 / ADR-0007), all proven in tests:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import random
 import time
@@ -45,6 +46,9 @@ from door_sync.targets import (
 )
 
 logger = logging.getLogger("door_sync.engine")
+
+# See _backoff_delay: bounds 2**attempts so a long outage cannot overflow a float.
+_BACKOFF_EXPONENT_CAP = 30
 
 
 def _thumb_item_id(recording_id: str) -> str:
@@ -82,8 +86,15 @@ class SyncEngine:
         return self._clock()
 
     def _backoff_delay(self, prior_attempts: int) -> float:
+        # The exponent is capped before the multiply. `base * 2**attempts` is
+        # evaluated before `min` clamps it, and at attempts=1024 the float product
+        # raises OverflowError: one transient failure every ~225 s (the 300 s cap
+        # with equal jitter) gets there in ~64 h of NAS/NUC outage, after which
+        # the drain pass died on that item every time and starved every later one.
+        # 2**30 * base already dwarfs any sane backoff_max_s.
+        exponent = min(max(prior_attempts, 0), _BACKOFF_EXPONENT_CAP)
         capped = min(
-            self._settings.backoff_base_s * (2**prior_attempts),
+            self._settings.backoff_base_s * (2**exponent),
             self._settings.backoff_max_s,
         )
         # Equal jitter: half fixed, half random — bounded, never a busy 0-delay.
@@ -385,7 +396,18 @@ class SyncEngine:
         processed = 0
         await self.finalize_licenses()
         for item in self._queue.due_items(now_epoch=now):
-            await self.process_item(item)
+            try:
+                await self.process_item(item)
+            except Exception as exc:  # noqa: BLE001
+                # process_item classifies every error it sees, but its *failure
+                # bookkeeping* can itself raise (the backoff overflow did). Without
+                # this, one item that is due on every pass -- and, being oldest,
+                # first -- aborted the pass before anything behind it was tried.
+                # Record it as transient so next_attempt_at moves on; if even that
+                # fails, the item is skipped and the rest of the pass still runs.
+                logger.exception("upload_item_bookkeeping_error", extra={"item_id": item.item_id})
+                with contextlib.suppress(Exception):
+                    self._on_failure(item, exc, permanent=False)
             processed += 1
         return processed
 
