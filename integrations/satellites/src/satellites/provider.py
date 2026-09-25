@@ -415,14 +415,56 @@ class SkyfieldSatelliteProvider(SatelliteProvider):
 
 
 class MockSatelliteProvider(SatelliteProvider):
+    # The mock pass: rise in ten minutes, ~9 min long like a high ISS pass, the same
+    # timing and peak as satelliteFixture in apps/door-ui/src/fixtures.ts. Up from the SW,
+    # over the NW at 64.5 degrees, down to the NE -- so `direction`, which is the
+    # culmination's compass point the way the real provider computes it, is truthfully
+    # "NW". Elevation follows a sine and azimuth sweeps 180 degrees: the shape of a real
+    # overhead pass. The ground path runs SW to NE and passes near campus at culmination.
+    _PASS_DURATION_S = 540.0
+    _PASS_MAX_ELEVATION_DEG = 64.5
+    _PASS_RISE_AZIMUTH_DEG = 225.0
+    _PASS_SAMPLES = 18
+    _PASS_GROUND_START = (22.0, -142.0)
+    _PASS_GROUND_END = (52.8, -102.3)
+
     def get_next_pass(self, now: datetime) -> dict[str, Any] | None:
-        # Mock payload matching satelliteFixture in fixtures.ts
+        """A deterministic pass WITH its geometry (ADR-0025).
+
+        The mock used to return only the five text fields, so under the dev stack the
+        sky dome could only ever draw its "high point only" fallback and the globe had
+        no arc -- mock mode showed the panel's degraded state instead of the panel.
+        ADR-0025 asks the opposite: mock mode has to exercise the real path.
+        """
+        rise_at = now + timedelta(minutes=10)
+        (start_lat, start_lng), (end_lat, end_lng) = self._PASS_GROUND_START, self._PASS_GROUND_END
+        track: list[dict[str, float]] = []
+        for index in range(self._PASS_SAMPLES + 1):
+            fraction = index / self._PASS_SAMPLES
+            track.append(
+                {
+                    "t_offset_s": round(self._PASS_DURATION_S * fraction, 1),
+                    "azimuth_deg": round(
+                        (self._PASS_RISE_AZIMUTH_DEG + fraction * 180.0) % 360.0, 1
+                    ),
+                    "elevation_deg": round(
+                        math.sin(math.pi * fraction) * self._PASS_MAX_ELEVATION_DEG, 1
+                    ),
+                    "lat": round(start_lat + (end_lat - start_lat) * fraction, 3),
+                    "lng": round(start_lng + (end_lng - start_lng) * fraction, 3),
+                }
+            )
         return {
             "satellite": "ISS",
-            "rise_at": now + timedelta(minutes=10),
-            "max_elevation_deg": 64.5,
+            "rise_at": rise_at,
+            "max_elevation_deg": self._PASS_MAX_ELEVATION_DEG,
             "direction": "NW",
             "visible": True,
+            "set_at": rise_at + timedelta(seconds=self._PASS_DURATION_S),
+            "rise_azimuth_deg": track[0]["azimuth_deg"],
+            "set_azimuth_deg": track[-1]["azimuth_deg"],
+            "culmination_azimuth_deg": track[self._PASS_SAMPLES // 2]["azimuth_deg"],
+            "track": track,
         }
 
     # (name, norad_id, inclination_deg, ascending-node longitude, period_min). A spread of

@@ -4,10 +4,12 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from doorboard_contracts import parse_event
+from doorboard_contracts.events import AmbientSatellitePassEvent, AmbientSatellitePassPayload
 from satellites.provider import MockSatelliteProvider, SatelliteConfig, SkyfieldSatelliteProvider
 from skyfield.api import load
 from wallboard_worker.jobs import run_satellite_orbits, run_satellite_passes
@@ -32,6 +34,85 @@ def test_mock_satellite_provider() -> None:
     assert res["visible"] is True
     assert res["direction"] == "NW"
     assert res["max_elevation_deg"] == 64.5
+
+
+def _pass_payload(pass_data: dict[str, Any]) -> AmbientSatellitePassPayload:
+    """Exactly as run_satellite_passes builds it, `.get` for the geometry and all."""
+    return AmbientSatellitePassPayload(
+        satellite=pass_data["satellite"],
+        rise_at=pass_data["rise_at"],
+        max_elevation_deg=pass_data["max_elevation_deg"],
+        direction=pass_data["direction"],
+        visible=pass_data["visible"],
+        set_at=pass_data.get("set_at"),
+        rise_azimuth_deg=pass_data.get("rise_azimuth_deg"),
+        set_azimuth_deg=pass_data.get("set_azimuth_deg"),
+        culmination_azimuth_deg=pass_data.get("culmination_azimuth_deg"),
+        track=pass_data.get("track") or [],
+    )
+
+
+def test_mock_pass_carries_geometry_that_validates_as_the_contract_payload() -> None:
+    """ADR-0025: mock mode has to exercise the panel's real path, not its fallback.
+
+    The mock returned only the five text fields, so under the dev stack the sky dome
+    could only ever draw "high point only" and the globe had no arc. The geometry must
+    also be a *coherent* pass -- a track that disagrees with its own rise/set/peak would
+    draw a confident wrong picture -- and `direction` is the culmination's compass point,
+    the way the real provider computes it, not the rise's.
+    """
+    now = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
+    pass_data = MockSatelliteProvider().get_next_pass(now)
+    assert pass_data is not None
+    payload = _pass_payload(pass_data)
+
+    assert payload.set_at is not None
+    assert payload.rise_at > now
+    assert payload.set_at > payload.rise_at
+    assert payload.track, "no arc to draw"
+
+    first, last = payload.track[0], payload.track[-1]
+    assert first.t_offset_s == 0
+    assert last.t_offset_s == pytest.approx((payload.set_at - payload.rise_at).total_seconds())
+    assert first.elevation_deg == 0 and last.elevation_deg == 0
+    assert max(s.elevation_deg for s in payload.track) == pytest.approx(payload.max_elevation_deg)
+    assert first.azimuth_deg == payload.rise_azimuth_deg
+    assert last.azimuth_deg == payload.set_azimuth_deg
+    assert payload.culmination_azimuth_deg is not None
+    assert 292.5 <= payload.culmination_azimuth_deg < 337.5, "NW is 292.5-337.5 in the provider"
+    assert payload.direction == "NW"
+    # The globe needs the ground track too (ADR-0030); a sample without one is the
+    # fallback again, one point at a time.
+    assert all(s.lat is not None and s.lng is not None for s in payload.track)
+    # Deterministic: the dev stack and a test agree on what the mock says.
+    assert MockSatelliteProvider().get_next_pass(now) == pass_data
+
+
+@patch("httpx.post")
+def test_run_satellite_passes_puts_the_mock_geometry_on_the_wire(mock_post) -> None:
+    """End to end through the job: the event a mock-mode kiosk actually receives has the arc."""
+    token_resp, ingest_resp = MagicMock(), MagicMock()
+    token_resp.status_code = 200
+    token_resp.json.return_value = {"token": "tok"}
+    ingest_resp.status_code = 200
+    ingest_resp.json.return_value = {"status": "stored"}
+    mock_post.side_effect = [token_resp, ingest_resp]
+
+    now = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
+    assert run_satellite_passes(Settings(), MockSatelliteProvider(), now=now) is not None
+
+    event = None
+    for call in mock_post.mock_calls:
+        body = call.kwargs.get("json")
+        if isinstance(body, dict) and body.get("events"):
+            event = body["events"][0]
+            break
+    assert event is not None, "no ingest POST was made"
+    parsed = parse_event(event)
+    assert isinstance(parsed, AmbientSatellitePassEvent)
+    assert parsed.payload.set_at is not None
+    assert len(parsed.payload.track) > 2
+    assert parsed.payload.rise_azimuth_deg is not None
 
 
 @patch("httpx.get")
