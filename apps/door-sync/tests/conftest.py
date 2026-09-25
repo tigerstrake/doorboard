@@ -35,6 +35,8 @@ from doorboard_contracts.events import (
     MediaThumbnailReadyPayload,
     SessionEndedEvent,
     SessionEndedPayload,
+    SystemStorageAlertEvent,
+    SystemStorageAlertPayload,
 )
 
 
@@ -192,12 +194,32 @@ def make_media_thumbnail_ready_dict(
     return ev.model_dump(mode="json")
 
 
+def make_storage_alert_dict(*, severity: str = "critical", door_id: str = "primary") -> dict:
+    ev = SystemStorageAlertEvent(
+        event_id=uuid7(),
+        type="system.storage_alert",
+        source="door-media",
+        occurred_at=datetime.now(UTC),
+        monotonic_ms=123,
+        door_id=door_id,
+        trace_id=uuid7(),
+        payload=SystemStorageAlertPayload(
+            host="door-pi",
+            mount="/mnt/ssd/doorboard",
+            free_bytes=3_000_000_000,
+            severity=severity,  # type: ignore[arg-type]
+        ),
+    )
+    return ev.model_dump(mode="json")
+
+
 @pytest.fixture
 def helpers() -> SimpleNamespace:
     return SimpleNamespace(
         make_settings=make_settings,
         make_recording_file=make_recording_file,
         make_session_event_dict=make_session_event_dict,
+        make_storage_alert_dict=make_storage_alert_dict,
         make_media_recording_started_dict=make_media_recording_started_dict,
         make_media_recording_finalized_dict=make_media_recording_finalized_dict,
         make_media_thumbnail_ready_dict=make_media_thumbnail_ready_dict,

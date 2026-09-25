@@ -6,7 +6,9 @@ idempotent things: enqueues NAS archive work as recordings finalize
 *and* mirrors the media metadata event itself to the NUC control plane
 (``media.recording_started`` / ``_finalized`` / ``_thumbnail_ready`` →
 ``enqueue_event``) so its ``media_mirror`` read model — the table Telegram
-video-message delivery reads — is populated. This is the fast path;
+video-message delivery reads — is populated. ``system.storage_alert`` is
+mirrored the same way: it is the "alert control plane" half of ARCHITECTURE
+§10's storage-low row, and this is the only path off the Pi. This is the fast path;
 reconciliation (``SyncEngine.reconcile_from_media``) is the backstop that
 guarantees nothing is lost when the stream was down as an event fired.
 
@@ -89,6 +91,12 @@ class MediaEventSource:
                 local_path=payload["path"],
                 trace_id=trace_id,
             )
+            self._engine.enqueue_event(event)
+        elif etype == "system.storage_alert":
+            # door-media raises this when the SSD crosses 10%/5% free and stops
+            # recording. It went onto an in-process queue nothing forwarded, so the
+            # control plane's notify rule for it could never fire and the owner
+            # learned of "recording stopped" by noticing bell clips missing.
             self._engine.enqueue_event(event)
 
     async def run(self) -> None:

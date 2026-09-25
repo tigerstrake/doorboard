@@ -69,6 +69,46 @@ def test_thumbnail_ready_archives_to_nas_and_mirrors_to_nuc(helpers) -> None:
     engine.enqueue_event.assert_called_once_with(event)
 
 
+def test_storage_alert_is_mirrored_to_the_nuc(helpers) -> None:
+    """ARCHITECTURE §10, storage low: "stop recording safely, preserve interaction,
+    alert control plane". The first two held; the alert was emitted into a queue
+    nothing forwarded, so control-plane-api's notify rule for it never fired."""
+    source, engine = _make_source()
+    event = helpers.make_storage_alert_dict(severity="critical")
+
+    source.handle_event(event)
+
+    engine.enqueue_event.assert_called_once_with(event)
+    engine.enqueue_recording.assert_not_called()
+    engine.enqueue_thumbnail.assert_not_called()
+
+
+def test_a_storage_alert_frame_lands_as_a_nuc_queue_item(tmp_path, helpers) -> None:
+    """End to end through a real engine: the frame becomes a pending `nuc` item."""
+    from door_sync.queue import UploadQueue
+
+    settings = helpers.make_settings(tmp_path)
+    queue = UploadQueue(settings.queue_db_path)
+    try:
+        engine = SyncEngine(
+            queue=queue,
+            settings=settings,
+            media_target=helpers.MockMediaTarget(),
+            nuc_target=helpers.MockNucTarget(),
+            media_client=helpers.RecordingMediaClient(),
+        )
+        source = MediaEventSource(engine, base_url="http://door-media")
+        event = helpers.make_storage_alert_dict(severity="warning")
+
+        source._handle_frame(json.dumps(event))
+
+        item = queue.get(event["event_id"])
+        assert item is not None
+        assert (item.kind, item.target, item.status) == ("event", "nuc", "pending")
+    finally:
+        queue.close()
+
+
 def test_unknown_event_type_is_ignored(helpers) -> None:
     """A non-media event (e.g. session.*) triggers no enqueues on this source."""
     source, engine = _make_source()
