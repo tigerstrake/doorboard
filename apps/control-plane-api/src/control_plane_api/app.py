@@ -10,7 +10,8 @@ Routes:
   GET    /status/presence/bundle                    — Pi-cacheable presence bundle (config-scoped)
   GET    /status/presence/{subject_id}              — current presence + per-source detail (admin)
   GET    /status/presence/{subject_id}/history       — label-change history (admin)
-  PATCH  /status/presence/{subject_id}               — set tracking_enabled (admin)
+  PATCH  /status/presence/{subject_id}               — set tracking_enabled; may create (admin)
+  DELETE /status/presence/{subject_id}               — remove subject, rows, retained topic (admin)
   POST   /status/presence/{subject_id}/override      — set manual override (admin UI + one-tap)
   DELETE /status/presence/{subject_id}/override      — clear manual override (admin)
   PATCH  /status/presence/{subject_id}/sources/{src} — per-source enable/disable (admin)
@@ -57,7 +58,7 @@ from typing import Annotated, Any
 from doorboard_auth import ServiceTokenRecord, ServiceTokenScope
 from doorboard_config import DoorConfigSettings
 from doorboard_contracts import PresenceLabel
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Request, status
 from fastapi.responses import Response
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import Engine, select, text
@@ -71,7 +72,12 @@ from control_plane_api.http_limits import BodySizeLimitMiddleware
 from control_plane_api.metrics import MQTT_CONNECTED, metrics
 from control_plane_api.models import SocialItemRow
 from control_plane_api.presence import CoordinatePayloadError, reject_coordinate_payload
-from control_plane_api.presence_engine import InvalidSourceError
+from control_plane_api.presence_engine import (
+    DEFAULT_SUBJECT_IDS,
+    SUBJECT_ID_PATTERN,
+    InvalidSourceError,
+    UnknownSubjectError,
+)
 from control_plane_api.purge import purge_person
 from control_plane_api.service import ingest_batch
 from control_plane_api.settings import Settings
@@ -89,6 +95,13 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # this lifespan turn the socket does not exist yet and paho drops the
     # publish — and the hook also covers every broker reconnect.
     app.state.app_state = AppState(cfg)
+    # Presence subjects are an allow-list; the defaults must exist before the first
+    # webhook. Best-effort: a database that is down at boot shows up on /health.
+    try:
+        with session_scope(app.state.app_state.session_factory) as session:
+            presence_engine.seed_default_subjects(session, now=datetime.now(UTC))
+    except Exception:
+        logger.warning("presence_subject_seed_failed", exc_info=True)
     logger.info("control_plane_api_ready", extra={"door_id": cfg.door_id})
     yield
     app.state.app_state.dispose()
@@ -360,6 +373,16 @@ def put_config(door_id: str, body: dict, request: Request, _auth: AdminAuth) -> 
 # ---------------------------------------------------------------------------
 
 
+# Path form of a subject id: validated before the handler runs, so a 65-char id is
+# a 422 rather than a `DataError` 500 out of the database.
+SubjectId = Annotated[str, Path(pattern=SUBJECT_ID_PATTERN)]
+
+
+def _require_known_subject(session, subject_id: str) -> None:
+    if not presence_engine.subject_exists(session, subject_id):
+        raise HTTPException(status_code=404, detail=f"unknown presence subject {subject_id!r}")
+
+
 def _source_status_to_dict(item: presence_engine.SourceStatus) -> dict:
     return {
         "source": item.source,
@@ -410,7 +433,7 @@ class PresenceWebhookRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    subject_id: str
+    subject_id: str = Field(pattern=SUBJECT_ID_PATTERN)
     # Nullable, but REQUIRED — you have to say what you mean. `null` CLEARS this
     # source, which is what lets a lower-precedence source show through again
     # (ADR-0037): a Focus-off that wrote "available" would outrank the nightly
@@ -475,9 +498,10 @@ def get_presence_bundle(
 
 
 @app.get("/status/presence/{subject_id}")
-def get_presence(subject_id: str, request: Request, _auth: AdminAuth) -> dict:
+def get_presence(subject_id: SubjectId, request: Request, _auth: AdminAuth) -> dict:
     state = _state(request)
     with session_scope(state.session_factory) as session:
+        _require_known_subject(session, subject_id)
         item = presence_engine.get_subject_status(
             session,
             subject_id=subject_id,
@@ -493,10 +517,11 @@ def get_presence(subject_id: str, request: Request, _auth: AdminAuth) -> dict:
 
 @app.get("/status/presence/{subject_id}/history")
 def get_presence_history(
-    subject_id: str, request: Request, _auth: AdminAuth, limit: int = 100
+    subject_id: SubjectId, request: Request, _auth: AdminAuth, limit: int = 100
 ) -> dict:
     state = _state(request)
     with session_scope(state.session_factory) as session:
+        _require_known_subject(session, subject_id)
         rows = presence_engine.list_history(session, subject_id=subject_id, limit=limit)
     return {
         "subject_id": subject_id,
@@ -514,8 +539,9 @@ def get_presence_history(
 
 @app.patch("/status/presence/{subject_id}")
 def patch_presence_subject(
-    subject_id: str, body: PresenceSubjectConfigRequest, request: Request, _auth: AdminAuth
+    subject_id: SubjectId, body: PresenceSubjectConfigRequest, request: Request, _auth: AdminAuth
 ) -> dict:
+    """The one route that may CREATE a subject: an admin adding a third resident."""
     state = _state(request)
     now = datetime.now(UTC)
     with session_scope(state.session_factory) as session:
@@ -537,12 +563,13 @@ def patch_presence_subject(
 
 @app.post("/status/presence/{subject_id}/override")
 def set_presence_override(
-    subject_id: str, body: PresenceOverrideRequest, request: Request, _auth: AdminAuth
+    subject_id: SubjectId, body: PresenceOverrideRequest, request: Request, _auth: AdminAuth
 ) -> dict:
     """Manual override endpoint — admin UI and one-tap phone shortcut both hit this."""
     state = _state(request)
     now = datetime.now(UTC)
     with session_scope(state.session_factory) as session:
+        _require_known_subject(session, subject_id)
         presence_engine.set_manual_override(
             session, subject_id=subject_id, label=body.label, until=body.until, now=now
         )
@@ -560,10 +587,11 @@ def set_presence_override(
 
 
 @app.delete("/status/presence/{subject_id}/override")
-def clear_presence_override(subject_id: str, request: Request, _auth: AdminAuth) -> dict:
+def clear_presence_override(subject_id: SubjectId, request: Request, _auth: AdminAuth) -> dict:
     state = _state(request)
     now = datetime.now(UTC)
     with session_scope(state.session_factory) as session:
+        _require_known_subject(session, subject_id)
         presence_engine.clear_manual_override(session, subject_id=subject_id, now=now)
         item = presence_engine.get_subject_status(
             session,
@@ -580,7 +608,7 @@ def clear_presence_override(subject_id: str, request: Request, _auth: AdminAuth)
 
 @app.patch("/status/presence/{subject_id}/sources/{source}")
 def patch_presence_source(
-    subject_id: str,
+    subject_id: SubjectId,
     source: str,
     body: PresenceSourceToggleRequest,
     request: Request,
@@ -590,6 +618,7 @@ def patch_presence_source(
     now = datetime.now(UTC)
     try:
         with session_scope(state.session_factory) as session:
+            _require_known_subject(session, subject_id)
             presence_engine.set_source_enabled(
                 session, subject_id=subject_id, source=source, enabled=body.enabled, now=now
             )
@@ -629,6 +658,9 @@ def _handle_presence_webhook(request: Request, raw: dict, *, source: str) -> dic
     if until is None and payload.label is not None:
         until = now + timedelta(seconds=state.settings.presence_webhook_max_age_s)
     with session_scope(state.session_factory) as session:
+        # Allow-list: a webhook may update a subject, never invent one. Anything a
+        # LAN client can reach HA's inbound webhook with lands here.
+        _require_known_subject(session, payload.subject_id)
         presence_engine.set_source_value(
             session,
             subject_id=payload.subject_id,
@@ -648,6 +680,24 @@ def _handle_presence_webhook(request: Request, raw: dict, *, source: str) -> dic
             history_max_rows=state.settings.presence_history_max_rows,
         )
     return _subject_status_to_dict(item)
+
+
+@app.delete("/status/presence/{subject_id}")
+def delete_presence_subject(subject_id: SubjectId, request: Request, _auth: AdminAuth) -> dict:
+    """Remove a subject: its config, sources and history, and the broker's retained label."""
+    if subject_id in DEFAULT_SUBJECT_IDS:
+        raise HTTPException(
+            status_code=409, detail=f"{subject_id!r} is a configured default subject"
+        )
+    state = _state(request)
+    try:
+        with session_scope(state.session_factory) as session:
+            counts = presence_engine.delete_subject(session, subject_id=subject_id)
+    except UnknownSubjectError as exc:
+        raise HTTPException(status_code=404, detail="unknown presence subject") from exc
+    presence_engine.clear_retained_presence(state.mqtt_publisher, subject_id)
+    logger.info("presence_subject_deleted", extra={"subject_id": subject_id, **counts})
+    return {"subject_id": subject_id, "status": "deleted", **counts}
 
 
 @app.post("/status/presence/webhook/focus-shortcut")

@@ -83,6 +83,10 @@ def topics_for(event: DoorboardEvent) -> tuple[str, ...]:
 class MqttPublisher(Protocol):
     def publish_event(self, event: DoorboardEvent) -> None: ...
 
+    def clear_retained(self, topic: str) -> None:
+        """Delete the broker's retained message on `topic` (empty retained publish)."""
+        ...
+
     @property
     def connected(self) -> bool | None:
         """True/False for a real link; None when MQTT is not configured at all."""
@@ -94,6 +98,9 @@ class NullMqttPublisher:
 
     def publish_event(self, event: DoorboardEvent) -> None:
         logger.debug("mqtt_disabled_skip_publish", extra={"type": event.type})
+
+    def clear_retained(self, topic: str) -> None:
+        logger.debug("mqtt_disabled_skip_clear", extra={"topic": topic})
 
     @property
     def connected(self) -> bool | None:
@@ -108,11 +115,15 @@ class RecordingMqttPublisher:
         # topic each publish fanned out to (the legacy presence topic included).
         self.published: list[tuple[str, DoorboardEvent]] = []
         self.topics: list[str] = []
+        self.cleared: list[str] = []
 
     def publish_event(self, event: DoorboardEvent) -> None:
         topics = topics_for(event)
         self.published.append((topics[0], event))
         self.topics.extend(topics)
+
+    def clear_retained(self, topic: str) -> None:
+        self.cleared.append(topic)
 
     @property
     def connected(self) -> bool | None:
@@ -264,6 +275,18 @@ class PahoMqttPublisher:
                     self._record_dropped(event, topic, rc)
         except Exception:
             logger.warning("mqtt_publish_failed", extra={"type": event.type}, exc_info=True)
+
+    def clear_retained(self, topic: str) -> None:
+        # An empty payload with retain=True is MQTT's "forget the retained
+        # message" — the broker deletes it and future subscribers get nothing.
+        try:
+            info = self._client.publish(topic, None, retain=True)
+            rc = int(getattr(info, "rc", _RC_SUCCESS) or _RC_SUCCESS)
+            if rc != _RC_SUCCESS:
+                metrics.inc(MQTT_PUBLISH_FAILURES)
+                logger.warning("mqtt_clear_retained_dropped", extra={"topic": topic, "rc": rc})
+        except Exception:
+            logger.warning("mqtt_clear_retained_failed", extra={"topic": topic}, exc_info=True)
 
     def close(self) -> None:
         # Send DISCONNECT while the network loop is still running so the broker

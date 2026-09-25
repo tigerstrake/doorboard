@@ -12,10 +12,15 @@ from __future__ import annotations
 import time
 from datetime import UTC, datetime, timedelta
 
+import pytest
+from control_plane_api import state as state_module
 from control_plane_api.app import app
+from control_plane_api.models import PresenceHistoryRow, PresenceSourceRow, PresenceSubjectRow
+from control_plane_api.mqtt import PRESENCE_TOPIC, RecordingMqttPublisher, presence_topic_for
 from control_plane_api.presence import is_stale
 from control_plane_api.settings import override_settings
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from .conftest import TestSettings as _BaseTestSettings
 
@@ -499,3 +504,160 @@ def test_an_override_with_an_expiry_resolves_instead_of_500ing(client: TestClien
     status = client.get("/status/presence/owner", headers=ADMIN_HEADERS)
     assert status.status_code == 200, status.text
     assert status.json()["source"] == "manual"
+
+
+# ---------------------------------------------------------------------------
+# Subjects are an allow-list (seeded defaults + admin-created), never client-invented
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def recording_client(engine, monkeypatch: pytest.MonkeyPatch):
+    """A TestClient whose AppState publishes to a recording MQTT double."""
+    recorder = RecordingMqttPublisher()
+    monkeypatch.setattr(state_module, "build_publisher", lambda **kwargs: recorder)
+    with TestClient(app) as c:
+        yield c, recorder
+
+
+def _subject_rows(session_factory, subject_id: str) -> tuple[int, int, int]:
+    with session_factory() as session:
+        subjects = session.execute(
+            select(PresenceSubjectRow).where(PresenceSubjectRow.subject_id == subject_id)
+        ).all()
+        sources = session.execute(
+            select(PresenceSourceRow).where(PresenceSourceRow.subject_id == subject_id)
+        ).all()
+        history = session.execute(
+            select(PresenceHistoryRow).where(PresenceHistoryRow.subject_id == subject_id)
+        ).all()
+    return len(subjects), len(sources), len(history)
+
+
+def test_a_webhook_for_an_unknown_subject_is_404_and_writes_and_publishes_nothing(
+    recording_client, session_factory
+) -> None:
+    """Before: any string on the LAN-reachable webhook became a permanent, published,
+    retained, wallboard-rendered subject with no way to delete it."""
+    client, recorder = recording_client
+    resp = client.post(
+        "/status/presence/webhook/focus-shortcut",
+        json={"subject_id": "stranger", "label": "busy"},
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 404, resp.text
+    assert _subject_rows(session_factory, "stranger") == (0, 0, 0)
+    assert not [e for _t, e in recorder.published if "stranger" in e.model_dump_json()]
+    listed = {
+        s["subject_id"]
+        for s in client.get("/status/presence", headers=ADMIN_HEADERS).json()["subjects"]
+    }
+    assert listed == {"owner", "roommate"}
+
+
+@pytest.mark.parametrize(
+    "subject_id",
+    ["x" * 33, "x" * 65, "Owner", "a b", "../owner", "owner;drop", ""],
+)
+def test_malformed_subject_ids_are_422_on_the_webhook_and_in_the_path(
+    client: TestClient, subject_id: str
+) -> None:
+    resp = client.post(
+        "/status/presence/webhook/geofence-label",
+        json={"subject_id": subject_id, "label": "away"},
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 422, resp.text
+    if subject_id and "/" not in subject_id:
+        # In the path too: a 65-char id used to reach Postgres and 500 on DataError.
+        assert client.get(f"/status/presence/{subject_id}", headers=ADMIN_HEADERS).status_code in (
+            404,
+            422,
+        )
+        assert (
+            client.post(
+                f"/status/presence/{subject_id}/override",
+                json={"label": "busy"},
+                headers=ADMIN_HEADERS,
+            ).status_code
+            == 422
+        )
+
+
+def test_admin_get_and_override_of_an_unknown_subject_are_404(client: TestClient) -> None:
+    assert client.get("/status/presence/guest", headers=ADMIN_HEADERS).status_code == 404
+    assert client.get("/status/presence/guest/history", headers=ADMIN_HEADERS).status_code == 404
+    assert (
+        client.post(
+            "/status/presence/guest/override", json={"label": "busy"}, headers=ADMIN_HEADERS
+        ).status_code
+        == 404
+    )
+    assert (
+        client.delete("/status/presence/guest/override", headers=ADMIN_HEADERS).status_code == 404
+    )
+    assert (
+        client.patch(
+            "/status/presence/guest/sources/manual", json={"enabled": False}, headers=ADMIN_HEADERS
+        ).status_code
+        == 404
+    )
+
+
+def test_admin_patch_creates_a_subject_the_webhook_then_accepts(recording_client) -> None:
+    client, recorder = recording_client
+    created = client.patch(
+        "/status/presence/guest", json={"tracking_enabled": True}, headers=ADMIN_HEADERS
+    )
+    assert created.status_code == 200, created.text
+    resp = client.post(
+        "/status/presence/webhook/focus-shortcut",
+        json={"subject_id": "guest", "label": "busy"},
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["label"] == "busy"
+    assert presence_topic_for("guest") in recorder.topics
+
+
+def test_admin_delete_removes_the_subject_its_rows_and_the_retained_topics(
+    recording_client, session_factory
+) -> None:
+    client, recorder = recording_client
+    client.patch("/status/presence/guest", json={"tracking_enabled": True}, headers=ADMIN_HEADERS)
+    client.post(
+        "/status/presence/webhook/focus-shortcut",
+        json={"subject_id": "guest", "label": "busy"},
+        headers=ADMIN_HEADERS,
+    )
+    # One source row; two history rows (unknown/default on creation, then busy).
+    assert _subject_rows(session_factory, "guest") == (1, 1, 2)
+
+    resp = client.delete("/status/presence/guest", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "subject_id": "guest",
+        "status": "deleted",
+        "sources_deleted": 1,
+        "history_deleted": 2,
+    }
+    assert _subject_rows(session_factory, "guest") == (0, 0, 0)
+    # Both retained topic forms are forgotten on the broker (ADR-0048 transition).
+    assert recorder.cleared == [presence_topic_for("guest"), PRESENCE_TOPIC]
+    assert client.get("/status/presence/guest", headers=ADMIN_HEADERS).status_code == 404
+    assert client.delete("/status/presence/guest", headers=ADMIN_HEADERS).status_code == 404
+    listed = {
+        s["subject_id"]
+        for s in client.get("/status/presence", headers=ADMIN_HEADERS).json()["subjects"]
+    }
+    assert listed == {"owner", "roommate"}
+
+
+def test_default_subjects_cannot_be_deleted(client: TestClient) -> None:
+    assert client.delete("/status/presence/owner", headers=ADMIN_HEADERS).status_code == 409
+    assert client.delete("/status/presence/roommate", headers=ADMIN_HEADERS).status_code == 409
+    assert client.get("/status/presence/owner", headers=ADMIN_HEADERS).status_code == 200
+
+
+def test_subject_delete_requires_admin(client: TestClient) -> None:
+    assert client.delete("/status/presence/guest").status_code == 401

@@ -21,11 +21,14 @@ persistence and orchestration layer around it —
     "busy until 15:00" revert on schedule without a background scheduler:
     every caller resolves against the current `now`.
 
-Two subjects are auto-provisioned on first touch (owner, roommate — the
-Weasley-clock pair ARCHITECTURE.md §9 and the wallboard spec name), mirroring
-`bundles.get_or_create_bundle`'s "auto-create sane defaults on first read"
-pattern. Any other `subject_id` still works — it just isn't listed until it
-has a row.
+Subjects are an allow-list. The two defaults (owner, roommate — the
+Weasley-clock pair ARCHITECTURE.md §9 and the wallboard spec name) are seeded
+at startup; an admin PATCH may create another. The webhooks and the other
+admin routes refuse (404) a `subject_id` that has no `presence_subjects` row:
+before this, any string a LAN client sent became a permanent subject that was
+published, retained, rendered on the wallboard (evicting the owner's tile) and
+republished at every boot, with no way to delete it. `delete_subject` is that
+way now.
 """
 
 from __future__ import annotations
@@ -44,7 +47,7 @@ from sqlalchemy.orm import Session
 from control_plane_api._uuid7 import uuid7
 from control_plane_api.ingest import ingest_one
 from control_plane_api.models import PresenceHistoryRow, PresenceSourceRow, PresenceSubjectRow
-from control_plane_api.mqtt import MqttPublisher
+from control_plane_api.mqtt import PRESENCE_TOPIC, MqttPublisher, presence_topic_for
 from control_plane_api.presence import (
     INFERRED_SOURCES,
     SOURCE_PRECEDENCE,
@@ -59,6 +62,11 @@ logger = logging.getLogger("control_plane_api.presence_engine")
 
 DEFAULT_SUBJECT_IDS: tuple[str, ...] = ("owner", "roommate")
 
+# What a subject id may look like, on the wire and in a path. Lowercase so a
+# case variant cannot masquerade as a second subject; 32 chars is generous
+# for a household and far below the 64 the columns hold.
+SUBJECT_ID_PATTERN = r"^[a-z0-9_-]{1,32}$"
+
 # Sources with a real registry row holding label/until. "calendar" is
 # deliberately excluded — its value always comes live from the
 # `CalendarProvider`; a row for it (if any) only ever carries `enabled`.
@@ -68,6 +76,10 @@ STORED_VALUE_SOURCES: frozenset[str] = frozenset(
 
 
 class InvalidSourceError(ValueError):
+    pass
+
+
+class UnknownSubjectError(LookupError):
     pass
 
 
@@ -108,6 +120,49 @@ def set_subject_tracking_enabled(
     row.updated_at = now
     session.flush()
     return row
+
+
+def seed_default_subjects(session: Session, *, now: datetime) -> int:
+    """Make sure every default subject has its row (called at startup). Idempotent."""
+    created = 0
+    for subject_id in DEFAULT_SUBJECT_IDS:
+        if session.get(PresenceSubjectRow, subject_id) is None:
+            session.add(
+                PresenceSubjectRow(subject_id=subject_id, tracking_enabled=True, updated_at=now)
+            )
+            created += 1
+    session.flush()
+    return created
+
+
+def subject_exists(session: Session, subject_id: str) -> bool:
+    return session.get(PresenceSubjectRow, subject_id) is not None
+
+
+def delete_subject(session: Session, *, subject_id: str) -> dict[str, int]:
+    """Remove a subject with everything keyed to it. Raises for an unknown subject.
+
+    The raw `events` rows for its `status.presence_changed` history are left in the
+    archive: they carry a broad label and an opaque id, not personal content, and
+    `presence_history` is the only table that referenced them.
+    """
+    if not subject_exists(session, subject_id):
+        raise UnknownSubjectError(subject_id)
+    history = session.execute(
+        delete(PresenceHistoryRow).where(PresenceHistoryRow.subject_id == subject_id)
+    ).rowcount
+    sources = session.execute(
+        delete(PresenceSourceRow).where(PresenceSourceRow.subject_id == subject_id)
+    ).rowcount
+    session.execute(delete(PresenceSubjectRow).where(PresenceSubjectRow.subject_id == subject_id))
+    session.flush()
+    return {"sources_deleted": int(sources), "history_deleted": int(history)}
+
+
+def clear_retained_presence(mqtt_publisher: MqttPublisher, subject_id: str) -> None:
+    """Forget a subject's retained presence on the broker — both topic forms (ADR-0048)."""
+    mqtt_publisher.clear_retained(presence_topic_for(subject_id))
+    mqtt_publisher.clear_retained(PRESENCE_TOPIC)
 
 
 def list_known_subject_ids(session: Session) -> list[str]:
