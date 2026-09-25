@@ -28,6 +28,10 @@ from control_plane_api.mqtt import MqttPublisher
 logger = logging.getLogger("control_plane_api.service")
 
 
+def _clip(value: object, limit: int = 128) -> str | None:
+    return None if value is None else str(value)[:limit]
+
+
 def ingest_batch(
     session_factory: sessionmaker[Session],
     raw_events: list[dict],
@@ -47,6 +51,22 @@ def ingest_batch(
         if outcome.error is not None:
             item["error"] = outcome.error
         results.append(item)
+        # One structured line per event (CONTRIBUTING.md "Logs"): the ids and the
+        # outcome, never the payload. For a rejected event the type/trace_id come
+        # from the raw dict and may be anything the sender put there, so they are
+        # clipped to the column widths they would have had.
+        event = outcome.event
+        logger.info(
+            "event_ingested",
+            extra={
+                "event_id": outcome.event_id,
+                "trace_id": str(event.trace_id) if event else _clip(raw.get("trace_id")),
+                "type": event.type if event else _clip(raw.get("type")),
+                "status": outcome.status,
+                "batch_id": batch_id,
+                "error": outcome.error,
+            },
+        )
 
         if outcome.status == "stored" and outcome.event is not None:
             try:

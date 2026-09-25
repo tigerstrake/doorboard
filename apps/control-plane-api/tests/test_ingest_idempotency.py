@@ -7,6 +7,7 @@ projections (must not double-apply on replay).
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 from control_plane_api.fanout import FanoutWorker
@@ -201,3 +202,53 @@ def test_a_value_the_database_refuses_is_rejected_and_the_rest_of_the_batch_land
         assert session.get(SocialItemRow, ("guestbook", oversized["payload"]["entry_id"])) is None
         count = session.execute(select(func.count()).select_from(EventRow)).scalar_one()
     assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# Structured per-event log; rejections never echo the input
+# ---------------------------------------------------------------------------
+
+
+def test_a_rejection_names_the_field_but_never_echoes_the_input(session_factory, caplog) -> None:
+    """`str(ValidationError)` carried `input_value=...` — a recognised visitor's name
+    went back over the wire to the Pi and into the logs at both ends."""
+    bad = build_event("session.state_changed", payload_overrides={"display_name": "Secret Name"})
+    bad["payload"]["to_state"] = "NOT_A_STATE"
+    with caplog.at_level(logging.INFO, logger="control_plane_api.service"):
+        results = ingest_batch(
+            session_factory,
+            [bad],
+            batch_id="reject",
+            now=datetime.now(UTC),
+            mqtt_publisher=RecordingMqttPublisher(),
+            fanout=_worker(session_factory),
+        )
+    assert results[0]["status"] == "rejected"
+    error = results[0]["error"]
+    assert "to_state" in error
+    assert "Secret Name" not in error
+    assert "NOT_A_STATE" not in error
+    assert "Secret Name" not in caplog.text
+
+
+def test_every_event_gets_one_structured_log_line(session_factory, caplog) -> None:
+    good = build_event("system.service_health")
+    bad = {"type": "system.service_health", "payload": {"service": "x"}, "trace_id": "t" * 300}
+    with caplog.at_level(logging.INFO, logger="control_plane_api.service"):
+        ingest_batch(
+            session_factory,
+            [good, good, bad],
+            batch_id="log",
+            now=datetime.now(UTC),
+            mqtt_publisher=RecordingMqttPublisher(),
+            fanout=_worker(session_factory),
+        )
+    lines = [r for r in caplog.records if r.getMessage() == "event_ingested"]
+    assert [r.status for r in lines] == ["stored", "duplicate", "rejected"]  # type: ignore[attr-defined]
+    assert lines[0].event_id == good["event_id"]  # type: ignore[attr-defined]
+    assert lines[0].trace_id == good["trace_id"]  # type: ignore[attr-defined]
+    assert lines[0].type == "system.service_health"  # type: ignore[attr-defined]
+    assert lines[0].batch_id == "log"  # type: ignore[attr-defined]
+    assert lines[2].event_id is None  # type: ignore[attr-defined]
+    assert len(lines[2].trace_id) == 128  # type: ignore[attr-defined]
+    assert lines[2].error  # type: ignore[attr-defined]
