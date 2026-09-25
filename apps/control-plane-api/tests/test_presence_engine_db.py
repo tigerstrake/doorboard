@@ -10,19 +10,21 @@ FastAPI/TestClient involved.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 from control_plane_api import presence_engine
 from control_plane_api.db import session_scope
 from control_plane_api.models import PresenceHistoryRow
-from control_plane_api.mqtt import RecordingMqttPublisher
+from control_plane_api.mqtt import PahoMqttPublisher, RecordingMqttPublisher, presence_topic_for
 from control_plane_api.presence import (
     INFERRED_SOURCES,
     SOURCE_PRECEDENCE,
     MockCalendarProvider,
     SourceEntry,
 )
-from doorboard_contracts import PresenceLabel
+from doorboard_contracts import PresenceLabel, parse_event
+from doorboard_contracts.events import StatusPresenceChangedEvent
 from sqlalchemy import select
 
 NOW = datetime.now(UTC)
@@ -348,10 +350,59 @@ def test_republish_current_presence_re_emits_without_recording_history(session_f
         )
 
     assert n == 2  # both default subjects (owner + roommate) are re-stated
-    subjects = {event.payload.subject_id for _topic, event in republished.published}
+    events = [event for _topic, event in republished.published]
+    assert all(isinstance(e, StatusPresenceChangedEvent) for e in events)
+    presence_events = [e for e in events if isinstance(e, StatusPresenceChangedEvent)]
+    subjects = {e.payload.subject_id for e in presence_events}
     assert subjects == {"owner", "roommate"}
-    owner_evt = next(e for _t, e in republished.published if e.payload.subject_id == "owner")
+    owner_evt = next(e for e in presence_events if e.payload.subject_id == "owner")
     assert owner_evt.type == "status.presence_changed"
     assert owner_evt.payload.label.value == "away"
     # A re-statement, not a transition: no new history row.
     assert len(_history_rows(session_factory, "owner")) == history_before
+
+
+def test_republish_lands_each_subject_on_its_own_retained_topic(session_factory) -> None:
+    """ADR-0048 §1: what the broker holds after a restart must cover every subject.
+
+    Driven through the real Paho publisher against a fake client, so this asserts the
+    exact topic strings and retain flags the broker would see — not the recording double.
+    """
+    published: list[tuple[str, str, bool]] = []
+
+    class _Client:
+        def publish(self, topic: str, payload: str, retain: bool = False) -> None:
+            published.append((topic, payload, retain))
+
+    publisher = PahoMqttPublisher.__new__(PahoMqttPublisher)
+    publisher._client = _Client()  # type: ignore[attr-defined]
+    publisher._is_connected = lambda: True  # type: ignore[attr-defined]
+    calendar = MockCalendarProvider()
+
+    with session_scope(session_factory) as session:
+        presence_engine.set_manual_override(
+            session, subject_id="owner", label=PresenceLabel.BUSY, until=None, now=NOW
+        )
+        presence_engine.set_manual_override(
+            session, subject_id="roommate", label=PresenceLabel.AWAY, until=None, now=NOW
+        )
+        n = presence_engine.republish_current_presence(
+            session,
+            now=NOW,
+            door_id="primary",
+            calendar_provider=calendar,
+            mqtt_publisher=publisher,
+        )
+    assert n == 2
+
+    retained = {topic: (payload, retain) for topic, payload, retain in published}
+    expected = {"owner": PresenceLabel.BUSY, "roommate": PresenceLabel.AWAY}
+    for subject, label in expected.items():
+        payload, retain = retained[presence_topic_for(subject)]
+        assert retain is True
+        replayed = parse_event(json.loads(payload))  # the full contract event, not a bare label
+        assert isinstance(replayed, StatusPresenceChangedEvent)
+        assert replayed.payload.subject_id == subject
+        assert replayed.payload.label == label
+        assert replayed.payload.source == "manual"
+    assert len({t for t, _p, _r in published}) == 3  # owner, roommate, and the legacy topic

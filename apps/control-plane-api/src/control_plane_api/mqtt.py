@@ -22,6 +22,7 @@ import time
 from typing import Any, Protocol
 
 from doorboard_contracts import DoorboardEvent
+from doorboard_contracts.events import StatusPresenceChangedEvent
 
 logger = logging.getLogger("control_plane_api.mqtt")
 
@@ -32,6 +33,32 @@ _DISCONNECTED_WARN_INTERVAL_S = 30.0
 
 def topic_for(event_type: str) -> str:
     return "doorboard/" + event_type.replace(".", "/")
+
+
+PRESENCE_TOPIC = topic_for("status.presence_changed")
+
+
+def presence_topic_for(subject_id: str) -> str:
+    """The retained per-subject presence topic (ADR-0048 §1).
+
+    One retained topic per subject, so each subject's last label survives a broker
+    or consumer restart. On the single shared topic only the last-published subject
+    survived, which meant that after every NUC restart the owner's tile stayed
+    "unavailable" until their presence next changed — hours, on a quiet evening.
+    """
+    return f"{PRESENCE_TOPIC}/{subject_id}"
+
+
+def topics_for(event: DoorboardEvent) -> tuple[str, ...]:
+    """Every topic an event is published to; the first is the primary one.
+
+    `status.presence_changed` goes to its per-subject topic AND, for one release,
+    to the un-suffixed legacy topic so a door-api built before ADR-0048 keeps
+    receiving it. Everything else is published once.
+    """
+    if isinstance(event, StatusPresenceChangedEvent):
+        return (presence_topic_for(event.payload.subject_id), PRESENCE_TOPIC)
+    return (topic_for(event.type),)
 
 
 class MqttPublisher(Protocol):
@@ -49,10 +76,15 @@ class RecordingMqttPublisher:
     """Test double that records what would have been published."""
 
     def __init__(self) -> None:
+        # One entry per event, keyed by its primary topic; `topics` lists every
+        # topic each publish fanned out to (the legacy presence topic included).
         self.published: list[tuple[str, DoorboardEvent]] = []
+        self.topics: list[str] = []
 
     def publish_event(self, event: DoorboardEvent) -> None:
-        self.published.append((topic_for(event.type), event))
+        topics = topics_for(event)
+        self.published.append((topics[0], event))
+        self.topics.extend(topics)
 
 
 class PahoMqttPublisher:
@@ -154,7 +186,9 @@ class PahoMqttPublisher:
             # transitions, not state. A retained "the bell is ringing" would be delivered to
             # every future subscriber as though it had just happened.
             retain = event.type.startswith(("ambient.", "status."))
-            self._client.publish(topic_for(event.type), event.model_dump_json(), retain=retain)
+            payload = event.model_dump_json()
+            for topic in topics_for(event):
+                self._client.publish(topic, payload, retain=retain)
         except Exception:
             logger.warning("mqtt_publish_failed", extra={"type": event.type}, exc_info=True)
 

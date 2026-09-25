@@ -3,6 +3,8 @@
 # (bell event, presence, storage alert, sync status). Adding an entity is:
 # add a payload file here + one line below, nothing else.
 homeassistant/binary_sensor/doorboard/bell_event/config|bell_event.json
-homeassistant/sensor/doorboard/presence/config|presence.json
+# presence is a device-discovery payload (one sensor per subject, ADR-0048):
+# it MUST go to the homeassistant/device/... topic, not sensor/...
+homeassistant/device/doorboard_presence/config|presence.json
 homeassistant/sensor/doorboard/storage_alert/config|storage_alert.json
 homeassistant/sensor/doorboard/sync_status/config|sync_status.json

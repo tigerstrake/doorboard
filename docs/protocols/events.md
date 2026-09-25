@@ -102,6 +102,8 @@ Local file deletion is only legal after `sync.upload_completed` with a matching 
 
 Precedence (higher wins): manual > focus_shortcut > geofence_label > calendar > schedule > default. Broad labels only — no coordinates, no calendar contents.
 
+**MQTT topics.** control-plane-api's audit fan-out publishes every ingested event to `doorboard/<type with "." → "/">` (`mqtt.py`). `status.presence_changed` is additionally published **per subject**, retained, to `doorboard/status/presence_changed/<subject_id>` so each subject's last label survives a broker or consumer restart (ADR-0048 §1). The un-suffixed `doorboard/status/presence_changed` topic is still published for one release for consumers built before ADR-0048; new consumers subscribe to `doorboard/status/presence_changed/+`. Deleting a subject publishes an empty retained message on both forms.
+
 ## social.* — voluntary interactions (door-api public write, control-plane-api storage)
 
 | Type | Payload |

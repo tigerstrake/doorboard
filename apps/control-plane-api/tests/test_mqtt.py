@@ -11,11 +11,14 @@ from typing import Any
 
 import pytest
 from control_plane_api.mqtt import (
+    PRESENCE_TOPIC,
     NullMqttPublisher,
     PahoMqttPublisher,
     RecordingMqttPublisher,
     build_publisher,
+    presence_topic_for,
     topic_for,
+    topics_for,
 )
 from doorboard_contracts import parse_event
 
@@ -69,6 +72,7 @@ class FakeClient:
         self.on_disconnect: Any = None
         self.connected: bool = False
         self.published: list[tuple[str, Any]] = []
+        self.retained: dict[str, bool] = {}
         self.reconnect_delay: tuple[int, int] | None = None
         self.connect_async_args: tuple[str, int] | None = None
         self.loop_started: bool = False
@@ -98,6 +102,7 @@ class FakeClient:
         if self.publish_raises:
             raise RuntimeError("boom")
         self.published.append((topic, payload))
+        self.retained[topic] = bool(kwargs.get("retain", False))
         return None
 
     def disconnect(self, *args: Any, **kwargs: Any) -> None:
@@ -336,3 +341,67 @@ def test_ambient_and_status_topics_are_retained_but_transitions_are_not() -> Non
     assert retained["doorboard/status/presence_changed"] is True
     assert retained["doorboard/session/state_changed"] is False
     assert retained["doorboard/vision/identity_stable"] is False
+
+
+# ---------------------------------------------------------------------------
+# Presence is retained per subject (ADR-0048 §1)
+# ---------------------------------------------------------------------------
+
+
+def test_presence_is_retained_on_one_topic_per_subject_plus_the_legacy_topic(
+    fake_clients: list[FakeClient],
+) -> None:
+    """On one shared retained topic only the last-published subject survives a restart.
+
+    After a NUC restart the broker kept whichever subject was republished last, so the
+    other tile read "unavailable" until that person's status next changed. Per-subject
+    topics make the retained state complete; the un-suffixed topic stays for one release
+    so an older door-api keeps receiving it.
+    """
+    publisher = PahoMqttPublisher(url="mqtt://localhost")
+    client = fake_clients[0]
+    client.connected = True
+    owner = parse_event(
+        build_event("status.presence_changed", payload_overrides={"subject_id": "owner"})
+    )
+    roommate = parse_event(
+        build_event("status.presence_changed", payload_overrides={"subject_id": "roommate"})
+    )
+
+    publisher.publish_event(owner)
+    publisher.publish_event(roommate)
+
+    by_topic = {topic: payload for topic, payload in client.published}
+    assert presence_topic_for("owner") == "doorboard/status/presence_changed/owner"
+    assert by_topic["doorboard/status/presence_changed/owner"] == owner.model_dump_json()
+    assert by_topic["doorboard/status/presence_changed/roommate"] == roommate.model_dump_json()
+    # Each per-subject topic carries the FULL contract event, not a bare label.
+    for subject in ("owner", "roommate"):
+        replayed = parse_event(__import__("json").loads(by_topic[presence_topic_for(subject)]))
+        assert replayed.type == "status.presence_changed"
+        assert replayed.payload.subject_id == subject  # type: ignore[union-attr]
+    assert client.retained["doorboard/status/presence_changed/owner"] is True
+    assert client.retained["doorboard/status/presence_changed/roommate"] is True
+    # Legacy topic: still published (retained), last writer wins as before.
+    assert by_topic[PRESENCE_TOPIC] == roommate.model_dump_json()
+    assert client.retained[PRESENCE_TOPIC] is True
+
+
+def test_only_presence_fans_out_to_more_than_one_topic() -> None:
+    presence = parse_event(build_event("status.presence_changed"))
+    assert topics_for(presence) == (
+        presence_topic_for(presence.payload.subject_id),  # type: ignore[union-attr]
+        PRESENCE_TOPIC,
+    )
+    for event_type in ("ambient.satellite_pass", "session.state_changed", "system.service_health"):
+        assert topics_for(parse_event(build_event(event_type))) == (topic_for(event_type),)
+
+
+def test_recording_publisher_records_every_topic_but_one_entry_per_event() -> None:
+    publisher = RecordingMqttPublisher()
+    event = parse_event(
+        build_event("status.presence_changed", payload_overrides={"subject_id": "owner"})
+    )
+    publisher.publish_event(event)
+    assert publisher.published == [("doorboard/status/presence_changed/owner", event)]
+    assert publisher.topics == ["doorboard/status/presence_changed/owner", PRESENCE_TOPIC]

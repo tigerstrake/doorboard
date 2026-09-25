@@ -1,15 +1,34 @@
 {
-  "name": "Doorboard Presence",
-  "unique_id": "doorboard_primary_presence",
-  "state_topic": "doorboard/status/presence_changed",
-  "value_template": "{{ value_json.payload.label }}",
-  "json_attributes_topic": "doorboard/status/presence_changed",
-  "json_attributes_template": "{{ {'source': value_json.payload.source, 'until': value_json.payload.until} | tojson }}",
-  "icon": "mdi:account-question",
-  "device": {
+  "dev": {
     "identifiers": ["doorboard_primary"],
     "name": "Doorboard",
     "manufacturer": "doorboard (self-hosted)",
     "model": "NUC control plane"
+  },
+  "o": {
+    "name": "doorboard",
+    "url": "https://github.com/tigerstrake/doorboard"
+  },
+  "cmps": {
+    "presence_owner": {
+      "p": "sensor",
+      "name": "Doorboard Presence (owner)",
+      "unique_id": "doorboard_primary_presence_owner",
+      "state_topic": "doorboard/status/presence_changed/owner",
+      "value_template": "{{ value_json.payload.label }}",
+      "json_attributes_topic": "doorboard/status/presence_changed/owner",
+      "json_attributes_template": "{{ {'source': value_json.payload.source, 'until': value_json.payload.until} | tojson }}",
+      "icon": "mdi:account-question"
+    },
+    "presence_roommate": {
+      "p": "sensor",
+      "name": "Doorboard Presence (roommate)",
+      "unique_id": "doorboard_primary_presence_roommate",
+      "state_topic": "doorboard/status/presence_changed/roommate",
+      "value_template": "{{ value_json.payload.label }}",
+      "json_attributes_topic": "doorboard/status/presence_changed/roommate",
+      "json_attributes_template": "{{ {'source': value_json.payload.source, 'until': value_json.payload.until} | tojson }}",
+      "icon": "mdi:account-question"
+    }
   }
 }
