@@ -60,11 +60,17 @@ async function request<T>(
     let traceId: string | undefined;
     try {
       const parsed = await resp.json();
-      const err = parsed?.detail?.error ?? parsed?.error;
+      const detail = parsed?.detail;
+      const err = detail?.error ?? parsed?.error;
       if (err) {
         code = err.code ?? code;
         message = err.message ?? message;
         traceId = err.trace_id;
+      } else if (typeof detail === "string" && detail.trim()) {
+        // A plain FastAPI `HTTPException(detail="...")` — door-api's own sentence for a
+        // refusal such as "No active visitor session". It is written for a person, so it
+        // is the message; "request failed with status 409" told the visitor nothing.
+        message = detail.trim();
       }
     } catch {
       // Response body wasn't the expected error envelope — surface the status only.

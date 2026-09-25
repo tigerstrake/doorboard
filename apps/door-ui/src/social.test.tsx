@@ -31,27 +31,83 @@ describe("Guestbook/poll render paths never execute untrusted markup", () => {
   });
 });
 
-function mockFetchSequence(responses: Array<{ status?: number; body: unknown }>) {
-  let call = 0;
+type MockRoute = {
+  /** Substring (or pattern) of the request URL this route answers. */
+  match: string | RegExp;
+  /** HTTP method to answer for; any method when omitted. */
+  method?: string;
+  status?: number;
+  body: unknown;
+};
+
+const IDLE_SNAPSHOT = { session: { state: "IDLE" }, config: {} };
+
+/**
+ * A URL-keyed fetch mock: each request is answered by the first route found in its URL
+ * (and method, when given), never by its position in a sequence. The old sequence mock
+ * handed the next canned body to whatever was fetched, so a background request — the
+ * identity keepalive, a re-read of `/session`, the visitor token minted on the way into
+ * a write — silently re-targeted every later assertion, and a `/visitor-token` 409
+ * passed as a success. Unmatched requests get the benign default for the endpoint.
+ */
+function mockFetchRoutes(routes: MockRoute[] = []) {
   const fetchMock = vi.fn<(...args: unknown[]) => Promise<Response>>(async (...args) => {
-    // The doorpad's identity keepalive (ADR-0020) is fire-and-forget: it reads no body
-    // and is not part of any flow under test. It must not advance the sequence, or
-    // adding a background ping would silently re-target every later assertion. Real
-    // browsers send it via navigator.sendBeacon; jsdom has none, so it lands here.
-    if (String(args[0] ?? "").includes("/doorpad/activity")) {
+    const url = String(args[0] ?? "");
+    const method = String((args[1] as RequestInit | undefined)?.method ?? "GET").toUpperCase();
+    if (url.includes("/doorpad/activity")) {
       return { ok: true, status: 202, json: async () => ({}) } as Response;
     }
-    const resp = responses[Math.min(call, responses.length - 1)];
-    call += 1;
-    return {
-      ok: (resp.status ?? 200) < 400,
-      status: resp.status ?? 200,
-      json: async () => resp.body,
-    } as Response;
+    const route = routes.find(
+      (candidate) =>
+        (typeof candidate.match === "string"
+          ? url.includes(candidate.match)
+          : candidate.match.test(url)) &&
+        (candidate.method === undefined || candidate.method.toUpperCase() === method)
+    );
+    let status = 200;
+    let body: unknown = {};
+    if (route) {
+      status = route.status ?? 200;
+      body = route.body;
+    } else if (url.endsWith("/session")) {
+      body = IDLE_SNAPSHOT;
+    } else if (url.includes("/visitor-token")) {
+      body = { token: "tok-default", url: "http://door.local/visitor?token=tok-default" };
+    } else if (url.includes("/guestbook")) {
+      body = { entries: [] };
+    } else if (url.includes("/polls/current")) {
+      body = { poll: null };
+    }
+    return { ok: status < 400, status, json: async () => body } as Response;
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
+
+function requestBody(
+  fetchMock: ReturnType<typeof mockFetchRoutes>,
+  match: string,
+  method = "POST"
+): Record<string, unknown> | null {
+  const call = fetchMock.mock.calls.find(
+    ([url, init]) =>
+      String(url).includes(match) &&
+      String((init as RequestInit | undefined)?.method ?? "GET").toUpperCase() === method
+  );
+  const init = call?.[1] as RequestInit | undefined;
+  return init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null;
+}
+
+const PICK_ONE_POLL = {
+  poll: {
+    id: "poll-1",
+    question: "Pick one",
+    status: "open",
+    created_at: "2026-07-08T00:00:00Z",
+    closed_at: null,
+    options: [{ id: "a", text: "A" }],
+  },
+};
 
 describe("AdminSocialPanel renders untrusted guestbook text inertly", () => {
   beforeEach(() => {
@@ -59,12 +115,15 @@ describe("AdminSocialPanel renders untrusted guestbook text inertly", () => {
   });
 
   it("shows hostile pending-entry text as plain text, never executes it", async () => {
-    mockFetchSequence([
-      { body: { entries: [{ id: "e1", text: HOSTILE, author_label: null, created_at: "now" }] } },
-      { body: { entries: [] } },
-      { body: { polls: [] } },
-      { body: { stat: null } },
-      { body: { entries: [] } },
+    mockFetchRoutes([
+      {
+        match: "status=pending",
+        body: { entries: [{ id: "e1", text: HOSTILE, author_label: null, created_at: "now" }] },
+      },
+      { match: "status=approved", body: { entries: [] } },
+      { match: "/admin/polls", body: { polls: [] } },
+      { match: "/most-frequent", body: { stat: null } },
+      { match: "/moderation-log", body: { entries: [] } },
     ]);
 
     render(<AdminSocialPanel />);
@@ -77,8 +136,9 @@ describe("AdminSocialPanel renders untrusted guestbook text inertly", () => {
 describe("VisitorPage renders untrusted poll option text inertly", () => {
   it("shows hostile poll option text as plain text, never executes it", async () => {
     window.history.pushState(null, "", "/visitor?token=signed-token");
-    mockFetchSequence([
+    mockFetchRoutes([
       {
+        match: "/visitor-session",
         body: {
           session_id: "018f6a61-0000-7000-8000-000000000402",
           expires_at: 1_800_000_000,
@@ -86,6 +146,7 @@ describe("VisitorPage renders untrusted poll option text inertly", () => {
         },
       },
       {
+        match: "/polls/current",
         body: {
           poll: {
             id: "p1",
@@ -97,7 +158,7 @@ describe("VisitorPage renders untrusted poll option text inertly", () => {
           },
         },
       },
-      { body: { results: [{ option_id: "o1", text: HOSTILE, votes: 1 }] } },
+      { match: "/results", body: { results: [{ option_id: "o1", text: HOSTILE, votes: 1 }] } },
     ]);
 
     render(<VisitorPage sessionState="IDLE" />);
@@ -110,7 +171,7 @@ describe("VisitorPage renders untrusted poll option text inertly", () => {
 describe("Photo booth feature flag", () => {
   it("hides the DoorPad photo booth button when the flag is unset", async () => {
     window.history.pushState(null, "", "/doorpad");
-    mockFetchSequence([{ body: { session: { state: "IDLE" }, config: {} } }]);
+    mockFetchRoutes();
 
     render(<App />);
 
@@ -122,11 +183,7 @@ describe("Photo booth feature flag", () => {
 describe("T-405 public kiosk regressions", () => {
   it("does not show simulation controls on public routes unless explicitly enabled", async () => {
     window.history.pushState(null, "", "/wallboard");
-    mockFetchSequence([
-      { body: { session: { state: "IDLE" }, config: {} } },
-      { body: { entries: [] } },
-      { body: { poll: null } },
-    ]);
+    mockFetchRoutes();
 
     render(<App />);
 
@@ -137,19 +194,16 @@ describe("T-405 public kiosk regressions", () => {
 
   it("renders the visitor page without the old route/debug wrapper", async () => {
     window.history.pushState(null, "", "/visitor?token=signed-token");
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      const body = url.includes("/visitor-session")
-        ? {
-            session_id: "018f6a61-0000-7000-8000-000000000402",
-            expires_at: 1_800_000_000,
-            state: "IDLE",
-          }
-        : url.includes("/polls/current")
-          ? { poll: null }
-          : { session: { state: "IDLE" }, config: {} };
-      return { ok: true, status: 200, json: async () => body } as Response;
-    }));
+    mockFetchRoutes([
+      {
+        match: "/visitor-session",
+        body: {
+          session_id: "018f6a61-0000-7000-8000-000000000402",
+          expires_at: 1_800_000_000,
+          state: "IDLE",
+        },
+      },
+    ]);
 
     render(<App />);
 
@@ -160,7 +214,10 @@ describe("T-405 public kiosk regressions", () => {
 
   it("rejects a visitor page without a signed token", async () => {
     window.history.pushState(null, "", "/visitor");
-    mockFetchSequence([{ status: 401, body: { detail: { error: { code: "invalid" } } } }]);
+    mockFetchRoutes([
+      { match: "/visitor-token", status: 401, body: { detail: { error: { code: "invalid" } } } },
+      { match: "/visitor-session", status: 401, body: { detail: { error: { code: "invalid" } } } },
+    ]);
     render(<VisitorPage sessionState="IDLE" />);
     await waitFor(() => expect(screen.getByText("Visitor link unavailable")).toBeTruthy());
     expect(screen.queryByText("Ring status")).toBeNull();
@@ -168,9 +225,10 @@ describe("T-405 public kiosk regressions", () => {
 
   it("submits DoorPad free-text guestbook notes through the real social API", async () => {
     window.history.pushState(null, "", "/doorpad");
-    const fetchMock = mockFetchSequence([
-      { body: { session: { state: "IDLE" }, config: {} } },
+    const fetchMock = mockFetchRoutes([
       {
+        match: "/guestbook",
+        method: "POST",
         body: {
           id: "entry-1",
           text: "I stopped by",
@@ -190,27 +248,15 @@ describe("T-405 public kiosk regressions", () => {
     fireEvent.click(screen.getByText("Submit Note"));
 
     await waitFor(() => {
-      expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/guestbook"))).toBe(true);
+      expect(requestBody(fetchMock, "/guestbook")).toMatchObject({ text: "I stopped by" });
     });
   });
 
   it("requires a poll selection before the DoorPad submits a vote", async () => {
     window.history.pushState(null, "", "/doorpad");
-    mockFetchSequence([
-      { body: { session: { state: "IDLE" }, config: {} } },
-      {
-        body: {
-          poll: {
-            id: "poll-1",
-            question: "Pick one",
-            status: "open",
-            created_at: "2026-07-08T00:00:00Z",
-            closed_at: null,
-            options: [{ id: "a", text: "A" }],
-          },
-        },
-      },
-      { body: { results: [{ option_id: "a", text: "A", votes: 0 }] } },
+    mockFetchRoutes([
+      { match: "/polls/current", body: PICK_ONE_POLL },
+      { match: "/results", body: { results: [{ option_id: "a", text: "A", votes: 0 }] } },
     ]);
 
     render(<App />);
@@ -229,9 +275,9 @@ describe("T-405 public kiosk regressions", () => {
     // The doorpad used to be the one surface with no graph — it printed "— N votes" only
     // after you had voted, while the wallboard a metre away showed the live tally.
     window.history.pushState(null, "", "/doorpad");
-    mockFetchSequence([
-      { body: { session: { state: "IDLE" }, config: {} } },
+    mockFetchRoutes([
       {
+        match: "/polls/current",
         body: {
           poll: {
             id: "poll-1",
@@ -247,6 +293,7 @@ describe("T-405 public kiosk regressions", () => {
         },
       },
       {
+        match: "/results",
         body: {
           results: [
             { option_id: "a", text: "Alpha", votes: 3 },
@@ -275,7 +322,7 @@ describe("T-405 public kiosk regressions", () => {
 
   it("does not offer a fake privacy deletion success when no local content exists", async () => {
     window.history.pushState(null, "", "/doorpad");
-    mockFetchSequence([{ body: { session: { state: "IDLE" }, config: {} } }]);
+    mockFetchRoutes();
 
     render(<App />);
 
@@ -291,10 +338,7 @@ describe("T-405 public kiosk regressions", () => {
     // showed the ringing screen. Now a failed POST keeps the visitor on home and surfaces a
     // retry on the ring button instead of pretending the bell fired.
     window.history.pushState(null, "", "/doorpad");
-    const fetchMock = mockFetchSequence([
-      { body: { session: { state: "IDLE" }, config: {} } },
-      { status: 500, body: {} },
-    ]);
+    const fetchMock = mockFetchRoutes([{ match: "/doorpad/ring", status: 500, body: {} }]);
 
     render(<App />);
 
@@ -321,9 +365,9 @@ describe("T-405 public kiosk regressions", () => {
     // show the ringing screen — but effect.status "unavailable" means the local light/chime
     // did not fire, so we add a calm aside rather than overstate the physical bell.
     window.history.pushState(null, "", "/doorpad");
-    mockFetchSequence([
-      { body: { session: { state: "IDLE" }, config: {} } },
+    mockFetchRoutes([
       {
+        match: "/doorpad/ring",
         body: {
           accepted: true,
           effect: { status: "unavailable" },
@@ -352,9 +396,10 @@ describe("T-405 public kiosk regressions", () => {
     );
     oversizedStore["bad-session"] = [{ kind: "guestbook", id: "", label: {} }];
     window.localStorage.setItem("doorboard_my_social_content_v2", JSON.stringify(oversizedStore));
-    mockFetchSequence([
-      { body: { session: { state: "IDLE" }, config: {} } },
+    mockFetchRoutes([
       {
+        match: "/guestbook",
+        method: "POST",
         body: {
           id: "entry-current",
           text: "Current note",
@@ -383,10 +428,7 @@ describe("T-405 public kiosk regressions", () => {
 
   it("rolls a failed video-message offer back to the reviewable offer screen", async () => {
     window.history.pushState(null, "", "/doorpad");
-    mockFetchSequence([
-      { body: { session: { state: "IDLE" }, config: {} } },
-      { status: 503, body: {} },
-    ]);
+    mockFetchRoutes([{ match: "/doorpad/video-message/offer", status: 503, body: {} }]);
 
     render(<App />);
 
@@ -402,7 +444,7 @@ describe("T-405 public kiosk regressions", () => {
     // wallboardFocusSplit.test.tsx). The doorpad's privacy screen keeps only the
     // visitor-facing "what have I left here, and how do I erase it" controls.
     window.history.pushState(null, "", "/doorpad");
-    mockFetchSequence([{ body: { session: { state: "IDLE" }, config: {} } }]);
+    mockFetchRoutes();
 
     render(<App />);
 
@@ -423,7 +465,7 @@ describe("T-405 public kiosk regressions", () => {
 
   it("lets DoorPad choose a mock Wallboard focused channel locally", async () => {
     window.history.pushState(null, "", "/doorpad");
-    mockFetchSequence([{ body: { session: { state: "IDLE" }, config: {} } }]);
+    mockFetchRoutes();
 
     render(<App />);
 
@@ -440,7 +482,7 @@ describe("T-405 public kiosk regressions", () => {
     // The About tile used to be ambient-only (channel: null); it is now individually
     // focusable from the launcher, exactly like Flights, satellite, birds, etc.
     window.history.pushState(null, "", "/doorpad");
-    mockFetchSequence([{ body: { session: { state: "IDLE" }, config: {} } }]);
+    mockFetchRoutes();
 
     render(<App />);
 
@@ -454,3 +496,98 @@ describe("T-405 public kiosk regressions", () => {
   });
 });
 
+/**
+ * A stranger who has not rung. Every social write first mints a visitor token, and
+ * door-api used to answer 409 from IDLE — which the doorpad showed as "request failed
+ * with status 409". door-api now opens a doorpad session from IDLE for that call; the
+ * doorpad's side is to say door-api's own sentence when it does refuse, and to carry the
+ * minted token into the write when it does not.
+ */
+describe("Social writes from an unrecognised visitor who has not rung", () => {
+  beforeEach(() => {
+    window.history.pushState(null, "", "/doorpad");
+  });
+
+  it("shows door-api's refusal sentence, not a status code", async () => {
+    mockFetchRoutes([
+      { match: "/visitor-token", status: 409, body: { detail: "No active visitor session" } },
+    ]);
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
+    fireEvent.click(screen.getByText("Guestbook"));
+    fireEvent.change(screen.getByPlaceholderText("Tap here to type your own note..."), {
+      target: { value: "Hello from the corridor" },
+    });
+    fireEvent.click(screen.getByText("Submit Note"));
+
+    await waitFor(() =>
+      expect(document.querySelector(".db-toast-message")?.textContent).toContain(
+        "No active visitor session"
+      )
+    );
+    expect(document.querySelector(".db-toast-message")?.textContent).not.toMatch(/status 409/);
+  });
+
+  it("completes the guestbook, vote and check-in once /visitor-token opens a session from IDLE", async () => {
+    const fetchMock = mockFetchRoutes([
+      {
+        match: "/visitor-token",
+        body: { token: "tok-idle", url: "http://door.local/visitor?token=tok-idle" },
+      },
+      {
+        match: "/guestbook",
+        method: "POST",
+        body: { id: "entry-9", text: "Hello", author_label: null, created_at: "now" },
+      },
+      { match: "/polls/current", body: PICK_ONE_POLL },
+      { match: "/results", body: { results: [{ option_id: "a", text: "A", votes: 0 }] } },
+      { match: "/polls/poll-1/vote", method: "POST", body: {} },
+      {
+        match: "/checkins",
+        method: "POST",
+        body: { id: "checkin-9", label: "Guest", created_at: "now", is_recognized: false },
+      },
+    ]);
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("Room 304 DoorPad")).toBeTruthy());
+
+    // Guestbook: the write carries the freshly minted token.
+    fireEvent.click(screen.getByText("Guestbook"));
+    fireEvent.change(screen.getByPlaceholderText("Tap here to type your own note..."), {
+      target: { value: "Hello" },
+    });
+    fireEvent.click(screen.getByText("Submit Note"));
+    await waitFor(() =>
+      expect(requestBody(fetchMock, "/guestbook")).toMatchObject({
+        text: "Hello",
+        session_token: "tok-idle",
+      })
+    );
+    await waitFor(() => expect(screen.getByText(/Note submitted!/)).toBeTruthy());
+
+    // Poll: back on home after the note, the vote goes through on the same session.
+    fireEvent.click(screen.getByText("Vote in Poll"));
+    await waitFor(() => expect(screen.getByText("Pick one")).toBeTruthy());
+    fireEvent.click(screen.getByText("A").closest("button")!);
+    fireEvent.click(screen.getByText("Submit Vote"));
+    await waitFor(() => expect(screen.getByText("Vote submitted.")).toBeTruthy());
+    expect(requestBody(fetchMock, "/polls/poll-1/vote")).toMatchObject({
+      option_id: "a",
+      session_token: "tok-idle",
+    });
+    fireEvent.click(screen.getByText("Done"));
+
+    // Check-in as Guest: one tap, same token.
+    fireEvent.click(screen.getByText("Visitor Check-In"));
+    fireEvent.click(screen.getByText("Check in as Guest"));
+    await waitFor(() =>
+      expect(requestBody(fetchMock, "/checkins")).toMatchObject({
+        label: "Guest",
+        session_token: "tok-idle",
+      })
+    );
+    await waitFor(() => expect(screen.getByText("Checked in as Guest")).toBeTruthy());
+  });
+});
