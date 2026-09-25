@@ -158,6 +158,21 @@ services:
       # (deploy/nas/README.md: doorboard/backups/) — never a Docker volume,
       # so a container/volume wipe can't take the only backup copy with it.
       - ${NAS_BACKUP_PATH:?NAS_BACKUP_PATH (host mount of the NAS backups share) must be set in .env}:/mnt/nas-backups
+    # Backup-stale check: unhealthy when no dump is younger than two intervals.
+    # The loop above retries forever without exiting (an unreachable NAS is
+    # transient by design), so a failing backup was invisible to `compose ps`.
+    # There is no backup-age metric; this is the alert (infra/monitoring/README.md).
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "test -n \"$$(find /mnt/nas-backups -maxdepth 1 -name 'doorboard-*.sql.gz' -mmin -$$((2 * BACKUP_INTERVAL_S / 60)) -print -quit)\"",
+        ]
+      interval: 10m
+      timeout: 30s
+      retries: 3
+      # The first dump runs at start; give a slow NAS a moment before judging.
+      start_period: 15m
 
   home-assistant:
     image: "ghcr.io/home-assistant/home-assistant:stable"

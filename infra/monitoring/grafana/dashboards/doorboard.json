@@ -155,7 +155,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "esp32_link_connected",
+          "expr": "door_api_esp32_link_connected",
           "legendFormat": "ESP32 connected status",
           "range": true,
           "refId": "A"
@@ -385,7 +385,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "node_hwmon_temp_celsius",
+          "expr": "node_thermal_zone_temp{type=\"cpu-thermal\"}",
           "legendFormat": "CPU temp (°C)",
           "range": true,
           "refId": "A"

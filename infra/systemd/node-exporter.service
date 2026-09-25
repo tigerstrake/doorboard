@@ -1,0 +1,28 @@
+[Unit]
+Description=Doorboard host metrics (prometheus-node-exporter, loopback only)
+Documentation=file:/opt/doorboard/infra/monitoring/README.md
+# `apt install prometheus-node-exporter` (Debian bookworm / Raspberry Pi OS).
+# The package's own prometheus-node-exporter.service listens on 0.0.0.0:9100;
+# ADR-0047 allows exactly one LAN listener, so the installers disable that
+# unit and run this one on loopback. Prometheus reaches it through the proxy
+# as /metrics/node. Skipped cleanly when the package is not installed.
+ConditionPathExists=/usr/bin/prometheus-node-exporter
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/bin/prometheus-node-exporter --web.listen-address=127.0.0.1:9100 --collector.disable-defaults --collector.cpu --collector.meminfo --collector.filesystem --collector.loadavg --collector.thermal_zone --collector.hwmon --collector.diskstats --collector.uname --collector.time
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

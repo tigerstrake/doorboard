@@ -11,27 +11,54 @@ alerting:
         - targets:
             - "alertmanager:9093"
 
+# The door Pi is reached through its LAN proxy (ADR-0047): every door service
+# binds loopback and door-proxy.service maps /metrics/<service> onto each one,
+# so all door jobs share the target door-pi.local:80 and differ only in
+# metrics_path. door-pi.local must resolve *inside* the Prometheus container —
+# mDNS does not cross into Docker; see README.md for the extra_hosts/DNS note.
+# tests/test_monitoring_rules.py cross-checks these paths and ports against the
+# Caddyfile and each service's *_BIND default.
 scrape_configs:
   - job_name: "prometheus"
     static_configs:
       - targets: ["localhost:9090"]
+
+  - job_name: "alertmanager"
+    static_configs:
+      - targets: ["alertmanager:9093"]
 
   - job_name: "control-plane-api"
     static_configs:
       - targets: ["control-plane-api:8090"]
 
   - job_name: "door-api"
+    metrics_path: /metrics/door-api
     static_configs:
-      - targets: ["door-api:8000"]
+      - targets: ["door-pi.local:80"]
 
   - job_name: "door-visiond"
+    metrics_path: /metrics/door-visiond
     static_configs:
-      - targets: ["door-visiond:8081"]
+      - targets: ["door-pi.local:80"]
 
   - job_name: "door-media"
+    metrics_path: /metrics/door-media
     static_configs:
-      - targets: ["door-media:8082"]
+      - targets: ["door-pi.local:80"]
 
   - job_name: "door-sync"
+    metrics_path: /metrics/door-sync
     static_configs:
-      - targets: ["door-sync:8083"]
+      - targets: ["door-pi.local:80"]
+
+  - job_name: "door-voice"
+    metrics_path: /metrics/door-voice
+    static_configs:
+      - targets: ["door-pi.local:80"]
+
+  # prometheus-node-exporter on the Pi (infra/systemd/node-exporter.service),
+  # for the thermal/CPU/disk panels and the PiThrottling rule.
+  - job_name: "node"
+    metrics_path: /metrics/node
+    static_configs:
+      - targets: ["door-pi.local:80"]

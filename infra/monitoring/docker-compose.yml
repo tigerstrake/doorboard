@@ -26,7 +26,9 @@ services:
         echo "$$CONTROL_PLANE_ADMIN_TOKEN" > /etc/alertmanager/token
         exec /bin/alertmanager --config.file=/etc/alertmanager/alertmanager.yml --storage.path=/alertmanager
     environment:
-      CONTROL_PLANE_ADMIN_TOKEN: ${CONTROL_PLANE_ADMIN_TOKEN:-dev-admin-token}
+      # The NUC admin secret, for POST /admin/alerts. No dev default: an Alertmanager
+      # posting `dev-admin-token` at a real control plane fails silently forever.
+      CONTROL_PLANE_ADMIN_TOKEN: ${CONTROL_PLANE_ADMIN_TOKEN:?CONTROL_PLANE_ADMIN_TOKEN must be set (same value as the NUC .env)}
     volumes:
       - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager

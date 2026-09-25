@@ -29,7 +29,8 @@ groups:
           description: "Sync backlog contains items older than 4 hours (current max age: {{ $value }}s)."
 
       - alert: ESP32Offline
-        expr: esp32_link_connected == 0
+        # door-api's name for it; `esp32_link_connected` never existed.
+        expr: door_api_esp32_link_enabled == 1 and door_api_esp32_link_connected == 0
         for: 1m
         labels:
           severity: critical
@@ -38,7 +39,11 @@ groups:
           description: "The ESP32 link has been disconnected for more than 1 minute."
 
       - alert: PiThrottling
-        expr: node_hwmon_temp_celsius{chip="platform_soc_thermal"} > 80
+        # prometheus-node-exporter on the Pi (infra/systemd/node-exporter.service),
+        # scraped as /metrics/node through the proxy. The thermal_zone collector
+        # names the Pi 5 SoC sensor `cpu-thermal`; the label needs on-device
+        # confirmation (`curl -s http://door-pi.local/metrics/node | grep thermal`).
+        expr: node_thermal_zone_temp{type="cpu-thermal"} > 80
         for: 2m
         labels:
           severity: warning
@@ -79,3 +84,18 @@ groups:
           description: >-
             A door-api outbox event was retried past its cap and parked (dead-lettered): a
             recording/session mirror the NUC will never receive without operator action.
+
+      - alert: AlertmanagerReceiverFailing
+        # Self-check: the only receiver is control-plane-api's POST /admin/alerts.
+        # When it fails, nothing reaches the owner — including this alert. It is
+        # read on the Prometheus/Alertmanager UI, never delivered (README.md).
+        expr: increase(alertmanager_notifications_failed_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alertmanager cannot deliver to control-plane-api"
+          description: >-
+            Alertmanager's webhook to control-plane-api /admin/alerts is failing, so no
+            alert (this one included) reaches the owner. Check control-plane-api's health
+            and that CONTROL_PLANE_ADMIN_TOKEN matches on both sides.

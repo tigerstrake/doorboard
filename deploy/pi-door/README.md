@@ -41,7 +41,9 @@ Raspberry Pi OS 64-bit on the Pi 5. Hardware-facing services run under **systemd
    config at `/etc/doorboard/mediamtx.yml`. Install camera/Hailo/UART packages
    required by the selected hardware adapters, and `apt install caddy` for the
    LAN proxy (the installer disables the package's own `caddy.service`, which
-   would otherwise hold port 80).
+   would otherwise hold port 80). Optionally `apt install
+   prometheus-node-exporter` for the NUC's thermal panel; the installer runs it
+   on loopback behind the proxy (`infra/monitoring/README.md`).
 4. Create `/etc/doorboard/doorboard.env` from
    `doorboard.env.example`, replace every `CHANGE_ME`, and keep it root-owned.
    It contains only Pi-scoped and local service credentials, never NUC admin,

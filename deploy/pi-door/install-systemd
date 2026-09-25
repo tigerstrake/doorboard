@@ -47,6 +47,13 @@ install -m 0644 "$repo_root"/deploy/pi-door/Caddyfile /etc/doorboard/Caddyfile
 if systemctl list-unit-files caddy.service >/dev/null 2>&1; then
   systemctl disable --now caddy.service 2>/dev/null || true
 fi
+# Host metrics for Prometheus (infra/monitoring): the package's own unit listens
+# on 0.0.0.0:9100, which ADR-0047 forbids; infra/systemd/node-exporter.service
+# runs the same binary on loopback behind the proxy's /metrics/node. Skipped
+# cleanly when `apt install prometheus-node-exporter` has not been done.
+if systemctl list-unit-files prometheus-node-exporter.service >/dev/null 2>&1; then
+  systemctl disable --now prometheus-node-exporter.service 2>/dev/null || true
+fi
 chown root:doorboard "$env_file"
 chmod 0640 "$env_file"
 
@@ -60,6 +67,7 @@ systemctl enable \
   door-api.service \
   door-sync.service \
   door-proxy.service \
+  node-exporter.service \
   doorboard-health-agent.timer
 
 echo "Units installed. Start with: systemctl start door-ui door-api door-sync doorboard-health-agent.timer"
