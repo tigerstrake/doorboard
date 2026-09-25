@@ -71,8 +71,17 @@ static uint64_t mono_ms(void)
 static void IRAM_ATTR button_isr_handler(void *arg)
 {
     (void)arg;
+    /*
+     * Same clock as mono_ms(): esp_timer_get_time() is IRAM-resident and safe
+     * to call from an ISR in IDF 5.x. The tick count used here before was a
+     * different clock (32-bit, zero at scheduler start, wrapping every 49.7
+     * days), and every other protocol timestamp is esp_timer-based, so a press
+     * landing inside the tick/esp_timer offset after a Pi heartbeat made
+     * `now - last_pi_heartbeat` wrap negative and flipped the controller into
+     * fallback -- orange pulse and error tone over the visitor's light.
+     */
     const button_isr_event_t event = {
-        .observed_at_mono_ms = (uint64_t)xTaskGetTickCountFromISR() * portTICK_PERIOD_MS,
+        .observed_at_mono_ms = (uint64_t)(esp_timer_get_time() / 1000),
     };
     BaseType_t higher_priority_task_woken = pdFALSE;
     if (xQueueSendFromISR(s_input_queue, &event, &higher_priority_task_woken) != pdTRUE) {
