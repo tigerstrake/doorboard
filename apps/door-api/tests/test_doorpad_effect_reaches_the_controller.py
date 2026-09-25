@@ -17,6 +17,11 @@ its factory.
 `door_effect_from_name` returns ``DOOR_EFFECT_NONE`` for an unknown name and
 `on_effect_play_received` drops the message, so the ring produced nothing at all.
 The name is checked against the firmware's own table rather than a copy of it.
+
+**The route never waits for it.** ``/doorpad/ring`` and the video-message offer used
+to await the ack before answering — four 50 ms attempts with a silent controller,
+212 ms measured against a 100 ms tap budget (ARCHITECTURE.md §4). The send now runs as
+a task; the response carries ``requested`` and the outcome is a metric and a log line.
 """
 
 from __future__ import annotations
@@ -24,18 +29,33 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from collections.abc import AsyncIterator, Mapping
+import time
+from collections.abc import AsyncIterator, Generator, Mapping
 from pathlib import Path
 
+import pytest
 from doorboard_contracts.events import DoorboardEvent
 from doorboard_esp32_link import Esp32TransportStatus, WireMessage
+from fastapi.testclient import TestClient
 
 # Importing door_api.app builds the module-level state, which needs a database
 # before it can be constructed. Same preamble as test_esp32_link.py.
 os.environ["DOOR_API_DB_PATH"] = ":memory:"
 os.environ["DOOR_API_SOCIAL_DB_PATH"] = ":memory:"
 
-from door_api.app import state  # noqa: E402
+from door_api.app import app, state  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _fresh_state(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    # Other modules close the shared store at teardown; rebuild it for each test here.
+    monkeypatch.setenv("DOOR_API_DB_PATH", ":memory:")
+    monkeypatch.setenv("DOOR_API_SOCIAL_DB_PATH", ":memory:")
+    state.__init__()
+    state.startup()
+    yield
+    state.shutdown()
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 EFFECTS_C = (
@@ -46,6 +66,17 @@ EFFECTS_C = (
     / "door_effects"
     / "door_effects.c"
 )
+
+
+class _NoFrames:
+    """An inbound stream that stays open and carries nothing: no controller frames here."""
+
+    def __aiter__(self) -> _NoFrames:
+        return self
+
+    async def __anext__(self) -> DoorboardEvent:
+        await asyncio.Event().wait()
+        raise StopAsyncIteration
 
 
 class _RecordingTransport:
@@ -63,13 +94,33 @@ class _RecordingTransport:
         self.sent.append(msg)
         return WireMessage(v=1, seq=0, message_type="ack", ack=msg.seq, payload={})
 
-    def events(self) -> AsyncIterator[DoorboardEvent]:
+    async def send_event(self, event: DoorboardEvent) -> WireMessage:
         raise NotImplementedError
+
+    def events(self) -> AsyncIterator[DoorboardEvent]:
+        return _NoFrames()
 
     def status(self) -> Esp32TransportStatus:
         return Esp32TransportStatus(
             connected=True, last_heartbeat_mono_ms=None, rx_errors=0, tx_retries=0
         )
+
+
+class _SilentTransport(_RecordingTransport):
+    """Acks nothing — a controller mid-reboot, or a cable that fell out."""
+
+    async def send(self, msg: WireMessage) -> WireMessage:
+        self.sent.append(msg)
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+
+class _FailingTransport(_RecordingTransport):
+    """The transport gave up on the ack (the real one raises AckTimeoutError)."""
+
+    async def send(self, msg: WireMessage) -> WireMessage:
+        self.sent.append(msg)
+        raise TimeoutError("no ack")
 
 
 def _firmware_effect_names() -> set[str]:
@@ -99,6 +150,64 @@ def test_repeated_rings_get_fresh_sequence_numbers() -> None:
 
 async def _ring_twice() -> list[dict[str, str]]:
     return [await state.play_doorpad_effect(), await state.play_doorpad_effect()]
+
+
+@pytest.mark.parametrize("route", ["/doorpad/ring", "/doorpad/video-message/offer"])
+def test_a_doorpad_route_answers_without_waiting_for_the_controller(route: str) -> None:
+    transport = _SilentTransport()
+    client = TestClient(app)
+    client.get("/health")  # warm the test client, so the timing below is the route's
+    state.attach_esp32_transport(transport)
+    try:
+        started = time.perf_counter()
+        response = client.post(route)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+    finally:
+        state.detach_esp32_transport()
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert response.json()["effect"] == {"status": "requested"}
+    assert elapsed_ms < 50, f"{route} took {elapsed_ms:.0f} ms with a silent controller"
+    assert [msg.message_type for msg in transport.sent] == ["effect_play"], (
+        "the effect was still put on the wire"
+    )
+
+
+@pytest.mark.anyio
+async def test_the_effect_outcome_is_recorded_off_the_request_path() -> None:
+    state.effect_sent = state.effect_failed = 0
+    acking = _RecordingTransport()
+    state.attach_esp32_transport(acking)
+    try:
+        assert state.request_doorpad_effect() == {"status": "requested"}
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert [msg.message_type for msg in acking.sent] == ["effect_play"]
+        assert state.effect_sent == 1
+        assert state.effect_failed == 0
+    finally:
+        state.detach_esp32_transport()
+
+    failing = _FailingTransport()
+    state.attach_esp32_transport(failing)
+    try:
+        assert state.request_doorpad_effect() == {"status": "requested"}
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert state.effect_failed == 1, "a controller that never acks is counted, not hidden"
+    finally:
+        state.detach_esp32_transport()
+
+    metrics = TestClient(app).get("/metrics").text
+    assert "door_api_doorpad_effect_sent_total 1" in metrics
+    assert "door_api_doorpad_effect_failed_total 1" in metrics
+
+
+def test_no_controller_is_still_reported_as_unavailable() -> None:
+    # The one outcome known at request time stays in the response: nothing is attached.
+    assert state.esp32_transport is None
+    assert TestClient(app).post("/doorpad/ring").json()["effect"] == {"status": "unavailable"}
 
 
 def test_configured_doorpad_effect_exists_in_the_firmware() -> None:

@@ -52,10 +52,17 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
     state.shutdown()
 
 
+# A factory, not an instance: re-raising one exception object grows its traceback on
+# every raise, which made a dozen attempts take minutes. Held in a dict rather than on
+# the class so pyright does not read the callable as an unbound method.
+_failure: dict[str, Callable[[], Exception]] = {
+    "factory": lambda: httpx.ConnectError("connection refused")
+}
+
+
 class _FailingClient:
     """An httpx.AsyncClient stand-in whose every post raises the configured failure."""
 
-    failure: Callable[[], Exception] = lambda: httpx.ConnectError("connection refused")
     posts = 0
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -70,7 +77,7 @@ class _FailingClient:
     async def post(self, url: str, **kwargs: Any) -> Any:
         del url, kwargs
         type(self).posts += 1
-        raise type(self).failure()
+        raise _failure["factory"]()
 
 
 def _refusal(code: int) -> httpx.HTTPStatusError:
@@ -81,9 +88,7 @@ def _refusal(code: int) -> httpx.HTTPStatusError:
 
 
 def _fail_with(monkeypatch: pytest.MonkeyPatch, failure: Callable[[], Exception]) -> None:
-    # A factory, not an instance: re-raising one exception object grows its traceback
-    # on every raise, which made a dozen attempts take minutes.
-    _FailingClient.failure = failure
+    _failure["factory"] = failure
     _FailingClient.posts = 0
     monkeypatch.setattr("door_api.app.httpx.AsyncClient", _FailingClient)
 

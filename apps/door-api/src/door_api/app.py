@@ -144,6 +144,12 @@ class DoorApiState:
         self.esp32_transport: Esp32Transport | None = None
         self.effect_requests = 0
         self.effect_unavailable = 0
+        # The controller send runs off the request path (request_doorpad_effect),
+        # so its outcome lives here rather than in a response: sent means acked,
+        # failed means the controller never acked and the operator should know.
+        self.effect_sent = 0
+        self.effect_failed = 0
+        self._effect_tasks: set[asyncio.Task[dict[str, str]]] = set()
         # Recognition profile pushes relayed from door-visiond onto the ESP32 link.
         # door-visiond computes the profile + expiry but door-api owns the single UART,
         # so it forwards door.profile_update/clear here and door-api puts them on the
@@ -820,9 +826,8 @@ class DoorApiState:
             self.store.complete_sync_event(item.event_id)
             self.sync_forward_successes += 1
 
-    async def play_doorpad_effect(self, trace_id: UUID | None = None) -> dict[str, str]:
-        """Emit and, when configured, send DoorPad feedback to the ESP32."""
-        self.effect_requests += 1
+    def _broadcast_doorpad_effect(self, trace_id: UUID | None) -> tuple[dict[str, object], UUID]:
+        """Tell the kiosks an effect was requested; returns the payload and its trace."""
         event_trace = trace_id or uuid4()
         effect_payload: dict[str, object] = {
             "effect_id": self.config.doorpad_effect_id,
@@ -839,11 +844,52 @@ class DoorApiState:
             "payload": effect_payload,
         }
         self.broadcast.send_delta(event)
+        return effect_payload, event_trace
 
+    def request_doorpad_effect(self, trace_id: UUID | None = None) -> dict[str, str]:
+        """Broadcast the effect now; put it on the controller off the request path.
+
+        ``/doorpad/ring`` used to await the ESP32 ack before answering: four
+        50 ms attempts with a silent controller, 212 ms measured, against the
+        100 ms tap budget (ARCHITECTURE.md §4) — and a UART round trip per tap
+        even when healthy. The transition and the ``/ws`` delta already happen
+        before this; the controller send was the only thing the response waited
+        on, and its outcome is a metric and a log line, never something the
+        doorpad needs in order to render.
+        """
+        self.effect_requests += 1
+        payload, event_trace = self._broadcast_doorpad_effect(trace_id)
         if self.esp32_transport is None:
             self.effect_unavailable += 1
             return {"status": "unavailable"}
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.effect_unavailable += 1
+            return {"status": "unavailable"}
+        task = loop.create_task(
+            self._send_doorpad_effect(payload, event_trace), name="door-api-doorpad-effect"
+        )
+        self._effect_tasks.add(task)
+        task.add_done_callback(self._effect_tasks.discard)
+        return {"status": "requested"}
 
+    async def play_doorpad_effect(self, trace_id: UUID | None = None) -> dict[str, str]:
+        """Emit and, when configured, send DoorPad feedback to the ESP32, awaiting the ack."""
+        self.effect_requests += 1
+        payload, event_trace = self._broadcast_doorpad_effect(trace_id)
+        if self.esp32_transport is None:
+            self.effect_unavailable += 1
+            return {"status": "unavailable"}
+        return await self._send_doorpad_effect(payload, event_trace)
+
+    async def _send_doorpad_effect(
+        self, effect_payload: dict[str, object], event_trace: UUID
+    ) -> dict[str, str]:
+        transport = self.esp32_transport
+        if transport is None:
+            self.effect_unavailable += 1
+            return {"status": "unavailable"}
         try:
             # Built by the transport, never by hand: it owns the sequence counter.
             # This used to send seq=0 on every ring, and the controller dedupes by
@@ -853,12 +899,16 @@ class DoorApiState:
             # effect occurred. Reused sequence numbers also collided in the
             # transport's pending-ack table, so two near-simultaneous taps raised
             # Esp32ProtocolError instead of playing twice.
-            await self.esp32_transport.send(
-                self.esp32_transport.make_message("effect_play", effect_payload)
-            )
-        except Exception:
+            await transport.send(transport.make_message("effect_play", effect_payload))
+        except Exception as exc:
             self.effect_unavailable += 1
+            self.effect_failed += 1
+            logger.warning(
+                "doorpad_effect_failed",
+                extra={"trace_id": str(event_trace), "error": type(exc).__name__},
+            )
             return {"status": "failed"}
+        self.effect_sent += 1
         return {"status": "sent"}
 
     async def relay_esp32_profile(self, event: DoorboardEvent) -> str:
@@ -1502,6 +1552,8 @@ async def metrics() -> Response:
         {
             "door_api_doorpad_effect_requests_total": state.effect_requests,
             "door_api_doorpad_effect_unavailable_total": state.effect_unavailable,
+            "door_api_doorpad_effect_sent_total": state.effect_sent,
+            "door_api_doorpad_effect_failed_total": state.effect_failed,
             "door_api_esp32_profile_relayed_total": state.esp32_profile_relayed,
             "door_api_esp32_profile_relay_failed_total": state.esp32_profile_relay_failed,
             "door_api_esp32_profile_relay_noop_total": state.esp32_profile_relay_noop,
@@ -1694,7 +1746,9 @@ async def doorpad_ring() -> dict[str, Any]:
         trigger="doorpad.touch_ring",
         entry="touch",
     )
-    effect = await state.play_doorpad_effect(trace_id)
+    # Never waits on the controller: a tap must answer inside its 100 ms budget
+    # whether the ESP32 acks in 14 ms or not at all.
+    effect = state.request_doorpad_effect(trace_id)
     return {"accepted": accepted, "effect": effect, **state.snapshot_response()}
 
 
@@ -1773,7 +1827,7 @@ async def admin_session_end() -> dict[str, Any]:
 async def video_message_offer() -> dict[str, Any]:
     trace_id = uuid4()
     accepted = state.machine.handle_video_message_offer(trace_id=trace_id)
-    effect = await state.play_doorpad_effect(trace_id)
+    effect = state.request_doorpad_effect(trace_id)
     return {"accepted": accepted, "effect": effect, **state.snapshot_response()}
 
 
