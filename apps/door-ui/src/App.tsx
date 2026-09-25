@@ -336,6 +336,33 @@ interface ScoreboardEntry {
   receivedAt: string;
 }
 
+/**
+ * One board's running tally. `social.scoreboard_updated` carries only `delta`, and
+ * door-api exposes no scoreboard read route, so a board is the sum of the deltas this
+ * kiosk has received since `sinceAt` (page load, in practice) — which the tile says.
+ * Boards are kept apart by `board_id`; the one that moved last is the one shown.
+ */
+interface ScoreboardBoard {
+  entries: Record<string, ScoreboardEntry>;
+  sinceAt: string;
+  updatedAt: string;
+}
+const MAX_SCOREBOARDS = 4;
+
+/**
+ * A row's name. An `entry_id` that is a configured presence subject is that resident
+ * (the same VITE_PRESENCE_SUBJECTS → VITE_RESIDENTS mapping the presence tile uses);
+ * anything else is named by rank, so the board never reads as if it knew who "Resident 2"
+ * was when it does not.
+ */
+export function scoreboardRowName(entryId: string, rank: number): string {
+  const subjectIndex = PRESENCE_SUBJECTS.indexOf(entryId);
+  if (subjectIndex !== -1) return RESIDENTS[subjectIndex] ?? `Resident ${subjectIndex + 1}`;
+  if (rank === 0) return "Leader";
+  if (rank === 1) return "Runner-up";
+  return `#${rank + 1}`;
+}
+
 interface AmbientAlert {
   id: string;
   kind: "aircraft" | "satellite" | "bird" | "printer";
@@ -778,18 +805,26 @@ export function App() {
         }
         : null
   );
-  const [scoreboardEntries, setScoreboardEntries] = useState<Record<string, ScoreboardEntry>>(() =>
+  // Keyed by board_id, then entry_id. The mock seeds one board whose entries are the
+  // configured presence subjects, so the fixture rows carry the residents' names.
+  const [scoreboards, setScoreboards] = useState<Record<string, ScoreboardBoard>>(() =>
     MOCK_AMBIENT_ENABLED
-      ? Object.fromEntries(
-          scoreboardFixture.scores.map((entry, index) => [
-            `fixture-${index}`,
-            {
-              score: entry.score,
-              occurredAt: scoreboardFixture.occurred_at,
-              receivedAt: scoreboardFixture.occurred_at,
-            },
-          ])
-        )
+      ? {
+          [scoreboardFixture.board_id]: {
+            sinceAt: scoreboardFixture.occurred_at,
+            updatedAt: scoreboardFixture.occurred_at,
+            entries: Object.fromEntries(
+              scoreboardFixture.scores.map((entry, index) => [
+                PRESENCE_SUBJECTS[index] ?? `fixture-${index}`,
+                {
+                  score: entry.score,
+                  occurredAt: scoreboardFixture.occurred_at,
+                  receivedAt: scoreboardFixture.occurred_at,
+                },
+              ])
+            ),
+          },
+        }
       : {}
   );
   const [ambientAlert, setAmbientAlert] = useState<AmbientAlert | null>(null);
@@ -1130,22 +1165,35 @@ export function App() {
       (event: DoorboardEvent) => {
         if (event.type !== "social.scoreboard_updated" || !Number.isFinite(event.payload.delta)) return;
         const entryKey = safeDisplayText(event.payload.entry_id, 128);
-        if (!entryKey || entryKey === "__proto__" || entryKey === "constructor") return;
-        setScoreboardEntries((previous) => {
-          const next = { ...previous };
-          if (!(entryKey in next) && Object.keys(next).length >= MAX_SCOREBOARD_ENTRIES) {
-            const oldest = Object.entries(next).sort(
-              ([, left], [, right]) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt)
+        const boardKey = safeDisplayText(event.payload.board_id, 64);
+        const unsafe = (key: string) => !key || key === "__proto__" || key === "constructor";
+        if (unsafe(entryKey) || unsafe(boardKey)) return;
+        const receivedAt = new Date().toISOString();
+        setScoreboards((previous) => {
+          const boards = { ...previous };
+          const board = boards[boardKey] ?? { entries: {}, sinceAt: receivedAt, updatedAt: receivedAt };
+          const entries = { ...board.entries };
+          if (!(entryKey in entries) && Object.keys(entries).length >= MAX_SCOREBOARD_ENTRIES) {
+            const oldest = Object.entries(entries).sort(([, left], [, right]) =>
+              left.receivedAt < right.receivedAt ? -1 : 1
             )[0];
-            if (oldest) delete next[oldest[0]];
+            if (oldest) delete entries[oldest[0]];
           }
-          const nextScore = (next[entryKey]?.score ?? 0) + Math.trunc(event.payload.delta);
-          next[entryKey] = {
+          const nextScore = (entries[entryKey]?.score ?? 0) + Math.trunc(event.payload.delta);
+          entries[entryKey] = {
             score: Math.min(Number.MAX_SAFE_INTEGER, Math.max(Number.MIN_SAFE_INTEGER, nextScore)),
             occurredAt: event.occurred_at,
-            receivedAt: new Date().toISOString(),
+            receivedAt,
           };
-          return next;
+          boards[boardKey] = { entries, sinceAt: board.sinceAt, updatedAt: receivedAt };
+          // board_id arrives off the wire, so the number of boards is bounded too.
+          if (!(boardKey in previous) && Object.keys(boards).length > MAX_SCOREBOARDS) {
+            const stalest = Object.entries(boards)
+              .filter(([key]) => key !== boardKey)
+              .sort(([, left], [, right]) => (left.updatedAt < right.updatedAt ? -1 : 1))[0];
+            if (stalest) delete boards[stalest[0]];
+          }
+          return boards;
         });
       }
     );
@@ -1930,13 +1978,27 @@ export function App() {
         .filter((value): value is string => value !== null)
         .sort()
         .at(-1) ?? null;
-    const scoreboardRows = Object.values(scoreboardEntries).sort((left, right) => right.score - left.score);
+    // The board that moved last is the one on screen; its rows are named by entry, not by
+    // rank position, so a lead change never re-labels who is who.
+    const activeBoardId =
+      Object.entries(scoreboards).sort(([, left], [, right]) =>
+        left.updatedAt < right.updatedAt ? 1 : -1
+      )[0]?.[0] ?? null;
+    const activeBoard = activeBoardId !== null ? scoreboards[activeBoardId] : null;
+    const scoreboardRows = activeBoard
+      ? Object.entries(activeBoard.entries)
+          .sort(([, left], [, right]) => right.score - left.score)
+          .map(([entryId, entry], rank) => ({
+            entryId,
+            name: scoreboardRowName(entryId, rank),
+            score: entry.score,
+          }))
+      : [];
     // The tile is as current as the last delta this kiosk received, whoever scored it.
-    const scoreboardAsOf =
-      scoreboardRows
-        .map((row) => row.receivedAt)
-        .sort()
-        .at(-1) ?? null;
+    const scoreboardAsOf = activeBoard?.updatedAt ?? null;
+    const scoreboardSince = activeBoard
+      ? new Date(activeBoard.sinceAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : null;
     const focusedChannel =
       !isVisitorMode &&
       wallboardFocusRequest?.mode === "focus" &&
@@ -2065,10 +2127,17 @@ export function App() {
         node: (
           <Tile title="Scoreboard" asOf={scoreboardAsOf}>
             <div className="scoreboard-tile-content">
-              {scoreboardRows.length > 0 ? scoreboardRows.slice(0, 8).map((entry, idx) => (
-                <div key={idx} className="score-row">
-                  <span>Resident {idx + 1}</span>
-                  <span className="score-points"><strong>{entry.score}</strong> pts</span>
+              {activeBoardId !== null && scoreboardSince !== null && (
+                // Honest about what the numbers are: deltas summed since this screen
+                // started listening, for this board. Nothing serves an absolute total.
+                <p className="scoreboard-board" data-testid="scoreboard-board">
+                  {activeBoardId} · since {scoreboardSince}
+                </p>
+              )}
+              {scoreboardRows.length > 0 ? scoreboardRows.slice(0, 8).map((row) => (
+                <div key={row.entryId} className="score-row" data-entry={row.entryId}>
+                  <span>{row.name}</span>
+                  <span className="score-points"><strong>{row.score}</strong> pts</span>
                 </div>
               )) : <p>Scoreboard unavailable.</p>}
             </div>

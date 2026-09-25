@@ -216,7 +216,8 @@ interface WallboardFocusSplitProps {
     satelliteOrbits: AmbientSatelliteOrbitsPayload | null;
     printer: AmbientPrinterStatusPayload | null;
     food: AmbientFoodRecommendationPayload | null;
-    scoreboard: Array<{ score: number; occurredAt: string }> | null;
+    /** Sorted by score, already named (resident name or rank label) by the caller. */
+    scoreboard: Array<{ entryId: string; name: string; score: number }> | null;
   };
   /**
    * The remaining ambient tiles (everything except the focused channel),
@@ -360,10 +361,11 @@ function renderFocusContent(
           {ambient.scoreboard.slice(0, 16).map((entry, index) => (
             <div
               className={`focus-row${index === 0 ? " focus-row--leader" : ""}`}
-              key={index}
+              key={entry.entryId}
             >
               <strong>
-                <span className="focus-rank">{index + 1}</span>Resident {index + 1}
+                <span className="focus-rank">{index + 1}</span>
+                {entry.name}
               </strong>
               <span>{entry.score} pts</span>
             </div>

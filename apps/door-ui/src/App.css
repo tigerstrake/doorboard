@@ -261,6 +261,17 @@
   color: var(--db-presence-away);
 }
 
+/* Which board, and since when the tally has been counting: the event carries deltas only,
+   so the numbers are "points since this screen started listening", and it says so. */
+.scoreboard-board {
+  margin: 0 0 var(--db-spacing-xs) 0;
+  font-family: var(--db-font-mono);
+  font-size: 0.8em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--db-text-muted);
+}
+
 .guestbook-quote {
   border-left: 3px solid var(--db-text-secondary);
   padding-left: var(--db-spacing-md);
