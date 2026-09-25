@@ -13,5 +13,9 @@ export async function handleGet(request: Request, store: RelayStore): Promise<Re
   if (!isDeviceRequest(request, "visitor")) return jsonError(401, "device_auth_required");
   if (!store.configured()) return jsonError(503, "storage_not_configured");
 
+  // door-api polls this every ~2 s; like the enrollment pickup, it drives the retention
+  // sweep so an uncollected note never outlives its window.
+  await store.sweepIfDue();
+
   return jsonOk({ items: await store.leaseVisitorActions() });
 }

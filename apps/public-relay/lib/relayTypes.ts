@@ -22,6 +22,9 @@ export const VISITOR_ACTION_TTL_S = 15 * 60;
 export const VISITOR_LEASE_S = 30;
 export const MAX_VISITOR_BATCH = 16;
 
+/** How often the retention sweep may run, driven from the Pi's pickup polls. */
+export const SWEEP_INTERVAL_S = 60;
+
 export type BundleState = "pending" | "collected" | "enrolled" | "failed" | "expired";
 
 /** Terminal states never regress — a late duplicate ack cannot un-enroll someone. */
@@ -106,4 +109,11 @@ export interface RelayStore {
     limit: number,
     windowS: number,
   ): Promise<boolean>;
+
+  /**
+   * Enforce retention if it is due (at most once per {@link SWEEP_INTERVAL_S}). Called from
+   * the device-authenticated pickup routes, which the Pi polls continuously; a store with
+   * native TTLs may answer `false` and do nothing.
+   */
+  sweepIfDue(): Promise<boolean>;
 }

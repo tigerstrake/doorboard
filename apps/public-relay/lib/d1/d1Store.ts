@@ -24,12 +24,13 @@ import {
   MAX_VISITOR_BATCH,
   PICKUP_LEASE_S,
   STATUS_TTL_S,
+  SWEEP_INTERVAL_S,
   VISITOR_ACTION_TTL_S,
   VISITOR_LEASE_S,
   VISITOR_SNAPSHOT_GRACE_S,
 } from "../relayTypes";
 import type { SealedBundle } from "../contracts";
-import { SCHEMA_SQL } from "./schema";
+import { MIGRATIONS } from "./schema";
 import type { D1Like } from "./types";
 
 const TERMINAL_SQL = "('enrolled','expired')";
@@ -53,9 +54,9 @@ export class D1RelayStore implements RelayStore {
     return true;
   }
 
-  /** Create the schema. Idempotent (every statement is `IF NOT EXISTS`). */
+  /** Apply every migration in order. Idempotent (every statement is `IF NOT EXISTS`). */
   async migrate(): Promise<void> {
-    await this.db.exec(SCHEMA_SQL);
+    for (const sql of MIGRATIONS) await this.db.exec(sql);
   }
 
   // -- door key -------------------------------------------------------------
@@ -399,16 +400,62 @@ export class D1RelayStore implements RelayStore {
     return (row?.count ?? 1) <= limit;
   }
 
-  // -- maintenance ----------------------------------------------------------
+  // -- retention ------------------------------------------------------------
 
-  /** Delete rows past their retention window. Called by the scheduled sweep (cron). */
+  /**
+   * Run {@link sweepExpired} if the last sweep is older than {@link SWEEP_INTERVAL_S}.
+   *
+   * Pages Functions have no cron, so the Pi's pickup polls (every few seconds) are the
+   * relay's heartbeat and call this. The slot is claimed with one guarded upsert on
+   * `meta.last_sweep_ms`, so two concurrent polls cannot both sweep. Returns whether this
+   * call did.
+   */
+  async sweepIfDue(): Promise<boolean> {
+    const now = this.now();
+    const claimed = await this.db
+      .prepare(
+        "INSERT INTO meta (key, value) VALUES ('last_sweep_ms', ?) " +
+          "ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE meta.value <= ?",
+      )
+      .bind(now, now - SWEEP_INTERVAL_S * 1000)
+      .run();
+    if (claimed.meta.changes === 0) return false;
+    await this.sweepExpired();
+    return true;
+  }
+
+  /**
+   * Enforce retention (ADR-0016 §5, preserved by ADR-0043 §1). A privacy control, not
+   * housekeeping: every read filters on expiry, so a stale row is never *served*, but until
+   * this runs it is still *held* — ciphertext the Pi never collected, a note that never
+   * reached the wallboard, a rate-limit bucket. On a store without native TTLs, this is
+   * the retention window.
+   */
   async sweepExpired(): Promise<void> {
     const now = this.now();
-    await this.db.prepare("DELETE FROM invite WHERE expires_ms <= ?").bind(now).run();
+    // Ciphertext past its TTL goes first, whatever the row's status or lease: a bundle the
+    // Pi leased and never acked must not outlive its 15 minutes any more than one it never
+    // collected. The status survives so the phone can be told — for the status window
+    // measured from the *expiry*, not from when this sweep noticed, so a late sweep does
+    // not renew the row.
     await this.db
-      .prepare(`DELETE FROM bundle WHERE status_expires_ms <= ? AND bundle_json IS NULL`)
+      .prepare(
+        "UPDATE bundle SET status = 'expired', status_reason = 'bundle_expired', " +
+          "status_updated_at = ?, status_expires_ms = bundle_expires_ms + ? " +
+          "WHERE bundle_expires_ms <= ? AND bundle_json IS NOT NULL " +
+          `AND status NOT IN ${TERMINAL_SQL}`,
+      )
+      .bind(new Date(now).toISOString(), STATUS_TTL_S * 1000, now)
+      .run();
+    await this.db
+      .prepare(
+        "UPDATE bundle SET bundle_json = NULL, in_pending = 0 " +
+          "WHERE bundle_expires_ms <= ? AND bundle_json IS NOT NULL",
+      )
       .bind(now)
       .run();
+    await this.db.prepare("DELETE FROM bundle WHERE status_expires_ms <= ?").bind(now).run();
+    await this.db.prepare("DELETE FROM invite WHERE expires_ms <= ?").bind(now).run();
     await this.db.prepare("DELETE FROM rate_limit WHERE window_expires_ms <= ?").bind(now).run();
     await this.db.prepare("DELETE FROM visitor_snapshot WHERE expires_ms <= ?").bind(now).run();
     await this.db.prepare("DELETE FROM visitor_action WHERE expires_ms <= ?").bind(now).run();

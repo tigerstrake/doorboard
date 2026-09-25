@@ -26,6 +26,10 @@ npm prefix — is not required. If you prefer a global install, `sudo npm i -g w
 It is idempotent — safe to re-run. The rest of this file is the manual reference the script
 follows, and the verification + rollback detail.
 
+**Migrations after the first.** The script applies `migrations/0001_init.sql`. Every later file
+under `migrations/` (today: `0002_meta.sql`, which the retention sweep needs) must be applied by
+hand as in step 1 *before* deploying code that expects it — nothing applies a migration lazily.
+
 ## 0. Prerequisites
 
 - `tigerstrake.com`'s DNS is already on Cloudflare (it is — the personal site is there).
@@ -39,16 +43,16 @@ follows, and the verification + rollback detail.
 wrangler d1 create doorboard-relay
 ```
 Copy the printed `database_id` into `wrangler.toml` (`database_id = "…"`, replacing the
-placeholder). Then create the schema (idempotent):
+placeholder). Then apply every migration, in order (each is idempotent):
 ```bash
-wrangler d1 execute doorboard-relay --remote --file=./migrations/0001_init.sql
+for f in ./migrations/*.sql; do wrangler d1 execute doorboard-relay --remote --file="$f"; done
 ```
-`migrations/0001_init.sql` mirrors `lib/d1/schema.ts`. Confirm five tables plus the two indexes
-exist:
+The files mirror `MIGRATIONS` in `lib/d1/schema.ts` (a test fails if they drift). Confirm seven
+tables plus the three indexes exist:
 ```bash
 wrangler d1 execute doorboard-relay --remote --command \
   "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-# expect: bundle, door_key, invite, rate_limit, visitor_action, visitor_snapshot
+# expect: bundle, door_key, invite, meta, rate_limit, visitor_action, visitor_snapshot
 ```
 
 ## 2. Set the two device-token secrets
@@ -124,17 +128,34 @@ Upstash database can be removed too.
 - **`nodejs_compat`** is set in `wrangler.toml`; it is required for `lib/device.ts`'s
   `node:crypto` constant-time compares and for the device-token secrets to be readable via
   `process.env`. If a device call unexpectedly 401s, confirm the flag is active on the deployment.
-- **Expiry sweep.** Every query filters on expiry, so stale rows are never served — correctness
-  does not need a sweep. To reclaim space, run periodically (or wire a scheduled Worker calling
-  `D1RelayStore.sweepExpired()`):
-  ```bash
-  wrangler d1 execute doorboard-relay --remote --command \
-    "DELETE FROM bundle WHERE status_expires_ms<=unixepoch()*1000 AND bundle_json IS NULL;
-     DELETE FROM invite WHERE expires_ms<=unixepoch()*1000;
-     DELETE FROM rate_limit WHERE window_expires_ms<=unixepoch()*1000;
-     DELETE FROM visitor_snapshot WHERE expires_ms<=unixepoch()*1000;
-     DELETE FROM visitor_action WHERE expires_ms<=unixepoch()*1000;"
-  ```
+- **The retention sweep is a privacy control, not housekeeping.** Every query filters on
+  expiry, so a stale row is never *served* — but until the sweep runs it is still *held*:
+  ciphertext the Pi never collected, a note door-api never picked up, a rate-limit bucket. On
+  D1 there are no native TTLs, so the sweep *is* the retention window of ADR-0016 §5. Pages
+  Functions have no cron; instead the two device-authenticated pickup routes (`GET /api/pickup`,
+  `GET /api/visitor/pickup`), which the Pi polls every few seconds, run
+  `D1RelayStore.sweepExpired()` whenever `meta.last_sweep_ms` is older than 60 s. It NULLs
+  ciphertext at the bundle TTL regardless of status or lease, then deletes rows by their own
+  windows. Consequences to know:
+  - **If the door stops polling, nothing sweeps.** A long door outage means whatever was
+    queued at the time is held until the next poll (then removed at once). To sweep by hand
+    in the meantime:
+    ```bash
+    wrangler d1 execute doorboard-relay --remote --command \
+      "UPDATE bundle SET bundle_json=NULL, in_pending=0 WHERE bundle_expires_ms<=unixepoch()*1000;
+       DELETE FROM bundle WHERE status_expires_ms<=unixepoch()*1000;
+       DELETE FROM invite WHERE expires_ms<=unixepoch()*1000;
+       DELETE FROM rate_limit WHERE window_expires_ms<=unixepoch()*1000;
+       DELETE FROM visitor_snapshot WHERE expires_ms<=unixepoch()*1000;
+       DELETE FROM visitor_action WHERE expires_ms<=unixepoch()*1000;"
+    ```
+  - **It needs `migrations/0002_meta.sql`.** Without the `meta` table the pickup routes fail
+    (500) rather than silently skipping retention — apply the migration, don't patch around it.
+  - To confirm it is running, watch the slot advance while the door is online:
+    ```bash
+    wrangler d1 execute doorboard-relay --remote --command \
+      "SELECT value FROM meta WHERE key='last_sweep_ms'"
+    ```
 - **Rollback.** The door URL env is the switch: point it back at the Vercel origin (kept live
   until step 7 is verified) and restart the two services. Nothing on the door changed but a URL.
 - **The code-level relay bugs** the move already fixed: the invite secret is out of the URL

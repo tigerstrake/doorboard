@@ -6,26 +6,37 @@
  * limiter — each a single guarded SQL statement here. P-33 (ADR-0043) is the lease + terminal
  * pair. A clock is injected so lease and TTL windows are deterministic.
  */
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
+
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { SealedBundle } from "@/lib/contracts";
 import { D1RelayStore } from "@/lib/d1/d1Store";
+import { MIGRATIONS } from "@/lib/d1/schema";
 import {
   BUNDLE_TTL_S,
   PICKUP_LEASE_S,
+  STATUS_TTL_S,
+  SWEEP_INTERVAL_S,
   type StoredVisitorSnapshot,
 } from "@/lib/store";
 
 import { NodeSqliteD1 } from "./nodeSqliteD1";
 
 const clock = { ms: 1_000_000 };
+let db: NodeSqliteD1;
 let store: D1RelayStore;
 
 beforeEach(async () => {
   clock.ms = 1_000_000;
-  store = new D1RelayStore(new NodeSqliteD1(), () => clock.ms);
+  db = new NodeSqliteD1();
+  store = new D1RelayStore(db, () => clock.ms);
   await store.migrate();
 });
+
+/** Distinctive enough to byte-scan for; the store never inspects ciphertext. */
+const CIPHERTEXT_SENTINEL = "DOORBOARD_SENTINEL_CIPHERTEXT";
 
 function sealed(bundleId: string, inviteId: string): SealedBundle {
   return {
@@ -36,7 +47,7 @@ function sealed(bundleId: string, inviteId: string): SealedBundle {
     door_key_id: "dky_x",
     ephemeral_public_key: "AA",
     salt: "BB",
-    items: [{ index: 0, nonce: "CC", ciphertext: "DD" }],
+    items: [{ index: 0, nonce: "CC", ciphertext: CIPHERTEXT_SENTINEL }],
   } as SealedBundle;
 }
 
@@ -146,6 +157,48 @@ describe("bundles and pickup lease", () => {
     clock.ms += BUNDLE_TTL_S * 1000 + 1;
     expect(await store.leaseBundles()).toEqual([]);
     expect((await store.getStatus("bnd_1"))?.status).toBe("expired");
+  });
+});
+
+describe("retention sweep", () => {
+  it("builds the same schema from migrations/*.sql as from the code", () => {
+    // The on-disk files are what `wrangler d1 execute` applies in production; the constants
+    // are what the tests apply. Compared modulo comments and whitespace so neither can drift.
+    const dir = path.join(__dirname, "..", "migrations");
+    const files = readdirSync(dir).filter((name) => name.endsWith(".sql")).sort();
+    expect(files).toHaveLength(MIGRATIONS.length);
+    const normalise = (sql: string) => sql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim();
+    files.forEach((file, index) => {
+      expect(normalise(readFileSync(path.join(dir, file), "utf8"))).toBe(
+        normalise(MIGRATIONS[index]!),
+      );
+    });
+  });
+
+  it("drops ciphertext at the bundle TTL even under a live lease, and the row at the status TTL", async () => {
+    await store.putBundle(sealed("bnd_1", "inv_a"));
+    // The Pi collected it and died: leased, never acked.
+    expect((await store.leaseBundles()).length).toBe(1);
+    expect(db.dumpRows()).toContain(CIPHERTEXT_SENTINEL);
+
+    clock.ms += BUNDLE_TTL_S * 1000 + 1;
+    await store.sweepExpired();
+    expect(db.dumpRows()).not.toContain(CIPHERTEXT_SENTINEL);
+    // The status outlives the ciphertext so the phone can be told what happened.
+    expect((await store.getStatus("bnd_1"))?.status).toBe("expired");
+
+    clock.ms += STATUS_TTL_S * 1000 + 1;
+    await store.sweepExpired();
+    expect(db.dumpRows()).not.toContain("bnd_1");
+  });
+
+  it("runs at most once per interval, from whichever poll claims the slot", async () => {
+    expect(await store.sweepIfDue()).toBe(true);
+    expect(await store.sweepIfDue()).toBe(false);
+    clock.ms += SWEEP_INTERVAL_S * 1000 - 1;
+    expect(await store.sweepIfDue()).toBe(false);
+    clock.ms += 2;
+    expect(await store.sweepIfDue()).toBe(true);
   });
 });
 

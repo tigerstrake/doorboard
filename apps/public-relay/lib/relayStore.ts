@@ -94,6 +94,10 @@ class RedisRelayStore implements RelayStore {
   ): Promise<boolean> {
     return redisStore.underRateLimit(scope, subject, limit, windowS);
   }
+  /** Redis keys carry native TTLs; there is nothing to sweep. */
+  async sweepIfDue(): Promise<boolean> {
+    return false;
+  }
 }
 
 const redisSingleton = new RedisRelayStore();

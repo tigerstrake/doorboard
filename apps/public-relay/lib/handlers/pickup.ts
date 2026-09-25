@@ -16,6 +16,10 @@ export async function handleGet(request: Request, store: RelayStore): Promise<Re
   if (!isDeviceRequest(request)) return jsonError(401, "device_auth_required");
   if (!store.configured()) return jsonError(503, "storage_not_configured");
 
+  // Retention runs from here, not a cron: Pages Functions have none, and the Pi polls this
+  // route every few seconds, so it is the relay's heartbeat (ADR-0043 §1).
+  await store.sweepIfDue();
+
   const leased = await store.leaseBundles();
   return jsonOk({
     items: leased.map((record) => ({

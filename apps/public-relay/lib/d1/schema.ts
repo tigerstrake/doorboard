@@ -1,16 +1,23 @@
 /**
- * The relay's D1 schema (ADR-0043 §1). Single source of truth: the store's `migrate()`
- * runs this, the tests run this, and `migrations/0001_init.sql` (for `wrangler d1 migrations`)
- * is generated from it. Every row that expires carries an `*_expires_ms` epoch-millis column,
- * swept lazily on read and by a scheduled sweep — this replaces Redis native key TTLs while
- * preserving the exact retention windows from ADR-0016 §5.
+ * The relay's D1 schema (ADR-0043 §1), as an ordered list of migrations.
+ *
+ * `D1RelayStore.migrate()` applies them in order for the tests. Production applies the
+ * matching files under `migrations/` with `wrangler d1 execute` (see the deploy runbook) —
+ * nothing runs them lazily on a request. The `migrations/*.sql` files mirror these constants
+ * one to one, and `tests/d1Store.test.ts` fails if the schema they build ever differs from
+ * the schema these build. If you edit one, edit both.
+ *
+ * Every row that expires carries an `*_expires_ms` epoch-millis column. Reads filter on it,
+ * so a stale row is never *served*; the sweep (`sweepExpired`, driven from the Pi's pickup
+ * polls via `meta.last_sweep_ms`) is what stops it being *held* — that is what preserves the
+ * retention windows of ADR-0016 §5 on a store without native TTLs.
  *
  * Why D1 (relational) and not KV: the invite `consumed` flag, the pickup lease, the
  * never-regressing terminal status, and the fixed-window rate limiter all need atomic
  * read-modify-write, which KV's eventual consistency cannot give. Each is a single guarded
  * SQL statement here.
  */
-export const SCHEMA_SQL = `
+const INIT_0001 = `
 CREATE TABLE IF NOT EXISTS door_key (
   id           TEXT PRIMARY KEY,          -- always 'active'
   record_json  TEXT NOT NULL
@@ -65,3 +72,14 @@ CREATE TABLE IF NOT EXISTS visitor_action (
 );
 CREATE INDEX IF NOT EXISTS idx_visitor_action_pending ON visitor_action (lease_until_ms, created_ms);
 `;
+
+/** Relay-wide bookkeeping; today only `last_sweep_ms`, the slot the retention sweep claims. */
+const META_0002 = `
+CREATE TABLE IF NOT EXISTS meta (
+  key    TEXT PRIMARY KEY,
+  value  INTEGER NOT NULL
+);
+`;
+
+/** In application order. `migrations/000N_*.sql` on disk is the same list, one file each. */
+export const MIGRATIONS: readonly string[] = [INIT_0001, META_0002];
