@@ -7,21 +7,25 @@ Task: T-503 (Gemini, config-heavy) with control-plane wiring in T-501.
 - Scoped long-lived token, NUC-only. The door Pi never talks to HA directly.
 - Contents: MQTT topic map, HA config snippets/blueprints, webhook payload schemas (contracts-typed), setup doc.
 
-## T-503 status (this task)
+## What is here
 
 Runs as the `home-assistant` service in `infra/compose/` (T-503's compose
 stack). Contents of this directory:
 
 | Path | What it is |
 |---|---|
-| [`config/configuration.yaml`](config/configuration.yaml) | HA's MQTT broker connection (credentials via `!env_var`, sourced from `.env` through compose — no second secrets file to keep in sync) |
-| [`config/rest_commands.yaml`](config/rest_commands.yaml) | `rest_command.presence_label_update` — the target the inbound webhook automation calls |
-| [`config/automations.yaml`](config/automations.yaml) | The inbound webhook → control-plane-api bridge, disabled by default (see below) |
+| [`config/configuration.yaml`](config/configuration.yaml) | `default_config`, the YAML dashboard below, a template sensor that turns the sync backlog into hours, and the `rest_command`/`automation` includes. The MQTT broker is deliberately **not** configured here — HA removed YAML broker config, so it is set up once in the UI (the file says how) and persists in `ha_data` |
+| [`config/rest_commands.yaml`](config/rest_commands.yaml) | `rest_command.presence_focus_update` and `rest_command.presence_geofence_update` — one per control-plane-api presence source, both carrying the admin token from the container environment (`!env_var`, sourced from `.env` through compose — no second secrets file to keep in sync) |
+| [`config/automations.yaml`](config/automations.yaml) | The two presence bridges (Focus webhook → `focus-shortcut`; companion-app zone change → `geofence-label`), both `initial_state: true`, plus phone pushes for the bell, a stalled archive and critical door storage |
+| [`config/doorboard-dashboard.yaml`](config/doorboard-dashboard.yaml) | A YAML Lovelace dashboard for the four entities, in HA's sidebar as "Doorboard" |
 | [`discovery/`](discovery/) | Static MQTT Discovery config payloads for the four entities below, plus [`publish-discovery.sh`](discovery/publish-discovery.sh), run once at stack startup by the `ha-discovery-publisher` compose service |
 
-These are bind-mounted read-only into the `home-assistant` container's
-`/config`; HA's own runtime state (`.storage/`, its SQLite DB, logs) lives
-in the separate `ha_data` named Docker volume and never touches this repo.
+These are bind-mounted read-only, **per file**, into the `home-assistant`
+container's `/config` (a new file needs its own mount or HA never sees it);
+HA's own runtime state (`.storage/`, its SQLite DB, logs) lives in the
+separate `ha_data` named Docker volume and never touches this repo. Because
+`automations.yaml` is read-only, HA's UI automation editor cannot save —
+automations for this stack are repo-managed on purpose.
 
 ### MQTT topic map / discovery entities
 
@@ -76,6 +80,19 @@ delivered through the container environment via `!env_var` like the admin
 token, generated per deployment (`openssl rand -hex 32`), and never a literal
 in this repo. Rotation: [docs/runbooks/security-checklist.md](../../docs/runbooks/security-checklist.md).
 
+### Which person, which zones
+
+The zone automation triggers on one `person.*` entity and maps zone names to
+labels. Both are per-deployment facts, not repo facts: HA derives the entity
+id from the name in Settings → People (and a wrong id fails silently, by
+never triggering), and zone names are whatever you called them. So the entity
+comes from `DOORBOARD_PRESENCE_PERSON_ENTITY` in `.env`, through the container
+environment like the webhook id — compose defaults it to the placeholder
+`person.owner` — and the mapping in `automations.yaml` ships with generic zone
+names (`home`, `Campus`, `Library`) to rename to match yours. Anything
+unmapped, another city or another country included, resolves to `away` on
+purpose: the label never says where you are, only that you are not here.
+
 ### Setting up the HA-side long-lived token
 
 If you extend this bridge to call the HA REST API directly (nothing here
@@ -88,11 +105,15 @@ only — the door Pi never talks to HA directly). Never put it in `configuration
 
 ### Verifying without a NUC
 
-`integrations/home-assistant/discovery/*.json` were validated with `python
--m json.tool`; `integrations/home-assistant/config/*.yaml` were checked for
-correct HA schema shape by hand against HA's documented `mqtt:` /
-`rest_command:` / `automation:` (`webhook` trigger) formats. Actually seeing
-the four entities render and the webhook automation fire needs a running HA
-instance — no Docker in this sandbox — see `infra/compose/README.md` and
-`infra/compose/scripts/demo-bell-to-ha.sh` for how to exercise this for
-real once Docker is available.
+`tests/test_home_assistant_presence_config.py` loads the YAML and checks it
+against the code it calls: every `rest_command` targets a route
+control-plane-api actually serves, sends no `source` and no coordinates,
+and authenticates from the environment; both presence automations are
+explicitly enabled; every label the zone template can render is one the
+contract accepts; and the webhook id and person entity reach the container
+from `.env` with only placeholders in git. It exists because an earlier
+version of this config was "checked by hand against HA's documented
+formats" and had three independently fatal faults that nothing caught until
+a Focus change did nothing. Actually seeing the four entities render and the
+webhook automation fire still needs a running HA — see
+`infra/compose/README.md` and `infra/compose/scripts/demo-bell-to-ha.sh`.

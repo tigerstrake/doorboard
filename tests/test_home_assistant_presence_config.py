@@ -252,3 +252,34 @@ def test_rest_command_env_var_matches_what_compose_provides(rest_commands):
         assert match.group(1) in provided, (
             f"{name} reads {match.group(1)}, which compose does not provide"
         )
+
+
+def _zone_trigger(automations: list[dict[str, Any]]) -> dict[str, Any]:
+    automation = next(a for a in automations if a["id"] == "doorboard_presence_from_zone")
+    return next(t for t in automation["triggers"] if t.get("trigger") == "state")
+
+
+def test_the_zone_trigger_names_no_particular_person(automations):
+    """`person.<the owner's name>` was a literal in a repo meant to go public.
+
+    Not a credential, but a name -- and a per-deployment fact besides, since HA
+    derives the id from Settings -> People and a wrong one never triggers. It
+    comes from the environment with a placeholder default, and the plumbing
+    holds the same way the webhook id's does: both compose stacks pass it and
+    .env.example documents it.
+    """
+    entity = str(_zone_trigger(automations)["entity_id"])
+    match = re.fullmatch(r"<!env_var:([A-Z0-9_]+) (person\.[a-z0-9_]+)>", entity)
+    assert match, f"entity_id is {entity!r}; it must be an !env_var with a person.* default"
+    var, default = match.groups()
+    assert default == "person.owner", f"the default {default!r} should be a placeholder"
+
+    for name in ("docker-compose.yml", "compose.dev.yml"):
+        compose = yaml.safe_load((REPO / "infra/compose" / name).read_text())
+        env = compose["services"]["home-assistant"]["environment"]
+        assert var in env, f"{name} does not pass {var} to home-assistant"
+
+    env_example = (REPO / ".env.example").read_text()
+    documented = re.search(rf"^{var}=(.*)$", env_example, flags=re.MULTILINE)
+    assert documented, f".env.example never mentions {var}"
+    assert documented.group(1).strip() == default

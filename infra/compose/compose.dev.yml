@@ -142,6 +142,8 @@ services:
       # The presence webhook id is a credential (see docker-compose.yml); a dev
       # stack bound to localhost may default it, production may not.
       DOORBOARD_PRESENCE_WEBHOOK_ID: ${DOORBOARD_PRESENCE_WEBHOOK_ID:-dev-presence-webhook-id}
+      # The person entity the zone automation watches; a placeholder until set.
+      DOORBOARD_PRESENCE_PERSON_ENTITY: ${DOORBOARD_PRESENCE_PERSON_ENTITY:-person.owner}
     volumes:
       - ./../../integrations/home-assistant/config/configuration.yaml:/config/configuration.yaml:ro
       - ./../../integrations/home-assistant/config/automations.yaml:/config/automations.yaml:ro

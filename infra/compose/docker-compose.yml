@@ -184,6 +184,11 @@ services:
       # Required, not defaulted: an unset !env_var fails the whole automations
       # include, and a guessable default is the hole this closes.
       DOORBOARD_PRESENCE_WEBHOOK_ID: ${DOORBOARD_PRESENCE_WEBHOOK_ID:?DOORBOARD_PRESENCE_WEBHOOK_ID must be set in .env (openssl rand -hex 32)}
+      # The person entity the zone automation watches (automations.yaml, via
+      # !env_var). Not a secret, but a per-deployment fact HA derives from the
+      # owner's name, so it lives in .env rather than in git; the default is a
+      # placeholder that triggers on nobody until it is set.
+      DOORBOARD_PRESENCE_PERSON_ENTITY: ${DOORBOARD_PRESENCE_PERSON_ENTITY:-person.owner}
     volumes:
       - ha_data:/config
       - ./../../integrations/home-assistant/config/configuration.yaml:/config/configuration.yaml:ro

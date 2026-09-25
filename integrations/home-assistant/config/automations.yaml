@@ -78,10 +78,12 @@
   max: 10
   triggers:
     - trigger: state
-      # Verified against the live entity registry on 2026-08-21. HA derives this
-      # from the name in Settings -> People, so it changes if the person is
-      # renamed — and a wrong id fails SILENTLY, by simply never triggering.
-      entity_id: person.tiger_strake
+      # HA derives a person's entity id from the name in Settings -> People, so
+      # it is a per-deployment fact, it changes if the person is renamed — and a
+      # wrong id fails SILENTLY, by simply never triggering. It comes from .env
+      # (DOORBOARD_PRESENCE_PERSON_ENTITY) through the container environment,
+      # like the webhook id; `person.owner` is only a placeholder default.
+      entity_id: !env_var DOORBOARD_PRESENCE_PERSON_ENTITY person.owner
   conditions:
     # Ignore the momentary unknown/unavailable flaps the app produces on
     # restart, which would otherwise publish "away" while you are sitting there.
@@ -96,17 +98,17 @@
         # One expression, not an {% if %} ladder: a folded block scalar turns
         # each newline into a space, so the ladder would have rendered
         # " available " and been rejected as an invalid label.
-        # A zone the door does not know about resolves to 'away' — INCLUDING a
-        # "Germany"/"motherland" zone. That is deliberate, not a gap: the presence
-        # label is broad by design (ADR-0035) and never says WHERE you are, only
-        # that you are not here. A corridor-facing screen must not announce
-        # "in Germany". So being in the motherland shows "Away", which is correct;
-        # the entries below are the only ones that map to something more specific.
+        # A zone the door does not know about resolves to 'away' — including a
+        # zone for another city or country. That is deliberate, not a gap: the
+        # presence label is broad by design (ADR-0035) and never says WHERE you
+        # are, only that you are not here, and a corridor-facing screen must not
+        # announce which country you are in. The entries below are the only ones
+        # that map to something more specific. The keys are HA zone names as they
+        # appear in the person's state; rename them to match the zones you made.
         label: >-
           {{ {'home': 'available',
               'Campus': 'at_class', 'campus': 'at_class',
-              'Library': 'at_library', 'library': 'at_library',
-              'Germany': 'away', 'motherland': 'away', 'Motherland': 'away'}
+              'Library': 'at_library', 'library': 'at_library'}
              .get(trigger.to_state.state, 'away') }}
 
 - id: doorboard_bell_push
