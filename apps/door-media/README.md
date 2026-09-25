@@ -30,6 +30,12 @@ visitor cam + mic → rpicam/libcamera → H.264/AAC → MediaMTX
 - HTTP: `/health`, `/metrics`, `GET /streams` (endpoint metadata for UIs), `GET /recordings` + `DELETE /recordings/{id}` (admin), and `/photos/*` still-capture review endpoints used by the feature-gated DoorPad photo booth.
 - MediaMTX sits behind a `MediaRouter` adapter (`mediamtx | mock`); raw MediaMTX/RTSP ports are never exposed off-host (security §16, see *Ports*).
 
+## Playback tokens
+
+`GET /recordings/{id}/file`, `GET /photos/{id}/review` and `GET /photos/{id}/file` serve a visitor's own clip or still back to the DoorPad review screen. The kiosk holds no secret, and `session_id` is not one either (it is on `/ws`, `/session` and the visitor's phone), so these routes take a `?token=` capability: `doorboard_auth.playback_tokens`, an HMAC over `recording_id|session_id|expires_at` keyed from `DOOR_MEDIA_ADMIN_TOKEN`, at most 300 s long. A missing, wrong, expired or over-long token is a 404, the same answer as an unknown recording. An admin bearer passes without one. With no admin token configured nothing can be minted or verified and the routes fail closed.
+
+door-media mints the token into the `review_url` and `playback_url` it returns from `POST /photos/capture` and `POST /photos/{id}/save`. door-api mints the one in `playback_url` on `GET /doorpad/video-message/latest` with the same `DOOR_MEDIA_ADMIN_TOKEN` it already holds for `/internal/session_event`. Media responses (files, thumbnails, snapshots) carry `Cache-Control: no-store`. The one-shot ffmpeg fallback behind `/snapshot` is capped at two concurrent grabs; further requests get the placeholder rather than a process each.
+
 ## Ports
 
 Nothing MediaMTX listens on is reachable off the Pi (ARCHITECTURE §2, ADR-0047). MediaMTX fills every key the generated `mediamtx.yml` omits from defaults that bind **all interfaces**, so the template names every protocol the pinned release has, and `tests/test_mediamtx_config_surface.py` checks the rendering against `tests/fixtures/mediamtx-<MEDIAMTX_VERSION>-defaults.yml`.

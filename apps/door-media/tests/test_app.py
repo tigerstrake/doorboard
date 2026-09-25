@@ -417,3 +417,159 @@ def test_photo_review_pending_set_is_bounded(client: TestClient):
         ).status_code
         == 404
     )
+
+
+# ---------------------------------------------------------------------------
+# Playback tokens: a capability, not a public id
+# ---------------------------------------------------------------------------
+
+_NO_AUTH = {"Authorization": ""}
+
+
+def _mint(rid: str, sid: str, *, ttl_s: int = 120, admin: str = "test-admin-token") -> str:
+    from doorboard_auth import mint_playback_token
+
+    return mint_playback_token(
+        admin, recording_id=rid, session_id=sid, expires_at=int(__import__("time").time()) + ttl_s
+    )
+
+
+def _record_video_message(client: TestClient) -> tuple[str, str]:
+    session_id = str(uuid.uuid4())
+    trace_id = str(uuid.uuid4())
+    for from_state, to_state, trigger in (
+        (SessionState.VIDEO_MESSAGE_OFFERED, SessionState.VIDEO_MESSAGE_RECORDING, "visitor:start"),
+        (SessionState.VIDEO_MESSAGE_RECORDING, SessionState.VIDEO_MESSAGE_REVIEW, "visitor:stop"),
+    ):
+        resp = client.post(
+            "/internal/session_event",
+            json=_session_event(
+                session_id=session_id,
+                from_state=from_state,
+                to_state=to_state,
+                trigger=trigger,
+                trace_id=trace_id,
+            ),
+        )
+        assert resp.status_code == 200
+    (recording,) = [
+        r for r in client.get("/recordings").json()["recordings"] if r["session_id"] == session_id
+    ]
+    return recording["recording_id"], session_id
+
+
+def test_video_message_file_needs_a_playback_token(client: TestClient) -> None:
+    """session_id is broadcast on /ws, /session and to the visitor's phone: it is
+    knowledge, not authorization. Knowing it must not fetch the clip."""
+    rid, sid = _record_video_message(client)
+    url = f"/recordings/{rid}/file?session_id={sid}"
+
+    assert client.get(url, headers=_NO_AUTH).status_code == 404
+    assert client.get(f"{url}&token=", headers=_NO_AUTH).status_code == 404
+    assert client.get(f"{url}&token=not-a-token", headers=_NO_AUTH).status_code == 404
+
+    good = client.get(f"{url}&token={_mint(rid, sid)}", headers=_NO_AUTH)
+    assert good.status_code == 200
+    assert good.headers["content-type"] == "video/mp4"
+    assert good.headers["cache-control"] == "no-store"
+
+
+def test_a_playback_token_is_bound_to_one_recording_and_session(client: TestClient) -> None:
+    rid, sid = _record_video_message(client)
+    other_rid, other_sid = _record_video_message(client)
+
+    # Right recording, token minted for another one.
+    assert (
+        client.get(
+            f"/recordings/{rid}/file?session_id={sid}&token={_mint(other_rid, sid)}",
+            headers=_NO_AUTH,
+        ).status_code
+        == 404
+    )
+    # Token minted for this recording under another session.
+    assert (
+        client.get(
+            f"/recordings/{rid}/file?session_id={sid}&token={_mint(rid, other_sid)}",
+            headers=_NO_AUTH,
+        ).status_code
+        == 404
+    )
+
+
+def test_an_expired_or_over_long_playback_token_is_refused(client: TestClient) -> None:
+    rid, sid = _record_video_message(client)
+    url = f"/recordings/{rid}/file?session_id={sid}"
+
+    assert (
+        client.get(f"{url}&token={_mint(rid, sid, ttl_s=-1)}", headers=_NO_AUTH).status_code == 404
+    )
+    assert (
+        client.get(f"{url}&token={_mint(rid, sid, ttl_s=3600)}", headers=_NO_AUTH).status_code
+        == 404
+    )
+
+
+def test_a_token_minted_with_another_doors_admin_token_is_refused(client: TestClient) -> None:
+    rid, sid = _record_video_message(client)
+    token = _mint(rid, sid, admin="some-other-secret")
+    assert (
+        client.get(
+            f"/recordings/{rid}/file?session_id={sid}&token={token}", headers=_NO_AUTH
+        ).status_code
+        == 404
+    )
+
+
+def test_an_admin_bearer_still_passes_the_playback_routes(client: TestClient) -> None:
+    rid, sid = _record_video_message(client)
+    assert client.get(f"/recordings/{rid}/file?session_id={sid}").status_code == 200
+
+
+def test_playback_routes_fail_closed_without_an_admin_token(client: TestClient) -> None:
+    """No admin token means nothing can be minted or verified; that must not open the
+    routes to anyone who knows a session_id."""
+    rid, sid = _record_video_message(client)
+    token = _mint(rid, sid)
+    cfg = cast(Any, client.app).state.cfg
+    cfg.admin_token = ""
+    assert (
+        client.get(
+            f"/recordings/{rid}/file?session_id={sid}&token={token}", headers=_NO_AUTH
+        ).status_code
+        == 404
+    )
+    assert client.get(f"/recordings/{rid}/file?session_id={sid}").status_code == 404
+
+
+def test_photo_review_and_file_urls_carry_a_token_and_require_it(client: TestClient) -> None:
+    session_id = str(uuid.uuid4())
+    trace_id = str(uuid.uuid4())
+    photo = client.post(
+        "/photos/capture", json={"session_id": session_id, "trace_id": trace_id}
+    ).json()["photo"]
+    rid = photo["recording_id"]
+
+    assert "&token=" in photo["review_url"]
+    tokened = client.get(photo["review_url"], headers=_NO_AUTH)
+    assert tokened.status_code == 200
+    assert tokened.headers["cache-control"] == "no-store"
+    untokened = photo["review_url"].split("&token=")[0]
+    assert client.get(untokened, headers=_NO_AUTH).status_code == 404
+    # A review token does not unlock the saved-photo route for a different recording id,
+    # and the review token is bound to this recording.
+    assert (
+        client.get(
+            f"/photos/{uuid.uuid4()}/review?session_id={session_id}&token={_mint(rid, session_id)}",
+            headers=_NO_AUTH,
+        ).status_code
+        == 404
+    )
+
+    saved = client.post(
+        f"/photos/{rid}/save", json={"session_id": session_id, "trace_id": trace_id}
+    ).json()["recording"]
+    assert "&token=" in saved["playback_url"]
+    assert client.get(saved["playback_url"], headers=_NO_AUTH).status_code == 200
+    assert (
+        client.get(saved["playback_url"].split("&token=")[0], headers=_NO_AUTH).status_code == 404
+    )

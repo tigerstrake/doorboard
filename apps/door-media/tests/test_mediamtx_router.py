@@ -1195,3 +1195,50 @@ async def test_a_failed_concat_leaves_nothing_under_the_final_name(
         await _concat_segments([tmp_path / "seg.mp4"], out_path)
 
     assert list(out_path.parent.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# One-shot snapshot grabs are bounded
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_one_shot_snapshot_grabs_are_capped_at_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each cold-reader fallback spawns an ffmpeg that lives up to snapshot_timeout_s.
+    Unbounded, a client polling /snapshot could hold N of them open at once."""
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_SNAPSHOT_READER_ENABLED=False,
+    )
+    router = MediaMTXRouter(cfg)
+    jpeg = b"\xff\xd8frame\xff\xd9"
+    in_flight = 0
+    high_water = 0
+    spawned = 0
+
+    class _SlowProc(_SnapshotProc):
+        async def communicate(self) -> tuple[bytes, bytes]:
+            nonlocal in_flight, high_water
+            in_flight += 1
+            high_water = max(high_water, in_flight)
+            await asyncio.sleep(0.05)
+            in_flight -= 1
+            return await super().communicate()
+
+    async def fake_exec(*args: str, **kwargs: object) -> _SlowProc:
+        nonlocal spawned
+        spawned += 1
+        return _SlowProc(stdout=jpeg, returncode=0)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    results = await asyncio.gather(*(router.snapshot() for _ in range(5)))
+
+    assert high_water == 2
+    assert spawned == 2
+    assert results.count(jpeg) == 2
+    assert results.count(None) == 3, "the excess is refused now, not queued"
+    assert router.snapshot_grabs_refused == 3

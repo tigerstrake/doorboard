@@ -455,6 +455,7 @@ version = "0.0.0"
 source = { editable = "apps/door-media" }
 dependencies = [
     { name = "anyio" },
+    { name = "doorboard-auth" },
     { name = "doorboard-config" },
     { name = "doorboard-contracts" },
     { name = "doorboard-observability" },
@@ -468,6 +469,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = ">=4.7" },
+    { name = "doorboard-auth", editable = "packages/auth" },
     { name = "doorboard-config", editable = "packages/config" },
     { name = "doorboard-contracts", editable = "packages/contracts" },
     { name = "doorboard-observability", editable = "packages/observability" },

@@ -1,3 +1,9 @@
+from doorboard_auth.playback_tokens import (
+    PLAYBACK_TOKEN_MAX_TTL_S,
+    derive_playback_key,
+    mint_playback_token,
+    verify_playback_token,
+)
 from doorboard_auth.tokens import (
     IssuedToken,
     ParsedToken,
@@ -18,6 +24,7 @@ from doorboard_auth.tokens import (
 )
 
 __all__ = [
+    "PLAYBACK_TOKEN_MAX_TTL_S",
     "IssuedToken",
     "ParsedToken",
     "ServiceTokenRecord",
@@ -30,8 +37,11 @@ __all__ = [
     "TokenRevokedError",
     "TokenScopeError",
     "authenticate",
+    "derive_playback_key",
     "hash_secret",
     "issue_service_token",
+    "mint_playback_token",
     "parse_presented_token",
+    "verify_playback_token",
     "verify_secret",
 ]

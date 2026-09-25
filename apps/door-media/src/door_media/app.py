@@ -9,6 +9,12 @@ Routes:
 
 Auth: ``DOOR_MEDIA_ADMIN_TOKEN`` env var. Empty closes protected routes.
 
+The DoorPad's own playback/review routes (``/recordings/{id}/file``,
+``/photos/{id}/review``, ``/photos/{id}/file``) take a ``?token=`` capability
+(``doorboard_auth.playback_tokens``) minted from the same admin token, because
+``session_id`` alone is public on ``/ws``, ``/session`` and the visitor's phone.
+An admin bearer passes them too. Media responses are ``Cache-Control: no-store``.
+
 Session event integration:
   - ``POST /internal/session_event`` accepts ``session.state_changed`` payloads
     to trigger recording windows.  This endpoint is loopback-only; it is NOT
@@ -30,6 +36,11 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any, cast
 from uuid import UUID
 
+from doorboard_auth import (
+    PLAYBACK_TOKEN_MAX_TTL_S,
+    mint_playback_token,
+    verify_playback_token,
+)
 from doorboard_contracts.events import (
     SessionState,
     SessionStateChangedEvent,
@@ -188,6 +199,51 @@ def _require_photobooth(request: Request) -> None:
 
 PhotoBoothEnabled = Annotated[None, Depends(_require_photobooth)]
 
+_NO_STORE = {"Cache-Control": "no-store"}
+
+
+def _has_admin_bearer(request: Request, cfg: Settings) -> bool:
+    auth = request.headers.get("Authorization", "")
+    return bool(
+        cfg.admin_token
+        and auth.startswith("Bearer ")
+        and secrets.compare_digest(auth.removeprefix("Bearer "), cfg.admin_token)
+    )
+
+
+def _playback_authorized(
+    request: Request, cfg: Settings, token: str | None, *, recording_id: UUID, session_id: UUID
+) -> bool:
+    """An admin bearer, or a playback token minted for exactly this recording and session.
+
+    ``session_id`` is knowledge, not authorization: door-api broadcasts it to every
+    ``/ws`` client and hands it to the visitor's phone, and this clip is the most
+    private artefact a visitor produces. The token is a five-minute HMAC capability
+    keyed from ``DOOR_MEDIA_ADMIN_TOKEN`` (door-api holds the same token and mints
+    the one in ``playback_url``). With no admin token configured nothing can be
+    minted or verified, so the routes fail closed rather than open.
+    """
+    if _has_admin_bearer(request, cfg):
+        return True
+    if not cfg.admin_token or not token:
+        return False
+    return verify_playback_token(
+        cfg.admin_token,
+        token,
+        recording_id=str(recording_id),
+        session_id=str(session_id),
+        now=time.time(),
+    )
+
+
+def _mint_playback_token(cfg: Settings, *, recording_id: UUID, session_id: UUID) -> str:
+    return mint_playback_token(
+        cfg.admin_token,
+        recording_id=str(recording_id),
+        session_id=str(session_id),
+        expires_at=int(time.time()) + PLAYBACK_TOKEN_MAX_TTL_S,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Health
@@ -336,12 +392,12 @@ async def snapshot(request: Request) -> Response:
         return Response(
             content=frame,
             media_type="image/jpeg",
-            headers={"X-Snapshot-Source": "live"},
+            headers={"X-Snapshot-Source": "live", **_NO_STORE},
         )
     return Response(
         content=_PLACEHOLDER_JPEG,
         media_type="image/jpeg",
-        headers={"X-Snapshot-Source": "placeholder"},
+        headers={"X-Snapshot-Source": "placeholder", **_NO_STORE},
     )
 
 
@@ -401,8 +457,14 @@ async def recording_file(
     recording_id: str,
     session_id: str,
     request: Request,
+    token: str | None = None,
 ) -> FileResponse:
-    """Serve a just-recorded visitor message back to the local DoorPad review UI."""
+    """Serve a just-recorded visitor message back to the local DoorPad review UI.
+
+    Needs a playback token for this recording and session (or an admin bearer); a
+    missing, wrong or expired token is a 404, the same answer as an unknown
+    recording, so the route does not confirm what exists.
+    """
     try:
         rid = UUID(recording_id)
         sid = UUID(session_id)
@@ -414,6 +476,8 @@ async def recording_file(
 
     db: RecordingDB = request.app.state.db
     cfg: Settings = request.app.state.cfg
+    if not _playback_authorized(request, cfg, token, recording_id=rid, session_id=sid):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
     row = db.get(rid)
     if (
         row is None
@@ -427,7 +491,7 @@ async def recording_file(
     path = cfg.ssd_data_root / row.path
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording file missing")
-    return FileResponse(path, media_type="video/mp4")
+    return FileResponse(path, media_type="video/mp4", headers=_NO_STORE)
 
 
 @app.get("/snapshot/recognition")
@@ -473,7 +537,7 @@ async def recognition_snapshot(request: Request) -> Response:
     return Response(
         content=frame,
         media_type="image/jpeg",
-        headers={"X-Snapshot-Source": "recognition"},
+        headers={"X-Snapshot-Source": "recognition", **_NO_STORE},
     )
 
 
@@ -515,7 +579,7 @@ async def recording_thumbnail(
     path = (root / row.thumbnail_path).resolve()
     if not path.is_relative_to(root) or not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thumbnail file missing")
-    return FileResponse(path, media_type="image/jpeg")
+    return FileResponse(path, media_type="image/jpeg", headers=_NO_STORE)
 
 
 # ---------------------------------------------------------------------------
@@ -702,12 +766,14 @@ async def capture_photo(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Photo capture unavailable",
         )
+    cfg: Settings = request.app.state.cfg
+    token = _mint_playback_token(cfg, recording_id=photo.recording_id, session_id=session_id)
     return {
         "photo": {
             "recording_id": str(photo.recording_id),
             "session_id": str(photo.session_id),
             "review_path": photo.review_path,
-            "review_url": photo.review_url_path,
+            "review_url": f"{photo.review_url_path}&token={token}",
             "size_bytes": photo.size_bytes,
             "sha256": photo.sha256,
         }
@@ -720,6 +786,7 @@ async def photo_review_file(
     session_id: str,
     _enabled: PhotoBoothEnabled,
     request: Request,
+    token: str | None = None,
 ) -> FileResponse:
     svc: RecordingService = request.app.state.service
     cfg: Settings = request.app.state.cfg
@@ -731,13 +798,15 @@ async def photo_review_file(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid recording_id or session_id UUID",
         ) from None
+    if not _playback_authorized(request, cfg, token, recording_id=rid, session_id=sid):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
     captured = svc.review_photo(rid, session_id=sid)
     if captured is None or captured.session_id != sid:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
     path = cfg.ssd_data_root / captured.path
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo file missing")
-    return FileResponse(path, media_type="image/jpeg")
+    return FileResponse(path, media_type="image/jpeg", headers=_NO_STORE)
 
 
 @app.post("/photos/{recording_id}/save")
@@ -760,7 +829,9 @@ async def save_photo(
     recording = await svc.save_photo(rid, session_id=session_id, trace_id=trace_id)
     if recording is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
-    recording["playback_url"] = f"/photos/{recording_id}/file?session_id={session_id}"
+    cfg: Settings = request.app.state.cfg
+    token = _mint_playback_token(cfg, recording_id=rid, session_id=session_id)
+    recording["playback_url"] = f"/photos/{recording_id}/file?session_id={session_id}&token={token}"
     return {"recording": recording}
 
 
@@ -792,6 +863,7 @@ async def saved_photo_file(
     session_id: str,
     _enabled: PhotoBoothEnabled,
     request: Request,
+    token: str | None = None,
 ) -> FileResponse:
     try:
         rid = UUID(recording_id)
@@ -804,6 +876,8 @@ async def saved_photo_file(
 
     db: RecordingDB = request.app.state.db
     cfg: Settings = request.app.state.cfg
+    if not _playback_authorized(request, cfg, token, recording_id=rid, session_id=sid):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
     row = db.get(rid)
     if (
         row is None
@@ -817,7 +891,7 @@ async def saved_photo_file(
     path = cfg.ssd_data_root / row.path
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo file missing")
-    return FileResponse(path, media_type="image/jpeg")
+    return FileResponse(path, media_type="image/jpeg", headers=_NO_STORE)
 
 
 # ---------------------------------------------------------------------------

@@ -287,6 +287,11 @@ class MediaMTXRouter:
         # Times the recognition reader needed its bounded warm-up wait to answer.
         self.recognition_cold_starts = 0
         self.snapshot_cache_misses = 0
+        # One-shot grabs spawn an ffmpeg each and hold it up to snapshot_timeout_s.
+        # Bounded, and refused rather than queued past the bound: a caller that
+        # polls while the reader is cold gets the placeholder now, not a process.
+        self._grab_slots = asyncio.Semaphore(_ONE_SHOT_GRAB_CONCURRENCY)
+        self.snapshot_grabs_refused = 0
 
     @property
     def reader_frames(self) -> int:
@@ -972,6 +977,13 @@ class MediaMTXRouter:
         failure so the caller can fall back to a placeholder. The door/face path must
         never block for long or 500 on a missing frame.
         """
+        if self._grab_slots.locked():
+            self.snapshot_grabs_refused += 1
+            return None
+        async with self._grab_slots:
+            return await self._spawn_one_frame_grab()
+
+    async def _spawn_one_frame_grab(self) -> bytes | None:
         stream = self._settings.visitor_cam_stream
         rtsp_url = self._settings.mediamtx_rtsp_url(stream)
         timeout_s = self._settings.snapshot_timeout_s
@@ -1179,6 +1191,8 @@ def _prune_segments(root: Path, *, older_than_epoch: float) -> int:
 # bounds a pathological hang.
 _PHOTO_CAPTURE_TIMEOUT_S = 20.0
 _FINALIZE_FFMPEG_TIMEOUT_S = 300.0
+# Concurrent one-shot snapshot ffmpegs (the cold-reader fallback behind /snapshot).
+_ONE_SHOT_GRAB_CONCURRENCY = 2
 
 
 async def _communicate_bounded(
