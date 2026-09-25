@@ -52,7 +52,7 @@ function deviceRequest(url: string, method: string, body?: unknown): Request {
     headers: {
       authorization: `Bearer ${DEVICE_TOKEN}`,
       "content-type": "application/json",
-      "x-forwarded-for": "203.0.113.7",
+      "cf-connecting-ip": "203.0.113.7",
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -66,7 +66,7 @@ function publicRequest(
 ): Request {
   return new Request(url, {
     method,
-    headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.4", ...extraHeaders },
+    headers: { "content-type": "application/json", "cf-connecting-ip": "198.51.100.4", ...extraHeaders },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }

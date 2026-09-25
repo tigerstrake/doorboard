@@ -78,15 +78,25 @@ export function digestsMatch(a: string, b: string): boolean {
   return timingSafeEqual(left, right);
 }
 
+/** Characters of base64url SHA-256 kept as a rate-limit subject: 16 bytes, plenty to bucket by. */
+const ADDRESS_DIGEST_CHARS = 22;
+
 /**
- * Best-effort client address for rate limiting. Behind Vercel the leftmost
- * `x-forwarded-for` entry is the caller; a missing header buckets everyone
- * together, which fails safe (stricter, never looser).
+ * The caller's address as a rate-limit subject — a truncated one-way digest, never the
+ * address itself, so no IP is ever at rest in the `rate_limit` table.
+ *
+ * On Cloudflare the trustworthy header is `CF-Connecting-IP`, which the edge sets from the
+ * TCP peer. `X-Forwarded-For` is *not* usable here: Cloudflare appends to a client-supplied
+ * value rather than replacing it, so its leftmost entry is whatever the client chose — which
+ * let every per-IP limit be bypassed by rotating it (and let an 8 kB header become an 8 kB
+ * row). A missing header buckets everyone together, which fails safe (stricter, never looser).
  */
 export function clientAddress(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for");
-  const first = forwarded?.split(",")[0]?.trim();
-  return first && first.length > 0 ? first : "unknown";
+  const address = request.headers.get("cf-connecting-ip")?.trim();
+  return sha256Base64Url(address && address.length > 0 ? address : "unknown").slice(
+    0,
+    ADDRESS_DIGEST_CHARS,
+  );
 }
 
 export function jsonError(status: number, error: string, extra?: Record<string, unknown>): Response {

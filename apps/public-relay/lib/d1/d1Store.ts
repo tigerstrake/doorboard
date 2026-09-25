@@ -34,6 +34,14 @@ import type { D1Like } from "./types";
 
 const TERMINAL_SQL = "('enrolled','expired')";
 
+/**
+ * Hard ceiling on a `rate_limit` row key. Every subject is already a 22-char address digest
+ * or an opaque id, so this never bites in practice; it exists so no future caller can turn a
+ * request header into a header-sized row. Truncation fails safe: a collision only makes the
+ * limit stricter.
+ */
+const MAX_RATE_LIMIT_KEY_CHARS = 96;
+
 export class D1RelayStore implements RelayStore {
   constructor(
     private readonly db: D1Like,
@@ -380,7 +388,13 @@ export class D1RelayStore implements RelayStore {
           "ELSE rate_limit.window_expires_ms END " +
           "RETURNING count",
       )
-      .bind(`${scope}:${subject}`, now + windowS * 1000, now, now, now + windowS * 1000)
+      .bind(
+        `${scope}:${subject}`.slice(0, MAX_RATE_LIMIT_KEY_CHARS),
+        now + windowS * 1000,
+        now,
+        now,
+        now + windowS * 1000,
+      )
       .first<{ count: number }>();
     return (row?.count ?? 1) <= limit;
   }

@@ -23,7 +23,7 @@ afterEach(() => setRedisForTests(null));
 function req(path: string, method = "GET"): Request {
   return new Request(`https://relay.test${path}`, {
     method,
-    headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.9" },
+    headers: { "content-type": "application/json", "cf-connecting-ip": "198.51.100.9" },
   });
 }
 

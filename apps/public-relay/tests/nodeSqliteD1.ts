@@ -4,6 +4,9 @@
  * `prepare().bind().first()/.all()/.run()` shape. `wrangler`/miniflare cannot be installed in
  * the build sandbox, so this is how the D1 store's semantics are exercised; the same SQL runs
  * against the real `env.DB` binding in production.
+ *
+ * It also records **every value ever bound** to a statement, so the privacy tests can byte-scan
+ * what the relay wrote (P-13, P-21) as well as what it still holds after a sweep.
  */
 import { DatabaseSync } from "node:sqlite";
 
@@ -20,16 +23,19 @@ function coerce(value: unknown): Bindable {
 class NodeStatement implements D1PreparedStatement {
   constructor(
     private readonly db: DatabaseSync,
+    private readonly writeLog: string[],
     private readonly sql: string,
     private readonly args: unknown[] = [],
   ) {}
 
   bind(...values: unknown[]): D1PreparedStatement {
-    return new NodeStatement(this.db, this.sql, values);
+    return new NodeStatement(this.db, this.writeLog, this.sql, values);
   }
 
   private params(): Bindable[] {
-    return this.args.map(coerce);
+    const params = this.args.map(coerce);
+    this.writeLog.push(`${this.sql}\n${params.map(String).join("\n")}`);
+    return params;
   }
 
   async first<T = Record<string, unknown>>(): Promise<T | null> {
@@ -50,13 +56,43 @@ class NodeStatement implements D1PreparedStatement {
 
 export class NodeSqliteD1 implements D1Like {
   private readonly db = new DatabaseSync(":memory:");
+  /** Every statement and every bound value, in order — for the "never held" scans. */
+  private readonly writeLog: string[] = [];
 
   prepare(query: string): D1PreparedStatement {
-    return new NodeStatement(this.db, query);
+    return new NodeStatement(this.db, this.writeLog, query);
   }
 
   async exec(query: string): Promise<unknown> {
     this.db.exec(query);
     return null;
+  }
+
+  /**
+   * Every row of every table, plus the schema, as one string: what the database holds
+   * *right now*. This is the retention scan — after a TTL and a sweep, a sentinel must be
+   * absent from here.
+   */
+  dumpRows(): string {
+    const parts: string[] = [];
+    const tables = this.db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name")
+      .all() as Array<{ name: string; sql: string }>;
+    for (const table of tables) {
+      parts.push(table.sql);
+      for (const row of this.db.prepare(`SELECT * FROM "${table.name}"`).all()) {
+        parts.push(`${table.name}:${JSON.stringify(row)}`);
+      }
+    }
+    return parts.join("\n");
+  }
+
+  /**
+   * Everything ever bound to a statement plus everything currently held — the D1 twin of the
+   * old FakeRedis write log, so P-13/P-21 keep their meaning: if the relay ever touched a
+   * plaintext sentinel or a raw token, it is in here.
+   */
+  dumpAll(): string {
+    return [...this.writeLog, this.dumpRows()].join("\n");
   }
 }

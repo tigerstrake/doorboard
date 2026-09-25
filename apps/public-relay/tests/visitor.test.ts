@@ -49,7 +49,7 @@ function req(
 ): Request {
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    "x-forwarded-for": options.ip ?? "198.51.100.9",
+    "cf-connecting-ip": options.ip ?? "198.51.100.9",
   };
   if (options.token) headers.authorization = `Bearer ${options.token}`;
   return new Request(url, {
