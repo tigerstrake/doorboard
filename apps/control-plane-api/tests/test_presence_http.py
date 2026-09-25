@@ -661,3 +661,25 @@ def test_default_subjects_cannot_be_deleted(client: TestClient) -> None:
 
 def test_subject_delete_requires_admin(client: TestClient) -> None:
     assert client.delete("/status/presence/guest").status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Query bounds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("limit", [0, -1, 1001, "many"])
+def test_history_limit_outside_its_bounds_is_422(client: TestClient, limit) -> None:
+    resp = client.get(
+        "/status/presence/owner/history", params={"limit": limit}, headers=ADMIN_HEADERS
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_history_limit_is_honoured(client: TestClient) -> None:
+    for label in ("busy", "available", "away"):
+        client.post("/status/presence/owner/override", json={"label": label}, headers=ADMIN_HEADERS)
+    resp = client.get("/status/presence/owner/history", params={"limit": 1}, headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    assert len(resp.json()["history"]) == 1
+    assert resp.json()["history"][0]["label"] == "away"

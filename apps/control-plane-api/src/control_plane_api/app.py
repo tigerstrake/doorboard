@@ -60,7 +60,7 @@ from typing import Annotated, Any, Literal
 from doorboard_auth import ServiceTokenRecord, ServiceTokenScope
 from doorboard_config import DoorConfigSettings
 from doorboard_contracts import PresenceLabel
-from fastapi import Depends, FastAPI, Header, HTTPException, Path, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request, status
 from fastapi.responses import Response
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import Engine, select, text
@@ -357,7 +357,8 @@ def metrics_endpoint(request: Request) -> Response:
 class IngestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    batch_id: str = Field(min_length=1, max_length=128)
+    # `events.batch_id` is String(64); a longer id reached Postgres and 500'd.
+    batch_id: str = Field(min_length=1, max_length=64)
     events: list[dict] = Field(max_length=200)
 
 
@@ -578,7 +579,10 @@ def get_presence(subject_id: SubjectId, request: Request, _auth: AdminAuth) -> d
 
 @app.get("/status/presence/{subject_id}/history")
 def get_presence_history(
-    subject_id: SubjectId, request: Request, _auth: AdminAuth, limit: int = 100
+    subject_id: SubjectId,
+    request: Request,
+    _auth: AdminAuth,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
 ) -> dict:
     state = _state(request)
     with session_scope(state.session_factory) as session:
@@ -906,9 +910,12 @@ def admin_alerts(body: AlertmanagerWebhook, request: Request, _auth: AdminAuth) 
 
 
 class IssueTokenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     scope: ServiceTokenScope
-    door_id: str
-    label: str | None = None
+    # Bounds match `service_tokens.door_id` String(64) / `label` String(256).
+    door_id: str = Field(min_length=1, max_length=64)
+    label: str | None = Field(default=None, max_length=256)
 
 
 @app.post("/admin/tokens", status_code=201)

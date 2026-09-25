@@ -176,3 +176,47 @@ def test_a_wrong_service_token_is_logged_with_its_public_id_prefix_only(
     assert record.peer_ip == "testclient"  # type: ignore[attr-defined]
     assert record.token_id_prefix == "dbt_abcdefgh"  # type: ignore[attr-defined]
     assert "the-secret-half" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Body values are bounded to what the columns hold (422, never a DataError 500)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"scope": "ingest", "door_id": "d" * 65},
+        {"scope": "ingest", "door_id": ""},
+        {"scope": "ingest", "door_id": "primary", "label": "l" * 257},
+        {"scope": "ingest", "door_id": "primary", "extra": "field"},
+    ],
+)
+def test_issue_token_rejects_out_of_range_values(client: TestClient, body: dict) -> None:
+    resp = client.post("/admin/tokens", json=body, headers=ADMIN_HEADERS)
+    assert resp.status_code == 422, resp.text
+
+
+def test_issue_token_accepts_the_column_limits_exactly(client: TestClient) -> None:
+    resp = client.post(
+        "/admin/tokens",
+        json={"scope": "ingest", "door_id": "d" * 64, "label": "l" * 256},
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+
+
+def test_ingest_batch_id_is_bounded_to_its_column(client: TestClient) -> None:
+    token = _issue(client, scope="ingest")
+    too_long = client.post(
+        "/ingest",
+        json={"batch_id": "b" * 65, "events": []},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert too_long.status_code == 422
+    exact = client.post(
+        "/ingest",
+        json={"batch_id": "b" * 64, "events": [build_event("system.service_health")]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert exact.status_code == 200, exact.text
