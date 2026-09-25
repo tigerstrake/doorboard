@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import logging
-from typing import cast
+import logging.config
+import signal
+from collections.abc import Callable
+from typing import Any, cast
 
 import click
 from aircraft.enrichment import AircraftEnricher, EnrichmentConfig
 from aircraft.provider import AircraftConfig, MockAircraftProvider, OpenSkyAircraftProvider
 from birdnet.provider import BirdnetConfig, BirdnetGoProvider, MockBirdProvider
+from doorboard_observability.logging_json import json_logging_config
 from printer.provider import (
     MockPrinterProvider,
     OctoPrintProvider,
@@ -26,14 +30,40 @@ from wallboard_worker.jobs import (
 from wallboard_worker.scheduler import Scheduler, build_food_provider
 from wallboard_worker.settings import Settings
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("doorboard.wallboard_worker.cli")
+
+SignalHandler = Callable[[int, Any], Any] | int | None
+
+
+def _configure_logging() -> None:
+    # The same one-JSON-object-per-line formatter every other service uses, and for the
+    # same reason: the scheduler attaches `job`, `duration_s`, `retry_in_s` and the like
+    # via extra=, and basicConfig's default format threw every one of them away. A
+    # "scheduled_job_timed_out" line that does not say which job is not a diagnostic.
+    logging.config.dictConfig(json_logging_config("wallboard-worker"))
+
+
+def install_stop_signal_handler(scheduler: Scheduler) -> SignalHandler:
+    """Turn SIGTERM into scheduler.stop(); returns the handler it replaced.
+
+    `docker stop` sends SIGTERM and waits ten seconds before SIGKILL. Python's default
+    disposition for SIGTERM is to die on the spot, which is fine for the loop but wrong
+    for a run mid-flight: the executors are abandoned, the heartbeat file keeps its last
+    mtime, and the log ends without a word. stop() lets the loop finish its current pass
+    and close the executors, and the loop checks the flag at least once a second.
+    """
+
+    def _stop(signum: int, _frame: Any) -> None:
+        logger.info("scheduler_stop_requested", extra={"signal": signal.Signals(signum).name})
+        scheduler.stop()
+
+    return signal.signal(signal.SIGTERM, _stop)
 
 
 @click.group()
 def cli() -> None:
     """wallboard-worker background job scheduler/runner CLI."""
-    pass
+    _configure_logging()
 
 
 @cli.command("run")
@@ -45,10 +75,14 @@ def run_scheduler(once: bool, mock: bool) -> None:
     if once:
         scheduler.run_once()
         return
+    previous = install_stop_signal_handler(scheduler)
     try:
         scheduler.run_forever()
     except KeyboardInterrupt:
         scheduler.stop()
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    logger.info("scheduler_stopped")
 
 
 @cli.command()

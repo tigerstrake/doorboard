@@ -34,3 +34,9 @@ backed off like a failure, and the job is not retried while that run is still
 going. Production uses a pre-issued `WALLBOARD_WORKER_INGEST_TOKEN`, which is
 reused for the life of the process. `CONTROL_PLANE_ADMIN_TOKEN` is accepted only
 as a dev bootstrap fallback and is not passed to the production container.
+
+Logs are one JSON object per line on stdout (`doorboard_observability`, the
+same formatter every service uses), so the `job`, `duration_s` and `retry_in_s`
+fields the scheduler attaches actually appear. `SIGTERM` -- what `docker stop`
+sends -- asks the scheduler to stop: the current pass finishes, the executors
+are closed, `scheduler_stopped` is logged, and the process exits.
