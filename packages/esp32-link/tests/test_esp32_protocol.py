@@ -622,6 +622,55 @@ def test_controller_reboot_with_an_unchanged_boot_id_is_a_link_restart() -> None
     asyncio.run(run())
 
 
+def test_controller_counters_in_the_heartbeat_reach_metrics() -> None:
+    # The firmware's rx_errors / tx_retries / tx_dropped used to go only to its
+    # USB console every 10 s; they now ride in the heartbeat. Absent (older
+    # firmware) or mistyped they are ignored, never a protocol error.
+    async def run() -> None:
+        bytes_ = QueueByteTransport()
+        transport = Esp32ProtocolTransport(bytes_, options=_options())
+        await transport.start()
+        events = transport.events()
+        await bytes_.feed(
+            WireMessage(
+                v=1,
+                seq=1,
+                message_type="heartbeat",
+                ack=None,
+                payload={"uptime_s": 1, "fallback_active": False, "cached_profile_id": None},
+            )
+        )
+        await bytes_.feed(
+            WireMessage(
+                v=1,
+                seq=2,
+                message_type="heartbeat",
+                ack=None,
+                payload={
+                    "uptime_s": 2,
+                    "fallback_active": False,
+                    "cached_profile_id": None,
+                    "rx_errors": 3,
+                    "tx_retries": 7,
+                    "tx_dropped": "many",
+                },
+            )
+        )
+        await _next_event(events)
+        health = await _next_event(events)
+
+        assert health.type == "door.controller_health"
+        metrics = transport.metrics()
+        assert (metrics.controller_rx_errors, metrics.controller_tx_retries) == (3, 7)
+        assert metrics.controller_tx_dropped == 0
+        assert "esp32_controller_rx_errors_total 3\n" in transport.metrics_text()
+        assert "esp32_controller_tx_retries_total 7\n" in transport.metrics_text()
+        assert transport.status().rx_errors == 0
+        await transport.close()
+
+    asyncio.run(run())
+
+
 def test_heartbeat_loss_emits_link_state_and_health_down() -> None:
     async def run() -> None:
         clock = ManualClock()

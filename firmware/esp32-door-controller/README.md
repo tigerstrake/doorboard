@@ -6,7 +6,7 @@ The component that makes the door feel instant. Trust level: **low** — it hold
 
 ## Hardware attached
 
-Bell button (debounced GPIO), WS2812B LED ring, speaker via class-D amp (I2S/DAC), piezo/accelerometer for secret-knock detection, optional: door reed switch, NFC reader, ambient light sensor. Power: LEDs/amp on their own regulated rail, common ground — never from Pi GPIO.
+Bell button (debounced GPIO, active-LOW with an internal pull-up and an RC filter), WS2812B LED ring (16 pixels, RMT-driven), speaker via class-D amp (I2S). Optional and not yet read by any code: a piezo for knock detection (see `CONFIG_DOORBOARD_ENABLE_KNOCK_DETECTION`). Power: LEDs/amp on their own regulated rail, common ground — never from Pi GPIO.
 
 ## Behavior requirements
 
@@ -18,11 +18,13 @@ Bell button (debounced GPIO), WS2812B LED ring, speaker via class-D amp (I2S/DAC
 | Knock detection | **Optional, planned.** Behind `CONFIG_DOORBOARD_ENABLE_KNOCK_DETECTION` (Kconfig, off by default); today the sensors task is a threshold stub that never fires. When implemented: on-device pattern matching (piezo), emits `knock_event` — no hallway audio streaming, ever |
 | Fallback | Pi heartbeat lost > 5 s → fallback animation/unavailable state; button keeps giving generic feedback |
 | Watchdog | Hardware watchdog; reboot lands in fallback state with working button |
-| Telemetry | 1 Hz heartbeat with uptime, fw version, cached profile, fallback flag |
+| Telemetry | 1 Hz heartbeat with uptime, cached profile, fallback flag and the controller's own `rx_errors` / `tx_retries` / `tx_dropped` counters; fw version and a per-boot random `boot_id` in `hello` |
+| Brightness | Every frame is scaled by `CONFIG_DOORBOARD_LED_BRIGHTNESS_PCT` (default 60 %); `effect_play.duration_ms` rescales an animation's length |
 
 ## Architecture notes
 
-- FreeRTOS tasks: `input` (highest priority, ISR + debounce), `effects` (LED/audio rendering), `link` (UART protocol, acks/retransmit, heartbeats), `sensors` (knock/reed/light).
+- FreeRTOS tasks: `input` (highest priority, ISR + debounce), `effects` (LED/audio rendering), `link` (UART protocol, acks/retransmit, heartbeats), `sensors` (knock stub).
+- Every timestamp -- the button ISR included -- comes from `esp_timer_get_time()`; there is one clock.
 - Effects are a pre-flashed table keyed by `effect_id`/`profile_id`; the wire never carries animation data in v1.
 - Wire protocol: [docs/protocols/esp32-pi-protocol.md](../../docs/protocols/esp32-pi-protocol.md). Protocol logic must be host-testable (pure C module + host-side unit tests) — CI has no device; hardware-in-loop tests live in `tests/hardware-in-loop/`.
 
@@ -92,12 +94,12 @@ The project skeleton is intentionally split along the required four tasks:
 
 | Task | Responsibility |
 |---|---|
-| `input` | Button GPIO ISR, firmware debounce, immediate local `generic_press` effect scheduling, then link event enqueue |
-| `effects` | Placeholder `generic_press`, `fallback`, `blue_wave`, and `green_pulse` physical effects |
+| `input` | Button GPIO ISR, debounce with a level re-check (`components/door_button`: one press per falling edge, re-armed only after the pin has read HIGH for the debounce interval), immediate local `generic_press` effect scheduling, then link event enqueue |
+| `effects` | The 11 pre-flashed effects in [docs/hardware/effects-catalog.md](../../docs/hardware/effects-catalog.md) (`components/door_effects`), with the global brightness scaler and `duration_ms` rescaling |
 | `link` | UART framing, ack/retry, inbound profile/effect handling, outbound button/knock/heartbeat frames |
 | `sensors` | Piezo threshold stub behind `CONFIG_DOORBOARD_ENABLE_KNOCK_DETECTION` (off by default; knock detection is optional and not yet implemented) |
 
-The wire protocol engine lives in `components/door_protocol`. It is pure C and includes only standard library headers, so host-side tests compile it directly without ESP-IDF or FreeRTOS. The module owns:
+The wire protocol engine lives in `components/door_protocol`. It is pure C and includes only standard library headers plus the `door_effects` table (to validate `effect_id`), so host-side tests compile it directly without ESP-IDF or FreeRTOS (`tests/firmware/`, `cc -std=c11 -Wall -Wextra -Werror`); `components/door_button` is host-tested the same way. The module owns:
 
 - newline-delimited JSON framing with a 512-byte maximum (newline excluded, matching the Pi): an
   oversize line is skipped to its newline, a partial line older than 1 s is dropped, and both count
@@ -108,7 +110,10 @@ The wire protocol engine lives in `components/door_protocol`. It is pure C and i
 - `(boot_id, seq)` dedupe for inbound Pi messages, cleared when the Pi's boot_id changes;
 - a per-boot random `boot_id` (`door_protocol_make_boot_id`) so the Pi can tell a reboot from a
   retransmit;
-- single cached profile with local monotonic expiry;
+- single cached profile with local monotonic expiry; a `high`-priority push holds it against a later
+  `normal` push of a different profile until expiry;
+- `effect_play` validation against the effects table (unknown ids are acked, counted as rejected,
+  and never played) and `duration_ms` handoff to the effects task;
 - heartbeat-loss fallback after 5 seconds, re-sending `hello` on that edge and whenever the Pi
   says `hello`; while in fallback a press plays the fallback animation after the generic flash.
 

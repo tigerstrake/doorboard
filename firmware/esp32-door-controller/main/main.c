@@ -8,6 +8,7 @@
 #include "door_effects.h"
 #include "door_button.h"
 #include "doorboard_pinout.h"
+#include "sdkconfig.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "driver/i2s_std.h"
@@ -37,6 +38,7 @@ typedef struct {
 typedef struct {
     door_effect_id_t effect_id;
     char profile_id[DOOR_PROTOCOL_PROFILE_ID_BYTES];
+    uint32_t duration_ms; /* 0: the effect's own length */
 } effect_command_t;
 
 typedef struct {
@@ -105,10 +107,11 @@ static door_effect_id_t profile_effect_for_id(const char *profile_id)
     return DOOR_EFFECT_BLUE_WAVE;
 }
 
-static bool enqueue_effect(door_effect_id_t effect_id, const char *profile_id)
+static bool enqueue_effect(door_effect_id_t effect_id, const char *profile_id, uint32_t duration_ms)
 {
     effect_command_t command = {
         .effect_id = effect_id,
+        .duration_ms = duration_ms,
     };
     if (profile_id != NULL) {
         snprintf(command.profile_id, sizeof(command.profile_id), "%s", profile_id);
@@ -196,7 +199,7 @@ static void input_task(void *arg)
          * The local effect is scheduled before the link event is queued. This
          * preserves button feedback when the Pi, UART, or control plane is down.
          */
-        enqueue_effect(DOOR_EFFECT_GENERIC_PRESS, NULL);
+        enqueue_effect(DOOR_EFFECT_GENERIC_PRESS, NULL, 0);
 
         char cached_profile[DOOR_PROTOCOL_PROFILE_ID_BYTES] = {0};
         portENTER_CRITICAL(&s_protocol_mux);
@@ -209,11 +212,11 @@ static void input_task(void *arg)
         portEXIT_CRITICAL(&s_protocol_mux);
 
         if (followup == DOOR_PROTOCOL_PRESS_PROFILE) {
-            enqueue_effect(profile_effect_for_id(cached_profile), cached_profile);
+            enqueue_effect(profile_effect_for_id(cached_profile), cached_profile, 0);
         } else if (followup == DOOR_PROTOCOL_PRESS_FALLBACK) {
             /* Fallback is a state, not a one-shot: while the Pi is lost every
              * press shows it, as the wire protocol doc requires. */
-            enqueue_effect(DOOR_EFFECT_FALLBACK, NULL);
+            enqueue_effect(DOOR_EFFECT_FALLBACK, NULL, 0);
         }
 
         link_button_event_t link_event = {
@@ -355,7 +358,12 @@ static void effects_task(void *arg)
             : pdMS_TO_TICKS(WATCHDOG_QUEUE_WAIT_MS);
 
         if (xQueueReceive(s_effect_queue, &command, wait_ticks) == pdTRUE) {
-            door_effects_start(&state, command.effect_id, command.profile_id[0] != '\0' ? command.profile_id : NULL);
+            door_effects_start_timed(
+                &state,
+                command.effect_id,
+                command.profile_id[0] != '\0' ? command.profile_id : NULL,
+                command.duration_ms
+            );
             animation_active = (state.effect_id != DOOR_EFFECT_NONE);
 
             if (!enqueue_audio(state.effect_id)) {
@@ -451,9 +459,12 @@ static void handle_uart_rx(uint64_t now_mono_ms)
             uart_write_frame(ack);
         }
         if (have_effect) {
+            /* The protocol component only leaves a request for an effect_id in
+             * the table, so this cannot be NONE; the check keeps the enqueue
+             * honest if the two ever drift. */
             door_effect_id_t id = door_effect_from_name(effect_id);
             if (id != DOOR_EFFECT_NONE) {
-                enqueue_effect(id, NULL);
+                enqueue_effect(id, NULL, effect_duration_ms);
             }
         }
     }
@@ -512,7 +523,7 @@ static void link_task(void *arg)
                 uart_write_frame(heartbeat);
             }
             if (entered_fallback) {
-                enqueue_effect(DOOR_EFFECT_FALLBACK, NULL);
+                enqueue_effect(DOOR_EFFECT_FALLBACK, NULL, 0);
             }
             last_heartbeat_mono_ms = now;
         }
@@ -686,6 +697,7 @@ void app_main(void)
     );
     door_protocol_init(&s_protocol, s_boot_id, "t-101-0.1.0");
 
+    door_effects_set_brightness_pct((uint8_t)CONFIG_DOORBOARD_LED_BRIGHTNESS_PCT);
     configure_gpio();
     configure_leds();
     configure_audio();
@@ -696,5 +708,5 @@ void app_main(void)
     ESP_ERROR_CHECK(xTaskCreate(link_task, "link", 6144, NULL, 8, NULL) == pdPASS ? ESP_OK : ESP_FAIL);
     ESP_ERROR_CHECK(xTaskCreate(sensors_task, "sensors", 4096, NULL, 5, NULL) == pdPASS ? ESP_OK : ESP_FAIL);
 
-    enqueue_effect(DOOR_EFFECT_BOOT, NULL);
+    enqueue_effect(DOOR_EFFECT_BOOT, NULL, 0);
 }

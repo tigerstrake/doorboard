@@ -1,5 +1,7 @@
 #include "door_protocol.h"
 
+#include "door_effects.h"
+
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -153,10 +155,10 @@ static bool ack_required(door_protocol_message_type_t type)
 
 static bool next_seq(door_protocol_t *ctx, uint32_t *seq)
 {
-    if (ctx->next_seq == UINT32_MAX) {
-        return false;
-    }
-    ctx->next_seq++;
+    /* Wraps to 1 after UINT32_MAX, as the Pi does; the receiver's dedupe is
+     * keyed by (boot_id, seq) in a short window, so a wrap is harmless, while
+     * refusing to send would have silenced the link -- acks included. */
+    ctx->next_seq = ctx->next_seq == UINT32_MAX ? 1U : ctx->next_seq + 1U;
     *seq = ctx->next_seq;
     return true;
 }
@@ -340,10 +342,29 @@ static void apply_message_once(door_protocol_t *ctx, const door_protocol_message
     }
 
     if (msg->type == DOOR_PROTOCOL_MSG_PROFILE_UPDATE) {
+        /*
+         * priority: a `high` push (a new or changed recognition) holds the
+         * cache against a later `normal` push of a *different* profile until it
+         * expires -- a throttled refresh for the previous person cannot take
+         * the light back from the one now in front of the camera. A normal
+         * refresh of the same profile extends the expiry and keeps the
+         * priority it was pushed with.
+         */
+        bool cached_high = ctx->cached_profile.active &&
+                           strcmp(ctx->cached_profile.priority, "high") == 0;
+        bool same_profile = ctx->cached_profile.active &&
+                            strcmp(ctx->cached_profile.profile_id, msg->profile_id) == 0;
+        bool incoming_high = strcmp(msg->priority, "high") == 0;
+        if (cached_high && !incoming_high && !same_profile) {
+            ctx->stats.profile_updates_rejected++;
+            return;
+        }
         ctx->cached_profile.active = true;
         ctx->cached_profile.expires_at_mono_ms = now_mono_ms + msg->ttl_ms;
         copy_text(ctx->cached_profile.profile_id, sizeof(ctx->cached_profile.profile_id), msg->profile_id);
-        copy_text(ctx->cached_profile.priority, sizeof(ctx->cached_profile.priority), msg->priority);
+        if (!(cached_high && same_profile && !incoming_high)) {
+            copy_text(ctx->cached_profile.priority, sizeof(ctx->cached_profile.priority), msg->priority);
+        }
         ctx->stats.profile_updates_applied++;
         return;
     }
@@ -355,6 +376,12 @@ static void apply_message_once(door_protocol_t *ctx, const door_protocol_message
     }
 
     if (msg->type == DOOR_PROTOCOL_MSG_EFFECT_PLAY) {
+        if (door_effect_from_name(msg->effect_id) == DOOR_EFFECT_NONE) {
+            /* Acked (it was received) but nothing will play, so it must not
+             * count as applied: the Pi's "sent" would otherwise be a lie. */
+            ctx->stats.effect_plays_rejected++;
+            return;
+        }
         ctx->stats.effect_plays_applied++;
         /*
          * Left for the caller to collect rather than delivered through a
@@ -806,26 +833,36 @@ bool door_protocol_make_heartbeat(
         return false;
     }
 
+    /* The controller's own counters ride along so they reach the Pi's
+     * /metrics instead of only the USB console (docs/protocols/esp32-pi-protocol.md). */
     if (ctx->cached_profile.active) {
         written = snprintf(
             frame_out,
             frame_out_len,
             "{\"v\":1,\"seq\":%" PRIu32 ",\"t\":\"heartbeat\",\"ack\":null,\"p\":{\"uptime_s\":%" PRIu32 ","
-            "\"fallback_active\":%s,\"cached_profile_id\":\"%s\"}}\n",
+            "\"fallback_active\":%s,\"cached_profile_id\":\"%s\",\"rx_errors\":%" PRIu32 ","
+            "\"tx_retries\":%" PRIu32 ",\"tx_dropped\":%" PRIu32 "}}\n",
             seq,
             uptime_s,
             ctx->fallback_active ? "true" : "false",
-            ctx->cached_profile.profile_id
+            ctx->cached_profile.profile_id,
+            ctx->stats.rx_errors,
+            ctx->stats.tx_retries,
+            ctx->stats.tx_dropped
         );
     } else {
         written = snprintf(
             frame_out,
             frame_out_len,
             "{\"v\":1,\"seq\":%" PRIu32 ",\"t\":\"heartbeat\",\"ack\":null,\"p\":{\"uptime_s\":%" PRIu32 ","
-            "\"fallback_active\":%s,\"cached_profile_id\":null}}\n",
+            "\"fallback_active\":%s,\"cached_profile_id\":null,\"rx_errors\":%" PRIu32 ","
+            "\"tx_retries\":%" PRIu32 ",\"tx_dropped\":%" PRIu32 "}}\n",
             seq,
             uptime_s,
-            ctx->fallback_active ? "true" : "false"
+            ctx->fallback_active ? "true" : "false",
+            ctx->stats.rx_errors,
+            ctx->stats.tx_retries,
+            ctx->stats.tx_dropped
         );
     }
 

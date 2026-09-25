@@ -78,8 +78,13 @@ typedef struct {
     uint32_t tx_retries;
     uint32_t tx_dropped;
     uint32_t profile_updates_applied;
+    /* A normal-priority push of a different profile while a high-priority one is
+     * still valid: acked, not applied. */
+    uint32_t profile_updates_rejected;
     uint32_t profile_clears_applied;
     uint32_t effect_plays_applied;
+    /* An effect_id that is not in the pre-flashed table: acked, nothing plays. */
+    uint32_t effect_plays_rejected;
 } door_protocol_stats_t;
 
 typedef bool (*door_protocol_random_fill_fn)(uint8_t *buffer, size_t len, void *user);

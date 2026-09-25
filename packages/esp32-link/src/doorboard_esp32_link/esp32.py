@@ -82,6 +82,13 @@ class Esp32TransportMetrics:
     link_state_queue_drops: int
     tx_write_timeouts: int = 0
     protocol_errors: int = 0
+    # The controller's own counters since its boot, as carried in its heartbeat.
+    controller_rx_errors: int = 0
+    controller_tx_retries: int = 0
+    controller_tx_dropped: int = 0
+
+
+CONTROLLER_STAT_KEYS = ("rx_errors", "tx_retries", "tx_dropped")
 
 
 class Esp32Transport(Protocol):
@@ -296,6 +303,7 @@ class Esp32ProtocolTransport:
         self._protocol_error: str | None = None
         self._last_protocol_error: str | None = None
         self._protocol_errors = 0
+        self._controller_stats: dict[str, int] = dict.fromkeys(CONTROLLER_STAT_KEYS, 0)
         self._closed = False
         self._started = False
         self._line_buffer = bytearray()
@@ -460,6 +468,9 @@ class Esp32ProtocolTransport:
             link_state_queue_drops=self._link_state_queue_drops,
             tx_write_timeouts=self._tx_write_timeouts,
             protocol_errors=self._protocol_errors,
+            controller_rx_errors=self._controller_stats["rx_errors"],
+            controller_tx_retries=self._controller_stats["tx_retries"],
+            controller_tx_dropped=self._controller_stats["tx_dropped"],
         )
 
     def metrics_text(self) -> str:
@@ -475,6 +486,9 @@ class Esp32ProtocolTransport:
             "esp32_link_state_queue_drops_total": metrics.link_state_queue_drops,
             "esp32_link_tx_write_timeouts_total": metrics.tx_write_timeouts,
             "esp32_link_protocol_errors_total": metrics.protocol_errors,
+            "esp32_controller_rx_errors_total": metrics.controller_rx_errors,
+            "esp32_controller_tx_retries_total": metrics.controller_tx_retries,
+            "esp32_controller_tx_dropped_total": metrics.controller_tx_dropped,
         }
         return "".join(f"{name} {value}\n" for name, value in values.items())
 
@@ -629,6 +643,12 @@ class Esp32ProtocolTransport:
         elif msg.message_type == "heartbeat":
             self._last_heartbeat_mono_ms = self._now_mono_ms()
             self._set_connected(True, "heartbeat")
+            # Optional: older firmware sends none of these, and a value that is
+            # not a plain int is ignored rather than rejected.
+            for key in CONTROLLER_STAT_KEYS:
+                value = msg.payload.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    self._controller_stats[key] = value
 
         if event is not None:
             if self._events.full():

@@ -1,6 +1,7 @@
 #include "door_protocol.h"
 
 #include <assert.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -772,6 +773,148 @@ static void test_press_followup_is_profile_then_fallback_then_nothing(void)
            DOOR_PROTOCOL_PRESS_FALLBACK);
 }
 
+static void test_unknown_effect_id_is_acked_but_counted_as_rejected(void)
+{
+    door_protocol_t esp32;
+    char ack[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    char taken_id[DOOR_PROTOCOL_EFFECT_ID_BYTES];
+    const char *unknown =
+        "{\"v\":1,\"seq\":1,\"t\":\"effect_play\",\"ack\":null,\"p\":{\"effect_id\":\"disco\","
+        "\"duration_ms\":900}}\n";
+    const char *known =
+        "{\"v\":1,\"seq\":2,\"t\":\"effect_play\",\"ack\":null,\"p\":{\"effect_id\":\"mint_pulse\","
+        "\"duration_ms\":0}}\n";
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+    assert(door_protocol_receive_from_pi(
+        &esp32, unknown, strlen(unknown), 0, "pi-boot", ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert_contains(ack, "\"ack\":1");
+    assert(esp32.stats.effect_plays_applied == 0);
+    assert(esp32.stats.effect_plays_rejected == 1);
+    assert(!door_protocol_take_effect_play(&esp32, taken_id, sizeof(taken_id), NULL));
+
+    assert(door_protocol_receive_from_pi(
+        &esp32, known, strlen(known), 1, "pi-boot", ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(esp32.stats.effect_plays_applied == 1);
+    assert(esp32.stats.effect_plays_rejected == 1);
+    assert(door_protocol_take_effect_play(&esp32, taken_id, sizeof(taken_id), NULL));
+    assert(strcmp(taken_id, "mint_pulse") == 0);
+}
+
+static door_protocol_rx_result_t push_profile(
+    door_protocol_t *esp32,
+    uint32_t seq,
+    const char *profile_id,
+    const char *priority,
+    uint64_t now_mono_ms
+)
+{
+    char ack[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    char frame[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+
+    snprintf(
+        frame,
+        sizeof(frame),
+        "{\"v\":1,\"seq\":%" PRIu32 ",\"t\":\"profile_update\",\"ack\":null,\"p\":{\"profile_id\":"
+        "\"%s\",\"ttl_ms\":2500,\"priority\":\"%s\"}}\n",
+        seq,
+        profile_id,
+        priority
+    );
+    return door_protocol_receive_from_pi(esp32, frame, strlen(frame), now_mono_ms, "pi-boot", ack, sizeof(ack));
+}
+
+static void test_high_priority_profile_holds_the_cache_against_a_normal_push(void)
+{
+    door_protocol_t esp32;
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+    assert(push_profile(&esp32, 1, "blue_wave", "high", 0) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(strcmp(door_protocol_cached_profile_id(&esp32, 0), "blue_wave") == 0);
+
+    /* A throttled normal refresh for someone else cannot take the light back. */
+    assert(push_profile(&esp32, 2, "green_pulse", "normal", 100) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(strcmp(door_protocol_cached_profile_id(&esp32, 100), "blue_wave") == 0);
+    assert(esp32.stats.profile_updates_applied == 1);
+    assert(esp32.stats.profile_updates_rejected == 1);
+
+    /* A normal refresh of the same profile extends the expiry and keeps high. */
+    assert(push_profile(&esp32, 3, "blue_wave", "normal", 2000) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(esp32.stats.profile_updates_applied == 2);
+    assert(esp32.cached_profile.expires_at_mono_ms == 4500);
+    assert(strcmp(esp32.cached_profile.priority, "high") == 0);
+    assert(push_profile(&esp32, 4, "green_pulse", "normal", 2100) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(esp32.stats.profile_updates_rejected == 2);
+
+    /* A high push of a different profile (a new recognition) replaces it. */
+    assert(push_profile(&esp32, 5, "sunrise", "high", 2200) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(strcmp(door_protocol_cached_profile_id(&esp32, 2200), "sunrise") == 0);
+    assert(esp32.stats.profile_updates_applied == 3);
+
+    /* Once it has expired, a normal push of anything is applied. */
+    assert(push_profile(&esp32, 6, "green_pulse", "normal", 4700) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(strcmp(door_protocol_cached_profile_id(&esp32, 4700), "green_pulse") == 0);
+    assert(strcmp(esp32.cached_profile.priority, "normal") == 0);
+    assert(esp32.stats.profile_updates_applied == 4);
+
+    /* Normal over normal replaces freely. */
+    assert(push_profile(&esp32, 7, "rainbow", "normal", 4800) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(strcmp(door_protocol_cached_profile_id(&esp32, 4800), "rainbow") == 0);
+    assert(esp32.stats.profile_updates_rejected == 2);
+}
+
+static void test_sequence_numbers_wrap_to_one_like_the_pi(void)
+{
+    door_protocol_t esp32;
+    char ack[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    char tx[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    const char *frame =
+        "{\"v\":1,\"seq\":1,\"t\":\"profile_clear\",\"ack\":null,\"p\":{\"reason\":\"test\"}}\n";
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+    esp32.next_seq = UINT32_MAX - 1U;
+    assert(door_protocol_receive_from_pi(
+        &esp32, frame, strlen(frame), 0, "pi-boot", ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert_contains(ack, "\"seq\":4294967295,");
+
+    assert(door_protocol_start_hello(&esp32));
+    assert(door_protocol_next_tx(&esp32, 0, tx, sizeof(tx)));
+    assert_contains(tx, "\"seq\":1,");
+    assert(esp32.next_seq == 1);
+}
+
+static void test_heartbeat_carries_the_controllers_counters(void)
+{
+    door_protocol_t esp32;
+    char ack[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    char heartbeat[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    char tx[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    char press_id[DOOR_PROTOCOL_PRESS_ID_BYTES];
+    const char *bad = "{\"v\":1,\"seq\":1,\"t\":\"nonsense\",\"ack\":null,\"p\":{}}\n";
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+    assert(door_protocol_make_heartbeat(&esp32, 0, 0, heartbeat, sizeof(heartbeat)));
+    assert_contains(heartbeat, "\"rx_errors\":0,\"tx_retries\":0,\"tx_dropped\":0}}");
+
+    assert(door_protocol_receive_from_pi(
+        &esp32, bad, strlen(bad), 0, "pi-boot", ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_DROPPED);
+    for (int index = 0; index <= DOOR_PROTOCOL_PENDING_DEPTH; index++) {
+        snprintf(press_id, sizeof(press_id), "00000000-0000-4000-8000-%012d", index);
+        (void)door_protocol_emit_button_event(&esp32, press_id, (uint64_t)index);
+    }
+    assert(door_protocol_next_tx(&esp32, 0, tx, sizeof(tx)));
+    assert(door_protocol_next_tx(&esp32, 50, tx, sizeof(tx)));
+    assert(door_protocol_next_tx(&esp32, 100, tx, sizeof(tx)));
+
+    assert(door_protocol_make_heartbeat(&esp32, 100, 0, heartbeat, sizeof(heartbeat)));
+    assert_contains(heartbeat, "\"rx_errors\":1,\"tx_retries\":2,\"tx_dropped\":1}}");
+    assert(strlen(heartbeat) <= DOOR_PROTOCOL_MAX_FRAME_BYTES);
+}
+
 int main(void)
 {
     test_boot_id_is_sixteen_hex_chars_and_differs_per_boot();
@@ -798,6 +941,10 @@ int main(void)
     test_key_lookup_ignores_matching_string_values();
     test_fallback_edge_fires_once_and_requeues_hello();
     test_press_followup_is_profile_then_fallback_then_nothing();
+    test_unknown_effect_id_is_acked_but_counted_as_rejected();
+    test_high_priority_profile_holds_the_cache_against_a_normal_push();
+    test_sequence_numbers_wrap_to_one_like_the_pi();
+    test_heartbeat_carries_the_controllers_counters();
     puts("wire protocol conformance passed");
     return 0;
 }

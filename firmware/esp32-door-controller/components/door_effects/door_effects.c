@@ -7,9 +7,15 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+static uint8_t s_brightness_pct = DOOR_EFFECTS_DEFAULT_BRIGHTNESS_PCT;
+
 static uint32_t pseudo_rand(uint32_t *seed) {
     *seed = (*seed * 1103515245U + 12345U) & 0x7fffffffU;
     return *seed;
+}
+
+static uint8_t scaled(uint8_t value) {
+    return (uint8_t)(((uint32_t)value * s_brightness_pct + 50U) / 100U);
 }
 
 void door_effects_init_state(door_effect_state_t *state) {
@@ -50,22 +56,45 @@ const char *door_effect_to_name(door_effect_id_t effect_id) {
     }
 }
 
+void door_effects_set_brightness_pct(uint8_t percent) {
+    if (percent == 0) {
+        percent = 1;
+    }
+    if (percent > 100) {
+        percent = 100;
+    }
+    s_brightness_pct = percent;
+}
+
+uint8_t door_effects_brightness_pct(void) {
+    return s_brightness_pct;
+}
+
 void door_effects_start(
     door_effect_state_t *state,
     door_effect_id_t effect_id,
     const char *profile_id
 ) {
+    door_effects_start_timed(state, effect_id, profile_id, 0);
+}
+
+void door_effects_start_timed(
+    door_effect_state_t *state,
+    door_effect_id_t effect_id,
+    const char *profile_id,
+    uint32_t duration_ms
+) {
     state->effect_id = effect_id;
     state->elapsed_ticks = 0;
     state->seed = 42;
-    
+
     if (profile_id != NULL && profile_id[0] != '\0') {
         door_effect_id_t resolved = door_effect_from_name(profile_id);
         if (resolved != DOOR_EFFECT_NONE) {
             state->effect_id = resolved;
         }
     }
-    
+
     switch (state->effect_id) {
         case DOOR_EFFECT_GENERIC_PRESS:
             state->total_ticks = 10; // 300 ms
@@ -105,6 +134,16 @@ void door_effects_start(
             state->effect_id = DOOR_EFFECT_NONE;
             break;
     }
+
+    if (duration_ms > 0 && state->effect_id != DOOR_EFFECT_NONE) {
+        if (duration_ms > DOOR_EFFECTS_MAX_DURATION_MS) {
+            duration_ms = DOOR_EFFECTS_MAX_DURATION_MS;
+        }
+        state->total_ticks = duration_ms / DOOR_EFFECTS_TICK_MS;
+        if (state->total_ticks == 0) {
+            state->total_ticks = 1;
+        }
+    }
 }
 
 bool door_effects_step(
@@ -142,8 +181,13 @@ bool door_effects_step(
             break;
         }
         case DOOR_EFFECT_BOOT: {
-            if (state->elapsed_ticks < 20) {
-                int lead = (state->elapsed_ticks * 2) % DOORBOARD_NUM_LEDS;
+            /* Two thirds spinning, one third fading -- as fractions of the
+             * total so a rescaled duration stretches both phases instead of
+             * running the fade negative. */
+            uint32_t spin_ticks = (state->total_ticks * 2U) / 3U;
+            if (spin_ticks == 0) spin_ticks = 1;
+            if (state->elapsed_ticks < spin_ticks) {
+                int lead = (int)((state->elapsed_ticks * 2U) % DOORBOARD_NUM_LEDS);
                 for (int i = 0; i < DOORBOARD_NUM_LEDS; i++) {
                     int diff = (lead - i + DOORBOARD_NUM_LEDS) % DOORBOARD_NUM_LEDS;
                     if (diff == 0) {
@@ -158,7 +202,11 @@ bool door_effects_step(
                     }
                 }
             } else {
-                float fade = 1.0f - (float)(state->elapsed_ticks - 20) / 10.0f;
+                uint32_t fade_ticks = state->total_ticks - spin_ticks;
+                float fade = fade_ticks > 0
+                    ? 1.0f - (float)(state->elapsed_ticks - spin_ticks) / (float)fade_ticks
+                    : 0.0f;
+                if (fade < 0.0f) fade = 0.0f;
                 uint8_t val = (uint8_t)(192.0f * fade);
                 for (int i = 0; i < DOORBOARD_NUM_LEDS; i++) {
                     frame->leds[i].r = 0;
@@ -263,7 +311,7 @@ bool door_effects_step(
                 uint8_t p = 0;
                 uint8_t q = (uint8_t)((1.0f - fract) * 255.0f);
                 uint8_t t = (uint8_t)(fract * 255.0f);
-                
+
                 switch (section % 6) {
                     case 0:
                         frame->leds[i].r = 255;
@@ -300,6 +348,8 @@ bool door_effects_step(
             break;
         }
         case DOOR_EFFECT_SPARKLE: {
+            /* New sparks for the first five sixths, decay only for the rest. */
+            uint32_t spark_ticks = (state->total_ticks * 5U) / 6U;
             uint32_t seed_run = 42;
             for (uint32_t step = 0; step <= state->elapsed_ticks; step++) {
                 for (int i = 0; i < DOORBOARD_NUM_LEDS; i++) {
@@ -307,7 +357,7 @@ bool door_effects_step(
                     frame->leds[i].g = (uint8_t)(frame->leds[i].g * 0.7f);
                     frame->leds[i].b = (uint8_t)(frame->leds[i].b * 0.7f);
                 }
-                if (step < 25) {
+                if (step < spark_ticks) {
                     int p1 = pseudo_rand(&seed_run) % DOORBOARD_NUM_LEDS;
                     int p2 = pseudo_rand(&seed_run) % DOORBOARD_NUM_LEDS;
                     frame->leds[p1].r = 255;
@@ -322,6 +372,12 @@ bool door_effects_step(
         }
         default:
             break;
+    }
+
+    for (int i = 0; i < DOORBOARD_NUM_LEDS; i++) {
+        frame->leds[i].r = scaled(frame->leds[i].r);
+        frame->leds[i].g = scaled(frame->leds[i].g);
+        frame->leds[i].b = scaled(frame->leds[i].b);
     }
 
     state->elapsed_ticks++;

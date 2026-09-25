@@ -14,16 +14,16 @@ Button debouncing and real-time physical feedback (LED & buzzer/speaker) must oc
 - **No physical response:** Pressing the bell button does not light up the LED ring or sound the buzzer/speaker, but the DoorPad/kiosk UI works.
 - **Pi connection lost (Fallback State):** The LED ring displays a continuous pulsing amber/blue wave or generic indicator, showing that it cannot communicate with the Pi.
 - **Link errors logged on Pi:** `door-api` logs show UART link errors, checksum errors, or heartbeat timeout failures.
-- **Offline metric:** `esp32_link_connected` is `0` on the Pi `/metrics` endpoint.
+- **Offline metric:** `door_api_esp32_link_connected` is `0` on the Pi `/metrics` endpoint.
 
 ---
 
 ## Diagnosis
 
 1. **Verify Serial Device presence:**
-   On the Pi, ensure the serial interface is detected:
+   On the Pi, ensure the bridge port is detected (the path `ESP32_UART_DEVICE` points at):
    ```bash
-   ls -la /dev/ttyAMA0
+   ls -la /dev/serial/by-id/usb-1a86_*
    ```
    Check group ownership. The user running `door-api` must be in the `dialout` group to write to UART:
    ```bash
@@ -34,9 +34,10 @@ Button debouncing and real-time physical feedback (LED & buzzer/speaker) must oc
    ```bash
    curl -s http://127.0.0.1:8080/metrics | grep esp32_link
    ```
-   - `esp32_link_connected`: Should be `1`. If `0`, communication is down.
-   - `esp32_link_rx_errors_total`: Increments on malformed frames or JSON parsing issues.
-   - `esp32_link_tx_timeouts_total` / `esp32_link_tx_retries_total`: Increments if the ESP32 is not acknowledging commands from the Pi.
+   - `door_api_esp32_link_connected`: Should be `1`. If `0`, communication is down.
+   - `door_api_esp32_link_open_failures_total`: Increments when the port cannot be opened (wrong device path, permissions, board unplugged).
+   - `door_api_esp32_link_reopens_total`: Increments when the descriptor was lost and reopened (USB re-enumeration).
+   - `door_api_esp32_link_idle_timeouts_total`: Increments when the port is fine but the controller stopped sending heartbeats (it is not reopened: that would reset the board).
 3. **Verify Wire Connection (Hardware-specific):**
    - Check RX/TX cross-wiring: Pi TX (GPIO 14) connects to ESP32 RX; Pi RX (GPIO 15) connects to ESP32 TX.
    - Ensure a common ground wire is securely connected between the Pi and ESP32.

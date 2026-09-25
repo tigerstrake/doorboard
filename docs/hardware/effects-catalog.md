@@ -12,6 +12,17 @@ Rather than compiling heavy PCM audio samples into the flash, audio cues are rep
 
 ---
 
+## Brightness and duration
+
+Colours below are the values the animations compute at 100 %. The firmware applies a global
+brightness scaler to every rendered frame (`CONFIG_DOORBOARD_LED_BRIGHTNESS_PCT`, default **60 %**):
+16 WS2812 at full white draw about 1 A and are blinding in a dark hallway. Audio is not scaled.
+
+Durations below are the effects' own lengths (30 ms per tick). An `effect_play` may pass
+`duration_ms` to rescale the tick count (0 keeps the listed length; clamped at 10 s); animations are
+drawn as a fraction of the total, so they stretch rather than truncate, while the audio cue keeps its
+own timing. `tests/firmware/effects_conformance.c` pins every row of this table.
+
 ## Effects Catalog Table
 
 | Effect ID | Intended Use | Duration | LED Pattern | Audio Cue |

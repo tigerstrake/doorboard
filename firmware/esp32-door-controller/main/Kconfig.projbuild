@@ -7,4 +7,14 @@ config DOORBOARD_ENABLE_KNOCK_DETECTION
         Enables the sensors task ADC threshold stub that emits knock_event frames.
         Pattern matching is intentionally deferred to a later task.
 
+config DOORBOARD_LED_BRIGHTNESS_PCT
+    int "Global LED brightness (percent)"
+    range 1 100
+    default 60
+    help
+        Scales every frame the effects library renders. Sixteen WS2812 pixels at
+        full white draw about 1 A from the LED rail and are blinding in a dark
+        hallway; 60 percent keeps the ring readable without either. Colours in
+        docs/hardware/effects-catalog.md are listed at 100 percent.
+
 endmenu

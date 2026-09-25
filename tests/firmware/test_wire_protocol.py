@@ -11,6 +11,9 @@ def test_wire_protocol_host_conformance(tmp_path: Path) -> None:
 
     repo_root = Path(__file__).resolve().parents[2]
     protocol_dir = repo_root / "firmware/esp32-door-controller/components/door_protocol"
+    # effect_play is validated against the effects table, so the protocol
+    # component links the real one rather than a stub.
+    effects_dir = repo_root / "firmware/esp32-door-controller/components/door_effects"
     binary = tmp_path / "wire_protocol_conformance"
 
     compile_cmd = [
@@ -20,10 +23,13 @@ def test_wire_protocol_host_conformance(tmp_path: Path) -> None:
         "-Wextra",
         "-Werror",
         f"-I{protocol_dir / 'include'}",
+        f"-I{effects_dir / 'include'}",
         str(protocol_dir / "door_protocol.c"),
+        str(effects_dir / "door_effects.c"),
         str(repo_root / "tests/firmware/wire_protocol_conformance.c"),
         "-o",
         str(binary),
+        "-lm",
     ]
 
     subprocess.run(compile_cmd, check=True, cwd=repo_root)
