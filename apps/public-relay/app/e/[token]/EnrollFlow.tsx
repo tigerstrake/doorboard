@@ -75,8 +75,17 @@ const MAX_EDGE_PX = 800;
 const JPEG_QUALITY = 0.85;
 const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 3 * 60 * 1000;
+/** What the Pi accepts as an accent colour (`enrollment.py` `_HEX_COLOR`, the six-digit form). */
+const HEX_COLOUR = /^#[0-9a-fA-F]{6}$/;
 
-export default function EnrollFlow({ inviteId: propInviteId }: { inviteId?: string }) {
+export default function EnrollFlow({
+  inviteId: propInviteId,
+  pollIntervalMs = POLL_INTERVAL_MS,
+}: {
+  inviteId?: string;
+  /** Tests shorten this; the page never sets it. */
+  pollIntervalMs?: number;
+}) {
   const inviteId = propInviteId ?? pathInviteId();
   const [step, setStep] = useState<Step>("checking");
   const [error, setError] = useState<string | null>(null);
@@ -92,10 +101,23 @@ export default function EnrollFlow({ inviteId: propInviteId }: { inviteId?: stri
   // The colour is now the enrollee's own (ADR-0021), independent of which LED effect
   // the door ends up allocating. Two people may pick the same one.
   const [accentColor, setAccentColor] = useState(PROFILES[0]!.color);
+  // What the hex box shows while somebody types. Only a complete `#rrggbb` reaches
+  // `accentColor`: a partial one used to be committed as typed, sealed, uploaded, and refused
+  // by the Pi at pickup (`invalid_accent_color`) — after the whole photo flow.
+  const [hexDraft, setHexDraft] = useState(PROFILES[0]!.color);
   const [statusReason, setStatusReason] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  /** The status poll in flight, so unmounting stops it rather than leaving it for 3 minutes. */
+  const pollRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => pollRef.current?.abort(), []);
+
+  const chooseColour = useCallback((next: string) => {
+    setAccentColor(next);
+    setHexDraft(next);
+  }, []);
 
   const maxImages = invite?.max_images ?? 3;
   const targetPhotos = Math.min(3, maxImages);
@@ -291,6 +313,12 @@ export default function EnrollFlow({ inviteId: propInviteId }: { inviteId?: stri
       setError("Please enter the name the door should greet you by.");
       return;
     }
+    // Checked here, before sealing: the Pi refuses a malformed colour at pickup, which is
+    // after the photos have gone and too late to fix in place.
+    if (!HEX_COLOUR.test(hexDraft) || !HEX_COLOUR.test(accentColor)) {
+      setError("Finish the colour code — six hex digits, like #3ddc84 — or pick one of the swatches.");
+      return;
+    }
 
     setError(null);
     setStep("sending");
@@ -355,7 +383,10 @@ export default function EnrollFlow({ inviteId: propInviteId }: { inviteId?: stri
       // The photos have left the phone sealed; drop the plaintext copies.
       retakeAll();
       setStep("waiting");
-      void pollUntilSettled(bundleId, setStep, setStatusReason);
+      pollRef.current?.abort();
+      const poll = new AbortController();
+      pollRef.current = poll;
+      void pollUntilSettled(bundleId, poll.signal, pollIntervalMs, setStep, setStatusReason);
     } catch {
       setError("Could not encrypt and send the photos. Please try again.");
       setStep("details");
@@ -363,7 +394,19 @@ export default function EnrollFlow({ inviteId: propInviteId }: { inviteId?: stri
     // accentColor belongs here: without it `submit` closes over the colour as it was
     // when the callback was last created, so a visitor who adjusts the picker and sends
     // immediately would enrol with the previous colour (ADR-0021).
-  }, [accentColor, doorKey, displayName, invite, photos, profileId, retakeAll, stopCamera, inviteId]);
+  }, [
+    accentColor,
+    hexDraft,
+    doorKey,
+    displayName,
+    invite,
+    photos,
+    profileId,
+    retakeAll,
+    stopCamera,
+    inviteId,
+    pollIntervalMs,
+  ]);
 
   const stepIndex = useMemo(() => {
     const order: Step[] = ["consent", "capture", "details", "sending", "waiting", "done"];
@@ -528,7 +571,7 @@ export default function EnrollFlow({ inviteId: propInviteId }: { inviteId?: stri
                       // the colour itself. The picker below can then move the colour
                       // alone, which is the point of separating them.
                       setProfileId(entry.id);
-                      setAccentColor(entry.color);
+                      chooseColour(entry.color);
                     }}
                   >
                     {entry.name}
@@ -545,7 +588,7 @@ export default function EnrollFlow({ inviteId: propInviteId }: { inviteId?: stri
                   id="colour-exact-input"
                   type="color"
                   value={accentColor}
-                  onChange={(event) => setAccentColor(event.target.value)}
+                  onChange={(event) => chooseColour(event.target.value)}
                   aria-describedby="colour-exact-hint"
                 />
                 <input
@@ -554,14 +597,16 @@ export default function EnrollFlow({ inviteId: propInviteId }: { inviteId?: stri
                   inputMode="text"
                   spellCheck={false}
                   maxLength={7}
-                  value={accentColor}
+                  value={hexDraft}
                   aria-label="Colour hex value"
                   onChange={(event) => {
-                    // Typed input is accepted as it is written and only committed when it
-                    // is a full hex literal, so the swatch does not flicker through
-                    // partial values while somebody types "#ff…".
+                    // The draft shows whatever is typed so far; the colour itself only
+                    // moves on a complete `#rrggbb`, so neither the swatch nor the bundle
+                    // ever sees "#ff".
                     const next = event.target.value.trim();
-                    if (/^#[0-9a-fA-F]{0,6}$/.test(next)) setAccentColor(next);
+                    if (!/^#?[0-9a-fA-F]{0,6}$/.test(next)) return;
+                    setHexDraft(next);
+                    if (HEX_COLOUR.test(next)) setAccentColor(next);
                   }}
                 />
                 <span className="colour-exact__preview" style={{ background: accentColor }} />
@@ -633,19 +678,35 @@ export default function EnrollFlow({ inviteId: propInviteId }: { inviteId?: stri
   );
 }
 
+/**
+ * Poll the bundle's status until it settles, the budget of *visible* time runs out, or
+ * `signal` aborts (the page unmounted — a tab closed mid-wait used to keep polling for three
+ * minutes). A tick while the tab is hidden neither fetches nor counts: nobody is watching,
+ * and a hidden tab must not run the budget down and then report "timed out" over an
+ * enrollment that succeeded.
+ */
 async function pollUntilSettled(
   bundleId: string,
+  signal: AbortSignal,
+  intervalMs: number,
   setStep: (step: Step) => void,
   setStatusReason: (reason: string | null) => void,
 ): Promise<void> {
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  let remainingMs = POLL_TIMEOUT_MS;
 
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  while (remainingMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    if (signal.aborted) return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") continue;
+    remainingMs -= intervalMs;
     try {
-      const resp = await fetch(`/api/status/${encodeURIComponent(bundleId)}`, { cache: "no-store" });
+      const resp = await fetch(`/api/status/${encodeURIComponent(bundleId)}`, {
+        cache: "no-store",
+        signal,
+      });
       if (!resp.ok) continue;
       const body = (await resp.json()) as { status: string; reason: string | null };
+      if (signal.aborted) return;
 
       if (body.status === "enrolled") {
         // A reason on success means something worth telling them (a reassigned
@@ -660,10 +721,13 @@ async function pollUntilSettled(
         return;
       }
     } catch {
-      // Transient network trouble: keep waiting until the deadline.
+      // Transient network trouble: keep waiting until the budget runs out. An abort mid-fetch
+      // lands here too.
+      if (signal.aborted) return;
     }
   }
 
+  if (signal.aborted) return;
   setStatusReason("timed_out");
   setStep("done");
 }

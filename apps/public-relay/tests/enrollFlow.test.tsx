@@ -73,7 +73,12 @@ interface Routes {
   submitBody?: unknown;
   /** Per-call submit responses, consumed in order; later calls fall back to submitStatus/Body. */
   submitSequence?: Array<{ status: number; body?: unknown }>;
+  /** What every status poll returns; `pending` unless a test says otherwise. */
+  status?: unknown;
 }
+
+/** Props a test may pass the page beyond the invite id. */
+type PageProps = { pollIntervalMs?: number };
 
 interface Call {
   method: string;
@@ -105,7 +110,11 @@ function mockApi(routes: Routes = {}): Call[] {
         return { ok: status < 400, status, json: async () => doorKeyBody() } as Response;
       }
       if (url.includes("/api/status/")) {
-        return { ok: true, status: 200, json: async () => ({ status: "pending", reason: null }) } as Response;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => routes.status ?? { status: "pending", reason: null },
+        } as Response;
       }
       return {
         ok: true,
@@ -153,8 +162,8 @@ afterEach(() => {
   window.location.hash = "";
 });
 
-async function reachConsent() {
-  render(<EnrollFlow inviteId={INVITE_ID} />);
+async function reachConsent(props: PageProps = {}) {
+  render(<EnrollFlow inviteId={INVITE_ID} {...props} />);
   await waitFor(() => expect(screen.getByText("Please read and agree")).toBeTruthy());
 }
 
@@ -168,9 +177,9 @@ function markPreviewLive() {
   return video;
 }
 
-async function reachCapture() {
+async function reachCapture(props: PageProps = {}) {
   const camera = mockCamera();
-  await reachConsent();
+  await reachConsent(props);
   fireEvent.click(screen.getByRole("checkbox"));
   fireEvent.click(screen.getByText("Continue to photos"));
   await waitFor(() => expect(screen.getByText(/Take 3 photos/)).toBeTruthy());
@@ -180,7 +189,10 @@ async function reachCapture() {
 async function takeAllPhotos() {
   markPreviewLive();
   for (let index = 1; index <= 3; index += 1) {
-    fireEvent.click(screen.getByText(`Take photo ${index} of 3`));
+    // "Camera ready" lands through an effect after the capture step commits, so the shutter
+    // label is awaited rather than read synchronously — reading it straight after the
+    // `canplay` event raced that effect under a loaded test run.
+    fireEvent.click(await screen.findByText(`Take photo ${index} of 3`));
     await waitFor(() =>
       expect(document.querySelectorAll(".thumbs img").length).toBe(index),
     );
@@ -376,13 +388,16 @@ describe("what leaves the phone", () => {
     return opened;
   }
 
-  async function submitEnrolment(calls: Call[]) {
-    await reachCapture();
+  async function reachDetails(props: PageProps = {}) {
+    await reachCapture(props);
     await takeAllPhotos();
     fireEvent.click(screen.getByText("Looks good, continue"));
     await waitFor(() => expect(screen.getByText(/How should the door greet you/)).toBeTruthy());
-
     fireEvent.change(screen.getByLabelText("Your name"), { target: { value: "Tiger" } });
+  }
+
+  async function submitEnrolment(calls: Call[], props: PageProps = {}) {
+    await reachDetails(props);
     fireEvent.click(screen.getByLabelText("Green"));
     fireEvent.click(screen.getByText("Encrypt and send"));
 
@@ -447,6 +462,33 @@ describe("what leaves the phone", () => {
     await expect(openBundle(reordered)).rejects.toThrow();
   });
 
+  it("keeps a partial hex colour out of the bundle and refuses to send until it is complete", async () => {
+    // `#ff` used to be committed as typed, sealed and uploaded, and refused by the Pi at
+    // pickup (`invalid_accent_color`) — after the whole photo flow, with a reload to recover.
+    const calls = mockApi();
+    await reachDetails();
+    const hex = screen.getByLabelText("Colour hex value") as HTMLInputElement;
+    const picker = document.getElementById("colour-exact-input") as HTMLInputElement;
+    const committed = picker.value;
+
+    fireEvent.change(hex, { target: { value: "#ff" } });
+    expect(hex.value).toBe("#ff"); // the draft shows what was typed…
+    expect(picker.value).toBe(committed); // …the colour itself has not moved
+
+    fireEvent.click(screen.getByText("Encrypt and send"));
+    await waitFor(() => expect(screen.getByText(/Finish the colour code/)).toBeTruthy());
+    expect(calls.filter((call) => call.url.includes("/submit"))).toHaveLength(0);
+    expect(screen.getByText(/How should the door greet you/)).toBeTruthy();
+
+    fireEvent.change(hex, { target: { value: "#ff8800" } });
+    expect(picker.value).toBe("#ff8800");
+    fireEvent.click(screen.getByText("Encrypt and send"));
+    await waitFor(() => expect(calls.some((call) => call.url.includes("/submit"))).toBe(true));
+    const bundle = JSON.parse(calls.find((call) => call.url.includes("/submit"))!.body!);
+    const manifest = JSON.parse(new TextDecoder().decode((await openBundle(bundle))[0]!));
+    expect(manifest.profile.accent_color).toBe("#ff8800");
+  });
+
   it("re-seals under a fresh bundle id and retries once when the relay already holds that id", async () => {
     const calls = mockApi({ submitSequence: [{ status: 409, body: { error: "bundle_id_taken" } }] });
     await submitEnrolment(calls);
@@ -478,6 +520,51 @@ describe("what leaves the phone", () => {
     await waitFor(() => expect(screen.getByText(/already been used/)).toBeTruthy());
     // Their photos and name are still in hand, so a fresh QR is all they need.
     expect(screen.getByText(/How should the door greet you/)).toBeTruthy();
+  });
+
+  describe("waiting for the door", () => {
+    const statusCalls = (calls: Call[]) =>
+      calls.filter((call) => call.url.includes("/api/status/")).length;
+    const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    it("lands on the done screen when the door reports the enrollment", async () => {
+      const calls = mockApi({ status: { status: "enrolled", reason: null } });
+      await submitEnrolment(calls, { pollIntervalMs: 20 });
+      await waitFor(() => expect(screen.getByText("You're enrolled")).toBeTruthy());
+    });
+
+    it("stops polling when the page is unmounted mid-wait", async () => {
+      // A closed tab used to keep polling /api/status for up to three minutes.
+      const calls = mockApi();
+      await submitEnrolment(calls, { pollIntervalMs: 20 });
+      await waitFor(() => expect(statusCalls(calls)).toBeGreaterThan(0));
+
+      cleanup();
+      const atUnmount = statusCalls(calls);
+      await settle(150);
+      expect(statusCalls(calls)).toBe(atUnmount);
+    });
+
+    it("skips polls while the tab is hidden and resumes once it is visible again", async () => {
+      const calls = mockApi();
+      await submitEnrolment(calls, { pollIntervalMs: 20 });
+      await waitFor(() => expect(statusCalls(calls)).toBeGreaterThan(0));
+
+      // On the instance, deleted afterwards so the prototype getter shows through again
+      // (same technique as visitorFlow.test).
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+      try {
+        await settle(60); // let a tick already in flight drain
+        const whileHidden = statusCalls(calls);
+        await settle(150);
+        expect(statusCalls(calls)).toBe(whileHidden);
+      } finally {
+        Reflect.deleteProperty(document, "visibilityState");
+      }
+
+      const onReturn = statusCalls(calls);
+      await waitFor(() => expect(statusCalls(calls)).toBeGreaterThan(onReturn));
+    });
   });
 });
 
