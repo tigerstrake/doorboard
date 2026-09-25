@@ -15,7 +15,7 @@ import { handlePut as registerInvite } from "@/lib/handlers/invite";
 import { handleGet as pickup } from "@/lib/handlers/pickup";
 import { handlePost as ack } from "@/lib/handlers/pickupAck";
 import { handleGet as getStatus } from "@/lib/handlers/status";
-import { sha256Base64Url } from "@/lib/device";
+import { RATE_LIMITS, sha256Base64Url } from "@/lib/device";
 import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
 import { KeyFingerprintMismatch, assertKeyMatchesFingerprint, fingerprintFor } from "@/lib/seal";
@@ -332,6 +332,53 @@ describe("invite state tells a phone only about its own invite", () => {
     const body = (await resp.json()) as { status: string; invite_id: string };
     expect(body.status).toBe("unknown");
     expect(body.invite_id).toBe("");
+  });
+
+  it("spends the per-invite submit budget only on requests that hold the secret", async () => {
+    // The invite id is visible (address bar, request lines); the secret is not. Five
+    // wrong-secret attempts by whoever saw the id must not burn the enrollee's five tries.
+    const { token, inviteId, secret } = await seedDoorKeyAndInvite();
+    const key = await fakeDoorKey();
+    const bundle = await makeSealedBundle({ key, inviteId });
+
+    for (let i = 0; i < RATE_LIMITS.submitPerInvite.limit; i += 1) {
+      const resp = await submitBundle(
+        publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, {
+          ...withSecret("d3Jvbmctc2VjcmV0LXZhbHVl"),
+          "cf-connecting-ip": `198.51.100.${10 + i}`, // spread over IPs, as a guesser would
+        }),
+        resolveStore(db),
+        { token },
+      );
+      expect(resp.status).toBe(404);
+    }
+
+    const genuine = await submitBundle(
+      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
+      resolveStore(db),
+      { token },
+    );
+    expect(genuine.status).toBe(202);
+  });
+
+  it("still caps submits per invite once the secret is right", async () => {
+    const { token, inviteId, secret } = await seedDoorKeyAndInvite();
+    const key = await fakeDoorKey();
+    const statuses: number[] = [];
+    for (let i = 0; i <= RATE_LIMITS.submitPerInvite.limit; i += 1) {
+      const bundle = await makeSealedBundle({ key, inviteId });
+      const resp = await submitBundle(
+        publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, {
+          ...withSecret(secret),
+          "cf-connecting-ip": `198.51.100.${10 + i}`,
+        }),
+        resolveStore(db),
+        { token },
+      );
+      statuses.push(resp.status);
+    }
+    expect(statuses.slice(0, -1).every((status) => status === 202)).toBe(true);
+    expect(statuses.at(-1)).toBe(429);
   });
 
   it("refuses a submit whose invite_id disagrees with the URL", async () => {

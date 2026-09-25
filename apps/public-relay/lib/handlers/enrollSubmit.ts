@@ -40,11 +40,7 @@ export async function handlePost(
   if (!parseInviteId(inviteId)) return jsonError(404, "invite_not_found");
 
   const perIp = RATE_LIMITS.submitPerIp;
-  const perInvite = RATE_LIMITS.submitPerInvite;
   if (!(await store.underRateLimit("submit-ip", clientAddress(request), perIp.limit, perIp.windowS))) {
-    return jsonError(429, "rate_limited");
-  }
-  if (!(await store.underRateLimit("submit-inv", inviteId, perInvite.limit, perInvite.windowS))) {
     return jsonError(429, "rate_limited");
   }
 
@@ -53,6 +49,16 @@ export async function handlePost(
   if (!invite || !secret || !digestsMatch(invite.secret_sha256, sha256Base64Url(secret))) {
     return jsonError(404, "invite_not_found");
   }
+
+  // The per-invite budget is the enrollee's, so it is spent only by requests that hold the
+  // secret. The invite id alone is visible (address bar, request lines); counting before the
+  // secret check let anyone who saw it burn the enrollee's five attempts. Per-IP, above,
+  // still bounds the guessing itself.
+  const perInvite = RATE_LIMITS.submitPerInvite;
+  if (!(await store.underRateLimit("submit-inv", inviteId, perInvite.limit, perInvite.windowS))) {
+    return jsonError(429, "rate_limited");
+  }
+
   if (invite.consumed) return jsonError(409, "invite_already_used");
   if (Date.parse(invite.expires_at) <= Date.now()) return jsonError(410, "invite_expired");
 
