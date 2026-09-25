@@ -70,6 +70,18 @@ fi
 install -m 0644 "$repo"/infra/systemd/*.service /etc/systemd/system/
 install -m 0644 "$repo"/infra/systemd/*.timer /etc/systemd/system/
 
+# The Pi's only LAN listener (ADR-0047): Caddy on :80 forwarding the allow-list
+# in deploy/pi-door/Caddyfile. The Debian package enables its own caddy.service
+# with a placeholder site on :80; that one must not hold the port.
+if ! command -v caddy >/dev/null 2>&1; then
+  echo "warning: caddy is not installed (apt install caddy); door-proxy.service will fail to start" >&2
+fi
+install -d -m 0755 /etc/doorboard
+install -m 0644 "$repo"/deploy/pi-door/Caddyfile /etc/doorboard/Caddyfile
+if systemctl list-unit-files caddy.service >/dev/null 2>&1; then
+  systemctl disable --now caddy.service 2>/dev/null || true
+fi
+
 # ---------------------------------------------------------------------------
 # Drop-ins
 # ---------------------------------------------------------------------------
@@ -133,21 +145,19 @@ python_service door-visiond.service "$visiond_venv" door_visiond
 write_dropin doorboard-storage-ready.service "ExecStart=
 ExecStart=/bin/bash -c 'set -a; . $env_file; set +a; exec $venv/bin/python $repo/scripts/check-door-storage'"
 
-# Keeps serving through the Vite dev server, which is what this Pi has always run
-# and what the two kiosks are pointed at (http://localhost:5173/doorpad and
-# /wallboard). The canonical unit serves a built bundle from apps/door-ui/dist
-# instead, which is the better end state for a kiosk -- no HMR socket, minified,
-# far less memory -- but switching is a visible change to the door's screen and a
-# new build step on every deploy, so it is a decision to make deliberately rather
-# than a side effect of installing units. To switch: build the bundle
-# (`pnpm --filter @doorboard/door-ui build`), delete this ExecStart override, and
-# restart door-ui.
-#
-# --host 0.0.0.0 rather than the canonical 127.0.0.1 for the same reason: that is
-# how it runs today, and narrowing it would cut off anyone opening the door UI
-# from another machine on the LAN.
+# The built bundle on loopback, as the canonical unit does -- not the Vite dev
+# server on 0.0.0.0 this Pi used to run. That server published /admin, /ws,
+# /session and, through /@fs/, the whole checkout to the corridor; ADR-0047 makes
+# door-proxy.service the only LAN listener and the kiosks keep loading
+# http://127.0.0.1:5173/... exactly as before. The bundle is a build step on
+# every deploy: `pnpm --filter @doorboard/door-ui build` (see the check below).
+if [[ ! -f "$repo/apps/door-ui/dist/index.html" ]]; then
+  echo "missing $repo/apps/door-ui/dist/index.html -- build the kiosk bundle first:" >&2
+  echo "  VITE_AMBIENT_MOCK=false pnpm --filter @doorboard/door-ui build" >&2
+  exit 1
+fi
 write_dropin door-ui.service "ExecStart=
-ExecStart=/usr/local/bin/pnpm --filter @doorboard/door-ui exec vite --host 0.0.0.0"
+ExecStart=$venv/bin/python $repo/scripts/serve_door_ui.py --directory $repo/apps/door-ui/dist --host 127.0.0.1 --port 5173"
 
 # This Pi's mediamtx config lives on the SSD next to its recordings, not in /etc.
 mediamtx_config=/mnt/ssd/doorboard/mediamtx/mediamtx.yml
@@ -192,6 +202,7 @@ systemctl enable \
   door-visiond.service \
   door-api.service \
   door-sync.service \
+  door-proxy.service \
   doorboard-health-agent.timer
 
 # ---------------------------------------------------------------------------
@@ -213,6 +224,7 @@ managed_units=(
   door-visiond.service
   door-api.service
   door-sync.service
+  door-proxy.service
 )
 stale=()
 for unit in "${managed_units[@]}"; do
@@ -243,6 +255,7 @@ already active, `start` for one that is dead):
   systemctl restart door-media   && curl -s localhost:8082/health
   systemctl restart door-api     && curl -s localhost:8080/health
   systemctl restart door-ui      && curl -sI localhost:5173/ | head -1
+  systemctl start   door-proxy   && curl -s -o /dev/null -w '%{http_code}\n' localhost/session   # 404
   systemctl start   door-visiond && curl -s localhost:8081/health
   systemctl start   doorboard-health-agent.timer
 

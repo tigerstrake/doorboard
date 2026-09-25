@@ -1,0 +1,37 @@
+[Unit]
+Description=Doorboard LAN proxy (ADR-0047): the Pi's only LAN-facing listener
+Documentation=file:/opt/doorboard/docs/runbooks/pi-lan-proxy.md
+# Not on the critical chain: nothing door-side Wants= this unit and it waits
+# for nothing but the network stack. The kiosks talk to 127.0.0.1 directly;
+# a dead proxy costs the phone fallback and the NUC pulls, never the bell.
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Needs no identity of its own: no files, no credentials, one config file.
+DynamicUser=yes
+StateDirectory=door-proxy
+Environment=XDG_DATA_HOME=/var/lib/door-proxy
+Environment=XDG_CONFIG_HOME=/var/lib/door-proxy
+# Optional: DOOR_PROXY_NUC_CIDR=<nuc ip>/32 restricts the NUC media routes.
+EnvironmentFile=-/etc/doorboard/door-proxy.env
+ExecStart=/usr/bin/caddy run --config /etc/doorboard/Caddyfile --adapter caddyfile
+# `admin off` in the Caddyfile, so there is no reload socket: restart instead.
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=10s
+# Port 80 without root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

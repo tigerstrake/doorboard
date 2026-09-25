@@ -1,0 +1,88 @@
+# The door Pi's ONE LAN-facing listener (ADR-0047). Installed to
+# /etc/doorboard/Caddyfile by deploy/pi-door/install-systemd and
+# install-home-layout; run by infra/systemd/door-proxy.service.
+#
+# Every door service binds 127.0.0.1. This proxy forwards an explicit
+# allow-list and answers 404 to everything else, so /admin, /ws, /session,
+# /internal, /snapshot*, /recordings* and the Vite dev server never leave the
+# Pi. tests/test_pi_proxy_allowlist.py parses this file and pins that list —
+# edit the file and the test together.
+#
+# Not on the door path: the kiosks talk to 127.0.0.1 directly. A dead proxy
+# costs the phone fallback and the NUC pulls, never the bell or the screens.
+
+{
+	# No admin API socket, no certificate automation: this is a plain-HTTP LAN
+	# listener until a LAN CA exists (then :443 is a one-listener change).
+	admin off
+	auto_https off
+}
+
+:80 {
+	# --- Visitor phone on the house wifi (ADR-0017 §4, E-19) -------------
+	# door-ui's static bundle, for the /visitor page only, plus the hashed
+	# assets that page loads. door-ui.service (scripts/serve_door_ui.py) serves
+	# index.html for /visitor and refuses nothing else on this list.
+	@visitor_ui path /visitor /visitor/* /assets/*
+	handle @visitor_ui {
+		reverse_proxy 127.0.0.1:5173
+	}
+
+	# The tokenised visitor surface — exactly what the public relay carries
+	# (ADR-0017 §2) and what apps/door-ui/src/VisitorPage.tsx calls: session
+	# lookup, the current poll, a note, a vote, the visitor's own deletion
+	# request. door-api enforces the token, the rate limit and the sanitiser.
+	@visitor_api path /visitor-session /visitor-token /guestbook /polls/current /polls/*/results /polls/*/vote /social/deletion-requests
+	handle @visitor_api {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# --- NUC -> door-api media pull (ADR-0012/0022) --------------------------
+	# The two routes control-plane-api's DoorApiVideoSource /
+	# DoorApiThumbnailSource call. Forwarded only with a bearer present (the
+	# proxy does not verify it; door-api does) and, when the operator sets
+	# DOOR_PROXY_NUC_CIDR in /etc/doorboard/door-proxy.env, only from there.
+	@nuc_media {
+		path /admin/media-inbox/*/file /admin/media-inbox/*/thumbnail
+		header Authorization Bearer*
+		remote_ip {$DOOR_PROXY_NUC_CIDR:0.0.0.0/0 ::/0}
+	}
+	handle @nuc_media {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# --- NUC -> Pi metrics ----------------------------------------------
+	# /metrics/<service> maps to that service's loopback /metrics so Prometheus
+	# scrapes door-pi.local:80 (infra/monitoring/prometheus.yml). Ports are the
+	# *_BIND defaults; the test cross-checks them against the code.
+	handle /metrics/door-api {
+		rewrite * /metrics
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle /metrics/door-visiond {
+		rewrite * /metrics
+		reverse_proxy 127.0.0.1:8081
+	}
+	handle /metrics/door-media {
+		rewrite * /metrics
+		reverse_proxy 127.0.0.1:8082
+	}
+	handle /metrics/door-sync {
+		rewrite * /metrics
+		reverse_proxy 127.0.0.1:8083
+	}
+	handle /metrics/door-voice {
+		rewrite * /metrics
+		reverse_proxy 127.0.0.1:8084
+	}
+	# prometheus-node-exporter, loopback-only (infra/systemd/node-exporter.service).
+	handle /metrics/node {
+		rewrite * /metrics
+		reverse_proxy 127.0.0.1:9100
+	}
+
+	# --- Everything else ------------------------------------------------
+	handle {
+		respond 404
+	}
+}

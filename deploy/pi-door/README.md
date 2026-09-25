@@ -8,6 +8,12 @@ Raspberry Pi OS 64-bit on the Pi 5. Hardware-facing services run under **systemd
 2. systemd ordering: SSD mount verified (`ssd.mount` dependency) → door-media + door-visiond + door-api → kiosk launch only after door-api `/health` is ok.
 3. Every service: `Restart=on-failure`, hardware watchdog enabled, journald → structured logs.
 4. Chromium kiosks: two instances, HDMI-1 `/wallboard`, HDMI-2 `/doorpad`, crash-relaunch, no toolbars, no exit path from touch.
+5. LAN surface (ADR-0047): every door service binds `127.0.0.1`; `door-proxy.service`
+   (Caddy, `deploy/pi-door/Caddyfile`) is the only LAN listener and forwards only the
+   visitor page, the tokenised visitor routes, the NUC's two media-inbox pulls and
+   `/metrics/<service>`. Everything else is a 404 from the proxy. It is not on the door
+   path — the kiosks talk to loopback. See
+   [docs/runbooks/pi-lan-proxy.md](../../docs/runbooks/pi-lan-proxy.md).
 
 ## Installation
 
@@ -33,7 +39,9 @@ Raspberry Pi OS 64-bit on the Pi 5. Hardware-facing services run under **systemd
    contract/security escalation mandated by `AGENTS.md`.
 3. Install the pinned MediaMTX binary at `/usr/local/bin/mediamtx` and its
    config at `/etc/doorboard/mediamtx.yml`. Install camera/Hailo/UART packages
-   required by the selected hardware adapters.
+   required by the selected hardware adapters, and `apt install caddy` for the
+   LAN proxy (the installer disables the package's own `caddy.service`, which
+   would otherwise hold port 80).
 4. Create `/etc/doorboard/doorboard.env` from
    `doorboard.env.example`, replace every `CHANGE_ME`, and keep it root-owned.
    It contains only Pi-scoped and local service credentials, never NUC admin,

@@ -23,13 +23,6 @@ export default defineConfig({
       "localhost",
       "127.0.0.1",
     ],
-    proxy: {
-      "/door-media": {
-        target: process.env.VITE_DOOR_MEDIA_TARGET ?? "http://127.0.0.1:8082",
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/door-media/, ""),
-      },
-    },
   },
   test: {
     // vitest's default include glob matches *.spec.ts anywhere in the

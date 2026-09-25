@@ -36,6 +36,17 @@ done
 install -d -m 0755 /etc/doorboard /var/lib/doorboard
 install -m 0644 "$repo_root"/infra/systemd/*.service /etc/systemd/system/
 install -m 0644 "$repo_root"/infra/systemd/*.timer /etc/systemd/system/
+
+# The Pi's only LAN listener (ADR-0047): Caddy on :80 forwarding the allow-list
+# in deploy/pi-door/Caddyfile. The Debian package enables its own caddy.service
+# with a placeholder site on :80; that one must not hold the port.
+if ! command -v caddy >/dev/null 2>&1; then
+  echo "caddy is not installed (apt install caddy); door-proxy.service will fail to start" >&2
+fi
+install -m 0644 "$repo_root"/deploy/pi-door/Caddyfile /etc/doorboard/Caddyfile
+if systemctl list-unit-files caddy.service >/dev/null 2>&1; then
+  systemctl disable --now caddy.service 2>/dev/null || true
+fi
 chown root:doorboard "$env_file"
 chmod 0640 "$env_file"
 
@@ -48,6 +59,7 @@ systemctl enable \
   door-visiond.service \
   door-api.service \
   door-sync.service \
+  door-proxy.service \
   doorboard-health-agent.timer
 
 echo "Units installed. Start with: systemctl start door-ui door-api door-sync doorboard-health-agent.timer"
