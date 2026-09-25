@@ -817,6 +817,10 @@ export function outcomeMessage(reason: string): string {
       return "Every light colour is already taken by someone enrolled. Ask the household admin to free one up.";
     case "too_many_images":
       return "That was more photos than this invitation allows. Ask for a fresh QR code.";
+    case "invalid_display_name":
+      return "The door could not use that name — it needs one to sixty-four visible characters. Start again with a shorter name.";
+    case "recognition_degraded":
+      return "The door's recognition hardware is recovering right now, so it declined to enrol anyone. Try again in a minute.";
     case "internal_error":
       return "The door hit an unexpected error saving your enrolment. Nothing was saved — ask the household admin to check the doorboard logs, then try again.";
     default:
