@@ -21,12 +21,13 @@ async function assertVisitorQrReady(page: Page) {
   await expect(page.getByAltText("Visitor link QR code")).toBeVisible();
 }
 
-// Freeze Date before the app's first script runs so the ambient clock and the
-// inactivity countdown always compute the same elapsed time (zero) — screenshots
-// don't race wall-clock-driven UI. Real timers still fire, they just see no
-// elapsed time, matching how a kiosk would look at a single instant.
-test.beforeEach(async ({ page }) => {
-  await page.clock.setFixedTime(0);
+// Freeze Date before the app's first script runs so the ambient clock always
+// computes the same elapsed time (zero) — screenshots don't race wall-clock-driven
+// UI. Real timers still fire, they just see no elapsed time, matching how a kiosk
+// would look at a single instant. Cases tagged @real-clock opt out: they exist to
+// prove what happens as real time passes, which a frozen Date would hide.
+test.beforeEach(async ({ page }, testInfo) => {
+  if (!testInfo.tags.includes("@real-clock")) await page.clock.setFixedTime(0);
   await page.route("**/visitor-token", async (route) => {
     await route.fulfill({
       status: 200,
@@ -173,4 +174,37 @@ test.describe("Wallboard — transitions", () => {
     await expect(page.locator(".wallboard-ambient-view")).toBeVisible();
     await expect(page.getByTestId("wallboard-visitor-mode")).toHaveCount(0);
   });
+
+  test(
+    "never ends the session itself: 35 s of real time with no input posts nothing",
+    { tag: "@real-clock" },
+    async ({ page }) => {
+      // The wallboard is a corridor display nobody touches. It used to run a 30 s
+      // inactivity countdown that POSTed /doorpad/session/end — cutting off a video
+      // message or guestbook note in progress on the DoorPad, and invalidating the
+      // visitor QR it had just shown. Only the server may end a session.
+      test.setTimeout(90_000);
+      let sessionEndCalls = 0;
+      await page.route("**/doorpad/session/end", async (route) => {
+        sessionEndCalls += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ session: { state: "SESSION_END", session_id: "ses_owned" } }),
+        });
+      });
+
+      await gotoWallboard(page);
+      await publishSessionState(page, "ses_owned", "IDLE", "VISITOR_MODE");
+      const takeover = page.getByTestId("wallboard-visitor-mode");
+      await expect(takeover).toHaveAttribute("data-session-state", "VISITOR_MODE");
+
+      // Past the old 30 s countdown, with margin. Real time, no input, no events.
+      await page.waitForTimeout(35_000);
+
+      expect(sessionEndCalls).toBe(0);
+      await expect(takeover).toHaveAttribute("data-session-state", "VISITOR_MODE");
+      await expect(page.getByTestId("session-end-banner")).toHaveCount(0);
+    },
+  );
 });

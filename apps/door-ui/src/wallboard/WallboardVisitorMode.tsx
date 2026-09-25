@@ -2,14 +2,12 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   Tile,
   StatusBadge,
-  BigButton,
   GreetingBanner,
   RingStatus,
   VideoMessageStatus,
   PollPrompt,
   SessionEndBanner,
   QRPlaceholder,
-  CountdownAutoReset,
 } from "@doorboard/ui-kit";
 import type { PresenceLabel, SessionState } from "@doorboard/ui-kit";
 
@@ -29,8 +27,6 @@ export interface WallboardVisitorModeProps {
   residents?: string[];
   pollQuestion: string;
   visitorUrl: string | null;
-  autoResetMs?: number;
-  onDone: () => void;
 }
 
 function renderStatusPanel(state: SessionState) {
@@ -53,6 +49,12 @@ function renderStatusPanel(state: SessionState) {
 // session (the parent keys on ambient-vs-visitor, not on individual states) so a
 // late-arriving identity can upgrade the greeting in place without remounting —
 // see ARCHITECTURE.md §5 (late recognition never resets the interaction).
+//
+// Display only. The wallboard is a corridor screen nobody touches, so it must never
+// drive the session machine: it has no "Done" button and no inactivity countdown. The
+// session ends when the DoorPad or door-api says so (SESSION_END/IDLE over /ws) — an
+// inactivity timer here used to POST /doorpad/session/end 30 s after every bell, cutting
+// off video messages and guestbook notes in progress on the DoorPad.
 export function WallboardVisitorMode({
   sessionState,
   sessionId,
@@ -62,8 +64,6 @@ export function WallboardVisitorMode({
   residents = [],
   pollQuestion,
   visitorUrl,
-  autoResetMs = 30000,
-  onDone,
 }: WallboardVisitorModeProps) {
   const [justUpgraded, setJustUpgraded] = useState(false);
   const prevSessionIdRef = useRef<string>(sessionId);
@@ -102,63 +102,55 @@ export function WallboardVisitorMode({
     : "The DoorPad below shows your live self-view and next steps.";
 
   return (
-    <CountdownAutoReset onReset={onDone} timeoutMs={autoResetMs}>
-      <div
-        className="wallboard-visitor-view db-app-theme"
-        data-testid="wallboard-visitor-mode"
-        data-session-state={sessionState}
-      >
-        <GreetingBanner
-          title={greetingTitle}
-          subtitle={greetingSubtitle}
-          profileId={profileId}
-          celebratory={isEnrolled}
-          justUpgraded={justUpgraded}
-        />
+    <div
+      className="wallboard-visitor-view db-app-theme"
+      data-testid="wallboard-visitor-mode"
+      data-session-state={sessionState}
+    >
+      <GreetingBanner
+        title={greetingTitle}
+        subtitle={greetingSubtitle}
+        profileId={profileId}
+        celebratory={isEnrolled}
+        justUpgraded={justUpgraded}
+      />
 
-        {renderStatusPanel(sessionState)}
+      {renderStatusPanel(sessionState)}
 
-        <div className="visitor-grid">
-          <Tile title="DoorPad Instructions">
-            <div className="instructions-card">
-              <p>
-                Touch the <strong>7" DoorPad screen</strong> below to:
-              </p>
-              <ul>
-                <li>Wait for someone to come to the door</li>
-                <li>Leave a short video message</li>
-                <li>Sign our digital guestbook</li>
-                <li>Answer the roommate poll</li>
-              </ul>
+      <div className="visitor-grid">
+        <Tile title="DoorPad Instructions">
+          <div className="instructions-card">
+            <p>
+              Touch the <strong>7" DoorPad screen</strong> below to:
+            </p>
+            <ul>
+              <li>Wait for someone to come to the door</li>
+              <li>Leave a short video message</li>
+              <li>Sign our digital guestbook</li>
+              <li>Answer the roommate poll</li>
+            </ul>
+          </div>
+        </Tile>
+
+        <Tile title="Availability State">
+          <div className="status-display-box">
+            <div className="status-display-row">
+              <span className="person-name">{residents[0] ?? "Owner"}</span>
+              <StatusBadge label={presence.owner.label} />
             </div>
-          </Tile>
-
-          <Tile title="Availability State">
-            <div className="status-display-box">
-              <div className="status-display-row">
-                <span className="person-name">{residents[0] ?? "Owner"}</span>
-                <StatusBadge label={presence.owner.label} />
-              </div>
-              <div className="status-display-row">
-                <span className="person-name">{residents[1] ?? "Roommate"}</span>
-                <StatusBadge label={presence.roommate.label} />
-              </div>
+            <div className="status-display-row">
+              <span className="person-name">{residents[1] ?? "Roommate"}</span>
+              <StatusBadge label={presence.roommate.label} />
             </div>
-          </Tile>
+          </div>
+        </Tile>
 
-          <Tile title="Scan Visitor QR">
-            {visitorUrl ? <QRPlaceholder url={visitorUrl} /> : <p>Preparing visitor link...</p>}
-          </Tile>
-        </div>
-
-        <PollPrompt question={pollQuestion} />
-
-        <div className="visitor-mode-footer">
-          <BigButton variant="primary" onClick={onDone}>
-            Done / End Session
-          </BigButton>
-        </div>
+        <Tile title="Scan Visitor QR">
+          {visitorUrl ? <QRPlaceholder url={visitorUrl} /> : <p>Preparing visitor link...</p>}
+        </Tile>
       </div>
-    </CountdownAutoReset>
+
+      <PollPrompt question={pollQuestion} />
+    </div>
   );
 }

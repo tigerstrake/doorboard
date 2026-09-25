@@ -1801,15 +1801,14 @@ export function App() {
     clientRef.current.publish(event);
   };
 
+  // DoorPad-only: the wallboard never calls this (it is a display, not a control). No
+  // rollback on failure — re-applying the state captured before the call could clobber
+  // a newer `session.state_changed` that arrived over /ws during the request; door-api's
+  // own transition (or the reconnect snapshot) is the source of truth either way.
   const endVisitorSession = async () => {
-    const previous = sessionState;
     applySessionSnapshot({ state: "SESSION_END", session_id: mockSessionId });
     const result = await postDoorApi("/doorpad/session/end");
-    if (result?.session?.state) {
-      applySessionSnapshot(result.session);
-    } else {
-      applySessionSnapshot({ state: previous, session_id: mockSessionId });
-    }
+    if (result?.session?.state) applySessionSnapshot(result.session);
   };
 
   // Auto-reset is a real Pi-local session action. It never relies on sending a
@@ -2186,7 +2185,6 @@ export function App() {
             residents={RESIDENTS}
             pollQuestion={currentPoll?.question ?? "No poll running right now."}
             visitorUrl={visitorQrUrl}
-            onDone={endVisitorSession}
           />
         ) : focusedChannel ? (
           <WallboardFocusSplit

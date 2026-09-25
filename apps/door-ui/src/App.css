@@ -624,12 +624,6 @@
   margin: var(--db-spacing-xs) 0;
 }
 
-.visitor-mode-footer {
-  display: flex;
-  justify-content: center;
-  padding: var(--db-spacing-md) 0;
-}
-
 /* DoorPad View Styling */
 .doorpad-view {
   display: flex;
