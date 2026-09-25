@@ -558,6 +558,18 @@ class Esp32ProtocolTransport:
             self._protocol_error = f"invalid ESP32 {msg.message_type} payload: {exc}"
             return
 
+        if msg.message_type == "hello" and not self._is_remembered_inbound(
+            peer_boot_id or "unknown", msg.seq
+        ):
+            # A hello that is not a retransmit of one we already hold is the
+            # controller (re)starting its link, whatever boot_id it advertises.
+            # Its sequence numbers restart at 1, so the high-water mark from the
+            # previous run would otherwise ack and discard every frame it sends
+            # -- the bell included -- until seq climbed back past it. The
+            # firmware now draws a fresh boot_id per boot; this is the Pi's own
+            # defence, so it does not depend on that.
+            self._reset_inbound_dedupe()
+
         duplicate = self._is_duplicate_inbound(peer_boot_id or "unknown", msg.seq)
         if msg.message_type in ACK_REQUIRED:
             await self._write_message(
@@ -630,6 +642,14 @@ class Esp32ProtocolTransport:
                 "payload": payload,
             }
         )
+
+    def _is_remembered_inbound(self, boot_id: str, seq: int) -> bool:
+        return boot_id == self._dedupe_boot_id and seq in self._dedupe_recent_seqs
+
+    def _reset_inbound_dedupe(self) -> None:
+        self._dedupe_boot_id = None
+        self._dedupe_high_water_seq = -1
+        self._dedupe_recent_seqs.clear()
 
     def _is_duplicate_inbound(self, boot_id: str, seq: int) -> bool:
         if boot_id != self._dedupe_boot_id:

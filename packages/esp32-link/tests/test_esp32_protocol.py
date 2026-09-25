@@ -471,6 +471,70 @@ def test_boot_id_change_allows_same_sequence_after_reboot() -> None:
     asyncio.run(run())
 
 
+def test_controller_reboot_with_an_unchanged_boot_id_is_a_link_restart() -> None:
+    # The firmware used to send a constant boot_id, so after a reboot its hello
+    # (seq 1) and everything after it sat below the previous run's high-water
+    # mark and were acked and dropped: an hour of uptime meant an hour of dead
+    # bell. A hello that is not a retransmit resets the dedupe state regardless
+    # of boot_id; a retransmitted hello (same boot, same seq) stays deduped.
+    async def run() -> None:
+        clock = ManualClock()
+        bytes_ = QueueByteTransport()
+        options = replace(_options(), event_queue_size=2048)
+        transport = Esp32ProtocolTransport(bytes_, options=options, now_mono_ms=clock.now)
+        await transport.start()
+        events = transport.events()
+        hello = WireMessage(
+            v=1,
+            seq=1,
+            message_type="hello",
+            ack=None,
+            payload={"fw_version": "sim", "proto_v": 1, "boot_id": "constant"},
+        )
+        heartbeats = b"".join(
+            encode_wire_message(
+                WireMessage(
+                    v=1,
+                    seq=seq,
+                    message_type="heartbeat",
+                    ack=None,
+                    payload={"uptime_s": seq, "fallback_active": False, "cached_profile_id": None},
+                )
+            )
+            for seq in range(2, 1002)
+        )
+        button = WireMessage(
+            v=1,
+            seq=3,
+            message_type="button_event",
+            ack=None,
+            payload={
+                "press_id": "c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788",
+                "pressed_at_mono_ms": 123,
+                "had_cached_profile": False,
+                "profile_id": None,
+            },
+        )
+
+        await bytes_.feed(hello)
+        await bytes_.feed(hello)  # a retransmit is still a duplicate
+        await bytes_.inbound.put(heartbeats)
+        await bytes_.feed(hello)  # the controller rebooted: seq restarts at 1
+        await bytes_.feed(button)
+
+        delivered = await _next_event(events)
+        while delivered.type != "door.button_pressed":
+            delivered = await _next_event(events)
+
+        assert str(delivered.payload.press_id) == button.payload["press_id"]
+        assert transport.metrics().duplicate_rx == 1
+        assert transport.status().connected is True
+        assert transport.inbound_dedupe_entries <= 3
+        await transport.close()
+
+    asyncio.run(run())
+
+
 def test_heartbeat_loss_emits_link_state_and_health_down() -> None:
     async def run() -> None:
         clock = ManualClock()

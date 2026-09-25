@@ -243,6 +243,12 @@ static bool remember_seen(door_protocol_t *ctx, const char *boot_id, uint32_t se
     return false;
 }
 
+static void forget_seen(door_protocol_t *ctx)
+{
+    memset(ctx->seen, 0, sizeof(ctx->seen));
+    ctx->seen_next = 0;
+}
+
 static size_t pending_index(const door_protocol_t *ctx, size_t offset)
 {
     return (ctx->pending_head + offset) % DOOR_PROTOCOL_PENDING_DEPTH;
@@ -373,6 +379,17 @@ void door_protocol_apply_timeouts(door_protocol_t *ctx, uint64_t now_mono_ms)
     }
 }
 
+bool door_protocol_make_boot_id(char *out, size_t out_len, uint32_t (*rng)(void))
+{
+    if (out == NULL || out_len < DOOR_PROTOCOL_BOOT_ID_HEX_CHARS + 1U || rng == NULL) {
+        return false;
+    }
+    uint32_t high = rng();
+    uint32_t low = rng();
+    int written = snprintf(out, out_len, "%08" PRIx32 "%08" PRIx32, high, low);
+    return written == DOOR_PROTOCOL_BOOT_ID_HEX_CHARS;
+}
+
 bool door_protocol_make_uuid_v4(
     char *out,
     size_t out_len,
@@ -469,6 +486,17 @@ door_protocol_rx_result_t door_protocol_receive_from_pi(
     }
     if ((dedupe_boot_id == NULL || dedupe_boot_id[0] == '\0') && ctx->peer_boot_id[0] != '\0') {
         dedupe_boot_id = ctx->peer_boot_id;
+    }
+    if (msg.type == MSG_HELLO && msg.boot_id[0] != '\0' &&
+        strcmp(msg.boot_id, ctx->peer_boot_id) != 0) {
+        /*
+         * A hello from a boot we have not seen: the Pi's sequence numbers start
+         * over at 1, so nothing remembered from its previous run may dedupe them.
+         * The ring is keyed by boot_id, which already keeps the two runs apart;
+         * clearing it as well means a stale entry cannot outlive the run it came
+         * from, whatever boot_id the Pi advertises for frames after the hello.
+         */
+        forget_seen(ctx);
     }
     duplicate = remember_seen(ctx, dedupe_boot_id, msg.seq);
     if (!duplicate) {

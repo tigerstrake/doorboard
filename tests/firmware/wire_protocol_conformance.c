@@ -22,6 +22,88 @@ static bool fill_incrementing_random(uint8_t *buffer, size_t len, void *user)
     return true;
 }
 
+static uint32_t next_boot_word;
+
+static uint32_t counting_rng(void)
+{
+    return next_boot_word++;
+}
+
+static size_t seen_entries_in_use(const door_protocol_t *esp32)
+{
+    size_t used = 0;
+
+    for (size_t index = 0; index < sizeof(esp32->seen) / sizeof(esp32->seen[0]); index++) {
+        if (esp32->seen[index].used) {
+            used++;
+        }
+    }
+    return used;
+}
+
+static void test_boot_id_is_sixteen_hex_chars_and_differs_per_boot(void)
+{
+    char first[DOOR_PROTOCOL_BOOT_ID_HEX_CHARS + 1];
+    char second[DOOR_PROTOCOL_BOOT_ID_HEX_CHARS + 1];
+    char too_small[DOOR_PROTOCOL_BOOT_ID_HEX_CHARS];
+
+    next_boot_word = 0xDEADBEEFU;
+    assert(door_protocol_make_boot_id(first, sizeof(first), counting_rng));
+    assert(strlen(first) == DOOR_PROTOCOL_BOOT_ID_HEX_CHARS);
+    assert(strcmp(first, "deadbeefdeadbef0") == 0);
+    for (size_t index = 0; index < DOOR_PROTOCOL_BOOT_ID_HEX_CHARS; index++) {
+        assert(strchr("0123456789abcdef", first[index]) != NULL);
+    }
+
+    assert(door_protocol_make_boot_id(second, sizeof(second), counting_rng));
+    assert(strcmp(first, second) != 0);
+
+    assert(!door_protocol_make_boot_id(too_small, sizeof(too_small), counting_rng));
+    assert(!door_protocol_make_boot_id(first, sizeof(first), NULL));
+}
+
+static void test_pi_hello_from_a_new_boot_forgets_remembered_frames(void)
+{
+    door_protocol_t esp32;
+    char ack[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    const char *hello_one =
+        "{\"v\":1,\"seq\":1,\"t\":\"hello\",\"ack\":null,\"p\":{\"sw_version\":"
+        "\"doorboard-test\",\"proto_v\":1,\"boot_id\":\"pi-boot-one\"}}\n";
+    const char *hello_two =
+        "{\"v\":1,\"seq\":1,\"t\":\"hello\",\"ack\":null,\"p\":{\"sw_version\":"
+        "\"doorboard-test\",\"proto_v\":1,\"boot_id\":\"pi-boot-two\"}}\n";
+    const char *profile =
+        "{\"v\":1,\"seq\":2,\"t\":\"profile_update\",\"ack\":null,\"p\":{"
+        "\"profile_id\":\"blue_wave\",\"ttl_ms\":2500,\"priority\":\"normal\"}}\n";
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+    assert(door_protocol_receive_from_pi(
+        &esp32, hello_one, strlen(hello_one), 0, NULL, ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(door_protocol_receive_from_pi(
+        &esp32, profile, strlen(profile), 1, NULL, ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(seen_entries_in_use(&esp32) == 2);
+    assert(strcmp(esp32.peer_boot_id, "pi-boot-one") == 0);
+
+    /* A retransmit of the same hello is still a duplicate: same boot, same seq. */
+    assert(door_protocol_receive_from_pi(
+        &esp32, hello_one, strlen(hello_one), 2, NULL, ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(seen_entries_in_use(&esp32) == 2);
+
+    /* A hello from a new boot starts a fresh ring holding only that hello. */
+    assert(door_protocol_receive_from_pi(
+        &esp32, hello_two, strlen(hello_two), 3, NULL, ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(seen_entries_in_use(&esp32) == 1);
+    assert(strcmp(esp32.peer_boot_id, "pi-boot-two") == 0);
+    assert(door_protocol_receive_from_pi(
+        &esp32, profile, strlen(profile), 4, NULL, ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(esp32.stats.profile_updates_applied == 2);
+}
+
 static void test_uuid_v4_press_ids_use_random_version_and_variant_bits(void)
 {
     uint8_t next = 0;
@@ -309,6 +391,8 @@ static void test_peer_reboot_resets_dedupe_identity_for_frames_without_boot_id(v
 
 int main(void)
 {
+    test_boot_id_is_sixteen_hex_chars_and_differs_per_boot();
+    test_pi_hello_from_a_new_boot_forgets_remembered_frames();
     test_uuid_v4_press_ids_use_random_version_and_variant_bits();
     test_profile_update_ack_and_duplicate_dedupe();
     test_ack_consumes_esp32_sequence_numbers();

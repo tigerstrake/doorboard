@@ -20,6 +20,7 @@ extern "C" {
 #define DOOR_PROTOCOL_EFFECT_ID_BYTES 64
 #define DOOR_PROTOCOL_PRESS_ID_BYTES 40
 #define DOOR_PROTOCOL_PENDING_DEPTH 8
+#define DOOR_PROTOCOL_BOOT_ID_HEX_CHARS 16
 
 typedef enum {
     DOOR_PROTOCOL_RX_DROPPED = 0,
@@ -85,6 +86,15 @@ void door_protocol_init(
 );
 
 void door_protocol_apply_timeouts(door_protocol_t *ctx, uint64_t now_mono_ms);
+
+/*
+ * Write a DOOR_PROTOCOL_BOOT_ID_HEX_CHARS-character hex boot identifier drawn from
+ * two calls to `rng` into `out` (`out_len` >= DOOR_PROTOCOL_BOOT_ID_HEX_CHARS + 1).
+ * Generated once per boot: the Pi dedupes inbound frames by (boot_id, seq), so a
+ * boot_id that survives a reboot makes every post-reboot frame look like a stale
+ * retransmit of the previous run for as long as that run's sequence numbers ran.
+ */
+bool door_protocol_make_boot_id(char *out, size_t out_len, uint32_t (*rng)(void));
 
 bool door_protocol_make_uuid_v4(
     char *out,

@@ -53,6 +53,7 @@ static QueueHandle_t s_effect_queue;
 static QueueHandle_t s_link_queue;
 static QueueHandle_t s_audio_queue;
 static door_protocol_t s_protocol;
+static char s_boot_id[DOOR_PROTOCOL_BOOT_ID_HEX_CHARS + 1];
 static portMUX_TYPE s_protocol_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile uint32_t s_input_queue_drops;
 static volatile uint32_t s_effect_queue_drops;
@@ -620,7 +621,16 @@ void app_main(void)
     ESP_ERROR_CHECK(s_link_queue == NULL ? ESP_ERR_NO_MEM : ESP_OK);
     ESP_ERROR_CHECK(s_audio_queue == NULL ? ESP_ERR_NO_MEM : ESP_OK);
 
-    door_protocol_init(&s_protocol, "esp32-door-controller", "t-101-0.1.0");
+    /*
+     * A fresh boot_id per boot. The Pi dedupes inbound frames by (boot_id, seq);
+     * with a constant id, every frame after a reboot (hello, heartbeats, and the
+     * bell) sat below the previous run's high-water mark and was acked and
+     * discarded for roughly as long as that run had been up.
+     */
+    ESP_ERROR_CHECK(
+        door_protocol_make_boot_id(s_boot_id, sizeof(s_boot_id), esp_random) ? ESP_OK : ESP_FAIL
+    );
+    door_protocol_init(&s_protocol, s_boot_id, "t-101-0.1.0");
     s_protocol.effect_play_cb = on_effect_play_received;
     s_protocol.effect_play_cb_user = NULL;
 
