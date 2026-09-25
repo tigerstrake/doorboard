@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from control_plane_api.db import session_scope
 from control_plane_api.fanout import FanoutWorker
 from control_plane_api.ingest import ingest_one
+from control_plane_api.metrics import INGEST_EVENTS, metrics
 from control_plane_api.mqtt import MqttPublisher
 
 logger = logging.getLogger("control_plane_api.service")
@@ -41,6 +42,7 @@ def ingest_batch(
         with session_scope(session_factory) as session:
             outcome = ingest_one(session, raw, batch_id=batch_id, now=now)
 
+        metrics.inc(INGEST_EVENTS, status=outcome.status)
         item: dict = {"event_id": outcome.event_id, "status": outcome.status}
         if outcome.error is not None:
             item["error"] = outcome.error

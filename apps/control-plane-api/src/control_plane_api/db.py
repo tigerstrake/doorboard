@@ -18,8 +18,20 @@ class Base(DeclarativeBase):
     """Declarative base for all ORM models — see models.py."""
 
 
+# Seconds to wait for a TCP/auth handshake before giving up. A refused port
+# fails instantly; this bounds the black-holed-host case so `/health` (which
+# probes the database) answers "degraded" instead of hanging past the compose
+# healthcheck's own timeout.
+CONNECT_TIMEOUT_S = 5
+
+
 def make_engine(dsn: str) -> Engine:
-    return create_engine(dsn, pool_pre_ping=True, future=True)
+    return create_engine(
+        dsn,
+        pool_pre_ping=True,
+        future=True,
+        connect_args={"connect_timeout": CONNECT_TIMEOUT_S},
+    )
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:

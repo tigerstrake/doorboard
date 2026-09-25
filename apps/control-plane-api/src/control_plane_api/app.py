@@ -60,7 +60,7 @@ from doorboard_contracts import PresenceLabel
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import Response
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import Engine, select, text
 
 from control_plane_api import presence_engine
 from control_plane_api import tokens as token_store
@@ -68,7 +68,8 @@ from control_plane_api.bundles import get_or_create_bundle, update_bundle
 from control_plane_api.db import session_scope
 from control_plane_api.deletion import scrub_social_item
 from control_plane_api.http_limits import BodySizeLimitMiddleware
-from control_plane_api.models import EventRow, SocialItemRow
+from control_plane_api.metrics import MQTT_CONNECTED, metrics
+from control_plane_api.models import SocialItemRow
 from control_plane_api.presence import CoordinatePayloadError, reject_coordinate_payload
 from control_plane_api.presence_engine import InvalidSourceError
 from control_plane_api.purge import purge_person
@@ -173,10 +174,43 @@ _config_auth = _scoped_token_auth("config")
 # ---------------------------------------------------------------------------
 
 
+def _database_ok(engine: Engine) -> bool:
+    """`SELECT 1` under a short statement timeout; False on any failure."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SET LOCAL statement_timeout = 2000"))
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception as exc:
+        logger.warning("health_database_check_failed", extra={"error_class": type(exc).__name__})
+        return False
+
+
 @app.get("/health")
 def health(request: Request) -> dict[str, Any]:
-    cfg = _state(request).settings
-    return {"service": "control-plane-api", "status": "ok", "detail": None, "door_id": cfg.door_id}
+    """Honest health: probes what the service depends on instead of returning a constant.
+
+    `status` is "ok" or "degraded" and `checks` says which dependency is down. The
+    HTTP status stays 200 either way: the compose healthcheck only looks at the
+    status code, and restart-looping the control plane because the broker or a
+    calendar feed is unreachable would not fix either — it would just take
+    `/ingest` and the admin panel down with them.
+    """
+    state = _state(request)
+    checks: dict[str, bool | None] = {
+        "database": _database_ok(state.engine),
+        # None = not configured (dev/CI without MQTT), which is not "down".
+        "mqtt": state.mqtt_publisher.connected,
+        "calendar": getattr(state.calendar_provider, "healthy", None),
+    }
+    failing = [name for name, ok in checks.items() if ok is False]
+    return {
+        "service": "control-plane-api",
+        "status": "degraded" if failing else "ok",
+        "detail": ", ".join(f"{name} unavailable" for name in failing) or None,
+        "door_id": state.settings.door_id,
+        "checks": checks,
+    }
 
 
 @app.get("/status/keys/enrollment")
@@ -196,17 +230,43 @@ def enrollment_key(request: Request, _auth: EnrollmentKeyAuth) -> dict[str, str]
 _start_time = time.monotonic()
 
 
-@app.get("/metrics")
-def metrics(request: Request) -> Response:
-    with session_scope(_state(request).session_factory) as session:
-        event_count = session.execute(select(func.count()).select_from(EventRow)).scalar_one()
+def _events_estimate(engine: Engine) -> int | None:
+    """Row estimate for `events` from the planner's statistics — O(1), never a scan.
 
+    `count(*)` walked the whole unbounded table on every scrape. `reltuples` is
+    refreshed by autovacuum/ANALYZE and is -1 before the first ANALYZE; a scrape
+    must never fail because the database is momentarily unavailable.
+    """
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SET LOCAL statement_timeout = 2000"))
+            estimate = conn.execute(
+                text("SELECT reltuples FROM pg_class WHERE oid = 'events'::regclass")
+            ).scalar()
+        return max(0, int(estimate or 0))
+    except Exception as exc:
+        logger.warning("metrics_database_unavailable", extra={"error_class": type(exc).__name__})
+        return None
+
+
+@app.get("/metrics")
+def metrics_endpoint(request: Request) -> Response:
+    state = _state(request)
+    link = state.mqtt_publisher.connected
+    if link is not None:
+        metrics.set_gauge(MQTT_CONNECTED, 1 if link else 0)
+    lines: list[str] = []
+    estimate = _events_estimate(state.engine)
+    if estimate is not None:
+        lines += [
+            "# HELP control_plane_api_events_total Events stored (estimate: pg_class.reltuples)",
+            "# TYPE control_plane_api_events_total gauge",
+            f"control_plane_api_events_total {estimate}",
+            "",
+        ]
+    lines += metrics.render()
     uptime_s = time.monotonic() - _start_time
-    lines = [
-        "# HELP control_plane_api_events_total Total events durably stored",
-        "# TYPE control_plane_api_events_total counter",
-        f"control_plane_api_events_total {event_count}",
-        "",
+    lines += [
         "# HELP control_plane_api_uptime_s Service uptime in seconds",
         "# TYPE control_plane_api_uptime_s counter",
         f"control_plane_api_uptime_s {uptime_s:.1f}",

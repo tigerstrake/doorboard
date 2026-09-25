@@ -22,6 +22,7 @@ from typing import Protocol
 from doorboard_contracts import DoorboardEvent
 from sqlalchemy.orm import Session
 
+from control_plane_api.metrics import NOTIFICATIONS, metrics
 from control_plane_api.models import NotificationStateRow
 
 logger = logging.getLogger("control_plane_api.notify")
@@ -172,16 +173,26 @@ class NtfyNotifier:
         import httpx
 
         try:
-            httpx.post(
+            resp = httpx.post(
                 f"{self._base_url}/{self._topic}",
                 content=notification.message.encode("utf-8"),
                 headers={"Title": notification.title, "Priority": notification.priority},
                 timeout=5.0,
             )
         except Exception:
+            metrics.inc(NOTIFICATIONS, channel="ntfy", outcome="failed")
             logger.warning(
                 "ntfy_publish_failed", extra={"rule_key": notification.rule_key}, exc_info=True
             )
+            return
+        if resp.status_code >= 400:
+            metrics.inc(NOTIFICATIONS, channel="ntfy", outcome="failed")
+            logger.warning(
+                "ntfy_publish_rejected",
+                extra={"rule_key": notification.rule_key, "status_code": resp.status_code},
+            )
+            return
+        metrics.inc(NOTIFICATIONS, channel="ntfy", outcome="sent")
 
 
 class TelegramNotifier:

@@ -31,6 +31,7 @@ from doorboard_contracts import DoorboardEvent
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from control_plane_api.metrics import NOTIFICATIONS, metrics
 from control_plane_api.models import MediaMirrorRow
 
 logger = logging.getLogger("control_plane_api.telegram")
@@ -99,8 +100,7 @@ class TelegramClient:
                     data={"chat_id": chat_id, "text": text},
                     timeout=self._timeout_s,
                 )
-                self._log_non_ok(resp, chat_id, "sendMessage")
-                if resp.status_code < 400:
+                if self._log_non_ok(resp, chat_id, "sendMessage"):
                     # A delivered notification left no trace of its own: the only
                     # evidence was httpx's per-request INFO line, which is now
                     # silenced because it carried the bot token (see
@@ -113,6 +113,7 @@ class TelegramClient:
                         extra={"chat_id": chat_id, "method": "sendMessage"},
                     )
             except Exception:
+                metrics.inc(NOTIFICATIONS, channel="telegram", outcome="failed")
                 logger.warning(
                     "telegram_send_message_failed", extra={"chat_id": chat_id}, exc_info=True
                 )
@@ -132,6 +133,7 @@ class TelegramClient:
                 )
                 self._log_non_ok(resp, chat_id, "sendVideo")
             except Exception:
+                metrics.inc(NOTIFICATIONS, channel="telegram", outcome="failed")
                 logger.warning(
                     "telegram_send_video_failed", extra={"chat_id": chat_id}, exc_info=True
                 )
@@ -151,23 +153,29 @@ class TelegramClient:
                 )
                 self._log_non_ok(resp, chat_id, "sendPhoto")
             except Exception:
+                metrics.inc(NOTIFICATIONS, channel="telegram", outcome="failed")
                 logger.warning(
                     "telegram_send_photo_failed", extra={"chat_id": chat_id}, exc_info=True
                 )
 
     @staticmethod
-    def _log_non_ok(resp: object, chat_id: str, method: str) -> None:
-        # Telegram returns HTTP 200 with {"ok": false, "description": ...} for
-        # application-level failures (e.g. a wrong chat_id), so a raise-for-status
-        # alone would miss them.
+    def _log_non_ok(resp: object, chat_id: str, method: str) -> bool:
+        """Log and count the outcome of one Bot API call; returns True when it succeeded.
+
+        Telegram returns HTTP 200 with {"ok": false, "description": ...} for
+        application-level failures (e.g. a wrong chat_id), so a raise-for-status
+        alone would miss them.
+        """
         ok = getattr(resp, "status_code", 0) == 200
         if ok:
             try:
                 ok = bool(resp.json().get("ok", False))  # type: ignore[attr-defined]
             except Exception:
                 ok = False
+        metrics.inc(NOTIFICATIONS, channel="telegram", outcome="sent" if ok else "failed")
         if not ok:
             logger.warning("telegram_api_not_ok", extra={"chat_id": chat_id, "method": method})
+        return ok
 
 
 class DoorApiVideoSource:
