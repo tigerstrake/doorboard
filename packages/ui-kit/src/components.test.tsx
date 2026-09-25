@@ -350,4 +350,24 @@ describe("CameraNotice", () => {
     // The fuller text must keep personalization distinct from access control.
     expect(detail?.textContent).toMatch(/never controls access/i);
   });
+
+  it("shows the doorpad detail as a dismissible overlay above the row, not in its flow", () => {
+    // The row lives at the foot of a 600 px panel; an in-flow expansion pushed itself off
+    // screen. The detail is a dialog anchored above the row with its own Close.
+    const pad = render(<CameraNotice surface="doorpad" />);
+    const toggle = pad.container.querySelector(".db-camera-notice__toggle") as HTMLButtonElement;
+    act(() => {
+      toggle.click();
+    });
+    const detail = screen.getByRole("dialog", { name: /camera and privacy details/i });
+    expect(detail.classList.contains("db-camera-notice__detail")).toBe(true);
+    // The short line stays visible alongside the overlay, so the row never loses it.
+    expect(pad.container.querySelector(".db-camera-notice__text")?.textContent).toMatch(/camera/i);
+
+    act(() => {
+      screen.getByRole("button", { name: "Close" }).click();
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  });
 });

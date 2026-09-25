@@ -53,11 +53,26 @@ export function CameraNotice({ surface, className = "" }: CameraNoticeProps) {
           {expanded ? "Hide" : "Details"}
         </button>
       )}
+      {/* The detail floats above the notice row rather than growing it. The row lives at
+          the bottom of a 1024x600 panel with no scrollbar, so an in-flow expansion pushed
+          itself straight off the screen — nobody ever saw it. */}
       {canExpand && expanded && (
-        <div className="db-camera-notice__detail">
+        <div
+          className="db-camera-notice__detail"
+          role="dialog"
+          aria-label="Camera and privacy details"
+          data-testid="camera-notice-detail"
+        >
           {DETAIL_LINES.map((line) => (
             <p key={line}>{line}</p>
           ))}
+          <button
+            type="button"
+            className="db-camera-notice__close"
+            onClick={() => setExpanded(false)}
+          >
+            Close
+          </button>
         </div>
       )}
     </aside>

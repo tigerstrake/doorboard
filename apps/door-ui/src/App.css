@@ -4034,7 +4034,11 @@ input:focus-visible {
 .doorpad-surface {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  /* Fixed, not a minimum: with `min-height` the column grew to 100vh plus the notice row,
+     which put the row at y=600..631 on the 600 px panel — off screen on every screen, with
+     no scrollbar to say so. */
+  height: 100vh;
+  overflow: hidden;
 }
 
 .doorpad-surface > .doorpad-view,
@@ -4048,13 +4052,18 @@ input:focus-visible {
   flex-direction: column;
 }
 
-.doorpad-surface .doorpad-view {
+/* Every doorpad view fills the height the notice leaves, rather than its own 100vh: the
+   home view directly, the sub-screens through the auto-reset wrapper. */
+.doorpad-surface .doorpad-view,
+.doorpad-surface .doorpad-view--home {
+  flex: 1 1 auto;
+  height: auto;
   min-height: 0;
 }
 
 .doorpad-camera-notice {
   flex: none;
-  padding: 5px 14px;
+  padding: 0 14px;
   border-top: 1px solid var(--db-border-color);
   background: var(--db-bg-inset);
 }
