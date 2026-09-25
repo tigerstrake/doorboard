@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -92,6 +93,16 @@ class SoakResult:
 
 
 async def run_simulator_soak(config: SoakConfig) -> SoakResult:
+    """Run the soak with its artifacts in a per-run temporary directory.
+
+    A fixed /tmp path made two runs on one machine (two worktrees, or pytest -n)
+    share and clobber each other's placeholder clips.
+    """
+    with tempfile.TemporaryDirectory(prefix="doorboard-soak-simulator-") as tmpdir:
+        return await _run_simulator_soak(config, artifact_root=Path(tmpdir))
+
+
+async def _run_simulator_soak(config: SoakConfig, *, artifact_root: Path) -> SoakResult:
     from doorboard_simulator.clock import SimClock
     from doorboard_simulator.esp32 import FakeEsp32Transport
     from doorboard_simulator.events import EventFactory
@@ -105,7 +116,6 @@ async def run_simulator_soak(config: SoakConfig) -> SoakResult:
     events = EventFactory(clock)
     esp32 = FakeEsp32Transport(clock, events)
     vision = FakeVisionPipeline(clock, events, outages)
-    artifact_root = Path("/tmp/doorboard-soak-simulator")
     media = FakeMediaRouter(clock, events, outages, artifact_root=artifact_root)
 
     latency_samples: dict[str, list[float]] = {path: [] for path in BUDGET_P95_MS}
