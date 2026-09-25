@@ -94,6 +94,77 @@ test("DoorPad camera notice and its Details stay inside the 1024x600 panel", asy
   await expect(detail).toHaveCount(0);
 });
 
+test("recognised visitor + six-option poll keeps Submit and Cancel on the 1024x600 panel", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "doorpad", "DoorPad viewport coverage");
+
+  const options = ["Pizza", "Tacos", "Sushi", "Ramen", "Curry", "Salad"];
+  await page.route("**/session", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        session: {
+          state: "IDLE",
+          session_id: null,
+          display_name: "Tiger",
+          profile_id: "sunrise",
+          accent_color: "#00d7a3",
+          attributed_to: "Tiger",
+          identity_expires_in_s: 90,
+        },
+        config: {},
+      }),
+    });
+  });
+  await page.route("**/polls/current", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        poll: {
+          id: "poll-six",
+          question: "What should we order tonight?",
+          status: "open",
+          created_at: "2026-09-25T00:00:00Z",
+          closed_at: null,
+          options: options.map((text, index) => ({ id: `opt-${index}`, text })),
+        },
+      }),
+    });
+  });
+  await page.route("**/polls/poll-six/results", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        results: options.map((text, index) => ({ option_id: `opt-${index}`, text, votes: index })),
+      }),
+    });
+  });
+
+  await page.goto("/doorpad");
+  await expect(page.getByTestId("doorpad-identity")).toContainText("Tiger");
+  await page.locator("#btn-poll").click();
+
+  // The E-23 disclosure is there, before the vote (measured before the fix: with it, six
+  // options put Submit at 664 px).
+  await expect(page.getByTestId("attribution-notice")).toContainText("Tiger");
+  await expect(page.getByRole("button", { name: /Salad/ })).toBeVisible();
+
+  for (const name of ["Submit Vote", "Cancel"]) {
+    const box = await page.getByRole("button", { name }).boundingBox();
+    expect(box, `${name} should have a box`).not.toBeNull();
+    expect(box!.y + box!.height, `${name} bottom edge must be on screen`).toBeLessThanOrEqual(600);
+  }
+  const overflow = await page.evaluate(() => {
+    const view = document.querySelector(".doorpad-view");
+    return view ? view.scrollHeight - view.clientHeight : -1;
+  });
+  expect(overflow).toBe(0);
+});
+
 test("phone visitor page has no live-video affordance and confirms poll selection", async ({
   page,
 }, testInfo) => {

@@ -99,6 +99,12 @@ describe("Post-bell photo check-in flow", () => {
       fetchMock.mock.calls.some(([url]) => String(url).includes("/photo-booth/capture"))
     ).toBe(true);
     await waitFor(() => expect(screen.getByAltText("Your check-in photo")).toBeTruthy());
+
+    // The name is capped where door-api caps it (checkin_label_max_len = 40). The input
+    // accepted 60, so a long name failed after the photo had already been saved.
+    const nameInput = screen.getByPlaceholderText("Guest") as HTMLInputElement;
+    expect(nameInput.maxLength).toBe(40);
+    expect(screen.getByText("0 / 40")).toBeTruthy();
   });
 
   it("saves the photo and creates a check-in with the photo_recording_id on Yes", async () => {

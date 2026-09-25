@@ -50,4 +50,18 @@ describe("AttributionNotice", () => {
     expect(screen.getByText(hostile)).toBeTruthy();
     expect(document.querySelector("script")).toBeNull();
   });
+
+  it("says the same three things in one line when compact", () => {
+    // The composers on the 600 px panel: the full notice pushed Submit below the fold on
+    // a six-option poll. Compact keeps E-23 whole — who, that the write carries it, and
+    // the way out — in a single paragraph.
+    render(<AttributionNotice attributedTo="Tiger" verb="vote on" compact />);
+    const notice = screen.getByTestId("attribution-notice");
+    expect(notice.classList.contains("db-attribution-notice--compact")).toBe(true);
+    expect(notice.querySelectorAll("p")).toHaveLength(1);
+    expect(screen.getByText("Tiger")).toBeTruthy();
+    expect(screen.getByText(/vote on here/)).toBeTruthy();
+    expect(screen.getByText(/Ask the household admin to remove it/)).toBeTruthy();
+    expect(screen.getByRole("status")).toBeTruthy();
+  });
 });

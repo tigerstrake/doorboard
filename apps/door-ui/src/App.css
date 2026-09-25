@@ -2617,7 +2617,7 @@ input:focus-visible {
   position: relative;
   overflow: hidden;
   width: 100%;
-  margin: 4px 0;
+  margin: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3196,6 +3196,39 @@ input:focus-visible {
   margin-top: 0.35rem !important;
   opacity: 0.75;
   font-size: 0.85em;
+}
+
+/* One line where height is scarce — the poll and guestbook composers on the 600 px
+   panel. Same disclosure (E-23), before the write, with the way out. */
+.db-attribution-notice--compact {
+  padding: 0.4rem 0.8rem;
+  margin: 0.25rem 0;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+/* The vote buttons. Two columns once a poll has more than four options: six full-width
+   rows plus the attribution notice put "Submit Vote" at 664 px on the 600 px panel. */
+.poll-choices {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.4rem;
+}
+
+.poll-choices--dense {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-height: 660px) {
+  .poll-choice {
+    padding: 0.6rem 0.9rem;
+  }
+}
+
+/* The check-in name counter sits inside its label, so it needs no pull-up. */
+.doorpad-photo-checkin__count {
+  margin: 0.15rem 0 0;
 }
 
 /* --- DoorPad identity + tile clarity (T-316) --------------------------------

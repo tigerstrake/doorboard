@@ -23,14 +23,36 @@ export interface AttributionNoticeProps {
   /** What the visitor is about to do, e.g. "leave" or "write". */
   verb?: string;
   className?: string;
+  /**
+   * One line instead of two paragraphs, for composers on the 600 px panel where the
+   * full notice pushed the Submit button below the fold. Says the same three things:
+   * who the door thinks you are, that the write will carry it, and the way out.
+   */
+  compact?: boolean;
 }
 
 export function AttributionNotice({
   attributedTo,
   verb = "leave",
   className = "",
+  compact = false,
 }: AttributionNoticeProps) {
   if (!attributedTo) return null;
+
+  if (compact) {
+    return (
+      <div
+        className={`db-attribution-notice db-attribution-notice--compact ${className}`}
+        data-testid="attribution-notice"
+        role="status"
+      >
+        <p>
+          The door recognises you as <strong>{attributedTo}</strong> — your name will be attached
+          to anything you {verb} here. Ask the household admin to remove it.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div

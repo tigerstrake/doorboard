@@ -82,6 +82,39 @@ import { doorpadResetTimeoutMs } from "./doorpadTimeouts";
 const MAX_STORED_VISITOR_SESSIONS = 16;
 const MAX_CONTENT_ITEMS_PER_SESSION = 32;
 
+// "My Data & Privacy" lists what the person standing at the pad submitted. It is keyed on
+// the kiosk's own notion of a visit, not the server session: door-api's session lingers
+// three seconds after a write and lapses to IDLE, and the next tap opens a new one, so
+// keying on `session_id` forgot a note the moment it was posted. A visit ends when the
+// pad's own reset says so — End Visit / Done, or this long without a touch.
+const KIOSK_VISIT_KEY = "doorboard_kiosk_visit_id";
+const MY_CONTENT_IDLE_MS = 3 * 60_000;
+
+// Mirrors door-api's `checkin_label_max_len` (social/config.py). The input accepted 60
+// and the server 40, so a long name failed after the photo had already been saved.
+const CHECKIN_LABEL_MAX_LEN = 40;
+
+function newKioskVisitId(): string {
+  const id = safeRandomUUID();
+  try {
+    window.sessionStorage.setItem(KIOSK_VISIT_KEY, id);
+  } catch {
+    // Storage can be disabled on a locked-down kiosk; the list then lives in memory only.
+  }
+  return id;
+}
+
+// Survives a reload mid-visit (the session does too), and nothing else.
+function readKioskVisitId(): string {
+  try {
+    const stored = window.sessionStorage.getItem(KIOSK_VISIT_KEY);
+    if (stored) return stored;
+  } catch {
+    // As above.
+  }
+  return newKioskVisitId();
+}
+
 // The admin console locks itself after this much inactivity and the pad returns to the
 // visitor screen (ADR-0042: the console faces a shared corridor once it opens from the pad).
 const ADMIN_IDLE_RETURN_MS = 3 * 60_000;
@@ -640,6 +673,7 @@ export function App() {
   const [selectedPollOptionId, setSelectedPollOptionId] = useState<string | null>(null);
   const [doorPadVotedOptionId, setDoorPadVotedOptionId] = useState<string | null>(null);
   const [checkinSubmitting, setCheckinSubmitting] = useState<boolean>(false);
+  const [kioskVisitId, setKioskVisitId] = useState<string>(() => readKioskVisitId());
   const [myContent, setMyContent] = useState<MyContentRef[]>([]);
   const [approvedGuestbook, setApprovedGuestbook] = useState<GuestbookEntry[]>([]);
   const [academicCountdown, setAcademicCountdown] = useState<{
@@ -940,15 +974,41 @@ export function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // The visitor token is bound to the server session, so once that lapses a fresh one is
+  // minted on the next write. "My content" is deliberately not tied to it (see
+  // KIOSK_VISIT_KEY): it used to be cleared here on IDLE, which door-api reaches three
+  // seconds after every write.
   useEffect(() => {
-    if (sessionState === "IDLE") {
-      saveMyContent(mockSessionId, []);
-      setMyContent([]);
-      socialApi.clearVisitorToken();
-      return;
-    }
-    setMyContent(loadMyContent(mockSessionId));
-  }, [mockSessionId, sessionState]);
+    if (sessionState === "IDLE") socialApi.clearVisitorToken();
+  }, [sessionState]);
+
+  useEffect(() => {
+    setMyContent(loadMyContent(kioskVisitId));
+  }, [kioskVisitId]);
+
+  // The kiosk's own idle reset for the list: this long without a touch on the pad and it
+  // is cleared for the next visitor. Only armed while there is something to clear.
+  const resetKioskVisit = useCallback(() => {
+    saveMyContent(kioskVisitId, []);
+    setMyContent([]);
+    setKioskVisitId(newKioskVisitId());
+  }, [kioskVisitId]);
+
+  useEffect(() => {
+    if (route !== "/doorpad" || myContent.length === 0) return undefined;
+    let timer: number | null = null;
+    const arm = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(resetKioskVisit, MY_CONTENT_IDLE_MS);
+    };
+    const events = ["pointerdown", "keydown", "touchstart"];
+    events.forEach((name) => window.addEventListener(name, arm, { passive: true }));
+    arm();
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      events.forEach((name) => window.removeEventListener(name, arm));
+    };
+  }, [myContent.length, resetKioskVisit, route]);
 
   useEffect(() => {
     if (route !== "/doorpad") return undefined;
@@ -1622,7 +1682,7 @@ export function App() {
   const rememberMyContent = (ref: MyContentRef) => {
     setMyContent((previous) => {
       const next = [...previous.filter((item) => item.id !== ref.id), ref];
-      saveMyContent(mockSessionId, next);
+      saveMyContent(kioskVisitId, next);
       return next;
     });
   };
@@ -1840,7 +1900,7 @@ export function App() {
       await socialApi.requestDeletion(item.kind, item.id);
       const next = myContent.filter((c) => c.id !== item.id);
       setMyContent(next);
-      saveMyContent(mockSessionId, next);
+      saveMyContent(kioskVisitId, next);
       triggerToast("Deletion request honored.");
     } catch (err) {
       triggerToast(apiErrorMessage(err, "Couldn't process the deletion request."));
@@ -1856,7 +1916,7 @@ export function App() {
     try {
       await Promise.all(items.map((item) => socialApi.requestDeletion(item.kind, item.id)));
       setMyContent([]);
-      saveMyContent(mockSessionId, []);
+      saveMyContent(kioskVisitId, []);
       triggerToast("Deletion requests honored.");
       returnDoorPadToContext();
     } catch (err) {
@@ -1918,6 +1978,8 @@ export function App() {
 
   const endVisitorSession = async () => {
     const previous = sessionState;
+    // "Done" / "End Visit" is the pad's own end of a visit, so the list goes with it.
+    resetKioskVisit();
     applySessionSnapshot({ state: "SESSION_END", session_id: mockSessionId });
     const result = await postDoorApi("/doorpad/session/end");
     if (result?.session?.state) {
@@ -2771,6 +2833,16 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doorPadScreen]);
 
+  // And the draft itself. It was cleared only on a successful submit, so a note typed and
+  // abandoned — Cancel, the auto-reset, a server transition — greeted the next visitor,
+  // keyboard still open. Everything the composer holds resets whenever the screen is left.
+  useEffect(() => {
+    if (doorPadScreen === "guestbook") return;
+    setGuestbookText("");
+    setSelectedGuestbookPhrase(null);
+    setGuestbookKeyboardOpen(false);
+  }, [doorPadScreen]);
+
   // Navigating away from the Check In screen mid-confirm discards the still
   // private capture, so declining by walking off leaves nothing behind.
   useEffect(() => {
@@ -3241,10 +3313,16 @@ export function App() {
                             className="doorpad-photo-checkin__input"
                             type="text"
                             value={postRingName}
-                            maxLength={60}
+                            maxLength={CHECKIN_LABEL_MAX_LEN}
                             placeholder="Guest"
                             onChange={(event) => setPostRingName(event.target.value)}
                           />
+                          <span
+                            className="character-count doorpad-photo-checkin__count"
+                            aria-live="polite"
+                          >
+                            {postRingName.length} / {CHECKIN_LABEL_MAX_LEN}
+                          </span>
                         </label>
                         <div className="action-button-group">
                           <BigButton
@@ -3514,7 +3592,7 @@ export function App() {
               <h2>Leave a Guestbook Note</h2>
               <p className="placeholder-subtext">Pick a phrase or write a short note (280 chars max)</p>
               {/* Above the composer, so it is read before anything is written (E-23). */}
-              <AttributionNotice attributedTo={attributedTo} />
+              <AttributionNotice attributedTo={attributedTo} compact />
               {FEATURE_PHOTOBOOTH && (
                 <div className="doorpad-guestbook-photo" id="guestbook-photo">
                   {guestbookPhotoStatus === "ready" && guestbookPhoto ? (
@@ -3634,7 +3712,7 @@ export function App() {
               {currentPoll && (
                 <>
                   {/* An attributed vote is not a secret ballot; say so first (E-23). */}
-                  <AttributionNotice attributedTo={attributedTo} verb="vote on" />
+                  <AttributionNotice attributedTo={attributedTo} verb="vote on" compact />
                   <p className="poll-q"><strong>{currentPoll.question}</strong></p>
                   {pollVoteError && <p className="poll-error">{pollVoteError}</p>}
                   {/*
@@ -3647,7 +3725,11 @@ export function App() {
                     Shown before voting too. The wallboard a metre away already publishes the
                     same tallies live, so withholding them here protected nothing.
                   */}
-                  <div className="poll-choices">
+                  {/* Two columns past four options: six full-width rows put Submit at
+                      664 px on the 600 px panel. */}
+                  <div
+                    className={`poll-choices${currentPoll.options.length > 4 ? " poll-choices--dense" : ""}`}
+                  >
                     {pollShares(currentPoll, pollResults).map((share) => (
                       <button
                         key={share.optionId}
