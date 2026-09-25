@@ -1,12 +1,16 @@
 import asyncio
 import hashlib
+import os
+import time
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from door_media.db import RecordingDB
+from door_media.mediamtx_router import MediaMTXRouter
 from door_media.mock_router import MockMediaRouter
 from door_media.service import RecordingService
-from door_media.settings import settings
+from door_media.settings import Settings, settings
 
 
 @pytest.fixture
@@ -76,7 +80,9 @@ async def test_service_lifecycle(service_env):
 
 
 @pytest.mark.anyio
-async def test_active_recording_limit_refuses_new_windows(service_env):
+async def test_active_recording_limit_bounds_open_windows_not_failed_ones(service_env):
+    """The cap is for windows that are genuinely open. A window whose finalize
+    failed is over, so it must not count against the next bell press."""
     svc, _db, cfg = service_env
     cfg.max_active_recordings = 1
     await svc.start()
@@ -85,7 +91,12 @@ async def test_active_recording_limit_refuses_new_windows(service_env):
     assert first is not None
     assert await svc.start_recording(session_id=uuid4(), kind="bell_clip", trace_id=uuid4()) is None
 
-    assert await svc.discard_recording(first, trace_id=uuid4())
+    async def cannot_cut(*args, **kwargs):
+        raise RuntimeError("no media segments found")
+
+    svc._router.finalize_recording = cannot_cut
+    assert not await svc.finalize_recording(first, consent_context="bell_event", trace_id=uuid4())
+
     assert (
         await svc.start_recording(session_id=uuid4(), kind="bell_clip", trace_id=uuid4())
         is not None
@@ -129,8 +140,15 @@ async def test_thumbnail_failure_does_not_block_finalization(service_env):
 
 
 @pytest.mark.anyio
-async def test_finalize_failure_keeps_handle_retryable(service_env):
-    svc, _db, _cfg = service_env
+async def test_router_finalize_failure_releases_the_window(service_env):
+    """A recording the router cannot cut is over, not active.
+
+    The old behaviour kept the handle "for a retry". Nothing ever retried it:
+    door-api's outbox gave up after its attempts, and the segments that would
+    have made the clip were never written. The handle just sat there, pinning
+    segment pruning and consuming the active cap.
+    """
+    svc, db, _cfg = service_env
     await svc.start()
     recording_id = await svc.start_recording(
         session_id=uuid4(),
@@ -138,30 +156,83 @@ async def test_finalize_failure_keeps_handle_retryable(service_env):
         trace_id=uuid4(),
     )
     assert recording_id is not None
-    original_finalize = svc._router.finalize_recording
-    attempts = 0
+    router = svc._router
 
-    async def fail_once(*args, **kwargs):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise RuntimeError("transient finalization failure")
-        return await original_finalize(*args, **kwargs)
+    async def cannot_cut(*args, **kwargs):
+        raise RuntimeError("no media segments found")
 
-    svc._router.finalize_recording = fail_once
+    router.finalize_recording = cannot_cut
     assert not await svc.finalize_recording(
         recording_id,
         consent_context="visitor_initiated",
         trace_id=uuid4(),
     )
-    assert recording_id in svc._active_handles
-    assert await svc.finalize_recording(
+
+    assert recording_id not in svc._active_handles
+    assert recording_id not in router._active
+    assert db.get(recording_id) is None, "a started row with no clip is an orphan"
+    assert svc.finalize_failures == 1
+    # And a later finalize for the same id is the unknown-recording no-op, not a crash.
+    assert not await svc.finalize_recording(
         recording_id,
         consent_context="visitor_initiated",
         trace_id=uuid4(),
     )
-    assert recording_id not in svc._active_handles
     await svc.stop()
+
+
+@pytest.mark.anyio
+async def test_a_camera_outage_does_not_lock_the_door_out_of_recording(tmp_path: Path):
+    """The lockout as it happened on the door, against the real MediaMTX router.
+
+    Eight bell presses while MediaMTX had no publisher: each start_recording
+    registered a window, each finalize found no segments and raised. Before the
+    fix the eight leaked handles hit max_active_recordings, so the ninth press --
+    camera long since back -- was refused, and stayed refused until restart.
+    Meanwhile prune_segments clamped its cutoff to the oldest leaked window and
+    the rolling segments grew without bound.
+    """
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        MEDIA_MODE="mediamtx",
+        DOOR_MEDIA_MAX_ACTIVE_RECORDINGS=8,
+        DOOR_MEDIA_SEGMENT_RETENTION_S=60,
+    )
+    router = MediaMTXRouter(cfg)  # never started: no MediaMTX process, no segments
+    db = RecordingDB(tmp_path / "test.db")
+    svc = RecordingService(router=router, db=db, settings=cfg)
+    await svc.start()
+    try:
+        for _ in range(cfg.max_active_recordings):
+            rid = await svc.start_recording(session_id=uuid4(), kind="bell_clip", trace_id=uuid4())
+            assert rid is not None
+            assert not await svc.finalize_recording(
+                rid, consent_context="bell_event", trace_id=uuid4()
+            )
+            assert rid not in router._active
+            assert rid not in svc._active_handles
+
+        assert svc.finalize_failures == cfg.max_active_recordings
+        assert db.list_pending() == [], "no orphan rows"
+
+        # Pruning is not pinned: a segment older than retention goes.
+        now = time.time()
+        old_segment = cfg.segments_root / "visitor" / "old.mp4"
+        old_segment.parent.mkdir(parents=True, exist_ok=True)
+        old_segment.write_bytes(b"segment")
+        os.utime(old_segment, (now - 3600, now - 3600))
+        assert router.prune_segments(now_epoch=now) == 1
+        assert not old_segment.exists()
+
+        # The ninth press records.
+        ninth = await svc.start_recording(session_id=uuid4(), kind="bell_clip", trace_id=uuid4())
+        assert ninth is not None
+        assert ninth in router._active
+    finally:
+        await svc.stop()
+        await router.stop()
+        db.close()
 
 
 @pytest.mark.anyio

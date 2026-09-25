@@ -1057,3 +1057,141 @@ async def test_stream_info_reports_up_and_counts_readers_when_ready(tmp_path: Pa
 
     assert info.stream_up is True
     assert info.webrtc_clients == 2
+
+
+# ---------------------------------------------------------------------------
+# Finalize releases the window on every path; concat is atomic
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_finalize_with_no_segments_releases_the_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A camera or MediaMTX outage during a bell press: nothing was written.
+
+    The router raised *before* popping ``_active``, so the window stayed
+    registered forever: ``prune_segments`` clamped its cutoff to it (the rolling
+    2 s segments then grew ~65 GB/day) and eight of them hit
+    ``max_active_recordings``. The mic capture and its temp file leaked with it.
+    """
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        MEDIA_AUDIO_ENABLED=True,
+        DOOR_MEDIA_SEGMENT_RETENTION_S=60,
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec_factory(calls))
+    router = MediaMTXRouter(cfg)
+    handle = await router.start_recording(
+        session_id=uuid.uuid4(), kind="bell_clip", stream="visitor"
+    )
+    active = router._active[handle.recording_id]
+    audio_proc = active.audio_proc
+    audio_path = active.audio_path
+    assert isinstance(audio_proc, _FakeProc) and audio_path is not None
+    audio_path.write_bytes(b"audio-bytes")
+    # Segment tree exists but holds nothing from this window.
+    (cfg.segments_root / "visitor").mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="no media segments"):
+        await router.finalize_recording(handle, consent_context="bell_event")
+
+    assert handle.recording_id not in router._active
+    assert audio_proc.terminated, "the mic capture must not outlive the window"
+    assert not audio_path.exists()
+    assert list(cfg.recordings_root.glob("*")) == [], "no partial clip"
+
+    # Pruning is no longer pinned to the dead window.
+    now = time.time()
+    stale = cfg.segments_root / "visitor" / "stale.mp4"
+    _touch(stale, modified=now - 3600)
+    assert router.prune_segments(now_epoch=now) == 1
+    assert not stale.exists()
+
+
+@pytest.mark.anyio
+async def test_finalize_concat_failure_leaves_no_partial_clip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+
+    async def failing_concat(segments: list[Path], out_path: Path) -> None:
+        raise RuntimeError("ffmpeg concat failed (1): moov atom not found")
+
+    monkeypatch.setattr("door_media.mediamtx_router._concat_segments", failing_concat)
+    router = MediaMTXRouter(cfg)
+    handle = await router.start_recording(
+        session_id=uuid.uuid4(), kind="video_message", stream="visitor"
+    )
+    _touch(cfg.segments_root / "visitor" / "seg.mp4", modified=time.time())
+
+    with pytest.raises(RuntimeError, match="concat failed"):
+        await router.finalize_recording(handle, consent_context="visitor_initiated")
+
+    assert handle.recording_id not in router._active
+    assert list(cfg.recordings_root.glob("*.mp4")) == []
+
+
+class _ConcatProc(_FakeProc):
+    """ffmpeg for the concat: writes its output argument on success, nothing on failure."""
+
+    def __init__(self, argv: list[str], *, succeed: bool) -> None:
+        super().__init__(argv)
+        self._succeed = succeed
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        if self._succeed:
+            Path(self.argv[-1]).write_bytes(b"concat-bytes")
+            self.returncode = 0
+            return (b"", b"")
+        self.returncode = 1
+        return (b"", b"Impossible to open 'seg.mp4'")
+
+
+@pytest.mark.anyio
+async def test_concat_writes_the_clip_atomically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ffmpeg writes a dot-prefixed temp that is renamed into place after rc 0.
+
+    A concat killed part-way used to leave a partial ``bell_clip_<id>.mp4`` in
+    recordings_root with no DB row pointing at it: unfindable, un-syncable,
+    never deleted. The startup sweep covers the temp name.
+    """
+    from door_media.mediamtx_router import _concat_segments
+
+    out_path = tmp_path / "recordings" / "bell_clip_abc.mp4"
+    out_path.parent.mkdir(parents=True)
+    calls: list[list[str]] = []
+
+    async def fake_exec(*args: str, **kwargs: object) -> _ConcatProc:
+        calls.append(list(args))
+        return _ConcatProc(list(args), succeed=True)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    await _concat_segments([tmp_path / "seg.mp4"], out_path)
+
+    assert calls[0][-1] == str(out_path.parent / ".concat_bell_clip_abc.mp4")
+    assert out_path.read_bytes() == b"concat-bytes"
+    assert sorted(p.name for p in out_path.parent.iterdir()) == ["bell_clip_abc.mp4"]
+
+
+@pytest.mark.anyio
+async def test_a_failed_concat_leaves_nothing_under_the_final_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from door_media.mediamtx_router import _concat_segments
+
+    out_path = tmp_path / "recordings" / "bell_clip_abc.mp4"
+    out_path.parent.mkdir(parents=True)
+
+    async def fake_exec(*args: str, **kwargs: object) -> _ConcatProc:
+        return _ConcatProc(list(args), succeed=False)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    with pytest.raises(RuntimeError, match="concat failed"):
+        await _concat_segments([tmp_path / "seg.mp4"], out_path)
+
+    assert list(out_path.parent.iterdir()) == []

@@ -21,6 +21,8 @@ def test_sweep_removes_orphans_and_keeps_real_recordings(tmp_path: Path) -> None
 
     (rec / ".muxed_bell_abc.mp4").write_bytes(b"x")
     (rec / ".concat_bell_abc.txt").write_text("file 'seg'")
+    # The concat output before its rename into place (the atomic-write temp).
+    (rec / ".concat_bell_abc.mp4").write_bytes(b"x")
     (audio / "abc.m4a").write_bytes(b"x")
 
     # These must survive: a finished recording, its thumbnail, and a non-orphan name.
@@ -29,9 +31,10 @@ def test_sweep_removes_orphans_and_keeps_real_recordings(tmp_path: Path) -> None
 
     removed = sweep_orphan_temp_files(rec, audio)
 
-    assert removed == 3
+    assert removed == 4
     assert not (rec / ".muxed_bell_abc.mp4").exists()
     assert not (rec / ".concat_bell_abc.txt").exists()
+    assert not (rec / ".concat_bell_abc.mp4").exists()
     assert not (audio / "abc.m4a").exists()
     assert (rec / "bell_abc.mp4").read_bytes() == b"real clip"
     assert (rec / "bell_abc.jpg").exists()

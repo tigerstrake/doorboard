@@ -224,6 +224,7 @@ async def metrics(request: Request) -> Response:
     cfg: Settings = request.app.state.cfg
     router: MediaRouter = request.app.state.router
     db: RecordingDB = request.app.state.db
+    svc: RecordingService = request.app.state.service
 
     stream_up = await router.health_check()
     streams = router.stream_info()
@@ -262,6 +263,14 @@ async def metrics(request: Request) -> Response:
         "# HELP door_media_oldest_unsynced_s Age (s) of the oldest unsynced recording",
         "# TYPE door_media_oldest_unsynced_s gauge",
         f"door_media_oldest_unsynced_s {oldest_age}",
+        "",
+        "# HELP door_media_active_recordings Recording windows open right now",
+        "# TYPE door_media_active_recordings gauge",
+        f"door_media_active_recordings {len(svc._active_handles)}",  # type: ignore[attr-defined]
+        "",
+        "# HELP door_media_finalize_failures_total Recording windows the router could not cut",
+        "# TYPE door_media_finalize_failures_total counter",
+        f"door_media_finalize_failures_total {svc.finalize_failures}",
         "",
         "# HELP door_media_uptime_s Service uptime in seconds",
         "# TYPE door_media_uptime_s counter",

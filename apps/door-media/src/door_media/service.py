@@ -68,14 +68,15 @@ _FINALIZE_LOCKS_MAX = 256
 def sweep_orphan_temp_files(recordings_root: Path, audio_tmp_root: Path) -> int:
     """Delete finalize temp files a killed process left behind, returning how many were removed.
 
-    A `.muxed_*` / `.concat_*.txt` in the recordings dir and a `.m4a` in the audio tmp dir exist
-    only *during* an active finalize — the success and error paths both clean them up. So any
-    present at startup are orphans from a SIGKILL/power-loss mid-finalize; without pruning they
-    accumulate on the SSD forever (nothing else ever touches them). Deleting them at startup is
-    safe: they are never part of a completed recording.
+    A `.muxed_*` / `.concat_*` (the ffmpeg list and the not-yet-renamed concat output) in the
+    recordings dir and a `.m4a` in the audio tmp dir exist only *during* an active finalize — the
+    success and error paths both clean them up. So any present at startup are orphans from a
+    SIGKILL/power-loss mid-finalize; without pruning they accumulate on the SSD forever (nothing
+    else ever touches them). Deleting them at startup is safe: they are never part of a completed
+    recording.
     """
     removed = 0
-    for pattern in (".muxed_*", ".concat_*.txt"):
+    for pattern in (".muxed_*", ".concat_*"):
         for path in recordings_root.glob(pattern):
             with contextlib.suppress(OSError):
                 path.unlink()
@@ -120,6 +121,9 @@ class RecordingService:
         self._storage_task: asyncio.Task[None] | None = None
         self._event_forwarder: EventForwarder | None = None
         self._trace_id = uuid7()  # service-level trace; per-session traces override
+        # Router finalize failures: a clip the door could not cut. Exported on
+        # /metrics because until it was, a dead camera looked like "no visitors".
+        self.finalize_failures = 0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -286,9 +290,11 @@ class RecordingService:
         event's hash while the last writer won on disk, so every clip
         dead-lettered as "local checksum mismatch" and nothing ever archived.
 
-        Retry semantics are unchanged: a *failed* finalize is not memoised, so
-        the handle stays and a later call retries (reusing a completed router
-        result via ``_pending_finalized``).
+        A finalize that fails *after* the router cut the clip (a DB error) is
+        not memoised: the handle stays and a later call retries, reusing the
+        completed router result via ``_pending_finalized``. A finalize that fails
+        *in* the router releases the window instead (see
+        ``_finalize_recording_locked``); there is nothing left to retry.
 
         Returns True on success — including for a duplicate call whose original
         succeeded.  Never raises.
@@ -370,7 +376,22 @@ class RecordingService:
                     consent_context=consent_context,
                 )
             except Exception as exc:
-                logger.exception("router_finalize_error", exc_info=exc)
+                # The router could not cut the window (no segments: camera or
+                # MediaMTX was down; concat failed). The window is over and the
+                # segments that would have made the clip do not exist, so keeping
+                # the handle "for a retry" only pins segment pruning and consumes
+                # the active cap: after max_active_recordings such outages the
+                # door stopped recording bell clips until restart. Release it.
+                logger.exception(
+                    "router_finalize_error",
+                    exc_info=exc,
+                    extra={"recording_id": str(recording_id)},
+                )
+                self.finalize_failures += 1
+                with contextlib.suppress(Exception):
+                    await self._router.discard_recording(handle)  # type: ignore[arg-type]
+                self._db.delete_unfinalized(recording_id=recording_id)
+                self._active_handles.pop(recording_id, None)
                 return False
             self._pending_finalized[recording_id] = finalized
 

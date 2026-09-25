@@ -49,6 +49,9 @@ def test_metrics(client: TestClient):
     resp = client.get("/metrics")
     assert resp.status_code == 200
     assert "door_media_uptime_s" in resp.text
+    # A full SSD has to be explainable from /metrics: open windows and failed cuts.
+    assert "door_media_active_recordings 0" in resp.text
+    assert "door_media_finalize_failures_total 0" in resp.text
 
 
 def test_admin_routes_fail_closed_without_configured_token(client: TestClient) -> None:

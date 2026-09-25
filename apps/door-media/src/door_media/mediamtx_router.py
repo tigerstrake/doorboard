@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import hashlib
 import logging
+import os
 import shutil
 import signal
 import time
@@ -612,13 +613,42 @@ class MediaMTXRouter:
         *,
         consent_context: ConsentContext,
     ) -> FinalizedRecording:
-        """Cut and remux the recording window into a single MP4."""
+        """Cut and remux the recording window into a single MP4.
+
+        Whether this returns or raises, the window is over: the handle leaves
+        ``_active`` (so it neither pins segment pruning nor consumes the active
+        cap), the mic capture is stopped and its temp file removed, and no partial
+        clip is left under the final name. A recording that cannot be cut is
+        finished, not active -- retrying it later cannot conjure segments that
+        were never written -- and before this held, one camera outage per bell
+        press leaked a handle until door-media restarted: after eight presses
+        ``max_active_recordings`` refused every recording for good, and the leaked
+        ``started_epoch`` kept the rolling segments from ever being pruned.
+        """
         active = self._active.get(handle.recording_id)
         if active is None:
             raise RuntimeError(f"recording {handle.recording_id} is not active")
-        elapsed_s = time.monotonic() - active.started_monotonic
-
         out_path = self._settings.recordings_root / f"{handle.kind}_{handle.recording_id}.mp4"
+        try:
+            return await self._cut_window(active, out_path, consent_context=consent_context)
+        except Exception:
+            await self._stop_audio_capture(active)
+            self._cleanup_audio_file(active)
+            with contextlib.suppress(OSError):
+                out_path.unlink(missing_ok=True)
+            raise
+        finally:
+            self._active.pop(handle.recording_id, None)
+
+    async def _cut_window(
+        self,
+        active: _ActiveRecording,
+        out_path: Path,
+        *,
+        consent_context: ConsentContext,
+    ) -> FinalizedRecording:
+        handle = active.handle
+        elapsed_s = time.monotonic() - active.started_monotonic
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Find segments that overlap the recording window
@@ -631,12 +661,10 @@ class MediaMTXRouter:
         )
 
         # The recording window is over: stop the parallel mic capture so ffmpeg
-        # finalizes its .m4a. Always stop (even on the error paths below) so the
-        # capture process is never leaked.
+        # finalizes its .m4a before the mux reads it.
         await self._stop_audio_capture(active)
 
         if not segments:
-            self._cleanup_audio_file(active)
             raise RuntimeError(f"no media segments found for recording {handle.recording_id}")
         # Concatenate the padded window of WHOLE 2s segments so the real
         # recording window is fully covered. out_path holds this video-only
@@ -644,7 +672,6 @@ class MediaMTXRouter:
         # remuxed below (otherwise it is the final video-only clip).
         await _concat_segments(segments, out_path)
         if not out_path.exists() or out_path.stat().st_size == 0:
-            self._cleanup_audio_file(active)
             raise RuntimeError(f"ffmpeg produced an empty recording {handle.recording_id}")
 
         # The concat is padded by segment_s on each side AND snaps to 2s segment
@@ -660,7 +687,6 @@ class MediaMTXRouter:
         # video to the real window. Graceful video-only fallback on any problem —
         # audio/trim must never break a recording.
         await self._mux_audio(active, out_path, trim_start=trim_start, duration_s=duration_s)
-        self._active.pop(handle.recording_id, None)
 
         size_bytes = out_path.stat().st_size
         sha256 = _sha256_file(out_path)
@@ -1174,9 +1200,15 @@ async def _communicate_bounded(
 
 
 async def _concat_segments(segments: list[Path], out_path: Path) -> None:
-    """Concatenate MP4 segments into a single output file using ffmpeg."""
-    # Build ffmpeg concat list
+    """Concatenate MP4 segments into ``out_path`` with ffmpeg, atomically.
+
+    ffmpeg writes a dot-prefixed sibling (``.concat_<name>.mp4``) that is renamed
+    into place only after it exits 0, so a concat that fails, times out or is
+    killed part-way never leaves a partial clip under the final name with no DB
+    row pointing at it. The startup sweep removes any ``.concat_*`` left behind.
+    """
     concat_list = out_path.parent / f".concat_{out_path.stem}.txt"
+    tmp_out = out_path.parent / f".concat_{out_path.stem}{out_path.suffix}"
     concat_list.write_text(
         "\n".join(f"file '{seg}'" for seg in segments),
         encoding="utf-8",
@@ -1193,7 +1225,7 @@ async def _concat_segments(segments: list[Path], out_path: Path) -> None:
             str(concat_list),
             "-c",
             "copy",
-            str(out_path),
+            str(tmp_out),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -1203,9 +1235,12 @@ async def _concat_segments(segments: list[Path], out_path: Path) -> None:
         if proc.returncode != 0:
             message = (stderr or b"").decode(errors="replace")[:500]
             raise RuntimeError(f"ffmpeg concat failed ({proc.returncode}): {message}")
+        os.replace(tmp_out, out_path)
     finally:
         with contextlib.suppress(OSError):
             concat_list.unlink()
+        with contextlib.suppress(OSError):
+            tmp_out.unlink(missing_ok=True)
 
 
 def _sha256_file(path: Path) -> str:
