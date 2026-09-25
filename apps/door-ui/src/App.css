@@ -1953,6 +1953,50 @@ input:focus-visible {
   color: var(--db-text-secondary);
 }
 
+/* Baked place labels on the flights basemap: towns centred on their point, airports as
+   an IATA code beside a small gold diamond. Zero-size anchors so the text, not a box,
+   is positioned; nothing here is interactive. */
+.leaflet-container .flights-place {
+  background: transparent;
+  border: none;
+  overflow: visible;
+  pointer-events: none;
+  font-family: var(--db-font-mono);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.leaflet-container .flights-place > span {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  color: rgba(159, 190, 214, 0.72);
+  font-size: 0.78rem;
+  text-shadow: 0 0 4px #0a1420, 0 0 2px #0a1420;
+}
+
+.leaflet-container .flights-place--city > span {
+  font-size: 0.92rem;
+  text-transform: uppercase;
+  color: rgba(190, 214, 232, 0.88);
+}
+
+.leaflet-container .flights-place--airport > span {
+  transform: translate(0.55rem, -50%);
+  color: var(--db-gold);
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+
+.leaflet-container .flights-place--airport::before {
+  content: "";
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  background: var(--db-gold);
+  box-shadow: 0 0 6px rgba(242, 193, 78, 0.6);
+}
+
 .flights-map-note {
   position: absolute;
   z-index: 500;

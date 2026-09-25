@@ -9,20 +9,20 @@ import type {
 } from "@doorboard/contracts";
 import type { Poll, PollResultRow } from "./socialApi";
 
-// The aircraft focus panel mounts a Leaflet map, which needs a real DOM/canvas
-// + network tiles. Mock Leaflet (and its CSS) so this suite exercises the split
-// layout in jsdom without the real library.
+// The aircraft focus panel mounts a Leaflet map, which needs a real DOM/canvas.
+// Mock Leaflet (and its CSS) so this suite exercises the split layout in jsdom
+// without the real library.
 vi.mock("leaflet", () => {
-  const chainable = () => {
-    const api: Record<string, unknown> = {};
+  const chainable = (extra: Record<string, unknown> = {}) => {
+    const api: Record<string, unknown> = { ...extra };
     for (const method of ["setView", "addTo", "on", "clearLayers", "remove", "invalidateSize", "fitBounds"]) {
       api[method] = () => api;
     }
     return api;
   };
   const L = {
-    map: () => chainable(),
-    tileLayer: () => chainable(),
+    map: () => chainable({ attributionControl: { setPrefix: () => {}, addAttribution: () => {} } }),
+    polyline: () => chainable(),
     layerGroup: () => chainable(),
     marker: () => chainable(),
     divIcon: () => ({}),

@@ -90,6 +90,21 @@ export async function publishSessionState(
   });
 }
 
+// The DoorPad's "focus a tile" request as door-api rebroadcasts it on /ws
+// (`wallboard.focus_changed`): an ephemeral UI-control message, not a contract event.
+export async function publishWallboardFocus(page: Page, channel: string) {
+  const now = Date.now();
+  const ambient = channel === "ambient";
+  await publish(page, {
+    type: "wallboard.focus_changed",
+    requestId: nextId("focus"),
+    mode: ambient ? "ambient" : "focus",
+    channel: ambient ? null : channel,
+    requestedAt: now,
+    expiresAt: ambient ? null : now + 120_000,
+  });
+}
+
 export async function publishIdentityStable(
   page: Page,
   profileId: string,

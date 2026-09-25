@@ -14,6 +14,14 @@ import {
   viewBoundsFor,
 } from "./flightsMapView";
 import type { LatLngTuple } from "./flightsMapView";
+import { OSM_ATTRIBUTION } from "./campusStreets";
+import {
+  REGION_COAST_STYLE,
+  REGION_ROAD_STYLE,
+  regionCoastline,
+  regionPlaces,
+  regionRoads,
+} from "./regionMap";
 
 // Fallback observer location (Stanford) used when the payload omits `observer`
 // — keeps the map centred on the door rather than [0,0] in the ocean.
@@ -22,12 +30,10 @@ const STANFORD_OBSERVER: AircraftObserver = { latitude: 37.4275, longitude: -122
 // The framing rule (campus centred, capped at the Golden Gate) lives in
 // ./flightsMapView so it can be tested without Leaflet.
 
-// CARTO dark raster tiles match the wallboard's dark theme. If the display is
-// offline the tiles simply fail to load and we degrade to the dark backdrop +
-// plotted markers (see `tilesFailed` handling below).
-const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
-const TILE_ATTRIBUTION =
-  '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/attributions">CARTO</a>';
+// No tile layer, on purpose. The basemap is baked OSM geometry (regionStreets.ts, via
+// ./regionMap) drawn as vector layers: CARTO began stamping keyless raster tiles with
+// "API KEY REQUIRED", and a public display must never fetch a picture it does not
+// control from a host it does not control. Works with the internet down (E-19).
 
 const finiteNum = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -64,19 +70,18 @@ interface FlightsMapProps {
 }
 
 /**
- * Leaflet raster map of nearby aircraft. The map instance is created exactly
- * once (empty-deps effect) and torn down on unmount; marker updates reuse a
- * single LayerGroup so a new `ambient.aircraft_summary` event (~every 30s)
- * re-plots planes without recreating the map. Every Leaflet call is guarded so
- * a headless/offline environment (jsdom in tests, no internet on the Dell)
- * degrades to a "map unavailable" note instead of crashing the 24/7 wallboard.
+ * Leaflet map of nearby aircraft over a baked vector basemap. The map instance
+ * is created exactly once (empty-deps effect) and torn down on unmount; marker
+ * updates reuse a single LayerGroup so a new `ambient.aircraft_summary` event
+ * (~every 30s) re-plots planes without recreating the map. Every Leaflet call
+ * is guarded so a headless environment (jsdom in tests) degrades to a "map
+ * unavailable" note instead of crashing the 24/7 wallboard.
  */
 function FlightsMap({ planes, observer }: FlightsMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const layerRef = useRef<L.LayerGroup | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-  const [tilesFailed, setTilesFailed] = useState(false);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -101,13 +106,43 @@ function FlightsMap({ planes, observer }: FlightsMapProps) {
         maxBoundsViscosity: 1.0,
       }).fitBounds(maxViewBounds(observer));
 
-      const tiles = L.tileLayer(TILE_URL, {
-        attribution: TILE_ATTRIBUTION,
-        subdomains: "abcd",
-        maxZoom: 19,
-      });
-      tiles.on("tileerror", () => setTilesFailed(true));
-      tiles.addTo(map);
+      // ODbL requires the credit wherever the data is shown; the "Leaflet" prefix is a
+      // link to a third-party site and has no business on a hallway screen.
+      map.attributionControl.setPrefix(false);
+      map.attributionControl.addAttribution(OSM_ATTRIBUTION);
+
+      // Basemap, coarse to fine: primaries as texture, motorways on top, then the
+      // shoreline, then the labels. One polyline per class — a few SVG paths, not
+      // thousands of nodes — and nothing interactive, so a hallway bump hits nothing.
+      const basemap = L.layerGroup();
+      for (const { layer: roadClass, lines } of regionRoads()) {
+        L.polyline(lines, {
+          ...REGION_ROAD_STYLE[roadClass],
+          interactive: false,
+          lineCap: "round",
+          lineJoin: "round",
+        }).addTo(basemap);
+      }
+      L.polyline(regionCoastline(), {
+        ...REGION_COAST_STYLE,
+        interactive: false,
+        lineJoin: "round",
+      }).addTo(basemap);
+      for (const place of regionPlaces()) {
+        L.marker([place.lat, place.lng], {
+          icon: L.divIcon({
+            className: `flights-place flights-place--${place.kind}`,
+            // Baked from OSM at build time, but escaped like every other string that
+            // reaches divIcon HTML — the rule is not "trusted sources may skip it".
+            html: `<span>${escapeHtml(place.name)}</span>`,
+            iconSize: [0, 0],
+            iconAnchor: [0, 0],
+          }),
+          interactive: false,
+          keyboard: false,
+        }).addTo(basemap);
+      }
+      basemap.addTo(map);
 
       const layer = L.layerGroup().addTo(map);
       mapRef.current = map;
@@ -213,12 +248,7 @@ function FlightsMap({ planes, observer }: FlightsMapProps) {
     }
   }, [planes, observer]);
 
-  const note =
-    status === "error"
-      ? "Live map unavailable"
-      : tilesFailed
-        ? "Map tiles offline · showing positions only"
-        : null;
+  const note = status === "error" ? "Live map unavailable" : null;
 
   return (
     <div className="flights-map-wrap">
@@ -309,9 +339,10 @@ function FlightCard({ plane }: { plane: AmbientAircraftNearby }) {
 }
 
 /**
- * Rich "Flights" focused-panel content: a live Leaflet map of every nearby
- * plane on top, and a scrollable, sparse-tolerant detail list below. Rendered
- * only for the aircraft channel inside the wallboard focus split panel.
+ * Rich "Flights" focused-panel content: a live map of every nearby plane on
+ * top (baked basemap, no tile host), and a scrollable, sparse-tolerant detail
+ * list below. Rendered only for the aircraft channel inside the wallboard
+ * focus split panel.
  */
 export function AircraftFocusPanel({ payload }: { payload: AmbientAircraftSummaryPayload }) {
   const planes = payload.nearby ?? [];

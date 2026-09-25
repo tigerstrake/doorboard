@@ -10,6 +10,16 @@ Baked at build time, not fetched at runtime: the doorboard has to work with the 
 
 Usage:
     scripts/build-campus-streets [--from-cache PATH] [--out PATH]
+    scripts/build-campus-streets --region [--roads-cache PATH] [--coast-cache PATH]
+                                          [--places-cache PATH] [--region-out PATH]
+
+`--region` bakes the second, much wider map: the flights view (~35 km tall around the
+door, wider still in landscape). That map used to be CARTO raster tiles, until CARTO
+started serving keyless requests as valid PNGs stamped "API KEY REQUIRED" — a licensing
+watermark tiled edge to edge on a public hallway screen, and a third-party dependency
+that changed under the project. Only the road skeleton (motorway/trunk/primary), the
+shoreline and a few place names are baked at that scale, which is all a basemap under
+plane markers needs.
 
 Data © OpenStreetMap contributors, ODbL 1.0 — the attribution is emitted into the generated
 module and rendered on the panel, which the licence requires.
@@ -86,14 +96,18 @@ def fetch(query: str = QUERY) -> dict:
     return json.loads(result.stdout)
 
 
-def clip_to_view(points: list[tuple[float, float]]) -> list[list[tuple[float, float]]]:
+def clip_to_view(
+    points: list[tuple[float, float]],
+    view: dict[str, float] = VIEW,
+    margin: float = MARGIN,
+) -> list[list[tuple[float, float]]]:
     """Split a way into the runs of it that fall inside the view (plus margin).
 
     Keeps one point either side of each crossing so a road that leaves and re-enters is not
     joined by a straight line through the middle of somewhere it never went.
     """
-    south, north = VIEW["south"] - MARGIN, VIEW["north"] + MARGIN
-    west, east = VIEW["west"] - MARGIN, VIEW["east"] + MARGIN
+    south, north = view["south"] - margin, view["north"] + margin
+    west, east = view["west"] - margin, view["east"] + margin
 
     def inside(p: tuple[float, float]) -> bool:
         return south <= p[0] <= north and west <= p[1] <= east
@@ -141,18 +155,281 @@ def simplify(points: list[tuple[float, float]], tolerance: float) -> list[tuple[
     return left[:-1] + right
 
 
-def encode(points: list[tuple[float, float]]) -> list[int]:
+def encode(points: list[tuple[float, float]], scale: int = SCALE) -> list[int]:
     """Flat delta-encoded integers: lat0, lng0, dlat1, dlng1, dlat2, dlng2, …"""
     out: list[int] = []
     previous_lat = previous_lng = 0
     for index, (lat, lng) in enumerate(points):
-        lat_i, lng_i = round(lat * SCALE), round(lng * SCALE)
+        lat_i, lng_i = round(lat * scale), round(lng * scale)
         if index == 0:
             out.extend([lat_i, lng_i])
         else:
             out.extend([lat_i - previous_lat, lng_i - previous_lng])
         previous_lat, previous_lng = lat_i, lng_i
     return out
+
+
+# ---------------------------------------------------------------------------------------
+# Region mode: the flights map basemap.
+#
+# The flights view is observer-centred and never wider than ~35 km tall (flightsMapView.ts
+# `maxViewBounds`), but the panel's aspect ratio decides what fills the other axis: at
+# 1920x1080 the map is roughly twice as wide as tall, so ~±0.45° of longitude is on screen
+# when the whole box is fitted. The bake box covers that with a margin so roads never stop
+# at an invisible edge inside the frame. It is deliberately NOT the campus view: two maps at
+# two scales, each baked for what it shows.
+# ---------------------------------------------------------------------------------------
+REGION_VIEW = {"south": 37.20, "north": 37.66, "west": -122.66, "east": -121.68}
+# Coordinates in hundred-thousandths of a degree (~1.1 m). Coarser than the campus map's
+# millionths: at this scale a metre is far below a pixel, and shorter integers are the
+# whole reason a 35 km road network fits in a bundle.
+REGION_SCALE = 100_000
+# ~30 m: under a pixel at the widest view (~44 m/px) and ~3 px at the tightest zoom the
+# marker effect allows (`VIEW_MAX_ZOOM`), which is fine for a basemap under plane markers.
+REGION_TOLERANCE = 3e-4
+# Only the skeleton. Secondary roads at this scale are texture the eye cannot read from a
+# corridor and would triple the bundle. Drawn coarse to fine, motorways on top.
+REGION_LAYER_ORDER = ("primary", "trunk", "motorway")
+REGION_PLACE_KINDS = ("city", "town")
+
+REGION_BBOX = (
+    f'({REGION_VIEW["south"]},{REGION_VIEW["west"]},{REGION_VIEW["north"]},{REGION_VIEW["east"]})'
+)
+REGION_ROADS_QUERY = f"""[out:json][timeout:180];
+way["highway"~"^({"|".join(REGION_LAYER_ORDER)})$"]{REGION_BBOX};
+out geom;
+"""
+# The Bay and the ocean side are tagged natural=coastline in OSM; that one line is what makes
+# the dark field read as the peninsula rather than as a void with roads on it.
+REGION_COAST_QUERY = f"""[out:json][timeout:180];
+way["natural"="coastline"]{REGION_BBOX};
+out geom;
+"""
+# City/town nodes for orientation, and every airport with an IATA code — on a map of
+# aircraft, "that plane is lining up for SFO" is the one label people actually want.
+REGION_PLACES_QUERY = f"""[out:json][timeout:60];
+(
+  node["place"~"^({"|".join(REGION_PLACE_KINDS)})$"]{REGION_BBOX};
+  nwr["aeroway"="aerodrome"]["iata"]{REGION_BBOX};
+);
+out center tags;
+"""
+
+
+def chain_ways(elements: list[dict]) -> list[list[tuple[float, float]]]:
+    """Join ways end-to-end by shared node id into long polylines.
+
+    OSM splits a motorway into hundreds of short ways wherever a tag changes (a lane count,
+    a speed limit, a bridge). Each baked way carries an absolute first coordinate and its
+    own array, so at 12 000 ways that overhead was most of the file. Chaining by node id
+    — not by coordinate — joins only ways that really connect.
+    """
+    ways: dict[int, tuple[list[int], list[tuple[float, float]]]] = {}
+    for element in elements:
+        nodes = element.get("nodes") or []
+        geometry = element.get("geometry") or []
+        if len(nodes) < 2 or len(nodes) != len(geometry):
+            continue
+        ways[element["id"]] = (nodes, [(node["lat"], node["lon"]) for node in geometry])
+
+    by_start: dict[int, list[int]] = {}
+    by_end: dict[int, list[int]] = {}
+    for way_id, (nodes, _) in ways.items():
+        by_start.setdefault(nodes[0], []).append(way_id)
+        by_end.setdefault(nodes[-1], []).append(way_id)
+
+    used: set[int] = set()
+
+    def take(candidates: list[int] | None) -> int | None:
+        for candidate in candidates or []:
+            if candidate not in used:
+                return candidate
+        return None
+
+    chains: list[list[tuple[float, float]]] = []
+    for way_id in ways:
+        if way_id in used:
+            continue
+        used.add(way_id)
+        nodes, points = ways[way_id]
+        nodes, points = list(nodes), list(points)
+        # Extend forward, then backward, one connecting way at a time.
+        while (next_id := take(by_start.get(nodes[-1]))) is not None:
+            used.add(next_id)
+            next_nodes, next_points = ways[next_id]
+            nodes.extend(next_nodes[1:])
+            points.extend(next_points[1:])
+        while (prev_id := take(by_end.get(nodes[0]))) is not None:
+            used.add(prev_id)
+            prev_nodes, prev_points = ways[prev_id]
+            nodes = list(prev_nodes[:-1]) + nodes
+            points = list(prev_points[:-1]) + points
+        chains.append(points)
+    return chains
+
+
+def onto_box_edge(
+    outside: tuple[float, float], inside: tuple[float, float], view: dict[str, float]
+) -> tuple[float, float]:
+    """The point where the segment outside→inside crosses into the box.
+
+    `clip_to_view` keeps one node past each crossing so a road reaches the frame edge
+    rather than stopping short of it. At campus scale that node is metres away; on a
+    motorway it can be a kilometre outside the bake box, and the panel's tests check that
+    every baked point is inside it. So the overhang is trimmed to the edge exactly.
+    """
+    t = 0.0
+    for axis, low, high in ((0, view["south"], view["north"]), (1, view["west"], view["east"])):
+        if outside[axis] < low:
+            t = max(t, (low - outside[axis]) / (inside[axis] - outside[axis]))
+        elif outside[axis] > high:
+            t = max(t, (high - outside[axis]) / (inside[axis] - outside[axis]))
+    return (
+        outside[0] + (inside[0] - outside[0]) * t,
+        outside[1] + (inside[1] - outside[1]) * t,
+    )
+
+
+def trim_to_box(
+    run: list[tuple[float, float]], view: dict[str, float]
+) -> list[tuple[float, float]]:
+    def inside(p: tuple[float, float]) -> bool:
+        return view["south"] <= p[0] <= view["north"] and view["west"] <= p[1] <= view["east"]
+
+    if len(run) >= 2 and not inside(run[0]):
+        run = [onto_box_edge(run[0], run[1], view)] + run[1:]
+    if len(run) >= 2 and not inside(run[-1]):
+        run = run[:-1] + [onto_box_edge(run[-1], run[-2], view)]
+    return run
+
+
+def bake_lines(
+    elements: list[dict], tolerance: float
+) -> tuple[list[list[int]], int]:
+    """Chain, clip to the region, simplify and encode. Returns (ways, point count)."""
+    baked: list[list[int]] = []
+    total = 0
+    for chain in chain_ways(elements):
+        for run in clip_to_view(chain, REGION_VIEW, 0.0):
+            simplified = simplify(trim_to_box(run, REGION_VIEW), tolerance)
+            if len(simplified) >= 2:
+                baked.append(encode(simplified, REGION_SCALE))
+                total += len(simplified)
+    return baked, total
+
+
+def bake_places(elements: list[dict]) -> list[dict]:
+    places: list[dict] = []
+    for element in elements:
+        tags = element.get("tags") or {}
+        centre = element.get("center") or element
+        lat, lng = centre.get("lat"), centre.get("lon")
+        if lat is None or lng is None:
+            continue
+        if tags.get("aeroway") == "aerodrome" and tags.get("iata"):
+            name, kind = tags["iata"], "airport"
+        elif tags.get("place") in REGION_PLACE_KINDS and tags.get("name"):
+            name, kind = tags["name"], tags["place"]
+        else:
+            continue
+        places.append({"name": name, "kind": kind, "lat": round(lat, 4), "lng": round(lng, 4)})
+    places.sort(key=lambda place: (place["kind"], place["name"]))
+    return places
+
+
+def build_region(args: argparse.Namespace) -> int:
+    def load(cache: pathlib.Path | None, query: str) -> list[dict]:
+        data = json.loads(cache.read_text()) if cache else fetch(query)
+        return data.get("elements", [])
+
+    roads = load(args.roads_cache, REGION_ROADS_QUERY)
+    coast = load(args.coast_cache, REGION_COAST_QUERY)
+    places = bake_places(load(args.places_cache, REGION_PLACES_QUERY))
+
+    layers: dict[str, list[list[int]]] = {}
+    points: dict[str, int] = {}
+    for name in REGION_LAYER_ORDER:
+        selected = [e for e in roads if (e.get("tags") or {}).get("highway") == name]
+        layers[name], points[name] = bake_lines(selected, args.tolerance)
+    coastline, coast_points = bake_lines(coast, args.tolerance)
+
+    def rows(ways: list[list[int]], indent: str) -> str:
+        return ",\n".join(indent + "[" + ",".join(str(v) for v in way) + "]" for way in ways)
+
+    roads_body = ",\n".join(
+        f"  {name}: [\n{rows(layers[name], '    ')}\n  ]" for name in REGION_LAYER_ORDER
+    )
+    places_body = ",\n".join(
+        f'  {{ name: {json.dumps(p["name"])}, kind: "{p["kind"]}", '
+        f'lat: {p["lat"]}, lng: {p["lng"]} }}'
+        for p in places
+    )
+    place_kinds = " | ".join(f'"{kind}"' for kind in (*REGION_PLACE_KINDS, "airport"))
+    module = f'''/**
+ * Regional road skeleton, shoreline and place names for the flights map, baked from
+ * OpenStreetMap. GENERATED — do not edit by hand.
+ *
+ * Regenerate with `scripts/build-campus-streets --region`. Baked rather than tiled: the
+ * flights map used CARTO raster tiles until keyless requests started coming back stamped
+ * "API KEY REQUIRED" — a third-party licensing watermark on a public hallway screen. A
+ * basemap the project ships itself cannot change under it, and works with the internet
+ * down (E-19), which the campus map already relied on.
+ *
+ * Same encoding as campusStreets.ts (lat-first, delta-encoded integers) at a coarser
+ * scale: hundred-thousandths of a degree, ~1.1 m. Ways are chained end-to-end by OSM node
+ * id before encoding, so one motorway is one array rather than hundreds.
+ *
+ * Data © OpenStreetMap contributors, ODbL 1.0 (https://www.openstreetmap.org/copyright).
+ * The panel renders this attribution; the licence requires it.
+ */
+
+export const REGION_COORD_SCALE = {REGION_SCALE};
+
+/** The baked area, degrees. Anything the map frames outside it is honestly empty. */
+export const REGION_VIEW = {{
+  south: {REGION_VIEW["south"]},
+  north: {REGION_VIEW["north"]},
+  west: {REGION_VIEW["west"]},
+  east: {REGION_VIEW["east"]},
+}} as const;
+
+/** Road classes, coarse to fine; the renderer weights each layer differently. */
+export type RegionRoadLayer = {" | ".join(f'"{name}"' for name in REGION_LAYER_ORDER)};
+
+export const REGION_ROAD_LAYER_ORDER: readonly RegionRoadLayer[] = [
+{chr(10).join(f'  "{name}",' for name in REGION_LAYER_ORDER)}
+];
+
+export const REGION_ROADS: Record<RegionRoadLayer, readonly (readonly number[])[]> = {{
+{roads_body}
+}};
+
+/** natural=coastline: the Bay and the Pacific side, as open polylines. */
+export const REGION_COASTLINE: readonly (readonly number[])[] = [
+{rows(coastline, '  ')}
+];
+
+export type RegionPlaceKind = {place_kinds};
+
+export interface RegionPlace {{
+  /** Display label: the town's name, or an airport's IATA code. */
+  name: string;
+  kind: RegionPlaceKind;
+  lat: number;
+  lng: number;
+}}
+
+export const REGION_PLACES: readonly RegionPlace[] = [
+{places_body}
+];
+'''
+    args.region_out.write_text(module)
+    print(f"wrote {args.region_out}  ({args.region_out.stat().st_size // 1024} KB)")
+    for name in REGION_LAYER_ORDER:
+        print(f"    {name:9} {len(layers[name]):5} chains  {points[name]:6} points")
+    print(f"    coastline {len(coastline):5} chains  {coast_points:6} points")
+    print(f"    places    {len(places):5}")
+    return 0
 
 
 def main() -> int:
@@ -164,8 +441,21 @@ def main() -> int:
         type=pathlib.Path,
         default=pathlib.Path("apps/door-ui/src/wallboard/campusStreets.ts"),
     )
-    parser.add_argument("--tolerance", type=float, default=2e-5)
+    parser.add_argument("--tolerance", type=float, default=None)
+    parser.add_argument("--region", action="store_true", help="bake the flights basemap instead")
+    parser.add_argument("--roads-cache", type=pathlib.Path, default=None)
+    parser.add_argument("--coast-cache", type=pathlib.Path, default=None)
+    parser.add_argument("--places-cache", type=pathlib.Path, default=None)
+    parser.add_argument(
+        "--region-out",
+        type=pathlib.Path,
+        default=pathlib.Path("apps/door-ui/src/wallboard/regionStreets.ts"),
+    )
     args = parser.parse_args()
+    if args.tolerance is None:
+        args.tolerance = REGION_TOLERANCE if args.region else 2e-5
+    if args.region:
+        return build_region(args)
 
     data = json.loads(args.from_cache.read_text()) if args.from_cache else fetch()
     elements = data.get("elements", [])

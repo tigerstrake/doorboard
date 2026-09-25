@@ -4,12 +4,12 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import type { AmbientAircraftSummaryPayload } from "@doorboard/contracts";
 
-// Leaflet needs a real DOM/canvas + network tiles, neither of which exist under
-// jsdom. Mock it with a chainable no-op API so the panel mounts (and its map
-// lifecycle runs) without touching the real library or the network.
-vi.mock("leaflet", () => {
-  const chainable = () => {
-    const api: Record<string, unknown> = {};
+// Leaflet needs a real DOM/canvas, which does not exist under jsdom. Mock it with a
+// chainable no-op API so the panel mounts (and its map lifecycle runs) without the
+// real library. Hoisted so the tests can assert WHICH layers the panel builds.
+const leaflet = vi.hoisted(() => {
+  const chainable = (extra: Record<string, unknown> = {}) => {
+    const api: Record<string, unknown> = { ...extra };
     for (const method of [
       "setView",
       "addTo",
@@ -23,16 +23,19 @@ vi.mock("leaflet", () => {
     }
     return api;
   };
-  const L = {
-    map: () => chainable(),
-    tileLayer: () => chainable(),
-    layerGroup: () => chainable(),
-    marker: () => chainable(),
-    divIcon: () => ({}),
-    latLngBounds: () => ({}),
+  const attributionControl = { setPrefix: vi.fn(), addAttribution: vi.fn() };
+  return {
+    attributionControl,
+    map: vi.fn(() => chainable({ attributionControl })),
+    tileLayer: vi.fn(() => chainable()),
+    polyline: vi.fn(() => chainable()),
+    layerGroup: vi.fn(() => chainable()),
+    marker: vi.fn(() => chainable()),
+    divIcon: vi.fn(() => ({})),
+    latLngBounds: vi.fn(() => ({})),
   };
-  return { default: L, ...L };
 });
+vi.mock("leaflet", () => ({ default: leaflet, ...leaflet }));
 
 // Also mock the CSS side-effect import so vitest doesn't try to parse it.
 vi.mock("leaflet/dist/leaflet.css", () => ({}));
@@ -118,6 +121,24 @@ describe("AircraftFocusPanel (Flights focus)", () => {
     expect(screen.getByText(/No nearby aircraft/)).toBeTruthy();
     // Map still mounts so the surface never goes blank.
     expect(screen.getByTestId("flights-map")).toBeTruthy();
+  });
+
+  it("draws a baked vector basemap and never adds a tile layer", () => {
+    // CARTO began serving keyless tiles stamped "API KEY REQUIRED" as valid 200 PNGs, so
+    // a raster layer cannot even detect the problem. The basemap is baked OSM geometry
+    // (roads, shoreline, place labels) and the map requests nothing from a tile host.
+    leaflet.tileLayer.mockClear();
+    leaflet.polyline.mockClear();
+    leaflet.attributionControl.addAttribution.mockClear();
+    render(<AircraftFocusPanel payload={makePayload([sparsePlane])} />);
+    expect(leaflet.tileLayer).not.toHaveBeenCalled();
+    // Three road classes + the shoreline.
+    expect(leaflet.polyline).toHaveBeenCalledTimes(4);
+    // ODbL: the credit is rendered wherever the data is shown.
+    expect(leaflet.attributionControl.addAttribution).toHaveBeenCalledWith(
+      "© OpenStreetMap contributors",
+    );
+    expect(screen.queryByText(/tiles offline/i)).toBeNull();
   });
 
   it("falls back to the default observer when the payload omits one", () => {
