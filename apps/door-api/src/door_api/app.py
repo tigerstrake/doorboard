@@ -127,8 +127,11 @@ class DoorApiState:
         self.config = SessionConfig.from_env()
         # The last ambient event per type, replayed to each new /ws client. Without it a
         # wallboard reload loses the once-a-day dining recommendation for up to a day
-        # (ADR-0027).
-        self.ambient_cache = AmbientCache(max_age_s=self.config.ambient_cache_max_age_s)
+        # (ADR-0027). Presence too, per subject and only while fresh (ADR-0048).
+        self.ambient_cache = AmbientCache(
+            max_age_s=self.config.ambient_cache_max_age_s,
+            presence_stale_after_s=self.config.presence_stale_after_s,
+        )
         self.broadcast = DisplayBroadcast(replay_source=self.ambient_cache.replay)
         self.store = SessionStore(
             self.config.db_path,
@@ -1648,6 +1651,9 @@ async def metrics() -> Response:
             ),
             "door_api_mqtt_bridge_messages_broadcast_total": (
                 state.mqtt_bridge.messages_broadcast if state.mqtt_bridge else 0
+            ),
+            "door_api_mqtt_bridge_messages_duplicate_total": (
+                state.mqtt_bridge.messages_duplicate if state.mqtt_bridge else 0
             ),
             "door_api_mqtt_bridge_parse_errors_total": (
                 state.mqtt_bridge.parse_errors if state.mqtt_bridge else 0

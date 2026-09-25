@@ -224,6 +224,10 @@ class SessionConfig:
     # the ceiling, so a producer on any cadence up to daily survives a reload while a
     # dead one stops being quoted as current.
     ambient_cache_max_age_s: float = 26 * 3600.0
+    # How long the last presence label per subject is replayed to a connecting kiosk
+    # (ADR-0048). Matches the control plane's CONTROL_PLANE_PRESENCE_STALE_AFTER_S, so
+    # door-api never quotes a label the resolver itself would call stale.
+    presence_stale_after_s: float = 1800.0
     # Must stay >= door-visiond's greeting cooldown (VISIOND_GREETING_COOLDOWN_MS, 30 s).
     #
     # Measured on the door: while someone stands there continuously, vision.identity_stable
@@ -384,6 +388,7 @@ class SessionConfig:
             sync_retry_window_s=_env_float("DOOR_API_SYNC_RETRY_WINDOW_S", 24 * 3600.0),
             internal_event_token=os.environ.get("DOOR_API_INTERNAL_EVENT_TOKEN", ""),
             ambient_cache_max_age_s=_env_float("DOOR_API_AMBIENT_CACHE_MAX_AGE_S", 26 * 3600.0),
+            presence_stale_after_s=_env_float("DOOR_API_PRESENCE_STALE_AFTER_S", 1800.0),
             recognised_identity_idle_ttl_s=_env_float("DOOR_API_IDENTITY_IDLE_TTL_S", 33.0),
             recognised_identity_interaction_ttl_s=_env_float(
                 "DOOR_API_IDENTITY_INTERACTION_TTL_S", 120.0

@@ -55,13 +55,14 @@ def test_a_newer_event_replaces_the_older_one_of_the_same_type() -> None:
     assert cache.replay()[0]["payload"]["title"] == "today"
 
 
-def test_presence_is_deliberately_not_cached() -> None:
-    # status.* carries presence: personal, with its own staleness contract on the control
-    # plane. Caching it would turn a live-only signal into a remembered one, telling a
-    # late-connecting client where someone was minutes ago.
+def test_presence_is_cached_per_subject_but_only_replayed_while_fresh() -> None:
+    # ADR-0048 supersedes ADR-0027's exclusion: presence is remembered per subject, and
+    # replayed only inside the control plane's own freshness bound. The example event's
+    # occurred_at is long past, so a wall clock of "now" must not replay it; a clock a
+    # minute after it must. The details live in test_presence_replay_per_subject.py.
     cache = AmbientCache()
-    assert cache.remember(_event("status.presence_changed")) is False
-    assert cache.replay() == []
+    assert cache.remember(_event("status.presence_changed")) is True
+    assert cache.replay() == [], "a stale label is never handed to a late client"
 
 
 def test_an_event_without_a_type_is_skipped_not_raised() -> None:

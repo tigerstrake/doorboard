@@ -19,13 +19,22 @@ So door-api remembers the most recent event per ambient type and replays them to
 ``/ws`` client, in door-api's ordinary delta envelope. A reconnecting wallboard sees exactly
 what it would have seen had it been listening all along, and needs no new code path for it.
 
-Scope and privacy
-=================
-``ambient.*`` only — deliberately **not** ``status.*``, which carries presence. Presence is
-personal, it has its own staleness contract on the control plane, and caching it here would
-change a live-only signal into a remembered one: a client connecting later would learn where
-someone was several minutes ago, which it would otherwise never have been told. Aircraft
-overhead, tonight's satellite pass and what is for lunch carry no such weight.
+Presence (ADR-0048)
+===================
+``status.*`` carries presence, and ADR-0027 deliberately left it out: a client connecting
+later would learn where someone was several minutes ago. That exclusion cost the wallboard
+its primary tile — "Presence unavailable." after every kiosk relaunch, door-ui restart or
+reload until someone's status next *changed*, which on a stable evening is hours. The label
+a late client learns is the same broad label the same corridor was shown a moment earlier,
+and the control plane already bounds how long a label may be believed
+(``CONTROL_PLANE_PRESENCE_STALE_AFTER_S``, 30 min).
+
+So the last ``status.*`` event is kept per ``(type, subject_id)`` — bounded to a handful of
+subjects, since the id arrives off an MQTT topic — and replayed **only while fresh**: the
+wall clock must be inside ``occurred_at + presence_stale_after_s`` and, when the event
+carries ``until``, before it. A stale or expired label is not replayed; the tile shows
+*unknown*, never the past. Nothing older than the control plane's own freshness bound is
+ever handed to a client, which keeps ADR-0027's privacy stance in spirit.
 
 Entries expire (``max_age_s``), because a stale ambient reading presented as current is worse
 than an empty tile. After a multi-day outage the dining channel must come back empty rather
@@ -37,6 +46,7 @@ from __future__ import annotations
 import time
 from collections import OrderedDict
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 # Just over a day. Set when the longest producer interval was the daily food job (now
@@ -48,47 +58,107 @@ DEFAULT_MAX_AGE_S = 26 * 3600.0
 # misbehaving producer must not be able to grow this without bound.
 DEFAULT_MAX_TYPES = 16
 
+# How long a presence label stays worth replaying. Matches the control plane's own
+# staleness contract (CONTROL_PLANE_PRESENCE_STALE_AFTER_S), which is the bound ADR-0048
+# leans on: door-api never quotes a label the resolver itself would call stale.
+DEFAULT_PRESENCE_STALE_AFTER_S = 1800.0
+
+# Presence is per subject and the subject id arrives off a topic; a house has a handful.
+DEFAULT_MAX_SUBJECTS = 8
+
+
+def _utc_timestamp(value: object) -> float | None:
+    """Epoch seconds for an ISO-8601 timestamp off an event dict, or None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
+
 
 class AmbientCache:
-    """Most-recent ``ambient.*`` event per type, with an age bound."""
+    """Most-recent ``ambient.*`` event per type, and ``status.*`` per subject, age-bounded."""
 
     def __init__(
         self,
         *,
         max_age_s: float = DEFAULT_MAX_AGE_S,
         max_types: int = DEFAULT_MAX_TYPES,
+        presence_stale_after_s: float = DEFAULT_PRESENCE_STALE_AFTER_S,
+        max_subjects: int = DEFAULT_MAX_SUBJECTS,
         monotonic_fn: Callable[[], float] | None = None,
+        wall_clock_fn: Callable[[], float] | None = None,
     ) -> None:
         self._max_age_s = max_age_s
         self._max_types = max_types
+        self._presence_stale_after_s = presence_stale_after_s
+        self._max_subjects = max_subjects
         self._monotonic = monotonic_fn or time.monotonic
+        # Presence freshness is judged against the event's own occurred_at/until, which
+        # are wall-clock, so this one comparison uses the wall clock too.
+        self._wall_clock = wall_clock_fn or time.time
         # Insertion-ordered so eviction drops the least recently *updated* type.
         self._entries: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+        self._presence: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
 
     def remember(self, event: dict[str, Any]) -> bool:
-        """Record an event if it is an ambient one. Returns whether it was kept.
+        """Record an event if it is an ambient or presence one. Returns whether it was kept.
 
         Called on the bridge's hot path, so it must not raise on a surprising shape — a
         payload that got this far is already schema-valid, but a missing ``type`` should
         cost a skip, not an exception that unwinds the bridge's read loop.
         """
         event_type = event.get("type")
-        if not isinstance(event_type, str) or not event_type.startswith("ambient."):
+        if not isinstance(event_type, str):
             return False
-        self._entries.pop(event_type, None)
-        self._entries[event_type] = (self._monotonic(), event)
-        while len(self._entries) > self._max_types:
-            self._entries.popitem(last=False)
-        return True
+        if event_type.startswith("ambient."):
+            self._entries.pop(event_type, None)
+            self._entries[event_type] = (self._monotonic(), event)
+            while len(self._entries) > self._max_types:
+                self._entries.popitem(last=False)
+            return True
+        if event_type.startswith("status."):
+            payload = event.get("payload")
+            subject_id = payload.get("subject_id") if isinstance(payload, dict) else None
+            if not isinstance(subject_id, str) or not subject_id:
+                return False
+            key = (event_type, subject_id)
+            self._presence.pop(key, None)
+            self._presence[key] = event
+            while len(self._presence) > self._max_subjects:
+                self._presence.popitem(last=False)
+            return True
+        return False
 
     def replay(self) -> list[dict[str, Any]]:
         """The events a newly connected client should be told about, oldest first.
 
         Oldest first so that if two types ever arrive out of order the client applies them
-        in the same sequence a live listener would have.
+        in the same sequence a live listener would have. Presence follows ambient, and only
+        the entries that are still fresh (ADR-0048).
         """
         self._expire()
-        return [event for _, event in self._entries.values()]
+        now = self._wall_clock()
+        return [event for _, event in self._entries.values()] + [
+            event for event in self._presence.values() if self._presence_is_fresh(event, now)
+        ]
+
+    def _presence_is_fresh(self, event: dict[str, Any], now: float) -> bool:
+        occurred_at = _utc_timestamp(event.get("occurred_at"))
+        if occurred_at is None or now >= occurred_at + self._presence_stale_after_s:
+            return False
+        payload = event.get("payload")
+        until = payload.get("until") if isinstance(payload, dict) else None
+        if until is not None:
+            until_at = _utc_timestamp(until)
+            # An `until` that cannot be read fails toward not replaying.
+            if until_at is None or now >= until_at:
+                return False
+        return True
 
     def _expire(self) -> None:
         cutoff = self._monotonic() - self._max_age_s
@@ -97,7 +167,7 @@ class AmbientCache:
 
     def forget_all(self) -> None:
         self._entries.clear()
+        self._presence.clear()
 
     def __len__(self) -> int:
-        self._expire()
-        return len(self._entries)
+        return len(self.replay())

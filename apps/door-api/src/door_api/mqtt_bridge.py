@@ -33,12 +33,23 @@ door-api already broadcasts its OWN session/vision/social events locally. We
 subscribe *only* to ``doorboard/ambient/#`` and ``doorboard/status/#`` (the
 config default) so we never re-broadcast — and thereby duplicate on ``/ws`` —
 events door-api itself is the source of.
+
+Per-subject presence topics (ADR-0048)
+======================================
+The control plane publishes ``status.presence_changed`` retained on
+``doorboard/status/presence_changed/<subject_id>`` — one topic per subject, so a
+broker restart keeps every subject rather than the last-published one — and, for
+one release, on the un-suffixed topic as well. The event type is read from the
+payload, never derived from the topic, so the extra segment needs no parsing;
+``doorboard/status/#`` matches both. The two copies carry the same ``event_id``
+and are deduplicated here, so a kiosk sees each presence change once.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from typing import Any
 from urllib.parse import urlparse
@@ -48,6 +59,11 @@ from doorboard_contracts.events import EVENT_ADAPTER
 from door_api.broadcast import DisplayBroadcast
 
 logger = logging.getLogger("door-api.mqtt_bridge")
+
+# How many recent event ids to remember for deduplication. The legacy and the
+# per-subject presence topics deliver the same event twice, and a broker reconnect
+# redelivers every retained message; a few hundred covers both with room to spare.
+_SEEN_EVENT_IDS = 256
 
 
 class MqttBridge:
@@ -84,15 +100,19 @@ class MqttBridge:
         # Best-effort observability counters (surfaced via /metrics).
         self.messages_received = 0
         self.messages_broadcast = 0
+        self.messages_duplicate = 0
         self.parse_errors = 0
         self.broadcast_errors = 0
+        self._seen_event_ids: OrderedDict[str, None] = OrderedDict()
 
-    def handle_payload(self, payload: bytes | bytearray | str) -> bool:
+    def handle_payload(self, payload: bytes | bytearray | str, *, topic: str | None = None) -> bool:
         """Parse one MQTT payload into a DoorboardEvent and broadcast it.
 
         Returns ``True`` when the event was broadcast, ``False`` when the
         payload was dropped. Never raises for bad input: a malformed/garbage
         payload is logged at WARNING and swallowed so the bridge keeps running.
+        A copy of an event already seen (the legacy and per-subject presence
+        topics, or a retained redelivery on reconnect) is counted and dropped.
         """
         self.messages_received += 1
         try:
@@ -101,6 +121,17 @@ class MqttBridge:
             self.parse_errors += 1
             logger.warning("mqtt_bridge_parse_failed", exc_info=True)
             return False
+
+        event_id = str(event.event_id)
+        if event_id in self._seen_event_ids:
+            self.messages_duplicate += 1
+            logger.debug(
+                "mqtt_bridge_duplicate_dropped", extra={"type": event.type, "topic": topic}
+            )
+            return False
+        self._seen_event_ids[event_id] = None
+        while len(self._seen_event_ids) > _SEEN_EVENT_IDS:
+            self._seen_event_ids.popitem(last=False)
 
         # Same envelope door-api uses for locally-produced contract events
         # (cf. the vision.* handlers in app.py): send_delta wraps the event dict
@@ -155,7 +186,7 @@ class MqttBridge:
                     )
                     backoff = self.reconnect_base_s  # reset after a clean connect
                     async for message in client.messages:
-                        self.handle_payload(message.payload)
+                        self.handle_payload(message.payload, topic=str(message.topic))
             except asyncio.CancelledError:
                 raise
             except Exception:
