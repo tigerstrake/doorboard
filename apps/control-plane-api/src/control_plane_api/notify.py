@@ -15,6 +15,7 @@ ingested event.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
@@ -143,6 +144,40 @@ def evaluate_rules(
                     cooldown_s=bird_new_species_cooldown_s,
                 )
     return None
+
+
+# Alertmanager messages are relayed as-is; a long description is truncated so
+# one runaway annotation cannot become a screen-long push notification.
+_ALERT_MESSAGE_MAX = 1000
+
+
+def notification_for_alert(
+    *, status: str, labels: Mapping[str, str], annotations: Mapping[str, str]
+) -> Notification:
+    """Turn one Alertmanager alert (labels + annotations) into an owner notification.
+
+    The NUC's Prometheus/Alertmanager posts to `/admin/alerts`; whatever channels
+    the owner already configured for door notifications (ntfy and/or Telegram)
+    carry the alert too, so a dead broker or a full disk reaches the same phone
+    as a missed bell. Cooldowns are Alertmanager's job (`repeat_interval`), so
+    this does not go through the per-rule cooldown table.
+    """
+    name = labels.get("alertname", "alert")
+    severity = labels.get("severity", "")
+    detail = annotations.get("summary") or annotations.get("description") or ""
+    where = labels.get("instance") or labels.get("job") or ""
+    title = f"✅ Resolved: {name}" if status == "resolved" else f"🚨 {name}"
+    parts = [detail] if detail else []
+    if where:
+        parts.append(f"({where})")
+    message = " ".join(parts) or f"{name} is {status}."
+    priority = "high" if status != "resolved" and severity in {"critical", "page"} else "default"
+    return Notification(
+        rule_key=f"alert:{name}",
+        title=title,
+        message=message[:_ALERT_MESSAGE_MAX],
+        priority=priority,
+    )
 
 
 class Notifier(Protocol):
@@ -279,6 +314,11 @@ class NotifyEngine:
         self._bird_new_species_alert = bird_new_species_alert
         self._bird_known_species = bird_known_species
         self._bird_new_species_cooldown_s = bird_new_species_cooldown_s
+
+    @property
+    def notifier(self) -> Notifier:
+        """The configured channel(s), for senders that manage their own cadence."""
+        return self._notifier
 
     def on_event(self, session: Session, event: DoorboardEvent, *, now: datetime) -> None:
         notification = evaluate_rules(

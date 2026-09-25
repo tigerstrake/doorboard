@@ -25,6 +25,7 @@ Routes:
   POST   /admin/tokens                — issue a Pi-scoped service token (admin)
   DELETE /admin/tokens/{token_id}     — revoke a service token (admin)
   GET    /admin/tokens                — list active service tokens (admin)
+  POST   /admin/alerts                — Alertmanager webhook -> owner notification channels (admin)
 
 Every route is a plain `def`: Starlette runs those on its threadpool, so the
 synchronous SQLAlchemy/httpx work inside them cannot stall the event loop the
@@ -46,6 +47,7 @@ not a new one. Replace when real admin auth lands (see T-501 README note).
 
 from __future__ import annotations
 
+import functools
 import logging
 import logging.config
 import secrets
@@ -53,7 +55,7 @@ import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from doorboard_auth import ServiceTokenRecord, ServiceTokenScope
 from doorboard_config import DoorConfigSettings
@@ -69,8 +71,15 @@ from control_plane_api.bundles import get_or_create_bundle, update_bundle
 from control_plane_api.db import session_scope
 from control_plane_api.deletion import scrub_social_item
 from control_plane_api.http_limits import BodySizeLimitMiddleware
-from control_plane_api.metrics import AUTH_FAILURES, MQTT_CONNECTED, RATE_LIMITED, metrics
+from control_plane_api.metrics import (
+    ALERTS_RECEIVED,
+    AUTH_FAILURES,
+    MQTT_CONNECTED,
+    RATE_LIMITED,
+    metrics,
+)
 from control_plane_api.models import SocialItemRow
+from control_plane_api.notify import notification_for_alert
 from control_plane_api.presence import CoordinatePayloadError, reject_coordinate_payload
 from control_plane_api.presence_engine import (
     DEFAULT_SUBJECT_IDS,
@@ -847,6 +856,48 @@ def admin_list_checkins(request: Request, _auth: AdminAuth) -> dict:
 @app.delete("/admin/social/checkins/{item_id}")
 def admin_delete_checkin(item_id: str, request: Request, _auth: AdminAuth) -> dict:
     return _delete_social_item(request, "checkin", item_id)
+
+
+# ---------------------------------------------------------------------------
+# Alertmanager webhook (admin bearer) — infra/monitoring/alertmanager.yml posts here
+# ---------------------------------------------------------------------------
+
+
+class AlertmanagerAlert(BaseModel):
+    """One alert of the Alertmanager v4 webhook payload. Unknown fields are ignored."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    status: Literal["firing", "resolved"] = "firing"
+    labels: dict[str, str] = Field(default_factory=dict, max_length=64)
+    annotations: dict[str, str] = Field(default_factory=dict, max_length=64)
+    startsAt: str | None = None  # Alertmanager's own field name
+
+
+class AlertmanagerWebhook(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    alerts: list[AlertmanagerAlert] = Field(max_length=100)
+
+
+@app.post("/admin/alerts")
+def admin_alerts(body: AlertmanagerWebhook, request: Request, _auth: AdminAuth) -> dict:
+    """Fan each firing/resolved alert out through whichever owner channels are configured.
+
+    Delivery goes through the fan-out worker so a slow ntfy/Telegram hop cannot
+    hold Alertmanager's request open (it retries on timeout, which would double
+    the message).
+    """
+    state = _state(request)
+    notifier = state.notify_engine.notifier
+    for alert in body.alerts:
+        notification = notification_for_alert(
+            status=alert.status, labels=alert.labels, annotations=alert.annotations
+        )
+        metrics.inc(ALERTS_RECEIVED, status=alert.status)
+        state.fanout.submit(functools.partial(notifier.notify, notification))
+    logger.info("alerts_received", extra={"count": len(body.alerts)})
+    return {"accepted": len(body.alerts)}
 
 
 # ---------------------------------------------------------------------------

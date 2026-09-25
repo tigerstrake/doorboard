@@ -13,6 +13,7 @@ from control_plane_api.notify import (
     TelegramNotifier,
     build_notifier,
     evaluate_rules,
+    notification_for_alert,
 )
 from doorboard_contracts import parse_event
 
@@ -343,3 +344,39 @@ def test_telegram_notifier_sends_message(monkeypatch) -> None:
     assert calls[0]["url"] == "https://tg.example/bottok/sendMessage"
     assert calls[0]["data"]["chat_id"] == "42"
     assert "Plane overhead" in calls[0]["data"]["text"]
+
+
+# ── Alertmanager relay (POST /admin/alerts) ────────────────────────────────
+
+
+def test_alert_mapping_firing_critical_is_high_priority_with_summary() -> None:
+    n = notification_for_alert(
+        status="firing",
+        labels={"alertname": "MosquittoDown", "severity": "critical", "instance": "nuc:1883"},
+        annotations={"summary": "Broker unreachable", "description": "ignored when summary set"},
+    )
+    assert n.rule_key == "alert:MosquittoDown"
+    assert n.title == "🚨 MosquittoDown"
+    assert n.message == "Broker unreachable (nuc:1883)"
+    assert n.priority == "high"
+
+
+def test_alert_mapping_resolved_is_default_priority_even_when_critical() -> None:
+    n = notification_for_alert(
+        status="resolved",
+        labels={"alertname": "MosquittoDown", "severity": "critical"},
+        annotations={"description": "Back up."},
+    )
+    assert n.title == "✅ Resolved: MosquittoDown"
+    assert n.message == "Back up."
+    assert n.priority == "default"
+
+
+def test_alert_mapping_survives_missing_labels_and_truncates_long_text() -> None:
+    n = notification_for_alert(status="firing", labels={}, annotations={})
+    assert n.title == "🚨 alert"
+    assert n.message == "alert is firing."
+    long = notification_for_alert(
+        status="firing", labels={"alertname": "x"}, annotations={"summary": "y" * 5000}
+    )
+    assert len(long.message) == 1000
