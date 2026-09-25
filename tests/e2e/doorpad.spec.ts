@@ -1,18 +1,37 @@
 import { expect, test, type Page } from "@playwright/test";
 
-type Recording = {
+// The shape `GET /doorpad/video-message/latest` returns: a playback URL and a duration,
+// never a storage path or a consent field (the doorpad states visitor_initiated itself).
+type LatestRecording = {
   recording_id: string;
-  path: string | null;
-  consent_context: "visitor_initiated" | "bell_event" | null;
-  thumbnail_path: string | null;
-  playback_url?: string;
+  playback_url: string;
+  duration_s: number | null;
+  finalized_at_utc: string | null;
 };
 
-const API = "http://127.0.0.1:8000";
+type InboxRecording = LatestRecording & {
+  consent_context: "visitor_initiated" | "bell_event" | null;
+  thumbnail_path: string | null;
+};
+
+// door-api's origin as the kiosk derives it from the page it is served on (apiBase.ts):
+// this suite is served from 127.0.0.1:5173, so door-api is 127.0.0.1:8080.
+const API = "http://127.0.0.1:8080";
 
 test.beforeEach(async ({ page }) => {
   await installMockDoorApi(page);
 });
+
+/**
+ * The admin token is held in memory only (ADR-0042: the console can open on the corridor
+ * touchscreen), so every visit to /admin goes through the sign-in form. The mock answers
+ * the admin routes regardless of the bearer value.
+ */
+async function signInToAdmin(page: Page) {
+  await page.goto("/admin");
+  await page.getByLabel("Admin token").fill("e2e-admin-token");
+  await page.getByRole("button", { name: "Continue" }).click();
+}
 
 test("visitor records, reviews, saves, and admin inbox shows metadata", async ({ page }) => {
   await page.goto("/doorpad");
@@ -24,14 +43,16 @@ test("visitor records, reviews, saves, and admin inbox shows metadata", async ({
   await page.getByRole("button", { name: "Stop & Review" }).click();
   await expect(page.getByRole("heading", { name: "Review Message" })).toBeVisible();
   await expect(page.getByText("Consent context: visitor_initiated")).toBeVisible();
+  // The preview arrives from the review-step poll, not from the Stop button.
+  await expect(page.locator("video.review-video")).toHaveAttribute("src", "data:video/mp4;base64,");
 
   await page.getByRole("button", { name: "Save Message" }).click();
   await expect(page.getByRole("heading", { name: "Message Saved" })).toBeVisible();
 
-  await page.goto("/admin");
+  await signInToAdmin(page);
   await expect(page.getByRole("heading", { name: "Video Message Inbox" })).toBeVisible();
   await expect(page.getByText("Consent: visitor_initiated")).toBeVisible();
-  await expect(page.getByText("Thumbnail ready")).toBeVisible();
+  await expect(page.getByText("3.5 seconds", { exact: false })).toBeVisible();
 });
 
 test("discarded reviewed message leaves the inbox empty", async ({ page }) => {
@@ -45,8 +66,9 @@ test("discarded reviewed message leaves the inbox empty", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Review Message" })).toBeVisible();
   await page.getByRole("button", { name: "Discard" }).click();
 
+  // Discarding is leaving: the visitor lands on the home tiles, not the offer screen.
   await expect(page.getByRole("button", { name: "Video Message" })).toBeVisible();
-  await page.goto("/admin");
+  await signInToAdmin(page);
   await expect(page.getByText("No saved visitor video messages.")).toBeVisible();
 });
 
@@ -54,16 +76,16 @@ test("QR handoff fetches a visitor token", async ({ page }) => {
   await page.goto("/doorpad");
 
   await page.getByRole("button", { name: "Video Message" }).click();
-  await page.getByRole("button", { name: "Use Phone QR" }).click();
+  await page.getByRole("button", { name: "Open Visitor QR" }).click();
 
-  await expect(page.getByRole("heading", { name: "Continue on Phone" })).toBeVisible();
-  await expect(page.getByText("door.local/visitor?token=" , { exact: false })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Visitor Link" })).toBeVisible();
+  await expect(page.getByText("door.local/visitor?token=", { exact: false })).toBeVisible();
 });
 
 async function installMockDoorApi(page: Page) {
   let sessionState = "IDLE";
-  let latestRecording: Recording | null = null;
-  let inbox: Recording[] = [];
+  let latestRecording: LatestRecording | null = null;
+  let inbox: InboxRecording[] = [];
 
   const snapshot = () => ({
     session: { state: sessionState, session_id: "018f6a61-0000-7000-8000-000000000402" },
@@ -94,10 +116,9 @@ async function installMockDoorApi(page: Page) {
     sessionState = "VIDEO_MESSAGE_REVIEW";
     latestRecording = {
       recording_id: "018f6a61-0000-7000-8000-000000000999",
-      path: "recordings/mock/video_message.mp4",
-      consent_context: "visitor_initiated",
-      thumbnail_path: "thumbnails/mock.jpg",
       playback_url: "data:video/mp4;base64,",
+      duration_s: 3.5,
+      finalized_at_utc: "2026-09-25T10:00:04Z",
     };
     await route.fulfill({ json: { accepted: true, ...snapshot() } });
   });
@@ -108,7 +129,15 @@ async function installMockDoorApi(page: Page) {
 
   await page.route(`${API}/doorpad/video-message/save`, async (route) => {
     sessionState = "VIDEO_MESSAGE_SAVED";
-    if (latestRecording) inbox = [latestRecording];
+    if (latestRecording) {
+      inbox = [
+        {
+          ...latestRecording,
+          consent_context: "visitor_initiated",
+          thumbnail_path: "thumbnails/mock.jpg",
+        },
+      ];
+    }
     await route.fulfill({ json: { accepted: true, ...snapshot() } });
   });
 

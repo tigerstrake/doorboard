@@ -363,6 +363,23 @@ interface VideoRecording {
   playback_url?: string;
 }
 
+/**
+ * `GET /doorpad/video-message/latest`: the clip this session just recorded, once
+ * door-media has finalised it. Deliberately narrow — the public doorpad route carries a
+ * playback URL and a duration, never a storage path.
+ */
+interface LatestRecording {
+  recording_id: string;
+  playback_url: string;
+  duration_s: number | null;
+  finalized_at_utc: string | null;
+}
+
+// Finalising a clip (concat + thumbnail) takes a few seconds on the Pi, so the review
+// screen polls the preview patiently — ~30 s — rather than giving up at 3 s.
+const LATEST_RECORDING_POLL_MS = 500;
+const LATEST_RECORDING_POLL_ATTEMPTS = 60;
+
 function AdminThumbnail({
   recordingId,
   token,
@@ -552,7 +569,7 @@ export function App() {
   const [photoCountdown, setPhotoCountdown] = useState<number>(3);
   const [recordingElapsed, setRecordingElapsed] = useState<number>(0);
   const [maxRecordingS, setMaxRecordingS] = useState<number>(60);
-  const [latestRecording, setLatestRecording] = useState<VideoRecording | null>(null);
+  const [latestRecording, setLatestRecording] = useState<LatestRecording | null>(null);
   // Display names of the residents a saved video message was routed to, used to
   // tailor the "Sent to …" confirmation. Empty = plain broadcast/save.
   const [sentRecipientNames, setSentRecipientNames] = useState<string[]>([]);
@@ -2371,29 +2388,45 @@ export function App() {
     }
   }, []);
 
-  const fetchLatestRecording = useCallback(async (): Promise<VideoRecording | null> => {
-    // Finalizing a clip (concat + thumbnail) can take several seconds on the Pi, so
-    // poll patiently — ~30 s — rather than giving up at 3 s and stranding the visitor on
-    // "Preparing playback…". The review screen keeps the Send buttons usable throughout
-    // (they don't depend on the preview), and the server holds the session for 180 s, so
-    // there is time. Well within the review timeout.
-    for (let attempt = 0; attempt < 60; attempt += 1) {
+  // The preview is fetched by an effect on the review step, not from the Stop button.
+  // Two paths reach review without that button: the server's own max-duration stop
+  // (`timeout:max_recording` fires before the client's timer) and a reload mid-review,
+  // which re-derives the screen from GET /session. Both sat on "Preparing the preview"
+  // forever. The poll also stays out of the buttons' way: Send/Discard/Re-record never
+  // depended on the preview, and the copy says so.
+  useEffect(() => {
+    if (doorPadScreen !== "message" || videoStep !== "review" || latestRecording) {
+      return undefined;
+    }
+    let cancelled = false;
+    let timer: number | null = null;
+    let attempts = 0;
+    const poll = async () => {
+      attempts += 1;
       try {
         const response = await fetch(`${API_BASE}/doorpad/video-message/latest`);
         if (response.ok) {
-          const data = (await response.json()) as { recording?: VideoRecording | null };
+          const data = (await response.json()) as { recording?: LatestRecording | null };
+          if (cancelled) return;
           if (data.recording) {
             setLatestRecording(data.recording);
-            return data.recording;
+            return;
           }
         }
       } catch {
         // Retry; the review screen shows a preparing state and stays interactive.
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 500));
-    }
-    return null;
-  }, []);
+      if (cancelled || attempts >= LATEST_RECORDING_POLL_ATTEMPTS) return;
+      timer = window.setTimeout(() => {
+        void poll();
+      }, LATEST_RECORDING_POLL_MS);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [doorPadScreen, latestRecording, videoStep]);
 
   const stopRecording = useCallback(async () => {
     if (mediaActionPending) return;
@@ -2403,13 +2436,11 @@ export function App() {
       "Couldn't stop the recording. Please try again."
     );
     const stopped = result?.accepted || result?.session?.state === "VIDEO_MESSAGE_REVIEW";
-    if (stopped) {
-      setVideoStep("review");
-      const recording = await fetchLatestRecording();
-      if (!recording) triggerToast("Recording stopped, but playback is still preparing.");
-    }
+    // Pending ends with the POST. It used to span the preview poll as well, which
+    // greyed out Send/Discard/Re-record for up to 30 s under copy promising the opposite.
     setMediaActionPending(false);
-  }, [fetchLatestRecording, mediaActionPending, postDoorApi]);
+    if (stopped) setVideoStep("review");
+  }, [mediaActionPending, postDoorApi]);
 
   const beginRecording = useCallback(async () => {
     if (mediaActionPending) return;
@@ -2485,7 +2516,11 @@ export function App() {
       setLatestRecording(null);
       setVisitorQrUrl(null);
       if (result?.session) applySessionSnapshot(result.session);
-      else setDoorPadScreen("home");
+      // Discarding is leaving. The snapshot alone does not say so: IDLE implies no screen
+      // (a lapsed session must not yank a visitor around), so without this a discarded
+      // message left the visitor on the offer screen rather than home.
+      const liveState = result?.session?.state;
+      if (!liveState || !VISITOR_STATES.includes(liveState)) setDoorPadScreen("home");
       setVideoStep("offer");
     }
     setMediaActionPending(false);
@@ -3310,9 +3345,10 @@ export function App() {
                   <span>Preparing the preview — you can send it now without waiting.</span>
                 </div>
               )}
-              <div className="message-meta">
-                Consent context: {latestRecording?.consent_context ?? "visitor_initiated"}
-              </div>
+              {/* Visitor-initiated by construction: this screen is only reached by a
+                  visitor choosing to record. The latest-recording route carries no consent
+                  field, so nothing here can claim otherwise. */}
+              <div className="message-meta">Consent context: visitor_initiated</div>
               <div className="action-button-group">
                 {RECIPIENT_CHOICES.length > 0 ? (
                   <>
