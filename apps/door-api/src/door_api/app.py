@@ -1018,6 +1018,16 @@ class DoorApiState:
             held = self.identity.current()
             session_key = held.interaction_id if held is not None else None
         if session_key is None:
+            # Nobody has rung and nobody is recognised: a stranger tapped Guestbook,
+            # typed a note and pressed Submit. Refusing here (409) meant every one of
+            # the doorpad's social flows failed for exactly the visitor they exist
+            # for. A note is a doorpad interaction like any other, so it opens the
+            # same touch session the doorpad ring and the video-message offer start
+            # (handle_button_pressed with entry "touch"), and the token binds to a
+            # real session. The wallboard only mints inside a takeover state, so an
+            # ambient poll can never start a session by accident.
+            session_key = self._start_touch_session_for_token()
+        if session_key is None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="No active visitor session",
@@ -1062,6 +1072,23 @@ class DoorApiState:
         # Push immediately so the snapshot is there before the visitor can scan.
         self._push_visitor_snapshot_soon(token)
         return {"token": token, "url": url, "expires_at": expires_at, "via": via}
+
+    def _start_touch_session_for_token(self) -> UUID | None:
+        """Open the doorpad touch session a visitor token needs, or None if that fails."""
+        trace_id = uuid4()
+        try:
+            started = self.machine.handle_button_pressed(
+                trace_id=trace_id, trigger="doorpad.visitor_token", entry="touch"
+            )
+        except Exception:
+            # A persist failure is already logged by the machine; the token route
+            # keeps its honest 409 rather than pretending a session exists.
+            logger.warning("visitor_token_session_start_failed", extra={"trace_id": str(trace_id)})
+            return None
+        if not started:
+            return None
+        logger.info("visitor_token_started_touch_session", extra={"trace_id": str(trace_id)})
+        return self.machine.snapshot().session_id
 
     def attributed_display_name(self) -> str | None:
         """The name to disclose on a surface that is about to attribute a write.

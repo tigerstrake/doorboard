@@ -137,6 +137,48 @@ def test_vote_flow_end_to_end(client: TestClient, monkeypatch: pytest.MonkeyPatc
     assert next(r for r in results if r["option_id"] == option_id)["votes"] == 1
 
 
+def test_social_writes_work_for_a_stranger_who_has_not_rung(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guestbook, vote and check-in from IDLE with nobody recognised (audit E1/A1).
+
+    The doorpad's social flows fetch a visitor token lazily on Submit. With no session
+    and no held identity the mint answered 409, so a stranger's note, vote and guest
+    check-in all failed with "request failed with status 409". The mint now opens the
+    doorpad touch session the note is part of, and the writes go through end to end.
+    """
+    monkeypatch.setenv("DOOR_API_SOCIAL_ADMIN_TOKEN", "test-admin-token")
+    state.__init__()
+    state.startup()
+    poll = client.post(
+        "/admin/polls",
+        json={"question": "Snack?", "options": ["Tea", "Coffee"]},
+        headers={"Authorization": "Bearer test-admin-token"},
+    ).json()
+    assert state.machine.snapshot().session_id is None
+    assert state.identity.current() is None
+
+    minted = client.get("/visitor-token")
+    assert minted.status_code == 200, minted.text
+    token = minted.json()["token"]
+    assert state.machine.snapshot().session_id is not None, "the mint opened a touch session"
+
+    note = client.post(
+        "/guestbook", json={"text": "hello from the hallway", "session_token": token}
+    )
+    assert note.status_code == 201, note.text
+    vote = client.post(
+        f"/polls/{poll['id']}/vote",
+        json={"option_id": poll["options"][0]["id"], "session_token": token},
+    )
+    assert vote.status_code == 201, vote.text
+    checkin = client.post("/checkins", json={"label": "guest", "session_token": token})
+    assert checkin.status_code == 201, checkin.text
+    assert checkin.json()["is_recognized"] is False, "nobody was recognised, nothing is attributed"
+    # Still the one token for that session on a later mint.
+    assert client.get("/visitor-token").json()["token"] == token
+
+
 # ---------------------------------------------------------------------------
 # Check-ins
 # ---------------------------------------------------------------------------

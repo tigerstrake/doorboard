@@ -366,18 +366,42 @@ def test_video_message_offer_starts_touch_session() -> None:
         assert started["payload"]["entry"] == "touch"
 
 
-def test_visitor_token_requires_active_session_and_is_scoped() -> None:
+def test_visitor_token_from_idle_opens_a_touch_session_and_is_scoped() -> None:
+    # A stranger who has not rung taps Guestbook and submits: the token mint used to
+    # 409 here, so every doorpad social flow failed for exactly the visitor it exists
+    # for. It now starts the same touch session the doorpad ring starts.
     client = TestClient(app)
-    missing = client.get("/visitor-token")
-    assert missing.status_code == 409
+    with client.websocket_connect("/ws") as websocket:
+        json.loads(websocket.receive_text())  # snapshot
+        assert state.machine.state == SessionState.IDLE
 
-    client.post("/doorpad/ring")
-    response = client.get("/visitor-token")
+        response = client.get("/visitor-token")
 
-    assert response.status_code == 200
-    token = response.json()["token"]
-    assert "." in token
-    assert response.json()["url"].endswith(f"/visitor?token={token}")
+        assert response.status_code == 200
+        token = response.json()["token"]
+        assert "." in token
+        assert response.json()["url"].endswith(f"/visitor?token={token}")
+        assert state.machine.state == SessionState.VISITOR_MODE
+        changed = _receive_delta(websocket, "session.state_changed")
+        started = _receive_delta(websocket, "session.started")
+        assert changed["payload"]["trigger"] == "doorpad.visitor_token"
+        assert started["payload"]["entry"] == "touch"
+        # Bound to that session, and the one token for it (the relay hash must not move).
+        assert state.verify_visitor_token(token).session_id == state.machine.session_id
+        assert client.get("/visitor-token").json()["token"] == token
+
+
+def test_visitor_token_keeps_its_409_when_no_session_can_be_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def disk_full(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise RuntimeError("database or disk is full")
+
+    monkeypatch.setattr(state.store, "save_with_delivery_events", disk_full)
+    response = TestClient(app).get("/visitor-token")
+    assert response.status_code == 409
+    assert state.machine.state == SessionState.IDLE
 
 
 def test_photobooth_feature_off_hides_public_endpoints() -> None:
