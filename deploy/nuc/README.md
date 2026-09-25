@@ -64,5 +64,5 @@ why" overview the handoff's trust model expects a reader to find first.
   token if it's ever physically lost (ARCHITECTURE.md §2: a stolen Pi holds
   no admin credentials and no long-term archive).
 
-The full deployment security checklist itself is T-701's
-(`docs/runbooks/security-checklist.md`, not yet written).
+The full deployment security checklist is
+[docs/runbooks/security-checklist.md](../../docs/runbooks/security-checklist.md).

@@ -1,5 +1,6 @@
 # Encrypted Enrollment Volume (LUKS, key-on-NUC)
 
+**Verified-on:** door-pi (home layout) + NUC, 2026-07-27
 **Status:** Verified on-device 2026-07-27 (door-pi + NUC). Deployed end-to-end: NUC releases the key (401 without/with-bad token, 200 with the correct token); the Pi built the LUKS2 volume, the boot-unlock unit fetches the key and re-opens the volume from a fully-closed state (reboot-survival confirmed), and door-visiond runs `enrollment_locked: false` with `enrollment.sqlite` on the encrypted mount.
 
 **As-deployed note (live door-pi):** the door Pi runs door-visiond as `tigerstrake` from `/home/tigerstrake/doorboard` (not the repo-canonical `doorboard`/`/opt/doorboard`), so the installed unit's `ExecStart` and `enrollment-unlock.env`'s `ENROLLMENT_OWNER` are set to match. door-visiond sources `~/doorboard/.env`, so `VISIOND_ENROLLMENT_ROOT` + `VISIOND_REQUIRE_ENCRYPTED_STORAGE` go there; the `Wants=`/`After=` on door-visiond is installed as a drop-in (`door-visiond.service.d/enrollment-unlock.conf`) rather than editing the hand-adapted unit.

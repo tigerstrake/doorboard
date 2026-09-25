@@ -4,7 +4,7 @@
 
 An open-source, self-hosted, door-mounted smart-door and smart-room system. A removable "door backpack" carries a large ambient display, a small visitor touchscreen, two cameras, a physical bell button with LED/audio feedback, and a Raspberry Pi 5 + Hailo AI accelerator — backed by an indoor NUC control plane, a BirdNET Pi, and a NAS archive.
 
-**Status: M0–M7 complete — software accepted in simulation (T-790); hardware bring-up pending.** All eight milestones are closed and verified in the hardware-free simulator: real-time I/O, camera/media, face recognition, visitor sessions, control plane, the M6 ambient features (birds, satellites, aircraft, printer, food, photo booth), and M7 hardening (performance acceptance, runbooks + monitoring, security review). Physical bring-up and on-hardware acceptance (Hailo, ESP32 flash, real cameras, live external services, on-device latency/soak, deployment security walk) are deferred debt tracked in [#84](https://github.com/tigerstrake/doorboard/issues/84). See [docs/reviews/final-acceptance.md](docs/reviews/final-acceptance.md). Implementation happened task-by-task via the multi-agent workflow described below.
+**Status: M0–M7 closed in simulation (T-790, 2026-07-08); hardware live since 2026-08.** All eight milestones were verified in the hardware-free simulator ([docs/reviews/final-acceptance.md](docs/reviews/final-acceptance.md)), and the door has since been running in the hallway on the home layout (`deploy/pi-door/install-home-layout`): Pi 5 + Hailo, ESP32 over USB, both cameras, both kiosks, the encrypted enrollment volume, and the public relay on Cloudflare at `door.tigerstrake.com` (ADR-0043). Still open: on-device latency/soak acceptance and the deployment security walk on the real network; the deferred and audit debt lives in [docs/audit-findings-todo.md](docs/audit-findings-todo.md) and [#84](https://github.com/tigerstrake/doorboard/issues/84). Implementation happened task-by-task via the multi-agent workflow described below.
 
 ## The one rule
 
@@ -23,8 +23,8 @@ Everything in this repo is structured around that rule. Read [ARCHITECTURE.md](A
 | `docs/tasks/` | Self-contained task briefs, one per subtask, assigned to an agent tier |
 | `docs/hardware/` | Bill of materials, door assembly, wiring |
 | `docs/ui/` | Specs for the four UI surfaces (wallboard, doorpad, visitor, admin) |
-| `docs/runbooks/` | Operational runbooks (written during M7) |
-| `apps/` | Service specs (and later, code) for each deployable service |
+| `docs/runbooks/` | Operational runbooks; each carries a `Verified-on:` line saying where it was last walked |
+| `apps/` | One directory per deployable service: door-api, door-visiond, door-media, door-sync, door-voice, door-ui, control-plane-api, wallboard-worker, public-relay (Cloudflare), simulator |
 | `firmware/` | ESP32-S3 door controller spec/firmware |
 | `packages/` | Shared libraries: contracts, config, observability, auth, clients, ui-kit |
 | `integrations/` | Adapters: BirdNET, satellites, aircraft, printer, Home Assistant, food, gallery |

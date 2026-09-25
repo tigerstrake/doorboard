@@ -1,6 +1,8 @@
 # Runbook: remote enrollment relay
 
-Operating the phone-enrollment path (ADR-0016). Applies to `apps/public-relay` on Vercel and the relay client inside door-visiond.
+Operating the phone-enrollment path (ADR-0016). Applies to `apps/public-relay` on Cloudflare Pages at `door.tigerstrake.com` (ADR-0043) and the relay client inside door-visiond.
+
+**Verified-on:** simulator, 2026-07 (T-306); the Cloudflare deployment per [relay-cloudflare-deploy.md](relay-cloudflare-deploy.md)
 
 **First thing to know when something is wrong:** none of this can affect the door. The button, the ESP32, the local UI, recording, and at-door enrollment all keep working with the relay dead, unreachable, or deleted. If someone reports the door misbehaving, the relay is not your suspect.
 
@@ -22,9 +24,9 @@ Expected end to end: a few seconds from *Encrypt and send* to *You're enrolled*.
 # Relay: is it up, configured, and has the door checked in?
 curl -s https://<deployment>/api/health
 
-# Door: does the Pi think the relay is reachable?
+# Door: does the Pi think the relay is reachable? (on the Pi — :8081 is loopback only, ADR-0047)
 curl -s -H "Authorization: Bearer $DOOR_VISIOND_ADMIN_TOKEN" \
-  http://<door>:8081/relay-status
+  http://127.0.0.1:8081/relay-status
 ```
 
 `GET /health` on door-visiond also carries `relay_status` and `relay_configured`. Prometheus counters: `door_visiond_relay_polls_ok`, `_polls_failed`, `_bundles_enrolled`, `_bundles_rejected`, `_consecutive_failures`.
@@ -37,7 +39,7 @@ The relay has no door key, so nothing can be sealed. The Pi publishes it on star
 
 1. Is the Pi's poller running? `GET /relay-status` → `{"configured": false}` means `VISIOND_RELAY_BASE_URL` or `VISIOND_RELAY_DEVICE_TOKEN` is unset. Set both, restart door-visiond.
 2. `"status": "degraded"` with `last_error` set means the Pi cannot reach the relay. Check the Pi's egress and DNS, then `curl -sS https://<deployment>/api/health` **from the Pi**.
-3. Token mismatch shows up as repeated failures with the relay logging 401s. Compare `RELAY_DEVICE_TOKEN` (Vercel) against `VISIOND_RELAY_DEVICE_TOKEN` (Pi).
+3. Token mismatch shows up as repeated failures with the relay logging 401s. Compare `RELAY_DEVICE_TOKEN` (Cloudflare Pages secret) against `VISIOND_RELAY_DEVICE_TOKEN` (Pi).
 4. `enrollment_locked` in `/health` means the encrypted volume never unlocked — see [enrollment-encrypted-volume.md](enrollment-encrypted-volume.md). The sealing key lives on that volume, so remote enrollment stays unavailable until it is unlocked. This is by design.
 
 ### The phone says "the door's key does not match the code you scanned"
@@ -75,7 +77,7 @@ Do this if you suspect the relay was compromised, or on a schedule.
 
 ```bash
 curl -sS -X POST -H "Authorization: Bearer $DOOR_VISIOND_ADMIN_TOKEN" \
-  http://<door>:8081/relay-key/rotate
+  http://127.0.0.1:8081/relay-key/rotate      # on the Pi
 ```
 
 - A new `door_key_id` and fingerprint take effect immediately and are republished.
@@ -88,7 +90,7 @@ Rotating does **not** affect enrolled people: their embeddings are unrelated to 
 
 Unset `VISIOND_RELAY_BASE_URL` on the Pi and restart door-visiond. The poller never starts, no key is published, and outstanding invites become uncollectable (they expire). At-door enrollment is unaffected.
 
-To also take the public site down: `vercel remove <project>` or disable the deployment. Nothing on the Pi depends on it.
+To also take the public site down: delete the Pages project in the Cloudflare dashboard (or `wrangler pages project delete doorboard-relay`). Nothing on the Pi depends on it.
 
 ## Deleting someone who enrolled by phone
 

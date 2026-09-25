@@ -5,7 +5,11 @@ Raspberry Pi OS 64-bit on the Pi 5. Hardware-facing services run under **systemd
 ## Boot contract
 
 1. Cold boot → operational door with **no network and no NUC** (offline boot required).
-2. systemd ordering: SSD mount verified (`ssd.mount` dependency) → door-media + door-visiond + door-api → kiosk launch only after door-api `/health` is ok.
+2. systemd ordering: SSD verified writable and not the root filesystem
+   (`doorboard-storage-ready.service`, `Requires=`/`After=` on every writer) →
+   mediamtx + door-media + door-visiond + door-api → kiosk launch only after door-api
+   `/health` answers. door-api does not wait for door-visiond, and nothing on its chain
+   waits for the network (`tests/test_systemd_units.py`).
 3. Every service: `Restart=on-failure` with no start-rate limit; journald → structured
    JSON logs, persistent and bounded (`journald.conf.d/doorboard.conf`) on the SSD
    (`var-log-journal.mount`), never the boot card (ADR-0007).
@@ -36,11 +40,17 @@ Raspberry Pi OS 64-bit on the Pi 5. Hardware-facing services run under **systemd
    available, door-visiond runs in generic-greeting mode, reports
    `enrollment_locked`, refuses enrollment endpoints, and writes no biometric
    database to the unencrypted parent filesystem. Restart door-visiond after
-   the volume unlocks. The NUC key-release endpoint remains part of hardware
-   bring-up issue #84 because adding a new credential scope requires the
-   contract/security escalation mandated by `AGENTS.md`.
-3. Install the pinned MediaMTX binary at `/usr/local/bin/mediamtx` and its
-   config at `/etc/doorboard/mediamtx.yml`. Install camera/Hailo/UART packages
+   the volume unlocks — or let `doorboard-enrollment-unlock.timer` do it. The NUC
+   releases the key at `GET /status/keys/enrollment` to a holder of the narrow
+   release token; the whole procedure is
+   [docs/runbooks/enrollment-encrypted-volume.md](../../docs/runbooks/enrollment-encrypted-volume.md).
+3. Install the pinned MediaMTX binary at `/usr/local/bin/mediamtx`. door-media
+   writes the config it runs MediaMTX with at
+   `/mnt/ssd/doorboard/mediamtx/mediamtx.yml` (`MEDIAMTX_CONFIG_PATH`) and
+   spawns the process itself; `mediamtx.service` is the standalone alternative
+   and must point at that same file (the home-layout drop-in does). Running
+   both is the known two-instance item in `docs/audit-findings-todo.md`.
+   Install camera/Hailo/UART packages
    required by the selected hardware adapters, and `apt install caddy` for the
    LAN proxy (the installer disables the package's own `caddy.service`, which
    would otherwise hold port 80). Optionally `apt install
@@ -59,7 +69,8 @@ Raspberry Pi OS 64-bit on the Pi 5. Hardware-facing services run under **systemd
    Wayland env in `kiosk-*.env`), or, on a labwc session as the live Pi runs,
    install `labwc-autostart.example` as `~/.config/labwc/autostart` — it waits
    for door-api `/health` and relaunches each kiosk on exit.
-6. Reboot with the NUC/network disconnected and verify the four loopback
-   `/health` endpoints, both kiosks, UART feedback, and local recording.
+6. Reboot with the NUC/network disconnected and verify the loopback `/health`
+   endpoints (door-api 8080, door-visiond 8081, door-media 8082, door-sync 8083,
+   door-voice 8084 when enabled), both kiosks, UART feedback, and local recording.
 
 Recovery/replacement procedures live in `docs/runbooks/`.

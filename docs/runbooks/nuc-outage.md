@@ -1,6 +1,7 @@
 # NUC outage / planned maintenance
 
 **Status:** Verified (Walked through and tested on July 8, 2026)
+**Verified-on:** simulator + the compose stack, 2026-07-08 — not yet re-walked with the live door
 **Walkthrough Duration:** Outage of 5 minutes; recovery and queue draining completed in 45 seconds.
 
 ## The guarantee this runbook exists to protect

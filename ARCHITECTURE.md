@@ -16,7 +16,9 @@ REAL-TIME DOOR PLANE (hallway, medium/low trust, latency-critical)
 │   LED ring            ├─ door-media     (owns MediaMTX)      │
 │   speaker             ├─ door-api       (session orchestr.)  │
 │   knock sensor        ├─ door-ui        (kiosk SPA, 4 routes)│
-│                       └─ door-sync      (async queue → NUC)  │
+│                       ├─ door-sync      (async queue → NUC)  │
+│                       ├─ door-voice     (spoken greeting)    │
+│                       └─ door-proxy     (LAN allow-list :80) │
 │                                                              │
 │  HDMI×2: Wallboard (21.5–24" 1080p) + DoorPad (7" touch)     │
 │  CSI×2: recognition cam (Std) + visitor cam (Wide NoIR)      │
@@ -49,11 +51,11 @@ REAL-TIME DOOR PLANE (hallway, medium/low trust, latency-critical)
 | ESP32 | Low | No secrets at all; profile cache holds only opaque profile IDs |
 | Public screens | Low | Anyone can touch/see. Broad status only — never GPS, calendars, private notes, diagnostics |
 | QR/PWA visitor endpoints | Low | Tokenized, rate-limited, short-lived |
-| Public relay (Vercel) | **None** | Public, outside the house. Enrollment payloads cross it as AEAD ciphertext it holds no key for (ADR-0016); the visitor surface crosses it as plaintext that is already destined for a hallway wallboard, protected by a narrow allow-list rather than secrecy (ADR-0017). No route toward the Pi, no admin surface, per-service scoped tokens. Treated as a hostile courier by design |
+| Public relay (Cloudflare Pages + D1, `door.tigerstrake.com`, ADR-0043) | **None** | Public, outside the house. Enrollment payloads cross it as AEAD ciphertext it holds no key for (ADR-0016); the visitor surface crosses it as plaintext that is already destined for a hallway wallboard, protected by a narrow allow-list rather than secrecy (ADR-0017). No route toward the Pi, no admin surface, per-service scoped tokens. Treated as a hostile courier by design |
 
 ## 3. Services
 
-Each service has a full spec in its directory README. Every service exposes `GET /health` and `GET /metrics`, supports a simulation/mock mode, and uses typed events from `packages/contracts` — no ad hoc JSON (ADR-0003).
+Each service has a full spec in its directory README. Every service exposes `GET /health` and `GET /metrics`, supports a simulation/mock mode, and uses typed events from `packages/contracts` — no ad hoc JSON (ADR-0003). On the Pi every service binds loopback; `door-proxy` (Caddy, not a doorboard service) is the one LAN listener (ADR-0047).
 
 | Service | Host | Owns | Must never |
 |---|---|---|---|
@@ -62,9 +64,11 @@ Each service has a full spec in its directory README. Every service exposes `GET
 | [door-api](apps/door-api/) | Pi | Visitor session state machine, button events, privacy mode, display broadcasts | Depend on control plane for session transitions |
 | [door-ui](apps/door-ui/) | Pi | `/wallboard` `/doorpad` `/visitor` `/admin` `/diagnostics` kiosk SPA | Show sensitive data on public routes; require non-local APIs |
 | [door-sync](apps/door-sync/) | Pi | Upload queue Pi→NUC/NAS, backoff, dedupe, checksum-verified cleanup | Delete local media before integrity verification |
+| [door-voice](apps/door-voice/) | Pi | Spoken greeting for people who opted in (ADR-0034): reads door-api's `/ws`, runs a local TTS | Sit on the door path; hold credentials; name anyone not on the allow list |
+| door-proxy ([deploy/pi-door/Caddyfile](deploy/pi-door/Caddyfile)) | Pi | The only LAN listener: the allow-listed visitor surface, the NUC's two media-inbox pulls, `/metrics/<service>` (ADR-0047) | Forward `/admin` (beyond those two routes), `/ws`, `/session`, `/internal`, snapshots or the dev server; be on the door path |
 | [control-plane-api](apps/control-plane-api/) | NUC | Event history, HA bridge, statuses, social features, integrations, notifications, config distribution | Sit in the door critical path |
 | [wallboard-worker](apps/wallboard-worker/) | NUC | Scheduled jobs: satellite passes, aircraft polling, bird summaries, collages | Run on the door Pi |
-| [public-relay](apps/public-relay/) | Vercel | Public relay for phone enrollment (ciphertext only) and the visitor page (allow-listed public session state) | Hold a decryption key; receive an enrollee's name or photo in the clear; publish identity, media, or diagnostics; expose an admin surface; initiate anything toward the Pi |
+| [public-relay](apps/public-relay/) | Cloudflare | Public relay for phone enrollment (ciphertext only) and the visitor page (allow-listed public session state) | Hold a decryption key; receive an enrollee's name or photo in the clear; publish identity, media, or diagnostics; expose an admin surface; initiate anything toward the Pi |
 | [simulator](apps/simulator/) | dev | Fake button/vision/camera/outage events for hardware-free development | — |
 | [esp32-door-controller](firmware/esp32-door-controller/) | ESP32 | Button debounce, generic <30 ms feedback, profile cache, LED/audio, knock detection, watchdog fallback | Hold secrets; wait on anything before generic feedback |
 
@@ -138,7 +142,7 @@ Button press enters visitor mode immediately; generic feedback precedes any netw
 - Deletion flows exist for messages, guestbook entries, photos, and enrollments.
 - Presence uses broad labels only (Available/Busy/DND/Sleeping/At Class/At Library/Away/Unknown); manual override outranks inference; no raw GPS anywhere.
 - Never log raw biometric data.
-- Face templates never leave the door Pi. Enrollment *photos* may cross the internet on the phone path, but only sealed to a door-held key that no intermediary has — and the relay never receives an enrollee's name (ADR-0016).
+- Face templates never leave the door Pi. Enrollment *photos* may cross the internet on the phone path, but only sealed to a door-held key that no intermediary has — and the enrollee's name travels only inside that sealed manifest, never in the clear to the relay (ADR-0016, ADR-0044).
 - The public visitor surface carries only what a hallway wallboard already shows: ring state, the current poll, and the visitor's own note. Never identity, media, or diagnostics (ADR-0017 §2).
 
 Any PR touching enrollment, embeddings, retention, or public display content requires `agent:claude` review before merge (ADR-0005, ADR-0008).
@@ -153,7 +157,7 @@ Any PR touching enrollment, embeddings, retention, or public display content req
 | Camera unavailable | button/UI still work; UI shows "video unavailable" |
 | ESP32 offline | Pi surfaces admin error; never pretend a physical effect occurred |
 | Pi restart | ESP32 runs generic fallback animation / unavailable state |
-| Internet offline | no impact on core flow; the visitor QR falls back to its LAN URL, so it keeps working on the house wifi and stops working only for phones on cellular (ADR-0017 §4) |
+| Internet offline | no impact on core flow; the visitor QR falls back to its LAN URL (the Pi's proxy, ADR-0047), so it keeps working on the house wifi and stops working only for phones on cellular (ADR-0017 §4) |
 | Storage low | stop recording safely, preserve interaction, alert control plane |
 
 ## 11. Technology stack (ADR-0003)
@@ -163,7 +167,7 @@ Any PR touching enrollment, embeddings, retention, or public display content req
 - **Data:** SQLite (WAL) on Pi; PostgreSQL on NUC; NAS archive-only.
 - **Media:** MediaMTX, `rpicam-apps`/libcamera, H.264, WebRTC.
 - **Vision:** Hailo runtime behind a replaceable interface in `door-visiond`; modes `disabled | mock | single-camera | dual-camera | hardware`; pinned runtime/model versions; the official Pi/Hailo face-recogniser is a reference, not a dependency to build on directly.
-- **Deploy:** systemd for Pi hardware-facing services; Docker Compose on NUC; offline boot required.
+- **Deploy:** systemd for Pi hardware-facing services; Docker Compose on NUC; offline boot required — nothing on door-api's start chain waits for the network or the NUC (`tests/test_systemd_units.py` pins it).
 
 ## 12. What is deliberately excluded
 

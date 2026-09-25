@@ -1,9 +1,10 @@
 # Deployment security checklist (T-701)
 
-**Reviewer:** Claude tier · **Date:** 2026-07-08 · **Scope:** whole system at `main` (post-M6)
-**Basis:** handoff §16 (security requirements), §3.2 (physical security), §5 (trust boundaries); ARCHITECTURE.md §2 (trust model); ADR-0007 (storage tiers), ADR-0009 (deletion).
+**Reviewer:** Claude tier · **Date:** 2026-07-08 (code/config review at `main`, post-M6) · **Re-audited:** 2026-09-24 against the deploy/infra audit — the deploy walk on the real network is still pending · **Scope:** whole system
+**Basis:** handoff §16 (security requirements), §3.2 (physical security), §5 (trust boundaries); ARCHITECTURE.md §2 (trust model); ADR-0007 (storage tiers), ADR-0009 (deletion + encrypted enrollment), ADR-0043 (relay on Cloudflare), ADR-0047 (one LAN listener on the Pi).
+**Verified-on:** code/config only — no line below has yet been dated ✅ against the live network or hardware.
 
-**Verdict:** ✅ **No blocking findings at the code/config level** — T-790 is not gated on security grounds. Remaining items are network/physical controls that can only be verified against real hardware at deployment time (marked ⏸); they are tracked, not resolved.
+**Verdict:** ✅ **No blocking findings at the code/config level** as of the 2026-07-08 review — T-790 was not gated on security grounds. The 2026-09 audits then found three deploy-level items the July review had marked ☐ rather than checked: the live installer served the kiosk from a Vite dev server on `0.0.0.0` (the whole checkout readable from the corridor), root ran user-writable scripts every 30 s, and the door plane has no TLS. The first two are closed in the repo (ADR-0047 proxy; root-owned copies under `/usr/local/lib/doorboard/`) and need the deploy walk to be dated; the third is open in `docs/audit-findings-todo.md`. Remaining items are network/physical controls that can only be verified against real hardware at deployment time (marked ⏸); they are tracked, not resolved.
 
 Legend: ✅ verified in code/config now · ☐ verify at deployment (network/host) · ⏸ deferred — requires physical hardware.
 
@@ -12,7 +13,7 @@ Legend: ✅ verified in code/config now · ☐ verify at deployment (network/hos
 | # | Requirement | Status | Evidence / action |
 |---|---|---|---|
 | 1 | Public and admin routes separated | ✅ | `control-plane-api` `_require_admin` gates all `/admin/*` via `secrets.compare_digest(presented, cfg.admin_token)`; door-api visitor routes are token-scoped, admin routes separate + authenticated. |
-| 2 | Don't expose raw MediaMTX / RTSP / SSH / Hailo broadly | ☐ | Services bind to internal interfaces; MediaMTX consumed locally via WebRTC. **At deployment:** firewall these ports to the door VLAN; no port-forwards; SSH key-only, LAN-scoped. |
+| 2 | Don't expose raw MediaMTX / RTSP / SSH / Hailo broadly | ☐ | Every door service binds `127.0.0.1`; the only LAN listener is `door-proxy` on `:80` with an allow-list (ADR-0047, `tests/test_pi_proxy_allowlist.py`); MediaMTX consumed locally via WebRTC. **At deployment:** confirm `ss -ltn` on the Pi shows only `:80` and `:22` on non-loopback; firewall to the door VLAN; no port-forwards; SSH key-only, LAN-scoped. |
 | 3 | No direct public-internet exposure | ☐ | No service opens an inbound public listener in code. **At deployment:** confirm the router has no port-forwards to Pi/NUC; outbound-only for ambient adapters. |
 | 4 | VLAN / firewall segmentation | ☐ | **At deployment:** put the door plane on its own VLAN; allow only Pi→NUC (control-plane + sync) and Pi→NAS (scoped upload); deny door-plane→WAN except the known ambient egress (below). |
 | 5 | Device-specific credentials | ✅ | `control-plane-api` issues **scoped** service tokens (`ingest` / `config` / Pi-scoped) via `POST /admin/tokens`; the Pi holds only its scoped set, never the admin token. |
@@ -26,7 +27,8 @@ Legend: ✅ verified in code/config now · ☐ verify at deployment (network/hos
 
 ## Trust-boundary confirmations (ARCHITECTURE.md §2)
 
-- ✅ **No admin credentials or long-term archive on the door Pi** — Pi holds only scoped tokens; archive lives on NAS (ADR-0007). Verified: no door-Pi service imports admin secrets or ambient-integration credentials.
+- ✅ **No admin credentials or long-term archive on the door Pi** — Pi holds only scoped tokens; archive lives on NAS (ADR-0007). Verified: no door-Pi service imports admin secrets or ambient-integration credentials. Listed so it is checked rather than re-derived: the one root-held credential on the Pi is `/etc/doorboard/enrollment-key.token` (root, 0600) — the **narrow** LUKS release token, not the passphrase, which never leaves the NUC (ADR-0009 §6). It unlocks nothing but the key-release route, and rotating it is one line on each side.
+- ☐ **Who holds the NUC admin token** (`CONTROL_PLANE_ADMIN_TOKEN`): control-plane-api itself; the Home Assistant container (`CONTROL_PLANE_ADMIN_TOKEN_HEADER`, for the presence `rest_commands`); the Alertmanager container (`/admin/alerts` webhook); and the owner's browser for the admin UI. Nothing on the Pi. **At deployment:** confirm those four and no others (`docker compose config | grep -n ADMIN_TOKEN`).
 - ✅ **ESP32 holds no secrets** — profile cache is opaque IDs + monotonic expiry only.
 - ✅ **Public screens show broad status only** — door-ui privacy rules keep names of unenrolled people, locations, calendars, diagnostics, and private photos off public routes.
 - ✅ **Ambient egress is outbound-only and credential-scoped to the NUC** (see inventory below).
@@ -58,8 +60,9 @@ The relay gives the door Pi its **only** internet egress — one origin, two ser
 - ☐ Allow the door Pi egress to that one origin (443) and nothing else. `HttpRelayTransport` refuses any non-HTTPS base URL except loopback, but the firewall should not rely on that.
 - ☐ Confirm the token pairs match and none is in git (`.env.example` only): `RELAY_DEVICE_TOKEN` ↔ `VISIOND_RELAY_DEVICE_TOKEN`, and `RELAY_VISITOR_DEVICE_TOKEN` ↔ `DOOR_API_VISITOR_RELAY_DEVICE_TOKEN`.
 - ☐ Confirm the two device tokens are **different values**. Reusing one defeats the scope split (ADR-0017 E-17) and hands a door-api compromise the enrollment surface.
-- ☐ Confirm the relay's environment contains **no** private key and no door-reachable credential. It should hold exactly the two device tokens and the Upstash pair (ADR-0016 E-9).
-- ☐ Confirm `GET /api/health` on the deployment reports `door_checked_in: true` and that production is publicly reachable without a Vercel auth bypass (a protected production deployment silently breaks every phone).
+- ☐ Confirm the relay's environment contains **no** private key and no door-reachable credential. It should hold exactly the two device tokens as Pages secrets and the D1 binding (ADR-0016 E-9, ADR-0043).
+- ☐ Confirm `GET /api/health` on the deployment answers `{"service": …, "status": "ok"}` publicly — that body is deliberately all the public gets; `door_checked_in` and the pending counts are returned only when the request presents the door-visiond device token — and that production is reachable without a Cloudflare Access rule or preview-only deployment in front of it (a protected production deployment silently breaks every phone).
+- ☐ Confirm the Vercel-era deployment is decommissioned ([relay-cloudflare-deploy.md](relay-cloudflare-deploy.md) §8): tokens rotated, Vercel project and Upstash database deleted, `apps/public-relay/.env.local` removed from the laptop. Until then two relays honour the door's tokens.
 - ☐ Leave `VISIOND_RELAY_BASE_URL` unset on any door that should not offer phone enrollment. Unset means the poller never starts and no sealing key is generated.
 
 - ☐ Confirm the visitor QR falls back correctly: with the relay blocked at the firewall, `GET /visitor-relay-status` reports `qr_target: "lan"` and the wallboard QR still works from the house wifi (ADR-0017 E-19).

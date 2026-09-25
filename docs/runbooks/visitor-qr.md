@@ -1,24 +1,27 @@
 # Runbook: the visitor QR
 
-Operating the wallboard QR that visitors scan (ADR-0017). Covers door-api's relay client and the visitor routes on [apps/public-relay](../../apps/public-relay/).
+Operating the wallboard QR that visitors scan (ADR-0017). Covers door-api's relay client and the visitor routes on [apps/public-relay](../../apps/public-relay/), served from Cloudflare Pages at `door.tigerstrake.com` (ADR-0043).
+
+**Verified-on:** simulator, 2026-07 (T-307) — the LAN fallback through the Pi's proxy (ADR-0047) not yet verified on the door
 
 **First thing to know:** the QR is not in the door path. The button, the ESP32, ringing, the wallboard, recording, and the doorpad all work identically whether the relay is up, down, or deleted. If someone reports the *door* misbehaving, this is not your suspect.
 
 **Second thing:** there are two QR targets, and knowing which one is live explains most symptoms.
 
 ```bash
-curl -s http://<door>:8080/visitor-relay-status
+# On the Pi (door-api binds loopback; :8080 is not on the LAN — ADR-0047):
+curl -s http://127.0.0.1:8080/visitor-relay-status
 # {"qr_target":"relay"}
 
 # The full worker diagnostics (counters, failure streak, last error) are owner-only:
-curl -s -H "Authorization: Bearer $DOOR_API_SOCIAL_ADMIN_TOKEN" http://<door>:8080/admin/visitor-relay-status
+curl -s -H "Authorization: Bearer $DOOR_API_SOCIAL_ADMIN_TOKEN" http://127.0.0.1:8080/admin/visitor-relay-status
 # {"configured":true,"status":"ok","qr_target":"relay",...}
 ```
 
 | `qr_target` | The QR encodes | Works for |
 |---|---|---|
 | `relay` | `https://<deployment>/v/<token>` | Any phone, any network |
-| `lan` | `http://door.local/visitor?token=…` | Only phones on the house wifi |
+| `lan` | `http://door-pi.local/visitor?token=…` (the Pi's LAN proxy, `DOOR_API_VISITOR_PUBLIC_BASE_URL`) | Only phones on the house wifi |
 
 door-api picks this per QR render: `relay` only when an exchange succeeded within `DOOR_API_VISITOR_RELAY_FRESHNESS_S` (default 30 s), otherwise `lan`. That fallback is deliberate — an internet outage degrades the QR to LAN-only rather than killing it.
 
@@ -39,14 +42,14 @@ The relay has no snapshot matching that token.
 - **Most likely benign:** the visitor token expired (`DOOR_API_VISITOR_TOKEN_TTL_S`, default 300 s) or the session ended. The QR is per-session and short-lived by design. Ring again.
 - Snapshot never pushed: check `qr_target`. If it says `relay` but the visitor page 404s, the push is failing — look at `polls_failed` and `last_error` in `/admin/visitor-relay-status`.
 
-### The QR points at door.local and visitors on cellular can't load it
+### The QR points at door-pi.local and visitors on cellular can't load it
 
 `qr_target: "lan"`. That is the fallback doing its job; the question is why.
 
 1. `{"configured": false}` → `DOOR_API_VISITOR_RELAY_BASE_URL` or `DOOR_API_VISITOR_RELAY_DEVICE_TOKEN` is unset. Set both, restart door-api.
 2. `status: "degraded"` with `last_error` → door-api cannot reach the relay. Check egress and DNS, then `curl -sS https://<deployment>/api/health` **from the Pi**.
-3. Repeated failures with the relay logging 401s → token mismatch. Compare `RELAY_VISITOR_DEVICE_TOKEN` (Vercel) with `DOOR_API_VISITOR_RELAY_DEVICE_TOKEN` (Pi). Note these are **not** the same as the enrollment pair; using the enrollment token here fails by design (E-17).
-4. `storage_not_configured` from the relay → the Upstash store is not attached to the Vercel project.
+3. Repeated failures with the relay logging 401s → token mismatch. Compare `RELAY_VISITOR_DEVICE_TOKEN` (Cloudflare Pages secret) with `DOOR_API_VISITOR_RELAY_DEVICE_TOKEN` (Pi). Note these are **not** the same as the enrollment pair; using the enrollment token here fails by design (E-17).
+4. `storage_not_configured` from the relay → the D1 binding (`DB` in `wrangler.toml`) is missing on the Pages project, or a migration was skipped ([relay-cloudflare-deploy.md](relay-cloudflare-deploy.md) step 1).
 
 ### A note was "sent" but never appeared
 

@@ -2,6 +2,7 @@
 
 **Status:** Verified
 **Walkthrough Date:** 2026-07-08 (Simulated/mock mode verified; hardware-specific steps marked and deferred)
+**Verified-on:** simulator (mock mode), 2026-07-08 — not yet re-walked on the door Pi (home layout)
 
 ## The Guarantee This Runbook Protects
 

@@ -2,6 +2,7 @@
 
 **Status:** Verified — commands re-checked against the source 2026-09-09
 **Walkthrough Date:** 2026-07-08 (Simulated/mock mode verified; hardware-specific steps marked and deferred)
+**Verified-on:** simulator (mock mode), 2026-07-08 — not yet re-walked on the door Pi (home layout)
 
 > The SQL and log keys below were wrong from the first draft: they named a `recordings`
 > schema (`id`, `filepath`, `synced`, `created_at`) and two log keys that have never existed

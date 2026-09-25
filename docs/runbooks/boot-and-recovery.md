@@ -1,7 +1,8 @@
 # Boot and Recovery
 
-**Status:** Verified
+**Status:** Verified in simulation; commands re-checked against the units 2026-09-25
 **Walkthrough Date:** 2026-07-08 (Simulated/mock mode verified; hardware-specific steps marked and deferred)
+**Verified-on:** simulator (mock mode), 2026-07-08 — not yet re-walked on the door Pi (home layout)
 
 ## The Guarantee This Runbook Protects
 
@@ -26,12 +27,15 @@ Per [ARCHITECTURE.md](../../ARCHITECTURE.md) §10, the real-time door plane must
    systemctl list-units --type=service --state=failed
    ```
 2. **Inspect Individual Service Logs:**
-   Identify errors or boot loop traces:
+   Identify errors or boot loop traces. The journal is persistent on the SSD
+   (`var-log-journal.mount`), so the *previous* boot is available with `-b -1` —
+   that is where a crash-reboot's cause is:
    ```bash
    journalctl -u door-api -n 100 --no-pager
    journalctl -u door-visiond -n 100 --no-pager
    journalctl -u door-media -n 100 --no-pager
    journalctl -u door-sync -n 100 --no-pager
+   journalctl -b -1 -p warning --no-pager      # everything at warning+ from the boot before this one
    ```
 3. **Verify SSD Mount:**
    The active databases and recordings live on the USB SSD. Ensure it is mounted at `/mnt/ssd`:
@@ -46,12 +50,16 @@ Per [ARCHITECTURE.md](../../ARCHITECTURE.md) §10, the real-time door plane must
    - **door-visiond:** `curl http://127.0.0.1:8081/health`
    - **door-media:** `curl http://127.0.0.1:8082/health`
    - **door-sync:** `curl http://127.0.0.1:8083/health`
-5. **Verify Kiosk Display Logs:**
-   If display/touch is unresponsive:
+   - **door-voice:** `curl http://127.0.0.1:8084/health` (only when the greeting is enabled)
+   - **door-proxy** (not on the door path): `curl -s -o /dev/null -w '%{http_code}\n' http://door-pi.local/session` → `404`
+5. **Verify the kiosks:**
+   On the live Pi the kiosks are launched by labwc's autostart
+   (`deploy/pi-door/labwc-autostart.example`), not by systemd units:
    ```bash
-   systemctl status chromium-kiosk@wallboard
-   systemctl status chromium-kiosk@doorpad
+   pgrep -af 'chromium.*--kiosk'          # one process per kiosk (doorpad, wallboard)
+   loginctl list-sessions                 # the kiosk user's Wayland session must be active
    ```
+   (With the canonical `chromium-kiosk@` units instead: `systemctl status chromium-kiosk@wallboard chromium-kiosk@doorpad`.)
 
 ---
 
@@ -59,16 +67,18 @@ Per [ARCHITECTURE.md](../../ARCHITECTURE.md) §10, the real-time door plane must
 
 ### Scenario A: Kiosk UI Frozen or Blank Screen
 If the physical buttons work and the ESP32 responds, but the screens are frozen:
-1. Restart the kiosk service:
+1. Relaunch the kiosk. The labwc autostart loop restarts Chromium as soon as it exits,
+   so killing it is the restart:
    ```bash
-   sudo systemctl restart chromium-kiosk@wallboard
-   sudo systemctl restart chromium-kiosk@doorpad
+   pkill -f 'chromium.*kiosk-doorpad'      # or kiosk-wallboard; relaunches within ~3 s
    ```
-2. Confirm the display outputs are detected (Hardware-specific step, Wayland/Labwc dependent):
+   (Canonical units: `sudo systemctl restart chromium-kiosk@doorpad`.) If nothing comes
+   back, the whole session: `loginctl terminate-user <kiosk-user>` and let auto-login
+   start labwc again — the autostart waits on door-api `/health` before launching.
+2. Confirm the outputs are detected (hardware-specific, labwc):
    ```bash
-   loginctl-session  # get active sessions
-   # View kiosk display manager status
-   systemctl status display-manager
+   loginctl list-sessions
+   wlr-randr                                # from inside the session: both outputs listed?
    ```
 
 ### Scenario B: Service Crash Loop / Database Corruption
@@ -90,13 +100,19 @@ If `door-api` or `door-media` boot-loops due to SQLite database corruption (e.g.
    sudo systemctl start door-api
    ```
 
-### Scenario C: Watchdog Triggered Loop
-If the hardware watchdog is rebooting the Pi continuously:
-1. Connect via serial debug cable / UART (Hardware-specific step) or disable the watchdog temporarily:
+### Scenario C: The Pi Reboots on Its Own
+Nothing in this repo configures a hardware watchdog (`RuntimeWatchdogSec` is unset and
+the `watchdog` package is not installed), so a spontaneous reboot is power, thermal, or
+the kernel — not a watchdog timeout.
+1. Read the boot before this one; the journal is persistent on the SSD:
    ```bash
-   sudo systemctl stop watchdog
+   journalctl -b -1 -p err --no-pager | tail -50
+   vcgencmd get_throttled                  # 0x0 = never throttled/under-volted since boot
    ```
-2. Diagnose the slow-startup service causing watchdog timeouts in `/var/log/syslog`.
+   There is no `/var/log/syslog` on Bookworm; the journal is the log.
+2. A unit that keeps failing is *not* parked any more (`StartLimitIntervalSec=0`), so a
+   crash loop shows as `activating (auto-restart)` in `systemctl status`, with the
+   reason in `journalctl -u <unit>`.
 
 ---
 
@@ -104,9 +120,9 @@ If the hardware watchdog is rebooting the Pi continuously:
 
 1. **Verify Services Running:**
    ```bash
-   systemctl is-active door-api door-visiond door-media door-sync
+   systemctl is-active door-api door-visiond door-media door-sync door-proxy doorboard-enrollment-unlock.timer
    ```
-   Output should be `active` for all.
+   Output should be `active` for all (`door-voice` too if the greeting is enabled).
 2. **Offline Kiosk Smoke Test:**
    Press the physical bell button. Verify that the ESP32 sounds the chime, the LED ring spins, and the DoorPad display transitions to "Visitor Mode" immediately.
 3. **Check Metrics:**
