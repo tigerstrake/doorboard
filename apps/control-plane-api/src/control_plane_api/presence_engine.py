@@ -37,11 +37,12 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import cast
 from uuid import uuid4
 
 from doorboard_contracts import PresenceLabel
 from doorboard_contracts.events import StatusPresenceChangedEvent, StatusPresenceChangedPayload
-from sqlalchemy import delete, select
+from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.orm import Session
 
 from control_plane_api._uuid7 import uuid7
@@ -148,11 +149,17 @@ def delete_subject(session: Session, *, subject_id: str) -> dict[str, int]:
     """
     if not subject_exists(session, subject_id):
         raise UnknownSubjectError(subject_id)
-    history = session.execute(
-        delete(PresenceHistoryRow).where(PresenceHistoryRow.subject_id == subject_id)
+    history = cast(
+        "CursorResult",
+        session.execute(
+            delete(PresenceHistoryRow).where(PresenceHistoryRow.subject_id == subject_id)
+        ),
     ).rowcount
-    sources = session.execute(
-        delete(PresenceSourceRow).where(PresenceSourceRow.subject_id == subject_id)
+    sources = cast(
+        "CursorResult",
+        session.execute(
+            delete(PresenceSourceRow).where(PresenceSourceRow.subject_id == subject_id)
+        ),
     ).rowcount
     session.execute(delete(PresenceSubjectRow).where(PresenceSubjectRow.subject_id == subject_id))
     session.flush()

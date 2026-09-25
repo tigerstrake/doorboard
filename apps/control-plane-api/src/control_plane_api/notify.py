@@ -18,10 +18,10 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import Protocol, cast
 
 from doorboard_contracts import DoorboardEvent
-from sqlalchemy import delete
+from sqlalchemy import CursorResult, delete
 from sqlalchemy.orm import Session
 
 from control_plane_api.metrics import NOTIFICATIONS, metrics
@@ -340,8 +340,11 @@ class NotifyEngine:
         cooldown cannot suppress anything, so it is only growth. Returns the count.
         """
         cutoff = now - self.longest_cooldown
-        result = session.execute(
-            delete(NotificationStateRow).where(NotificationStateRow.last_notified_at < cutoff)
+        result = cast(
+            "CursorResult",
+            session.execute(
+                delete(NotificationStateRow).where(NotificationStateRow.last_notified_at < cutoff)
+            ),
         )
         return int(result.rowcount or 0)
 

@@ -301,7 +301,7 @@ def test_window_end_on_the_spring_forward_night_is_the_real_local_seven() -> Non
     """
     now = datetime(2026, 3, 29, 1, 0, tzinfo=ZoneInfo("Europe/Rome"))  # 00:00Z, still CET
     entry = _rome_provider().get_label("owner", now=now)
-    assert entry is not None
+    assert entry is not None and entry.until is not None
     assert entry.until == datetime(2026, 3, 29, 5, 0, tzinfo=UTC)
     assert entry.until.astimezone(ZoneInfo("Europe/Rome")).strftime("%H:%M %Z") == "07:00 CEST"
 
@@ -310,7 +310,7 @@ def test_window_end_on_the_fall_back_night_is_the_real_local_seven() -> None:
     """2026-10-25: 03:00 CEST -> 02:00 CET. 07:00 local is 06:00Z, not 05:00Z."""
     now = datetime(2026, 10, 25, 1, 0, tzinfo=ZoneInfo("Europe/Rome"))  # 23:00Z, still CEST
     entry = _rome_provider().get_label("owner", now=now)
-    assert entry is not None
+    assert entry is not None and entry.until is not None
     assert entry.until == datetime(2026, 10, 25, 6, 0, tzinfo=UTC)
     assert entry.until.astimezone(ZoneInfo("Europe/Rome")).strftime("%H:%M %Z") == "07:00 CET"
 

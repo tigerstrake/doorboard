@@ -21,7 +21,7 @@ class PeriodicThread:
         name: str,
         *,
         interval_s: float,
-        fn: Callable[[], None],
+        fn: Callable[[], object],
         run_immediately: bool = True,
     ) -> None:
         self._name = name
