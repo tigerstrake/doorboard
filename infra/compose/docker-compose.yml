@@ -110,6 +110,9 @@ services:
       CONTROL_PLANE_ENROLLMENT_KEY_TOKEN: ${CONTROL_PLANE_ENROLLMENT_KEY_TOKEN:-}
       CONTROL_PLANE_SYNC_STALL_ALERT_S: ${CONTROL_PLANE_SYNC_STALL_ALERT_S:-14400}
       CONTROL_PLANE_NOTIFY_COOLDOWN_S: ${CONTROL_PLANE_NOTIFY_COOLDOWN_S:-3600}
+      # Per-IP cap on failed admin-bearer attempts per minute (the /admin/* limiter).
+      # Listed so the setting reaches the container; default mirrors the code's.
+      CONTROL_PLANE_AUTH_FAILURE_LIMIT_PER_MIN: ${CONTROL_PLANE_AUTH_FAILURE_LIMIT_PER_MIN:-5}
       # Telegram video-message delivery + door-api admin media source. This
       # compose file predates ADR-0012, so without these passthroughs the
       # service never saw TELEGRAM_BOT_TOKEN etc. even when set in .env.
