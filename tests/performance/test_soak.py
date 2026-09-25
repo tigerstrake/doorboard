@@ -19,7 +19,10 @@ def test_simulator_soak_ci_profile_passes() -> None:
     assert result.counters.nas_outage_injected is True
     assert result.counters.nas_recovery_injected is True
     assert result.resources["final_queue_depth"] <= result.resources["queue_depth_at_recovery"]
-    assert result.latency["paths"]["button_to_generic_feedback"]["count"] > 0
+    # The soak's latency rows are simulator stand-ins; the shared report labels the
+    # paths that cannot be timed off the door as N/A by name rather than numbering them.
+    assert result.latency["paths"]["bell_to_visitor_mode"]["count"] > 0
+    assert result.latency["paths"]["button_to_generic_feedback"]["simulator_na"] is True
 
 
 def test_simulator_soak_throttling_fault_fails() -> None:

@@ -37,13 +37,41 @@ BUDGET_P95_MS: dict[str, float] = {
     "webrtc_glass_to_glass": 750.0,
 }
 
-# Sentinel: all samples are 0.0 means the path cannot be simulated.
-_WEBRTC_PATHS = {"webrtc_glass_to_glass"}
+# Paths the harness cannot time on a machine without the door, and why. These are
+# reported as N/A by name: a number for any of them could only ever read "pass",
+# and a budget that cannot fail is worse than one marked unmeasured. Where the
+# path is verified instead is part of the reason.
+SIMULATOR_NA: dict[str, str] = {
+    "button_to_generic_feedback": "ESP32-local (ISR → LED/audio), never reaches the Pi; bench only",
+    "button_to_personalized_feedback": "ESP32-local (cached profile → effect); bench only",
+    "tap_to_local_response": "browser-side (pointerdown → first paint on /doorpad); bench only",
+    "face_to_stable_identity": (
+        "needs a camera and the Hailo; on the door: door-visiond's face_to_identity_ms_p95"
+    ),
+    "webrtc_glass_to_glass": "needs MediaMTX and a browser; bench only",
+}
+
+# The paths the harness does time, through the real service code in-process.
+MEASURED_PATHS: tuple[str, ...] = tuple(p for p in BUDGET_P95_MS if p not in SIMULATOR_NA)
 
 
 def _is_placeholder(vals: list[float]) -> bool:
-    """True when a path has only sentinel 0.0 values (simulator N/A)."""
+    """True when a path has only sentinel 0.0 values (the pre-name-based N/A marker)."""
     return bool(vals) and all(v == 0.0 for v in vals)
+
+
+def _is_na(path: str, vals: list[float]) -> bool:
+    return path in SIMULATOR_NA or _is_placeholder(vals)
+
+
+def _na_reason(path: str) -> str:
+    return SIMULATOR_NA.get(path, "cannot be timed off the door")
+
+
+def _ordered_paths(samples: dict[str, list[float]]) -> list[str]:
+    """Every §4 path in table order, then any extra path the samples carry."""
+    extras = sorted(p for p in samples if p not in BUDGET_P95_MS)
+    return [*BUDGET_P95_MS, *extras]
 
 
 # ---------------------------------------------------------------------------
@@ -55,13 +83,18 @@ def build_json(
     samples: dict[str, list[float]],
     regressions: list[str],
 ) -> dict[str, Any]:
-    """Return the full JSON report structure."""
+    """Return the full JSON report structure.
+
+    Every N/A path is present with ``simulator_na`` and its reason, samples or
+    not; a measured path with no samples is left out (it was not run).
+    """
     paths: dict[str, Any] = {}
-    for path, vals in samples.items():
-        if not vals:
+    for path in _ordered_paths(samples):
+        vals = samples.get(path, [])
+        if _is_na(path, vals):
+            paths[path] = {"simulator_na": True, "reason": _na_reason(path)}
             continue
-        if _is_placeholder(vals):
-            paths[path] = {"simulator_na": True}
+        if not vals:
             continue
         paths[path] = {
             "p50_ms": p50(vals),
@@ -89,17 +122,20 @@ def build_report(
     """Return a human-readable latency table."""
     lines: list[str] = [
         "═" * 78,
-        "  Doorboard latency harness — simulator run",
+        "  Doorboard latency harness — in-process run (real service code, no hardware)",
         "═" * 78,
         f"  {'PATH':<40} {'P50':>7} {'P95':>7} {'P99':>7}  {'BUDGET':>8}  STATUS",
         "─" * 78,
     ]
+    not_measured: list[str] = []
 
-    for path, vals in sorted(samples.items()):
-        if not vals:
-            continue
-        if _is_placeholder(vals):
+    for path in _ordered_paths(samples):
+        vals = samples.get(path, [])
+        if _is_na(path, vals):
             lines.append(f"  {path:<40} {'N/A':>7} {'N/A':>7} {'N/A':>7}  {'—':>8}  simulator N/A")
+            not_measured.append(path)
+            continue
+        if not vals:
             continue
 
         vp50 = p50(vals)
@@ -108,18 +144,24 @@ def build_report(
         budget = BUDGET_P95_MS.get(path)
         budget_str = f"{budget:.0f} ms" if budget is not None else "—"
 
-        if path in regressions:
+        # Regression entries are messages, "<path>: current p95=…", not bare names.
+        if any(r.startswith(f"{path}:") for r in regressions):
             status = "❌ REGRESSION"
         elif budget is not None and vp95 > budget:
             status = "⚠ over budget"
         else:
-            status = "✓"
+            status = "✓ measured"
 
         lines.append(
             f"  {path:<40} {vp50:>6.1f}ms {vp95:>6.1f}ms {vp99:>6.1f}ms  {budget_str:>8}  {status}"
         )
 
     lines.append("─" * 78)
+
+    if not_measured:
+        lines.append("\n  Not measured here (simulator N/A):")
+        for path in not_measured:
+            lines.append(f"     • {path}: {_na_reason(path)}")
 
     if regressions:
         lines.append(f"\n  ⛔ {len(regressions)} regression(s) detected vs baseline:")
@@ -148,7 +190,7 @@ def check_regressions(
 
     Rules:
     - Empty sample lists are skipped (not a regression).
-    - Placeholder paths (all-zero sentinel for simulator-N/A) are skipped.
+    - N/A paths (by name, or the all-zero sentinel) are skipped.
     - Paths absent from the baseline are skipped (new paths don't regress).
     - Baseline entries missing p95_ms are skipped (malformed, not a crash).
     """
@@ -156,7 +198,7 @@ def check_regressions(
     baseline_paths: dict[str, Any] = baseline.get("paths", {})
 
     for path, vals in samples.items():
-        if not vals or _is_placeholder(vals):
+        if not vals or _is_na(path, vals):
             continue
         base = baseline_paths.get(path)
         if base is None or base.get("simulator_na"):

@@ -1,8 +1,10 @@
 """Latency measurement harness — CLI runner.
 
-Drives the ARCHITECTURE.md §4 paths that can be exercised on a machine with no
-door hardware and produces p50/p95/p99 tables.  The shared logic (BUDGET_P95_MS,
-check_regressions, build_report, build_json) lives in
+Times the ARCHITECTURE.md §4 paths that can be exercised on a machine with no
+door hardware — through the real door-api and door-media code, in-process — and
+produces p50/p95/p99 tables. The paths that cannot be timed here are reported as
+N/A by name rather than approximated. The shared logic (BUDGET_P95_MS,
+SIMULATOR_NA, check_regressions, build_report, build_json) lives in
 doorboard_observability.harness_core so tests can import it without path
 manipulation.
 
@@ -362,17 +364,20 @@ def _drain_recording_started(queue: asyncio.Queue[Any]) -> Any | None:
 
 
 # ---------------------------------------------------------------------------
-# Simulator-based measurement
+# Collection
 # ---------------------------------------------------------------------------
 
 
 def collect_samples(iterations: int = ITERATIONS) -> dict[str, list[float]]:
-    """Measure every path the harness can, returning path name → millisecond samples."""
+    """Measure every path the harness can, returning path name → millisecond samples.
+
+    The paths in ``SIMULATOR_NA`` get no samples on purpose: the report labels them
+    N/A by name, with the reason, instead of timing a stand-in and calling it a pass.
+    """
     samples: dict[str, list[float]] = {path: [] for path in BUDGET_P95_MS}
 
     with tempfile.TemporaryDirectory(prefix="doorboard-harness-") as tmpdir:
         root = Path(tmpdir)
-        asyncio.run(_run_simulator_loop(iterations=iterations, samples=samples))
         samples["bell_to_visitor_mode"] = measure_bell_to_visitor_mode(
             iterations, root / "door-api"
         )
@@ -381,104 +386,6 @@ def collect_samples(iterations: int = ITERATIONS) -> dict[str, list[float]]:
         )
 
     return samples
-
-
-async def _run_simulator_loop(iterations: int, samples: dict[str, list[float]]) -> None:
-    """Simulator-only sections: no service code runs here."""
-    from doorboard_simulator.clock import SimClock
-    from doorboard_simulator.esp32 import FakeEsp32Transport
-    from doorboard_simulator.events import EventFactory
-    from doorboard_simulator.outages import OutageState
-    from doorboard_simulator.vision import FakeVisionPipeline, PersonScript
-
-    for i in range(iterations):
-        clock = SimClock(monotonic_ms=i * 10_000)  # disjoint time windows
-        outages = OutageState()
-        events = EventFactory(clock)
-        esp32 = FakeEsp32Transport(clock, events)
-
-        # ----------------------------------------------------------------
-        # 1. button_to_generic_feedback
-        #    Measures: ESP32 emits button event → Pi converts to contract event.
-        #    Hardware path adds UART serialization and ISR latency.
-        # ----------------------------------------------------------------
-        t0 = time.monotonic()
-        msg = await esp32.emit_button_press()
-        _ = esp32.to_contract_event(msg)
-        samples["button_to_generic_feedback"].append((time.monotonic() - t0) * 1000.0)
-
-        # ----------------------------------------------------------------
-        # 2. button_to_personalized_feedback
-        #    Same as above but with a cached profile loaded first.
-        # ----------------------------------------------------------------
-        clock2 = SimClock(monotonic_ms=(i + 100) * 10_000)
-        events2 = EventFactory(clock2)
-        esp32b = FakeEsp32Transport(clock2, events2)
-        vision2 = FakeVisionPipeline(clock2, events2, outages)
-        person = PersonScript(
-            person_id=f"prs_bench_{i}",
-            display_name="BenchUser",
-            profile_id=f"profile_{i}",
-        )
-        stable = await vision2.identity_stable(person)
-        if stable is not None:
-            pl = stable.model_dump(mode="python")["payload"]
-            ttl_ms = int(pl["expires_at_monotonic_ms"]) - clock2.monotonic_ms
-            await esp32b.send(
-                esp32b.make_message(
-                    "profile_update",
-                    {
-                        "profile_id": str(pl["profile_id"]),
-                        "ttl_ms": ttl_ms,
-                        "priority": "high",
-                    },
-                )
-            )
-
-        t0 = time.monotonic()
-        msg_b = await esp32b.emit_button_press()
-        _ = esp32b.to_contract_event(msg_b)
-        samples["button_to_personalized_feedback"].append((time.monotonic() - t0) * 1000.0)
-
-        # ----------------------------------------------------------------
-        # 3. face_to_stable_identity
-        #    Requires a camera, the snapshot reader's frame cadence and SCRFD +
-        #    ArcFace on the Hailo — not simulatable.
-        #    Sentinel 0.0 → "simulator N/A" in the report.
-        #
-        # This used to time `await face_visible()` then `await identity_stable()`,
-        # i.e. the construction of two event objects, and reported a p95 of 0.017 ms
-        # against a 600 ms budget. Every term the budget exists to bound — frame
-        # rate, detection, embedding, the stability window — lives outside the
-        # simulator, so the number could only ever read "pass". A budget that cannot
-        # fail is worse than one marked unmeasured: this path is verified on the
-        # door via door-visiond's own `face_to_identity_ms_p95`, and nowhere else.
-        # ----------------------------------------------------------------
-        samples["face_to_stable_identity"].append(0.0)
-
-        # ----------------------------------------------------------------
-        # 4. tap_to_local_response
-        #    No touchscreen in simulator — measures event creation overhead.
-        # ----------------------------------------------------------------
-        t0 = time.monotonic()
-        ev2 = events.make(
-            "session.state_changed",
-            {
-                "session_id": "00000000-0000-0000-0000-000000000001",
-                "from_state": "BUTTON_PRESSED",
-                "to_state": "VISITOR_MODE",
-                "trigger": "auto",
-            },
-        )
-        _ = ev2.model_dump(mode="json")
-        samples["tap_to_local_response"].append((time.monotonic() - t0) * 1000.0)
-
-        # ----------------------------------------------------------------
-        # 5. webrtc_glass_to_glass
-        #    Requires MediaMTX + WebRTC — not simulatable.
-        #    Sentinel 0.0 → "simulator N/A" in the report.
-        # ----------------------------------------------------------------
-        samples["webrtc_glass_to_glass"].append(0.0)
 
 
 # ---------------------------------------------------------------------------
