@@ -63,6 +63,21 @@ and logs `no_tts_backend_installed_service_will_stay_silent`, which is also its 
 
 6. `sudo systemctl restart door-voice` and check `journalctl -u door-voice -f`.
 
+## Health, metrics and logs
+
+Like every door service (ARCHITECTURE §3) it serves `GET /health` and `GET /metrics`, on
+loopback only: `VOICE_HEALTH_BIND`, default `127.0.0.1:8084`, using asyncio's own streams so
+it adds no dependency. Off the Pi it is reachable only through whatever ADR-0047's proxy
+chooses to map. `/health` is `degraded` whenever the `/ws` subscription to door-api is not
+up (that reconnect loop is otherwise silent for as long as door-api is away) and reports the
+TTS backend, whether the feature is enabled, how many people have opted in, and the age of
+the last identity event. `/metrics`: `door_voice_connected`, `door_voice_last_event_age_s`,
+`door_voice_greetings_spoken_total`, `door_voice_greetings_suppressed_total`,
+`door_voice_greetings_failed_total`, `door_voice_uptime_s`.
+
+Logs are structured JSON like the other Pi services (`doorboard_observability`); the
+`greeted` line carries the opaque `person_id`, never the name.
+
 ## Why it stayed quiet
 
 `greeting_suppressed` logs a reason at debug level, because `not_opted_in` is the steady state

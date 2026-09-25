@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     reconnect_delay_s: float = Field(default=3.0, alias="VOICE_RECONNECT_DELAY_S")
     reconnect_max_delay_s: float = Field(default=30.0, alias="VOICE_RECONNECT_MAX_DELAY_S")
 
+    # GET /health and GET /metrics, loopback only (ARCHITECTURE §3: every service
+    # has them). A /ws that has been down for hours retries silently; this is how
+    # the NUC's health agent and Prometheus get to notice.
+    health_bind: str = Field(default="127.0.0.1:8084", alias="VOICE_HEALTH_BIND")
+
     @field_validator("cooldown_s", "speak_timeout_s", "reconnect_delay_s", "reconnect_max_delay_s")
     @classmethod
     def _must_be_positive(cls, value: float) -> float:
@@ -68,6 +73,14 @@ class Settings(BaseSettings):
         if self.reconnect_max_delay_s < self.reconnect_delay_s:
             raise ValueError("VOICE_RECONNECT_MAX_DELAY_S must be >= VOICE_RECONNECT_DELAY_S")
         return self
+
+    @property
+    def health_host(self) -> str:
+        return self.health_bind.rsplit(":", 1)[0]
+
+    @property
+    def health_port(self) -> int:
+        return int(self.health_bind.rsplit(":", 1)[1])
 
     @property
     def allowed_person_ids(self) -> frozenset[str]:

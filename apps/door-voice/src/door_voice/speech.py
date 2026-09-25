@@ -121,6 +121,7 @@ class Speaker:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
+        assert piper.stdout is not None  # stdout=PIPE above
         aplay = await asyncio.create_subprocess_exec(
             *self._aplay_argv(),
             stdin=piper.stdout,
@@ -152,6 +153,7 @@ class Speaker:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
+            assert espeak.stdout is not None  # stdout=PIPE above
             aplay = await asyncio.create_subprocess_exec(
                 *self._aplay_argv(),
                 stdin=espeak.stdout,

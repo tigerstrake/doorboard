@@ -280,3 +280,128 @@ def test_an_equal_ceiling_is_allowed_and_gives_a_flat_retry():
     """The old flat-3s behaviour stays reachable for anyone who wants it."""
     settings = Settings(VOICE_RECONNECT_DELAY_S=3.0, VOICE_RECONNECT_MAX_DELAY_S=3.0)
     assert settings.reconnect_max_delay_s == settings.reconnect_delay_s
+
+
+# --- health / metrics ----------------------------------------------------------
+#
+# ARCHITECTURE §3: every service exposes GET /health and GET /metrics. door-voice
+# had neither, so a /ws that had been down for hours was invisible to the NUC.
+
+
+async def _get(port: int, path: str, method: str = "GET") -> tuple[int, str, bytes]:
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(f"{method} {path} HTTP/1.0\r\nHost: door-voice\r\n\r\n".encode())
+    await writer.drain()
+    raw = await reader.read()
+    writer.close()
+    await writer.wait_closed()
+    head, _, body = raw.partition(b"\r\n\r\n")
+    return int(head.split()[1]), head.decode(), body
+
+
+@pytest.mark.anyio
+async def test_health_is_degraded_until_the_ws_subscription_is_up():
+    import json
+
+    service, _ = build()
+    server = await service.serve_http(host="127.0.0.1", port=0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        status, head, body = await _get(port, "/health")
+        assert status == 200
+        assert "application/json" in head
+        data = json.loads(body)
+        assert data["service"] == "door-voice"
+        assert data["status"] == "degraded"
+        assert data["connected"] is False
+        assert data["last_event_age_s"] is None
+        assert data["enabled"] is True
+        assert data["allowed_people"] == 1
+
+        service._connected = True  # what run() sets once door-api accepts the subscribe
+        await service.handle_event(identity())
+        data = json.loads((await _get(port, "/health"))[2])
+        assert data["status"] == "ok"
+        assert data["last_event_age_s"] is not None and data["last_event_age_s"] < 5
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.anyio
+async def test_metrics_count_spoken_suppressed_and_failed_greetings():
+    service, speaker = build(allow="prs_tiger,prs_bo")
+    server = await service.serve_http(host="127.0.0.1", port=0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        await service.handle_event(identity())  # spoken
+        await service.handle_event(identity())  # cooldown: suppressed
+        await service.handle_event(identity("prs_stranger", "Nope"))  # not opted in: suppressed
+        speaker.fail = True
+        await service.handle_event(identity("prs_bo", "Bo"))  # failed
+
+        status, head, body = await _get(port, "/metrics")
+        text = body.decode()
+        assert status == 200
+        assert "text/plain; version=0.0.4" in head
+        assert "door_voice_connected 0" in text
+        assert "door_voice_greetings_spoken_total 1" in text
+        assert "door_voice_greetings_suppressed_total 2" in text
+        assert "door_voice_greetings_failed_total 1" in text
+        assert "door_voice_last_event_age_s " in text
+        assert "door_voice_uptime_s " in text
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.anyio
+async def test_the_health_server_answers_only_the_two_routes():
+    service, _ = build()
+    server = await service.serve_http(host="127.0.0.1", port=0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        assert (await _get(port, "/"))[0] == 404
+        assert (await _get(port, "/admin"))[0] == 404
+        assert (await _get(port, "/health", method="POST"))[0] == 405
+        # A query string does not change the route.
+        assert (await _get(port, "/metrics?x=1"))[0] == 200
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.anyio
+async def test_connected_flag_follows_the_ws_lifecycle(monkeypatch):
+    service, _ = build()
+    seen: list[bool] = []
+
+    class ObservingWS(FakeWS):
+        async def __anext__(self) -> str:
+            seen.append(service.health()["connected"])
+            raise ConnectionError("stream dropped")
+
+    delays = _patch_loop(monkeypatch, lambda url: ObservingWS(), stop_after=1)
+    with pytest.raises(_Stop):
+        await service.run()
+
+    assert seen == [True], "connected while the subscription is accepted"
+    assert service.health()["connected"] is False, "and not after it drops"
+    assert delays == [3.0]
+
+
+def test_logging_is_structured_json_and_honours_the_level():
+    import logging
+
+    from door_voice.__main__ import _configure_logging
+    from doorboard_observability.logging_json import JsonLogFormatter
+
+    root = logging.getLogger()
+    saved_handlers, saved_level = list(root.handlers), root.level
+    try:
+        _configure_logging("DEBUG")
+        assert root.level == logging.DEBUG
+        assert any(isinstance(h.formatter, JsonLogFormatter) for h in root.handlers)
+    finally:
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
