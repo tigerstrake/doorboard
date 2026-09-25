@@ -285,9 +285,18 @@ interface DoorApiSnapshot {
     profile_id?: string | null;
     /** The colour this person chose at enrollment (ADR-0021), not the profile default. */
     accent_color?: string | null;
+    /**
+     * Seconds until door-api lets go of the held identity (ADR-0020). Present on the
+     * merged snapshot only, never on a delta; 0 when nobody is held.
+     */
+    identity_expires_in_s?: number;
   };
   config?: { max_recording_s?: number };
 }
+
+// Slack added to the server's identity countdown before the doorpad asks whether the name
+// is still held, so a clock rounded to a tenth of a second cannot fire a hair early.
+const IDENTITY_EXPIRY_GRACE_MS = 250;
 
 interface TimedAmbient<T> {
   payload: T;
@@ -749,6 +758,62 @@ export function App() {
     Partial<Record<AmbientAlert["kind"], { key: string; shownAt: number }>>
   >({});
 
+  // The latest applySessionSnapshot, reachable from timers and fetch callbacks that are
+  // created before it is (and must not capture a stale copy).
+  const applySessionSnapshotRef = useRef<
+    (snapshot: DoorApiSnapshot["session"] | null | undefined) => void
+  >(() => undefined);
+  const identityExpiryTimerRef = useRef<number | null>(null);
+
+  const clearHeldIdentity = useCallback(() => {
+    setActiveDisplayName(null);
+    setActiveProfile(null);
+    setActiveAccent(null);
+    setAttributedTo(null);
+  }, []);
+
+  // Re-read the merged snapshot from door-api and apply it. `GET /session` is the one
+  // response that says who is held and for how long (ADR-0020): a `/ws` delta carries the
+  // session transition only. Resolves false when door-api could not be reached.
+  const resyncSession = useCallback(async (): Promise<boolean> => {
+    try {
+      const response = await fetch(`${API_BASE}/session`);
+      if (!response.ok) return false;
+      const data = (await response.json()) as DoorApiSnapshot | null;
+      applySessionSnapshotRef.current(data?.session);
+      if (typeof data?.config?.max_recording_s === "number") {
+        setMaxRecordingS(data.config.max_recording_s);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  // A local countdown mirroring door-api's identity window. When it fires the doorpad asks
+  // the server rather than clearing on its own — every touch re-arms the window server-side
+  // (ADR-0020), so a timer armed from an older snapshot would otherwise forget someone who
+  // is still tapping. Only an unreachable door-api clears locally: failing toward forgetting
+  // is the direction ADR-0020 chose.
+  const armIdentityExpiry = useCallback(
+    (expiresInS: number | undefined, held: boolean) => {
+      if (identityExpiryTimerRef.current !== null) {
+        window.clearTimeout(identityExpiryTimerRef.current);
+        identityExpiryTimerRef.current = null;
+      }
+      if (!held || typeof expiresInS !== "number" || !Number.isFinite(expiresInS) || expiresInS <= 0) {
+        return;
+      }
+      identityExpiryTimerRef.current = window.setTimeout(() => {
+        identityExpiryTimerRef.current = null;
+        void resyncSession().then((reached) => {
+          if (!reached) clearHeldIdentity();
+        });
+      }, expiresInS * 1000 + IDENTITY_EXPIRY_GRACE_MS);
+    },
+    [clearHeldIdentity, resyncSession]
+  );
+
   const applySessionSnapshot = useCallback(
     (snapshot: DoorApiSnapshot["session"] | null | undefined) => {
       const nextState = snapshot?.state;
@@ -758,7 +823,19 @@ export function App() {
         return nextState;
       });
       if (snapshot?.session_id) setMockSessionId(snapshot.session_id);
-      if (snapshot?.display_name !== undefined) setActiveDisplayName(snapshot.display_name);
+      // Identity fields are applied only when the payload carries them. A delta says
+      // nothing about who is held, so it leaves the badge alone; a merged snapshot says
+      // `display_name: null` in as many words once door-api has let go (ADR-0020). That
+      // snapshot is also what arms the local countdown, from the server's own figure.
+      if (snapshot?.display_name !== undefined) {
+        setActiveDisplayName(snapshot.display_name);
+        // attributed_to follows the badge. door-api sends the two together, and the E-23
+        // notice must never claim a name the header has already stopped showing.
+        if (snapshot.attributed_to === undefined && snapshot.display_name === null) {
+          setAttributedTo(null);
+        }
+        armIdentityExpiry(snapshot.identity_expires_in_s, Boolean(snapshot.display_name));
+      }
       if (snapshot?.attributed_to !== undefined) setAttributedTo(snapshot.attributed_to);
       if (snapshot?.profile_id !== undefined) setActiveProfile(snapshot.profile_id);
       if (snapshot?.accent_color !== undefined) setActiveAccent(snapshot.accent_color);
@@ -768,19 +845,25 @@ export function App() {
       if (target.screen !== null) setDoorPadScreen(target.screen);
       setVideoStep(target.video);
       if (nextState === "IDLE") {
-        // Only forget the person if the server has also forgotten them. door-api now
-        // holds a recognised identity across the approach timer (ADR-0020), so IDLE no
-        // longer implies "nobody is here" — clearing unconditionally is what made the
-        // greeting vanish and "Check in as <name>" disappear mid-interaction.
-        if (!snapshot?.display_name) setActiveDisplayName(null);
-        if (!snapshot?.profile_id) setActiveProfile(null);
-        if (!snapshot?.accent_color) setActiveAccent(null);
+        // IDLE does not mean "nobody is here": door-api holds a recognised identity across
+        // the approach timer (ADR-0020), and the name clears above, exactly when a snapshot
+        // says so. Clearing here on a delta that merely lacked the field was the regression.
         setRingRequestState("idle");
         // Fresh session: clear any post-bell check-in photo state.
         setPostRingPhoto(null);
         setPostRingPhotoStatus("idle");
         setPostRingName("");
         setPostRingCheckinPending(false);
+      }
+    },
+    [armIdentityExpiry]
+  );
+  applySessionSnapshotRef.current = applySessionSnapshot;
+
+  useEffect(
+    () => () => {
+      if (identityExpiryTimerRef.current !== null) {
+        window.clearTimeout(identityExpiryTimerRef.current);
       }
     },
     []
@@ -938,6 +1021,11 @@ export function App() {
       if (event && event.type === "session.state_changed" && event.payload) {
         const toState = event.payload.to_state;
         applySessionSnapshot({ state: toState, session_id: event.payload.session_id });
+        // An IDLE delta is the approach timer firing (10 s), not the person leaving:
+        // door-api still holds the recognised identity for the interaction (ADR-0020),
+        // and only its merged snapshot says for how long. Re-read it rather than infer
+        // absence from the state — that inference is what erased the name at t+10 s.
+        if (toState === "IDLE") void resyncSession();
       }
     });
 
@@ -1132,7 +1220,7 @@ export function App() {
       unsubscribeWallboardFocus();
       client.close();
     };
-  }, [applySessionSnapshot, showAmbientAlert]);
+  }, [applySessionSnapshot, resyncSession, showAmbientAlert]);
 
   useEffect(() => {
     if (!WALLBOARD_TAKEOVER_STATES.includes(sessionState)) {
@@ -1159,18 +1247,8 @@ export function App() {
   }, [sessionState]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    fetch(`${API_BASE}/session`, { signal: controller.signal })
-      .then((response) => (response.ok ? response.json() : null))
-      .then((data: DoorApiSnapshot | null) => {
-        applySessionSnapshot(data?.session);
-        if (typeof data?.config?.max_recording_s === "number") {
-          setMaxRecordingS(data.config.max_recording_s);
-        }
-      })
-      .catch(() => undefined);
-    return () => controller.abort();
-  }, [applySessionSnapshot]);
+    void resyncSession();
+  }, [resyncSession]);
 
   useEffect(() => {
     if (route !== "/admin" && route !== "/diagnostics") return undefined;
