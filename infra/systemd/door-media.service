@@ -3,6 +3,10 @@ Description=Doorboard media service
 Requires=doorboard-storage-ready.service
 Wants=mediamtx.service
 After=doorboard-storage-ready.service mediamtx.service
+# No start-rate limit: a door unit that crash-loops keeps retrying (RestartSec
+# paces it) instead of being parked in `failed` after five tries in 10 s. The
+# health agent handles the hung-but-active case; this handles the dead one.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

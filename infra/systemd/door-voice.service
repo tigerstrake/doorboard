@@ -5,6 +5,10 @@ Description=Doorboard spoken greeting service
 # no speech — nothing on `button -> ESP32 feedback -> local UI` depends on it.
 Wants=door-api.service
 After=door-api.service sound.target
+# No start-rate limit: a door unit that crash-loops keeps retrying (RestartSec
+# paces it) instead of being parked in `failed` after five tries in 10 s. The
+# health agent handles the hung-but-active case; this handles the dead one.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
