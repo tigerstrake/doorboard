@@ -71,7 +71,10 @@ class Settings(BaseSettings):
     )
 
     # ── consent (ADR-0009 §5 E-7) ─────────────────────────────────────────
-    consent_version: str = Field(default="v1", alias="VISIOND_CONSENT_VERSION")
+    # The consent version is read from the statement file itself (its "Version:"
+    # line), never from the environment: a VISIOND_CONSENT_VERSION setting used to
+    # exist here and nothing read it, which is exactly the kind of knob an operator
+    # sets expecting it to matter.
     consent_statement_path: Path | None = Field(
         default=Path("docs/policies/consent-statement.md"),
         alias="VISIOND_CONSENT_STATEMENT_PATH",

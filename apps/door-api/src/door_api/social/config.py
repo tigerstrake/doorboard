@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from door_api.config import door_id_from_env
+
 
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
@@ -76,7 +78,7 @@ class SocialConfig:
 
         return SocialConfig(
             db_path=db_path,
-            door_id=os.environ.get("DOOR_API_DOOR_ID", "primary"),
+            door_id=door_id_from_env(),
             write_rate_limit_count=_env_int("DOOR_API_SOCIAL_RATE_LIMIT_COUNT", 5),
             write_rate_limit_window_s=_env_float("DOOR_API_SOCIAL_RATE_LIMIT_WINDOW_S", 60.0),
             guestbook_text_max_len=_env_int("DOOR_API_SOCIAL_GUESTBOOK_TEXT_MAX_LEN", 280),

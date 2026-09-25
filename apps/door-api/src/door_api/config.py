@@ -14,6 +14,30 @@ from dataclasses import dataclass
 logger = logging.getLogger("door_api.config")
 
 
+def door_id_from_env() -> str:
+    """The door this service stamps on every event it emits.
+
+    ``DOORBOARD_DOOR_ID`` is the documented name and what door-visiond, door-media and
+    door-sync read. door-api alone read ``DOOR_API_DOOR_ID``, so a Pi configured with the
+    documented one had door-api stamping ``primary`` on session/social events while the
+    other three stamped the configured id. The legacy spelling is honoured for one release
+    so an existing .env keeps working, with a warning so it gets renamed; the documented
+    name wins when both are set.
+    """
+    documented = os.environ.get("DOORBOARD_DOOR_ID", "").strip()
+    if documented:
+        return documented
+    legacy = os.environ.get("DOOR_API_DOOR_ID", "").strip()
+    if legacy:
+        logger.warning(
+            "DOOR_API_DOOR_ID is deprecated and will stop being read next release; "
+            "rename it to DOORBOARD_DOOR_ID",
+            extra={"door_id": legacy},
+        )
+        return legacy
+    return "primary"
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if raw is None:
@@ -310,7 +334,7 @@ class SessionConfig:
             approach_timeout_s=_env_float("DOOR_API_APPROACH_TIMEOUT_S", 10.0),
             session_end_linger_s=_env_float("DOOR_API_SESSION_END_LINGER_S", 3.0),
             db_path=db_path,
-            door_id=os.environ.get("DOOR_API_DOOR_ID", "primary"),
+            door_id=door_id_from_env(),
             cors_origins=_cors_origins_from_env("DOOR_API_CORS_ORIGINS"),
             media_base_url=os.environ.get("DOOR_API_MEDIA_BASE_URL", "http://127.0.0.1:8082"),
             media_public_base_url=os.environ.get(
