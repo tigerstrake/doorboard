@@ -38,8 +38,11 @@ for all keys (`FOOD_USE_AI`, `OPENAI_API_KEY`, `FOOD_HALL_IDS`, …).
 
 ## Behaviour
 
-- One recommendation per day, cached. All network + LLM work runs in the
-  wallboard-worker (NUC) daily job — never on the door critical path.
+- The worker job runs every 3 h (`WALLBOARD_FOOD_INTERVAL_S`), so the pick
+  tracks the meal window through the day: the Stanford provider chooses the
+  meal for the moment it runs, and a daily cadence showed one meal for 24 h.
+  The latest pick is cached. All network + LLM work runs in the wallboard-worker
+  (NUC) — never on the door critical path.
 - On any provider failure the job emits **yesterday's** cached pick, whose older
   `occurred_at` renders as a staleness marker on the tile.
 - Dependencies (ADR-0003 / ADR-0010): `pydantic`, `httpx` (already in the

@@ -35,6 +35,17 @@ def test_mock_food_provider_is_stable_within_day_and_rotates() -> None:
     assert provider_next_day.get_daily_recommendation().title != first.title
 
 
+def test_the_food_cadence_is_shorter_than_a_meal_window() -> None:
+    """The Stanford provider picks the meal for the moment it runs.
+
+    At the old daily cadence the tile showed e.g. "Wilbur — Dinner" for 24 h, and
+    which meal depended on when the worker last restarted. The shortest window in
+    meal.detect_meal is breakfast, 06:00-10:00, so a run must land inside every
+    window: the interval has to be under four hours.
+    """
+    assert Settings.model_fields["food_interval_s"].default <= 3 * 3600
+
+
 def test_food_cache_ignores_wrong_day(tmp_path) -> None:
     cache = FoodRecommendationCache(tmp_path / "food.json")
     cache.save(Recommendation(date=date(2026, 7, 7), title="Ramen", provider="mock"))

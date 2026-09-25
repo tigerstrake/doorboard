@@ -101,10 +101,16 @@ POLLERS: tuple[Poller, ...] = (
     ),
     Poller(
         setting="WALLBOARD_FOOD_INTERVAL_S",
-        target="dining menu provider",
+        target="dining menu provider (Stanford R&DE menu page; one OpenAI call per run "
+        "only when FOOD_USE_AI is on)",
         metered=False,
         demand_gated=False,
-        note="Daily. A menu is a daily fact.",
+        note=(
+            "Every 3 h, ~240/month. A menu is a daily fact but the *meal* is a "
+            "time-of-day one: the provider picks the meal for the moment it runs, so "
+            "a daily cadence showed one meal for 24 h. The scrape is unmetered; the "
+            "optional LLM call is ~8/day of a cheap model."
+        ),
     ),
     Poller(
         setting="WALLBOARD_ACADEMIC_INTERVAL_S",

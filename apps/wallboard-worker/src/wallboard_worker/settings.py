@@ -61,7 +61,11 @@ class Settings(BaseSettings):
     )
     aircraft_interval_s: float = Field(default=30.0, alias="WALLBOARD_AIRCRAFT_INTERVAL_S", gt=0)
     printer_interval_s: float = Field(default=30.0, alias="WALLBOARD_PRINTER_INTERVAL_S", gt=0)
-    food_interval_s: float = Field(default=86400.0, alias="WALLBOARD_FOOD_INTERVAL_S", gt=0)
+    # Every 3 h, not daily: the provider picks the meal for the moment it runs, so a
+    # daily cadence showed "Wilbur — Dinner" for 24 h, with which meal depending on when
+    # the worker last restarted. Three hours is shorter than every meal window, so the
+    # tile tracks the day; the scrape is a LAN-cheap unmetered GET.
+    food_interval_s: float = Field(default=10800.0, alias="WALLBOARD_FOOD_INTERVAL_S", gt=0)
     # Daily. Reading a local table, so the interval is about when the day rolls
     # over, not about a remote service (ADR-0039).
     academic_countdown_interval_s: float = Field(

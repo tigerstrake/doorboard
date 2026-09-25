@@ -39,8 +39,9 @@ from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
-# Just over the longest producer interval (the daily food job at 86400 s), so a normal
-# once-a-day cadence always survives but a genuinely dead producer stops being quoted.
+# Just over a day. Set when the longest producer interval was the daily food job (now
+# every 3 h) and kept as the ceiling: a producer on any cadence up to daily survives a
+# reload, but a genuinely dead one stops being quoted after a day.
 DEFAULT_MAX_AGE_S = 26 * 3600.0
 
 # A cap on distinct remembered types. The type comes off an MQTT topic, so a renamed or

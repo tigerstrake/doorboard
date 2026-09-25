@@ -188,8 +188,9 @@ class SessionConfig:
     # lasts as long as the interaction and no longer. Bound to session state instead,
     # the name vanished ten seconds after the greeting and Check In refused to offer it.
     # How long a remembered ambient event stays worth replaying to a reconnecting kiosk.
-    # Just over the daily food job's interval, so a normal cadence survives a reload but a
-    # dead producer stops being quoted as current (ADR-0027).
+    # Just over a day: set when the food job published once daily (ADR-0027) and kept as
+    # the ceiling, so a producer on any cadence up to daily survives a reload while a
+    # dead one stops being quoted as current.
     ambient_cache_max_age_s: float = 26 * 3600.0
     # Must stay >= door-visiond's greeting cooldown (VISIOND_GREETING_COOLDOWN_MS, 30 s).
     #

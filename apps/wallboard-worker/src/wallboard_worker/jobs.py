@@ -598,7 +598,7 @@ def run_food_recommendation(
     now: datetime | None = None,
     cache: FoodRecommendationCache | None = None,
 ) -> dict | None:
-    """Fetch the daily food recommendation and ingest it into the control plane."""
+    """Fetch the current food recommendation and ingest it into the control plane."""
     if now is None:
         now = datetime.now(UTC)
     if cache is None:

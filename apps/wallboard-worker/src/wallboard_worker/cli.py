@@ -178,7 +178,7 @@ def printer_status(mock: bool, state: str | None) -> None:
 @cli.command()
 @click.option("--mock", is_flag=True, help="Force use of mock provider")
 def food_recommendation(mock: bool) -> None:
-    """Run the daily food recommendation ingestion job."""
+    """Run the food recommendation ingestion job."""
     settings = Settings()
     provider = build_food_provider(settings, force_mock=mock)
     run_food_recommendation(settings, provider)
