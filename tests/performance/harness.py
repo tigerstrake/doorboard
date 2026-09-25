@@ -1,13 +1,14 @@
 """Latency measurement harness — CLI runner.
 
-Drives the simulator through all ARCHITECTURE.md §4 paths and produces
-p50/p95/p99 tables.  The shared logic (BUDGET_P95_MS, check_regressions,
-build_report, build_json) lives in doorboard_observability.harness_core
-so tests can import it without path manipulation.
+Drives the ARCHITECTURE.md §4 paths that can be exercised on a machine with no
+door hardware and produces p50/p95/p99 tables.  The shared logic (BUDGET_P95_MS,
+check_regressions, build_report, build_json) lives in
+doorboard_observability.harness_core so tests can import it without path
+manipulation.
 
 Usage::
 
-    # Run against the simulator (default):
+    # Run in-process (default):
     python -m tests.performance.harness
 
     # Save a new baseline:
@@ -26,12 +27,23 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
+import os
+import secrets
 import sys
 import tempfile
+import threading
 import time
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
+from doorboard_contracts import DoorboardEvent, parse_event
+from doorboard_esp32_link import Esp32TransportStatus, WireMessage
+from doorboard_esp32_link.esp32 import uuid7_now
 from doorboard_observability.harness_core import (
     BUDGET_P95_MS,
     build_json,
@@ -44,27 +56,187 @@ from doorboard_observability.harness_core import (
 # The committed baseline lives alongside this runner.
 BASELINE_PATH = Path(__file__).parent / "baseline.json"
 
+# 50 iterations give the nearest-rank p95 the 48th-ordered value —
+# statistically meaningful without being slow in CI.
+ITERATIONS = 50
+
+
+# ---------------------------------------------------------------------------
+# bell_to_visitor_mode: door-api, in-process
+# ---------------------------------------------------------------------------
+
+
+class _QueueEsp32Transport:
+    """The controller link reduced to its inbound queue.
+
+    door-api's consumer task (``DoorApiState._consume_esp32_events``) iterates
+    ``events()`` exactly as it does over the UART transport. The harness feeds the
+    queue from the calling thread, so the timed window starts where a decoded frame
+    enters that same queue on the Pi. Outbound traffic (effects, profile pushes) is
+    not part of this path and is refused loudly rather than swallowed.
+    """
+
+    def __init__(self) -> None:
+        self._inbound: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._consuming = threading.Event()
+
+    def events(self) -> AsyncIterator[DoorboardEvent]:
+        return self._stream()
+
+    async def _stream(self) -> AsyncIterator[DoorboardEvent]:
+        self._loop = asyncio.get_running_loop()
+        self._consuming.set()
+        while True:
+            # Contract validation happens here, inside the consumer, as it does in
+            # Esp32ProtocolTransport.events() — it is part of the measured path.
+            yield parse_event(await self._inbound.get())
+
+    def push(self, wire: dict[str, Any]) -> None:
+        """Hand a decoded frame to the consumer from any thread."""
+        if not self._consuming.wait(timeout=5.0) or self._loop is None:
+            raise RuntimeError("door-api never started its ESP32 event consumer")
+        self._loop.call_soon_threadsafe(self._inbound.put_nowait, wire)
+
+    def status(self) -> Esp32TransportStatus:
+        return Esp32TransportStatus(
+            connected=True, last_heartbeat_mono_ms=None, rx_errors=0, tx_retries=0
+        )
+
+    def make_message(self, message_type: str, payload: Mapping[str, object]) -> WireMessage:
+        raise NotImplementedError("the harness link is inbound-only")
+
+    async def send(self, msg: WireMessage) -> WireMessage:
+        raise NotImplementedError("the harness link is inbound-only")
+
+    async def send_event(self, event: DoorboardEvent) -> WireMessage:
+        raise NotImplementedError("the harness link is inbound-only")
+
+
+def _button_pressed_wire() -> dict[str, Any]:
+    """A ``door.button_pressed`` envelope as the ESP32 link would decode it."""
+    return {
+        "event_id": str(uuid7_now()),
+        "type": "door.button_pressed",
+        "source": "esp32-link",
+        "occurred_at": datetime.now(UTC).isoformat(),
+        "monotonic_ms": time.monotonic_ns() // 1_000_000,
+        "door_id": "primary",
+        "trace_id": str(uuid4()),
+        "payload": {"press_id": str(uuid4()), "had_cached_profile": False, "profile_id": None},
+    }
+
+
+@contextlib.contextmanager
+def _environ(overrides: Mapping[str, str]) -> Iterator[None]:
+    saved = {key: os.environ.get(key) for key in overrides}
+    os.environ.update(overrides)
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _receive_state_changed(websocket: Any, *, to_state: str) -> dict[str, Any]:
+    """Read /ws frames until the ``session.state_changed`` delta into ``to_state``."""
+    while True:
+        frame = json.loads(websocket.receive_text())
+        if frame.get("type") != "delta":
+            continue
+        event = frame["event"]
+        if event["type"] == "session.state_changed" and event["payload"]["to_state"] == to_state:
+            return event
+
+
+def measure_bell_to_visitor_mode(iterations: int, data_dir: Path) -> list[float]:
+    """Time ``door.button_pressed`` → ``session.state_changed(VISITOR_MODE)`` on ``/ws``.
+
+    What runs: door-api's real FastAPI app under Starlette's TestClient with its
+    lifespan, the real ``SessionMachine`` over the real SQLite ``SessionStore`` on disk
+    in ``data_dir`` (WAL, ``synchronous=FULL`` — the Pi's settings), the real ESP32
+    event-consumer task reading a queue-backed link, and the real ``/ws`` endpoint.
+    The clock starts when the decoded button frame is handed to the consumer's queue
+    and stops when the ``VISITOR_MODE`` delta has been read from the socket.
+
+    Not on the path: the UART itself, and uvicorn's WebSocket framing — TestClient's
+    in-memory socket stands in for it. The harness's two thread hops (inject, read)
+    are overhead the Pi does not pay, so the number here is a slight over-estimate.
+
+    Every iteration is a fresh session: it is ended through ``POST /admin/session/end``
+    and the next press waits for the ``IDLE`` delta. ``SESSION_END → IDLE`` normally
+    lingers three seconds; that is zeroed here so fifty sessions take well under a
+    minute, and it is outside the timed window either way.
+    """
+    from fastapi.testclient import TestClient
+
+    db_path = str(data_dir / "session.sqlite")
+    admin_token = secrets.token_urlsafe(16)
+    overrides = {
+        "DOOR_API_DB_PATH": db_path,
+        "DOOR_API_SOCIAL_DB_PATH": str(data_dir / "social.sqlite"),
+        "DOOR_API_SOCIAL_ADMIN_TOKEN": admin_token,
+        "DOOR_API_SESSION_END_LINGER_S": "0",
+        # Nothing listens here: the media/sync forwarders fail fast and back off
+        # instead of reaching a real door-media or door-sync on the dev box.
+        "DOOR_API_MEDIA_BASE_URL": "http://127.0.0.1:9",
+        "DOOR_API_SYNC_BASE_URL": "http://127.0.0.1:9",
+        "ESP32_TRANSPORT": "mock",
+        "DOOR_API_MQTT_URL": "",
+        "DOOR_API_VISITOR_RELAY_BASE_URL": "",
+    }
+    samples: list[float] = []
+    with _environ(overrides):
+        from door_api.app import app, state
+
+        # The module-level state is built at import time. In a fresh process that
+        # already happened under this environment; under pytest it may predate it.
+        if state.config.db_path != db_path:
+            state.shutdown()
+            state.__init__()
+        link = _QueueEsp32Transport()
+        # No loop is running yet, so this only records the link; the lifespan's
+        # startup() creates the consumer task on the app's loop.
+        state.attach_esp32_transport(link)
+
+        with TestClient(app) as client, client.websocket_connect("/ws") as websocket:
+            headers = {"Authorization": f"Bearer {admin_token}"}
+            for _ in range(iterations):
+                t0 = time.perf_counter()
+                link.push(_button_pressed_wire())
+                _receive_state_changed(websocket, to_state="VISITOR_MODE")
+                samples.append((time.perf_counter() - t0) * 1000.0)
+
+                ended = client.post("/admin/session/end", headers=headers)
+                if ended.status_code != 200 or not ended.json()["accepted"]:
+                    raise RuntimeError(f"could not end the session: {ended.text}")
+                _receive_state_changed(websocket, to_state="IDLE")
+    return samples
+
 
 # ---------------------------------------------------------------------------
 # Simulator-based measurement
 # ---------------------------------------------------------------------------
 
 
-async def run_simulator() -> dict[str, list[float]]:
-    """Drive the simulator through the latency scenario and collect raw samples.
-
-    Returns a dict mapping path name → list of millisecond durations.
-    The simulator uses a wall-clock-free SimClock; we measure Pi-side
-    processing overhead with time.monotonic() so the harness exercises real
-    code paths even though no hardware is present.
-    """
+def collect_samples(iterations: int = ITERATIONS) -> dict[str, list[float]]:
+    """Measure every path the harness can, returning path name → millisecond samples."""
     samples: dict[str, list[float]] = {path: [] for path in BUDGET_P95_MS}
 
     with tempfile.TemporaryDirectory(prefix="doorboard-harness-") as tmpdir:
-        await _run_simulator_loop(
-            iterations=50,
-            artifact_root=Path(tmpdir),
-            samples=samples,
+        root = Path(tmpdir)
+        asyncio.run(
+            _run_simulator_loop(
+                iterations=iterations,
+                artifact_root=root / "simulator",
+                samples=samples,
+            )
+        )
+        samples["bell_to_visitor_mode"] = measure_bell_to_visitor_mode(
+            iterations, root / "door-api"
         )
 
     return samples
@@ -75,11 +247,7 @@ async def _run_simulator_loop(
     artifact_root: Path,
     samples: dict[str, list[float]],
 ) -> None:
-    """Inner measurement loop.
-
-    50 iterations give the nearest-rank p95 the 48th-ordered value —
-    statistically meaningful without being slow in CI.
-    """
+    """Simulator-only sections: no service code runs here."""
     from doorboard_simulator.clock import SimClock
     from doorboard_simulator.esp32 import FakeEsp32Transport
     from doorboard_simulator.events import EventFactory
@@ -173,18 +341,7 @@ async def _run_simulator_loop(
         samples["bell_to_recording_event"].append((time.monotonic() - t0) * 1000.0)
 
         # ----------------------------------------------------------------
-        # 5. bell_to_visitor_mode
-        #    Proxy: button_event processing + state-machine dispatch.
-        #    Full end-to-end needs door-api WebSocket (measured on bench).
-        # ----------------------------------------------------------------
-        t0 = time.monotonic()
-        msg_v = await esp32.emit_button_press()
-        ev = esp32.to_contract_event(msg_v)
-        _ = ev.model_dump(mode="json")
-        samples["bell_to_visitor_mode"].append((time.monotonic() - t0) * 1000.0)
-
-        # ----------------------------------------------------------------
-        # 6. tap_to_local_response
+        # 5. tap_to_local_response
         #    No touchscreen in simulator — measures event creation overhead.
         # ----------------------------------------------------------------
         t0 = time.monotonic()
@@ -201,7 +358,7 @@ async def _run_simulator_loop(
         samples["tap_to_local_response"].append((time.monotonic() - t0) * 1000.0)
 
         # ----------------------------------------------------------------
-        # 7. webrtc_glass_to_glass
+        # 6. webrtc_glass_to_glass
         #    Requires MediaMTX + WebRTC — not simulatable.
         #    Sentinel 0.0 → "simulator N/A" in the report.
         # ----------------------------------------------------------------
@@ -213,7 +370,7 @@ async def _run_simulator_loop(
 # ---------------------------------------------------------------------------
 
 
-async def run_hardware() -> dict[str, list[float]]:
+def run_hardware() -> dict[str, list[float]]:
     """Hardware-mode runner stub.
 
     In hardware mode the bench operator connects real devices and drives
@@ -234,11 +391,11 @@ async def run_hardware() -> dict[str, list[float]]:
 # ---------------------------------------------------------------------------
 
 
-async def _main(args: argparse.Namespace) -> int:
-    if args.mode == "hardware":
-        samples = await run_hardware()
-    else:
-        samples = await run_simulator()
+def _main(args: argparse.Namespace) -> int:
+    collect: Callable[[], dict[str, list[float]]] = (
+        run_hardware if args.mode == "hardware" else collect_samples
+    )
+    samples = collect()
 
     baseline = load_baseline(BASELINE_PATH)
     if baseline is None and BASELINE_PATH.exists():
@@ -285,7 +442,7 @@ def main() -> None:
         "--mode",
         choices=["simulator", "hardware"],
         default="simulator",
-        help="Run against simulator (default) or real hardware bench.",
+        help="Run in-process on this machine (default) or against the real hardware bench.",
     )
     parser.add_argument(
         "--save-baseline",
@@ -295,7 +452,7 @@ def main() -> None:
     parser.add_argument("--json-out", metavar="PATH", default=None)
     parser.add_argument("--report-out", metavar="PATH", default=None)
     args = parser.parse_args()
-    sys.exit(asyncio.run(_main(args)))
+    sys.exit(_main(args))
 
 
 if __name__ == "__main__":
