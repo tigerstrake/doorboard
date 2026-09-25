@@ -27,6 +27,7 @@ import contextlib
 import hashlib
 import logging
 import os
+import shlex
 import shutil
 import signal
 import time
@@ -213,7 +214,9 @@ def _build_run_on_init(settings: Settings) -> str:
             *(["--hflip"] if settings.video_hflip else []),
             *(["--vflip"] if settings.video_vflip else []),
             *(
-                [f"--tuning-file {settings.camera_tuning_file}"]
+                # Owner-controlled, so not an injection; but a path with a space or
+                # a quote silently broke the publisher (runOnInitRestart looped).
+                [f"--tuning-file {shlex.quote(settings.camera_tuning_file)}"]
                 if settings.camera_tuning_file
                 else []
             ),
@@ -225,14 +228,20 @@ def _build_run_on_init(settings: Settings) -> str:
         "ffmpeg -nostats -loglevel error -fflags nobuffer -f h264 "
         f"-r {settings.video_framerate} -i pipe:0 -c:v copy {rtsp}"
     )
-    return f"sh -c '{rpicam} | {ffmpeg}'"
+    # shlex.quote of a string with no quote characters is the same `'...'` the
+    # door has been running; only a path that needs escaping renders differently.
+    return f"sh -c {shlex.quote(f'{rpicam} | {ffmpeg}')}"
 
 
 @dataclass
 class _ActiveRecording:
     handle: RecordingHandle
+    # Monotonic only. The wall clock is not stored: the Pi boots at 1970 until NTP
+    # steps it, and a window that straddled the step used to run "from 1970 to
+    # now" -- every segment in the retention tree concatenated into one clip. The
+    # window's *length* is what is known; where it sits on the wall clock is
+    # derived from that at the moment it is needed (see started_epoch_as_of).
     started_monotonic: float = field(default_factory=time.monotonic)
-    started_epoch: float = field(default_factory=time.time)
     # Segment files captured during this window (collected at finalize time)
     captured_segments: list[Path] = field(default_factory=list)
     # Parallel USB-mic capture (video-only MediaMTX path, muxed at finalize).
@@ -242,6 +251,10 @@ class _ActiveRecording:
     audio_proc: asyncio.subprocess.Process | None = None
     audio_path: Path | None = None
     audio_drain: asyncio.Task[None] | None = None
+
+    def started_epoch_as_of(self, now_epoch: float, now_monotonic: float) -> float:
+        """Where this window began on the wall clock *as it reads now*."""
+        return now_epoch - (now_monotonic - self.started_monotonic)
 
 
 class MediaMTXRouter:
@@ -488,7 +501,10 @@ class MediaMTXRouter:
         now = time.time() if now_epoch is None else now_epoch
         cutoff = now - self._settings.segment_retention_s
         if self._active:
-            earliest_active = min(item.started_epoch for item in self._active.values())
+            now_monotonic = time.monotonic()
+            earliest_active = min(
+                item.started_epoch_as_of(now, now_monotonic) for item in self._active.values()
+            )
             cutoff = min(cutoff, earliest_active - self._settings.segment_s)
         root = self._settings.segments_root
         deleted = _prune_segments(root, older_than_epoch=cutoff)
@@ -675,12 +691,16 @@ class MediaMTXRouter:
         elapsed_s = time.monotonic() - active.started_monotonic
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Find segments that overlap the recording window
+        # Find segments that overlap the recording window. The window is
+        # [now - elapsed, now] on the wall clock as it reads *now*: its length is
+        # monotonic, so an NTP step between start and finalize cannot stretch it
+        # across the whole retention tree.
         seg_dir = self._settings.segments_root / handle.stream
         ended_epoch = time.time()
+        started_epoch = ended_epoch - elapsed_s
         segments = _find_segments(
             seg_dir,
-            started_epoch=active.started_epoch - self._settings.segment_s,
+            started_epoch=started_epoch - self._settings.segment_s,
             ended_epoch=ended_epoch + self._settings.segment_s,
         )
 
@@ -704,8 +724,8 @@ class MediaMTXRouter:
         # [started_epoch, ended_epoch]. Compute how far into the concat the real
         # start is (trim_start) and the real duration (D) so the audio mux can
         # trim the video to match — dropping the pre-roll and fixing A/V sync.
-        trim_start = self._trim_start_into_concat(active.started_epoch, segments[0])
-        duration_s = max(0.0, ended_epoch - active.started_epoch)
+        trim_start = self._trim_start_into_concat(started_epoch, segments[0])
+        duration_s = max(0.0, elapsed_s)
 
         # Mux the captured mic audio into the concatenated video, trimming the
         # video to the real window. Graceful video-only fallback on any problem —

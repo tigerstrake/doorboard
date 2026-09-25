@@ -289,6 +289,21 @@ class RecordingDB:
             self._conn.commit()
             return cur.rowcount > 0
 
+    def delete_unfinalized_before(self, *, started_before_utc: str) -> int:
+        """Remove started rows that never produced a clip and are too old to now.
+
+        A crash or a failed finalize leaves a ``path IS NULL`` row. Once the row is
+        older than the segment retention, the segments that would have made its clip
+        are gone, so the row can only ever be an orphan. Returns how many went.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM recordings WHERE path IS NULL AND started_at_utc < ?",
+                (started_before_utc,),
+            )
+            self._conn.commit()
+            return cur.rowcount
+
     def rows_for_session(self, *, session_id: UUID, kind: str | None = None) -> list[RecordingRow]:
         query = f"SELECT {_ROW_SELECT} FROM recordings WHERE session_id=?"
         params: list[str] = [str(session_id)]

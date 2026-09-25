@@ -29,7 +29,7 @@ import shutil
 import socket
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -51,6 +51,7 @@ from door_media.emitter import (
     emit_thumbnail_ready,
 )
 from door_media.event_forwarder import EventForwarder, HttpEventTransport
+from door_media.mediamtx_router import _communicate_bounded
 from door_media.settings import Settings
 
 logger = logging.getLogger("door_media.service")
@@ -63,6 +64,11 @@ _CRIT_FREE_RATIO = 0.05  # critical when <5% free
 # recording_id is remembered; the lock map is pruned to settled entries only.
 _FINALIZED_MEMO_MAX = 512
 _FINALIZE_LOCKS_MAX = 256
+
+# The thumbnail ffmpeg runs inside the per-recording finalize lock, with door-api's
+# /internal/session_event request open behind it. Unbounded, a corrupt clip that
+# made ffmpeg spin held both forever; the clip itself is already safe by then.
+_THUMBNAIL_FFMPEG_TIMEOUT_S = 30.0
 
 
 def sweep_orphan_temp_files(recordings_root: Path, audio_tmp_root: Path) -> int:
@@ -141,6 +147,12 @@ class RecordingService:
         )
         if swept:
             logger.info("orphan_temp_files_swept", extra={"removed": swept})
+        # Rows a crash or a failed finalize started and nothing will ever finish:
+        # older than the segment retention, the segments for their clip are gone.
+        cutoff = datetime.now(UTC) - timedelta(seconds=self._settings.segment_retention_s)
+        orphan_rows = self._db.delete_unfinalized_before(started_before_utc=cutoff.isoformat())
+        if orphan_rows:
+            logger.info("orphan_recording_rows_swept", extra={"removed": orphan_rows})
 
         self._retention_task = asyncio.create_task(self._retention_loop(), name="retention-loop")
         self._storage_task = asyncio.create_task(
@@ -730,13 +742,15 @@ class RecordingService:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await proc.communicate()
+            _, stderr = await _communicate_bounded(
+                proc, timeout_s=_THUMBNAIL_FFMPEG_TIMEOUT_S, what="thumbnail"
+            )
             if proc.returncode != 0:
                 logger.error(
                     "ffmpeg_thumbnail_failed",
                     extra={
                         "returncode": proc.returncode,
-                        "stderr": stderr.decode(errors="replace")[:500],
+                        "stderr": (stderr or b"").decode(errors="replace")[:500],
                         "clip": str(clip_path),
                     },
                 )

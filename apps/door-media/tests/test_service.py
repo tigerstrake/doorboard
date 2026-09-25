@@ -434,3 +434,77 @@ async def test_concurrent_finalize_cuts_the_clip_once(service_env, monkeypatch):
 
     assert recording_id not in svc._active_handles
     await svc.stop()
+
+
+@pytest.mark.anyio
+async def test_startup_sweeps_orphan_started_rows_older_than_segment_retention(service_env):
+    """A crash or a failed finalize leaves a path IS NULL row; once older than the
+    segment retention the segments for its clip are gone and it can only be an orphan."""
+    from datetime import UTC, datetime, timedelta
+
+    svc, db, cfg = service_env
+    old_rid, fresh_rid = uuid4(), uuid4()
+    for rid in (old_rid, fresh_rid):
+        db.insert_started(
+            recording_id=rid,
+            session_id=uuid4(),
+            kind="bell_clip",
+            stream="visitor",
+            started_mono_ms=0,
+        )
+    stale = datetime.now(UTC) - timedelta(seconds=cfg.segment_retention_s + 60)
+    db._conn.execute(  # noqa: SLF001
+        "UPDATE recordings SET started_at_utc=? WHERE recording_id=?",
+        (stale.isoformat(), str(old_rid)),
+    )
+    db._conn.commit()  # noqa: SLF001
+
+    await svc.start()
+    try:
+        assert db.get(old_rid) is None
+        assert db.get(fresh_rid) is not None, "younger than retention: left alone"
+    finally:
+        await svc.stop()
+
+
+@pytest.mark.anyio
+async def test_thumbnail_ffmpeg_is_bounded(service_env, monkeypatch):
+    """The only ffmpeg in door-media that ran unbounded, and it ran inside the
+    per-recording finalize lock with door-api's request open behind it."""
+    svc, _db, cfg = service_env
+    cfg.media_mode = "mediamtx"
+    clip = cfg.ssd_data_root / "recordings" / "clip.mp4"
+    clip.parent.mkdir(parents=True, exist_ok=True)
+    clip.write_bytes(b"not really an mp4")
+
+    class _Hang:
+        returncode: int | None = None
+        killed = False
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            await asyncio.sleep(3600)
+            return (b"", b"")
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+
+        async def wait(self) -> int:
+            return -9
+
+    proc = _Hang()
+
+    async def fake_exec(*args: object, **kwargs: object) -> _Hang:
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr("door_media.service._THUMBNAIL_FFMPEG_TIMEOUT_S", 0.05)
+
+    started = time.monotonic()
+    ok = await svc._generate_thumbnail(
+        clip_path=clip, thumb_path=clip.with_suffix(".jpg"), duration_s=3.0
+    )
+
+    assert ok is False
+    assert time.monotonic() - started < 5.0
+    assert proc.killed, "a hung ffmpeg must be reaped, not abandoned"

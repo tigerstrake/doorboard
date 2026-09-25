@@ -73,17 +73,6 @@ _PLACEHOLDER_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00
 # Lifespan
 # ---------------------------------------------------------------------------
 
-_RECORDING_TRIGGER_STATES: set[SessionState] = {
-    SessionState.BUTTON_PRESSED,
-    SessionState.VIDEO_MESSAGE_RECORDING,
-}
-_FINALIZE_STATES: set[SessionState] = {
-    SessionState.SESSION_END,
-    SessionState.VIDEO_MESSAGE_SAVED,
-    SessionState.UNANSWERED_TIMEOUT,
-    SessionState.ANSWERED,
-}
-
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:

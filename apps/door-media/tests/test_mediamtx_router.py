@@ -323,7 +323,7 @@ async def test_router_prune_protects_active_recording_window(tmp_path: Path) -> 
         kind="bell_clip",
         stream="visitor",
     )
-    router._active[handle.recording_id].started_epoch = now - 120
+    router._active[handle.recording_id].started_monotonic = time.monotonic() - 120
     protected = cfg.segments_root / "visitor" / "protected.mp4"
     stale = cfg.segments_root / "other" / "stale.mp4"
     _touch(protected, modified=now - 90)
@@ -430,10 +430,12 @@ async def test_finalize_trims_and_muxes_captured_audio(
     # into the concat and cap it at -t 6.496.
     seg_started = datetime(2026, 7, 18, 14, 30, 45, 500000)
     seg = _mediamtx_segment_path(cfg.segments_root, "visitor", seg_started)
-    active.started_epoch = seg_started.timestamp() + 2.5
-    finalize_epoch = active.started_epoch + 6.496
+    started_epoch = seg_started.timestamp() + 2.5
+    finalize_epoch = started_epoch + 6.496
+    # The window's length is monotonic; its wall-clock start is derived from it.
+    active.started_monotonic = time.monotonic() - 6.496
     monkeypatch.setattr(time, "time", lambda: finalize_epoch)
-    _touch(seg, modified=active.started_epoch)  # inside the padded find window
+    _touch(seg, modified=started_epoch)  # inside the padded find window
 
     result = await router.finalize_recording(handle, consent_context="visitor_initiated")
 
@@ -445,8 +447,9 @@ async def test_finalize_trims_and_muxes_captured_audio(
     # Frame-accurate trim: input -ss BEFORE -i, then a re-encode.
     assert mux[0] == "ffmpeg"
     assert mux.index("-ss") < mux.index("-i")
-    assert float(mux[mux.index("-ss") + 1]) == pytest.approx(2.5, abs=1e-3)
-    assert float(mux[mux.index("-t") + 1]) == pytest.approx(6.496, abs=1e-3)
+    # 50 ms: the real monotonic clock runs between arming the window and the cut.
+    assert float(mux[mux.index("-ss") + 1]) == pytest.approx(2.5, abs=0.05)
+    assert float(mux[mux.index("-t") + 1]) == pytest.approx(6.496, abs=0.05)
     assert str(out_path) in argv
     assert str(audio_path) in argv
     assert "-itsoffset 0.25" in argv
@@ -502,7 +505,7 @@ async def test_finalize_falls_back_to_video_only_on_mux_failure(
     assert active.audio_path is not None
     audio_path = active.audio_path
     audio_path.write_bytes(b"audio-bytes")
-    active.started_epoch = time.time() - 5  # non-zero real window
+    active.started_monotonic = time.monotonic() - 5  # non-zero real window
 
     _touch(cfg.segments_root / "visitor" / "seg.mp4", modified=time.time())
 
@@ -1269,7 +1272,7 @@ async def test_segment_size_cap_prunes_oldest_first_even_inside_an_active_window
     handle = await router.start_recording(
         session_id=uuid.uuid4(), kind="bell_clip", stream="visitor"
     )
-    router._active[handle.recording_id].started_epoch = now - 600  # window covers everything
+    router._active[handle.recording_id].started_monotonic = time.monotonic() - 600  # covers all
     segments = []
     for i in range(6):  # 6 x 256 KiB = 1.5 MiB, cap is 1 MiB
         seg = cfg.segments_root / "visitor" / f"seg{i}.mp4"
@@ -1293,3 +1296,81 @@ def test_segment_tree_bytes_counts_only_segments(tmp_path: Path) -> None:
     (tmp_path / "a" / "two.mp4").write_bytes(b"x" * 5)
     (tmp_path / "a" / "list.txt").write_bytes(b"x" * 100)
     assert segment_tree_bytes(tmp_path) == 15
+
+
+# ---------------------------------------------------------------------------
+# The recording window is monotonic; the wall clock is only consulted at the cut
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_an_ntp_step_during_the_window_does_not_stretch_the_clip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Pi boots at 1970 until NTP. A press before the step and a finalize after
+    it used to give a window from 1970 to now, which concatenated every segment in
+    the retention tree into one clip and made duration_s ~56 years."""
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_SEGMENT_S=2,
+    )
+    concatenated: list[list[Path]] = []
+
+    async def fake_concat(segments: list[Path], out_path: Path) -> None:
+        concatenated.append(list(segments))
+        Path(out_path).write_bytes(b"video-bytes")
+
+    monkeypatch.setattr("door_media.mediamtx_router._concat_segments", fake_concat)
+    router = MediaMTXRouter(cfg)
+
+    # Bell press with the clock at 1970: the wall clock said 12345.
+    monkeypatch.setattr(time, "time", lambda: 12345.0)
+    handle = await router.start_recording(
+        session_id=uuid.uuid4(), kind="bell_clip", stream="visitor"
+    )
+    router._active[handle.recording_id].started_monotonic = time.monotonic() - 6.0
+
+    # NTP steps the clock forward 56 years before the session ends.
+    real_now = 1_800_000_000.0
+    monkeypatch.setattr(time, "time", lambda: real_now)
+    seg_dir = cfg.segments_root / "visitor"
+    stale = [seg_dir / f"old{i}.mp4" for i in range(3)]  # an hour of older segments
+    for i, seg in enumerate(stale):
+        _touch(seg, modified=real_now - 1800 - i * 2)
+    in_window = [seg_dir / "a.mp4", seg_dir / "b.mp4", seg_dir / "c.mp4"]
+    for i, seg in enumerate(in_window):
+        _touch(seg, modified=real_now - 6 + i * 2)
+
+    result = await router.finalize_recording(handle, consent_context="bell_event")
+
+    assert concatenated == [in_window]
+    assert result.duration_s == pytest.approx(6.0, abs=0.05)
+
+
+def test_publisher_command_quotes_paths_for_the_shell(tmp_path: Path) -> None:
+    import shlex
+
+    cfg = Settings(
+        SSD_DATA_ROOT=tmp_path,
+        MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml",
+        DOOR_MEDIA_CAMERA_TUNING_FILE="/tuning/imx708 noir's.json",
+    )
+    cmd = _build_run_on_init(cfg)
+
+    prog, flag, script = shlex.split(cmd)
+    assert (prog, flag) == ("sh", "-c")
+    rpicam, sep, ffmpeg = script.partition(" | ffmpeg ")
+    assert sep, script
+    words = shlex.split(rpicam)
+    assert words[words.index("--tuning-file") + 1] == "/tuning/imx708 noir's.json"
+
+
+def test_publisher_command_is_unchanged_for_the_default_path(tmp_path: Path) -> None:
+    """The hardware-verified form: shlex.quote of a string with no quote characters
+    is the plain single-quoted wrapper the door has been running."""
+    cfg = Settings(SSD_DATA_ROOT=tmp_path, MEDIAMTX_CONFIG_PATH=tmp_path / "mediamtx.yml")
+    cmd = _build_run_on_init(cfg)
+    assert cmd.startswith("sh -c 'rpicam-vid --camera 0 ")
+    assert cmd.endswith("'")
+    assert cmd.count("'") == 2
