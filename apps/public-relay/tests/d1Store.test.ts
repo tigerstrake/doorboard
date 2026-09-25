@@ -22,7 +22,7 @@ import {
   type StoredVisitorSnapshot,
 } from "@/lib/relayTypes";
 
-import { NodeSqliteD1 } from "./nodeSqliteD1";
+import { NodeSqliteD1, interposeOnce } from "./nodeSqliteD1";
 
 const clock = { ms: 1_000_000 };
 let db: NodeSqliteD1;
@@ -282,6 +282,27 @@ describe("visitor surface", () => {
       Array.from({ length: 16 }, (_unused, i) => `act_${i + 4}`),
     );
     expect(outcomes.at(-1)).toEqual({ action_id: "act_19", status: "rejected" });
+  });
+
+  it("does not lose a snapshot push that lands between the fold's read and its write", async () => {
+    await store.putVisitorSnapshot(visitorSnapshot({ state: "VIDEO_MESSAGE_SAVED" }));
+    await store.queueVisitorAction("act_1", { action_id: "act_1", session_id: "ses_1" });
+
+    // door-api pushes SESSION_END while an ack is mid-fold: its client timed out at 4 s,
+    // but the Function is still running. Unguarded, the fold wrote the old state back and
+    // the phone kept the note box open until the session expired.
+    const racedDb = interposeOnce(db, /SELECT snapshot_json FROM visitor_snapshot/, async () => {
+      await store.putVisitorSnapshot(visitorSnapshot({ state: "SESSION_END" }));
+    });
+    await new D1RelayStore(racedDb, () => clock.ms).completeVisitorAction("ses_1", "act_1", {
+      action_id: "act_1",
+      status: "applied",
+    });
+
+    const snap = await store.getVisitorSnapshotByTokenHash("tokhash");
+    expect(snap?.state).toBe("SESSION_END");
+    expect(snap?.outcomes).toEqual([{ action_id: "act_1", status: "applied" }]);
+    expect(await store.pendingVisitorActionCount()).toBe(0);
   });
 
   it("folds nothing for a session it does not hold", async () => {

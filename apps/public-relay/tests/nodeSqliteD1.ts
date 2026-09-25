@@ -104,3 +104,33 @@ export async function freshD1(): Promise<NodeSqliteD1> {
   await new D1RelayStore(db).migrate();
   return db;
 }
+
+/**
+ * A {@link D1Like} that runs `hook` once, right after the first statement matching `pattern`
+ * returns its row — that is, in the gap between a read and the write that depends on it.
+ * SQLite here is synchronous, so a read-modify-write race cannot happen by itself; the
+ * interposed hook is "the other request" landing in the gap.
+ */
+export function interposeOnce(db: D1Like, pattern: RegExp, hook: () => Promise<void>): D1Like {
+  let fired = false;
+  const wrap = (inner: D1PreparedStatement): D1PreparedStatement => ({
+    bind: (...values: unknown[]) => wrap(inner.bind(...values)),
+    all: <T = Record<string, unknown>>() => inner.all<T>(),
+    run: () => inner.run(),
+    async first<T = Record<string, unknown>>(): Promise<T | null> {
+      const row = await inner.first<T>();
+      if (!fired) {
+        fired = true;
+        await hook();
+      }
+      return row;
+    },
+  });
+  return {
+    exec: (query) => db.exec(query),
+    prepare(query) {
+      const statement = db.prepare(query);
+      return fired || !pattern.test(query) ? statement : wrap(statement);
+    },
+  };
+}

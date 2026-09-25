@@ -341,7 +341,16 @@ export class D1RelayStore implements RelayStore {
     return claimed.results.map((r) => JSON.parse(r.action_json) as unknown);
   }
 
-  /** Retire a collected action and fold its outcome into the visitor's snapshot. */
+  /**
+   * Retire a collected action and fold its outcome into the visitor's snapshot.
+   *
+   * The fold is a read-modify-write, so the write is guarded: the UPDATE lands only if the
+   * row still holds exactly the JSON that was read (a compare-and-set on the value itself, so
+   * no version column is needed). A miss means door-api pushed a new snapshot in the gap —
+   * realistically an ack whose client timed out but which is still executing here — and the
+   * fold re-reads and retries once, so the push is kept and the outcome is added to it.
+   * Unguarded, the push was overwritten and the phone sat on the stale state until expiry.
+   */
   async completeVisitorAction(
     sessionId: string,
     actionId: string,
@@ -351,22 +360,28 @@ export class D1RelayStore implements RelayStore {
       .prepare("DELETE FROM visitor_action WHERE action_id = ?")
       .bind(actionId)
       .run();
-    const row = await this.db
-      .prepare("SELECT snapshot_json, expires_ms FROM visitor_snapshot WHERE session_id = ?")
-      .bind(sessionId)
-      .first<{ snapshot_json: string; expires_ms: number }>();
-    if (!row) return;
-    const snapshot = JSON.parse(row.snapshot_json) as StoredVisitorSnapshot;
-    const outcomes = [
-      ...snapshot.outcomes.filter(
-        (existing) => (existing as { action_id?: string }).action_id !== actionId,
-      ),
-      outcome,
-    ].slice(-16);
-    await this.db
-      .prepare("UPDATE visitor_snapshot SET snapshot_json = ? WHERE session_id = ?")
-      .bind(JSON.stringify({ ...snapshot, outcomes }), sessionId)
-      .run();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const row = await this.db
+        .prepare("SELECT snapshot_json FROM visitor_snapshot WHERE session_id = ?")
+        .bind(sessionId)
+        .first<{ snapshot_json: string }>();
+      if (!row) return;
+      const snapshot = JSON.parse(row.snapshot_json) as StoredVisitorSnapshot;
+      const outcomes = [
+        ...snapshot.outcomes.filter(
+          (existing) => (existing as { action_id?: string }).action_id !== actionId,
+        ),
+        outcome,
+      ].slice(-16);
+      const written = await this.db
+        .prepare(
+          "UPDATE visitor_snapshot SET snapshot_json = ? " +
+            "WHERE session_id = ? AND snapshot_json = ?",
+        )
+        .bind(JSON.stringify({ ...snapshot, outcomes }), sessionId, row.snapshot_json)
+        .run();
+      if (written.meta.changes > 0) return;
+    }
   }
 
   async pendingVisitorActionCount(): Promise<number> {
