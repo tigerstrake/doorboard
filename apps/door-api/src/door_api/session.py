@@ -387,61 +387,41 @@ class SessionMachine:
 
         now_ms = self._monotonic_ms_fn()
 
-        # Cancel any pending timer.
-        self._cancel_timer()
-
-        # Starting a new session?
+        # Work out the next session fields without assigning any of them. Nothing on
+        # this object changes until the row is on disk. The machine used to set
+        # `_state`, count the transition and fire `on_event` *before* persisting, so
+        # one `sqlite3.OperationalError("database or disk is full")` on a hardware
+        # press left it announced-but-unpersisted in BUTTON_PRESSED with no timer:
+        # VISITOR_MODE was never entered and every later press was refused as a
+        # double-press. A persist failure must leave the machine exactly where it
+        # was, so the next press still works.
         if from_state == SessionState.IDLE:
-            self._session_id = uuid4()
-            self._trace_id = trace_id or uuid4()
-            self._started_at_mono_ms = now_ms
-            self._person_id = person_id
-            self._display_name = display_name
-            self._profile_id = profile_id
-            self._had_cached_profile = bool(had_cached_profile)
-            self._was_answered = False
+            session_id = uuid4()
+            session_trace_id = trace_id or uuid4()
+            started_at_ms = now_ms
+            next_person_id = person_id
+            next_display_name = display_name
+            next_profile_id = profile_id
+            next_had_cached_profile = bool(had_cached_profile)
+            next_was_answered = False
         else:
+            assert self._session_id is not None
+            assert self._trace_id is not None
+            session_id = self._session_id
+            session_trace_id = self._trace_id
+            started_at_ms = self._started_at_mono_ms
             # Allow identity to be updated (e.g., late recognition during APPROACH_DETECTED).
-            if person_id is not None:
-                self._person_id = person_id
-            if display_name is not None:
-                self._display_name = display_name
-            if profile_id is not None:
-                self._profile_id = profile_id
-            if to_state == SessionState.BUTTON_PRESSED and had_cached_profile is not None:
-                self._had_cached_profile = had_cached_profile
-
-        self._state = to_state
+            next_person_id = person_id if person_id is not None else self._person_id
+            next_display_name = display_name if display_name is not None else self._display_name
+            next_profile_id = profile_id if profile_id is not None else self._profile_id
+            next_had_cached_profile = (
+                had_cached_profile
+                if to_state == SessionState.BUTTON_PRESSED and had_cached_profile is not None
+                else self._had_cached_profile
+            )
+            next_was_answered = self._was_answered
         if to_state == SessionState.ANSWERED:
-            self._was_answered = True
-        self._last_transition_mono_ms = now_ms
-        self.metrics.transitions += 1
-
-        # Every accepted transition, with what caused it.
-        #
-        # Only *rejected* transitions were logged before, which made a live door
-        # undiagnosable: a visitor session was observed ending 31s after a ring
-        # without passing through UNANSWERED_TIMEOUT, and the journal could not say
-        # which trigger did it — the scheduler and the contracts table both allow
-        # the message path, so the answer was only ever going to be in a log line
-        # that did not exist.
-        #
-        # Uses extra= rather than this module's json.dumps-into-the-message style so
-        # the fields arrive as real fields (JsonLogFormatter emits extras), which is
-        # what makes `trigger` filterable instead of buried in an escaped string.
-        logger.info(
-            "session_transition",
-            extra={
-                "from_state": from_state.value,
-                "to_state": to_state.value,
-                "trigger": trigger,
-                "session_id": str(self._session_id),
-            },
-        )
-
-        # Emit session.state_changed event.
-        assert self._session_id is not None
-        assert self._trace_id is not None
+            next_was_answered = True
 
         state_event = SessionStateChangedEvent(
             event_id=uuid7_now(),
@@ -450,9 +430,9 @@ class SessionMachine:
             occurred_at=datetime.now(UTC),
             monotonic_ms=now_ms,
             door_id=self.config.door_id,
-            trace_id=self._trace_id,
+            trace_id=session_trace_id,
             payload=SessionStateChangedPayload(
-                session_id=self._session_id,
+                session_id=session_id,
                 from_state=from_state,
                 to_state=to_state,
                 trigger=trigger,
@@ -461,16 +441,15 @@ class SessionMachine:
                 # say "Tiger is here" instead of "Someone's at the door"
                 # (ADR-0018 §4). None for an unrecognised visitor, which keeps the
                 # generic notification path exactly as it was.
-                display_name=self._display_name,
+                display_name=next_display_name,
             ),
         )
         state_event_dict = state_event.model_dump(mode="json")
         sync_events = [state_event_dict]
-        self.on_event(state_event_dict)
 
-        # Emit session.started on first non-IDLE transition.
+        # session.started on the first non-IDLE transition.
+        started_event_dict: dict[str, Any] | None = None
         if from_state == SessionState.IDLE:
-            self.metrics.sessions_started += 1
             entry = session_entry or (
                 "button" if to_state == SessionState.BUTTON_PRESSED else "approach"
             )
@@ -481,22 +460,21 @@ class SessionMachine:
                 occurred_at=datetime.now(UTC),
                 monotonic_ms=now_ms,
                 door_id=self.config.door_id,
-                trace_id=self._trace_id,
+                trace_id=session_trace_id,
                 payload=SessionStartedPayload(
-                    session_id=self._session_id,
+                    session_id=session_id,
                     entry=entry,
                 ),
             )
             started_event_dict = started_event.model_dump(mode="json")
             sync_events.append(started_event_dict)
-            self.on_event(started_event_dict)
 
-        # Emit session.ended on transition to SESSION_END, or direct to IDLE from active.
+        # session.ended on transition to SESSION_END, or direct to IDLE from active.
+        ended_event_dict: dict[str, Any] | None = None
         if to_state == SessionState.SESSION_END or (
             to_state == SessionState.IDLE
             and from_state not in (SessionState.IDLE, SessionState.SESSION_END)
         ):
-            self.metrics.sessions_ended += 1
             outcome = self._outcome_for_end(from_state, trigger)
             ended_event = SessionEndedEvent(
                 event_id=uuid7_now(),
@@ -505,43 +483,123 @@ class SessionMachine:
                 occurred_at=datetime.now(UTC),
                 monotonic_ms=now_ms,
                 door_id=self.config.door_id,
-                trace_id=self._trace_id,
+                trace_id=session_trace_id,
                 payload=SessionEndedPayload(
-                    session_id=self._session_id,
+                    session_id=session_id,
                     outcome=outcome,
                 ),
             )
             ended_event_dict = ended_event.model_dump(mode="json")
             sync_events.append(ended_event_dict)
-            self.on_event(ended_event_dict)
 
-        # Persist.
-        if to_state == SessionState.IDLE:
-            media_dropped, sync_dropped = self.store.clear_with_delivery_events(
-                media_event=state_event_dict,
-                sync_events=sync_events,
+        # Cancel any pending timer. Whatever happens below, `finally` schedules the
+        # right one for the state the machine actually ends up in.
+        self._cancel_timer()
+        committed = False
+        try:
+            # Persist first. SESSION_END is persisted as well so a restart can finish
+            # its transition; IDLE clears the row.
+            if to_state == SessionState.IDLE:
+                media_dropped, sync_dropped = self.store.clear_with_delivery_events(
+                    media_event=state_event_dict,
+                    sync_events=sync_events,
+                )
+            else:
+                media_dropped, sync_dropped = self.store.save_with_delivery_events(
+                    self._row(
+                        session_id=session_id,
+                        state=to_state,
+                        trace_id=session_trace_id,
+                        person_id=next_person_id,
+                        display_name=next_display_name,
+                        profile_id=next_profile_id,
+                        started_at_ms=started_at_ms,
+                        last_transition_ms=now_ms,
+                        had_cached_profile=next_had_cached_profile,
+                        was_answered=next_was_answered,
+                    ),
+                    media_event=state_event_dict,
+                    sync_events=sync_events,
+                )
+        except Exception:
+            logger.exception(
+                "session_persist_failed",
+                extra={
+                    "from_state": from_state.value,
+                    "to_state": to_state.value,
+                    "trigger": trigger,
+                    "session_id": str(session_id),
+                    "trace_id": str(session_trace_id),
+                },
             )
-            self._session_id = None
-            self._trace_id = None
-            self._person_id = None
-            self._display_name = None
-            self._profile_id = None
-            self._had_cached_profile = False
-            self._was_answered = False
+            raise
         else:
-            # Persist SESSION_END as well so restart can finish its transition.
-            media_dropped, sync_dropped = self._persist(
-                media_event=state_event_dict,
-                sync_events=sync_events,
+            committed = True
+            # The row is on disk: now the machine may agree with it.
+            if to_state == SessionState.IDLE:
+                self._session_id = None
+                self._trace_id = None
+                self._person_id = None
+                self._display_name = None
+                self._profile_id = None
+                self._had_cached_profile = False
+                self._was_answered = False
+            else:
+                self._session_id = session_id
+                self._trace_id = session_trace_id
+                self._started_at_mono_ms = started_at_ms
+                self._person_id = next_person_id
+                self._display_name = next_display_name
+                self._profile_id = next_profile_id
+                self._had_cached_profile = next_had_cached_profile
+                self._was_answered = next_was_answered
+            self._state = to_state
+            self._last_transition_mono_ms = now_ms
+            self.metrics.transitions += 1
+
+            # Every accepted transition, with what caused it.
+            #
+            # Only *rejected* transitions were logged before, which made a live door
+            # undiagnosable: a visitor session was observed ending 31s after a ring
+            # without passing through UNANSWERED_TIMEOUT, and the journal could not say
+            # which trigger did it — the scheduler and the contracts table both allow
+            # the message path, so the answer was only ever going to be in a log line
+            # that did not exist.
+            logger.info(
+                "session_transition",
+                extra={
+                    "from_state": from_state.value,
+                    "to_state": to_state.value,
+                    "trigger": trigger,
+                    "session_id": str(session_id),
+                    "trace_id": str(session_trace_id),
+                },
             )
 
-        if media_dropped:
-            logger.error("media_outbox_capacity_drop", extra={"dropped": media_dropped})
-        if sync_dropped:
-            logger.error("sync_outbox_capacity_drop", extra={"dropped": sync_dropped})
+            # Broadcast only what is persisted, in the order it happened. The IDLE
+            # clear above runs before this, so a snapshot taken from inside
+            # `on_event` no longer hands the ended session's name to the next client.
+            self.on_event(state_event_dict)
+            if started_event_dict is not None:
+                self.metrics.sessions_started += 1
+                self.on_event(started_event_dict)
+            if ended_event_dict is not None:
+                self.metrics.sessions_ended += 1
+                self.on_event(ended_event_dict)
 
-        # Schedule auto-transition timer for the new state.
-        self._schedule_timer_for_state(to_state)
+            if media_dropped:
+                logger.error("media_outbox_capacity_drop", extra={"dropped": media_dropped})
+            if sync_dropped:
+                logger.error("sync_outbox_capacity_drop", extra={"dropped": sync_dropped})
+        finally:
+            # The timer for whichever state the machine is really in: the new one when
+            # the transition committed (even if `on_event` raised afterwards), the old
+            # one — with the time already spent in it — when persistence failed.
+            if committed:
+                self._schedule_timer_for_state(to_state)
+            else:
+                elapsed_s = max(0.0, (now_ms - self._last_transition_mono_ms) / 1000.0)
+                self._schedule_timer_for_state(from_state, elapsed_s)
 
         return True
 
@@ -900,23 +958,26 @@ class SessionMachine:
             target = SessionState.IDLE
             trigger = "auto:end_to_idle"
         elif state in (SessionState.BUTTON_PRESSED, SessionState.VIDEO_MESSAGE_OFFERED):
-            # BUTTON_PRESSED transitions immediately to VISITOR_MODE in handle_button_pressed.
-            # VIDEO_MESSAGE_OFFERED waits for visitor action; has inactivity fallback.
+            # BUTTON_PRESSED normally lasts one call: handle_button_pressed moves on
+            # to VISITOR_MODE immediately. It still gets the inactivity fallback
+            # below, so a session that is stranded there — a restart between the two
+            # transitions, or VISITOR_MODE failing to persist — ends by itself
+            # instead of refusing every later press as a double-press forever.
+            # VIDEO_MESSAGE_OFFERED waits for visitor action; same fallback.
             pass
 
         if timeout_s is not None and target is not None:
             remaining_s = max(0.0, timeout_s - already_elapsed_s)
             self._start_timer(remaining_s, target, trigger)
-        elif state not in (SessionState.IDLE,):
-            # Schedule the global inactivity timeout as a fallback
-            # for states without a specific timer.
+        elif state in (SessionState.BUTTON_PRESSED, SessionState.VIDEO_MESSAGE_OFFERED):
+            # The global inactivity timeout as a fallback for states without a
+            # specific timer.
             remaining_s = max(0.0, self.config.inactivity_timeout_s - already_elapsed_s)
-            if state == SessionState.VIDEO_MESSAGE_OFFERED:
-                self._start_timer(
-                    remaining_s,
-                    SessionState.SESSION_END,
-                    "timeout:inactivity",
-                )
+            self._start_timer(
+                remaining_s,
+                SessionState.SESSION_END,
+                "timeout:inactivity",
+            )
 
     def _start_timer(self, delay_s: float, target: SessionState, trigger: str) -> None:
         """Start a timer that will auto-transition after delay_s seconds."""
@@ -955,6 +1016,43 @@ class SessionMachine:
     # Internal helpers
     # ---------------------------------------------------------------------------
 
+    def _row(
+        self,
+        *,
+        session_id: UUID,
+        state: SessionState,
+        trace_id: UUID,
+        person_id: str | None,
+        display_name: str | None,
+        profile_id: str | None,
+        started_at_ms: int,
+        last_transition_ms: int,
+        had_cached_profile: bool,
+        was_answered: bool,
+    ) -> PersistedSession:
+        """The session row for the given fields — built before they are assigned."""
+        return PersistedSession(
+            session_id=session_id,
+            state=state,
+            trace_id=trace_id,
+            person_id=person_id,
+            display_name=display_name,
+            profile_id=profile_id,
+            started_at_monotonic_ms=started_at_ms,
+            last_transition_monotonic_ms=last_transition_ms,
+            meta_json=json.dumps(
+                {
+                    "timer_target": (
+                        self._timer.target_state.value if self._timer.target_state else None
+                    ),
+                    "timer_trigger": self._timer.trigger or None,
+                    "had_cached_profile": had_cached_profile,
+                    "was_answered": was_answered,
+                    "boot_id": self._boot_id_fn(),
+                }
+            ),
+        )
+
     def _persist(
         self,
         *,
@@ -964,26 +1062,17 @@ class SessionMachine:
         """Write current state to SQLite."""
         assert self._session_id is not None
         assert self._trace_id is not None
-        persisted = PersistedSession(
+        persisted = self._row(
             session_id=self._session_id,
             state=self._state,
             trace_id=self._trace_id,
             person_id=self._person_id,
             display_name=self._display_name,
             profile_id=self._profile_id,
-            started_at_monotonic_ms=self._started_at_mono_ms,
-            last_transition_monotonic_ms=self._last_transition_mono_ms,
-            meta_json=json.dumps(
-                {
-                    "timer_target": (
-                        self._timer.target_state.value if self._timer.target_state else None
-                    ),
-                    "timer_trigger": self._timer.trigger or None,
-                    "had_cached_profile": self._had_cached_profile,
-                    "was_answered": self._was_answered,
-                    "boot_id": self._boot_id_fn(),
-                }
-            ),
+            started_at_ms=self._started_at_mono_ms,
+            last_transition_ms=self._last_transition_mono_ms,
+            had_cached_profile=self._had_cached_profile,
+            was_answered=self._was_answered,
         )
         if media_event is None:
             self.store.save(persisted)

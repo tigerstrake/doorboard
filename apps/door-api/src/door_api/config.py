@@ -301,6 +301,11 @@ class SessionConfig:
     esp32_udp_remote_addr: str = ""
     esp32_reconnect_base_s: float = 1.0
     esp32_reconnect_max_s: float = 30.0
+    # How long after an ESP32 event handler raised /health keeps saying so. The
+    # handler failing is a press the screens never saw; sixty seconds is long
+    # enough for a scrape to notice and short enough that a one-off SQLITE_BUSY
+    # does not pin the door at degraded for good.
+    esp32_handler_error_window_s: float = 60.0
 
     @staticmethod
     def from_env() -> SessionConfig:
@@ -403,4 +408,5 @@ class SessionConfig:
             esp32_udp_remote_addr=os.environ.get("ESP32_UDP_REMOTE_ADDR", ""),
             esp32_reconnect_base_s=_env_float("ESP32_RECONNECT_BASE_S", 1.0),
             esp32_reconnect_max_s=_env_float("ESP32_RECONNECT_MAX_S", 30.0),
+            esp32_handler_error_window_s=_env_float("DOOR_API_ESP32_HANDLER_ERROR_WINDOW_S", 60.0),
         )

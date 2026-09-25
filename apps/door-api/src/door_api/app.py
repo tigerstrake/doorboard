@@ -141,6 +141,17 @@ class DoorApiState:
         self.media_forward_successes = 0
         self.sync_forward_errors = 0
         self.sync_forward_successes = 0
+        # The ESP32 event consumer must never die silently: a handler exception is
+        # counted and reported on /health for a while, a consumer that stops is
+        # restarted and counted. Before this, one raise inside a button handler
+        # ended the task, `_esp32_event_task` kept pointing at the corpse so nothing
+        # could restart it, and the bell stopped reaching the screens with a green
+        # health check.
+        self.esp32_handler_errors = 0
+        self.esp32_handler_last_error: str | None = None
+        self._esp32_handler_last_error_mono: float | None = None
+        self.esp32_consumer_deaths = 0
+        self.esp32_consumer_restarts = 0
         self._esp32_event_task: asyncio.Task[None] | None = None
         self._media_forward_task: asyncio.Task[None] | None = None
         self._sync_forward_task: asyncio.Task[None] | None = None
@@ -379,19 +390,116 @@ class DoorApiState:
         self.esp32_transport = None
 
     def start_esp32_event_consumer(self) -> None:
-        if self.esp32_transport is None or self._esp32_event_task is not None:
+        transport = self.esp32_transport
+        if transport is None or self._esp32_event_task is not None:
             return
         with contextlib.suppress(RuntimeError):
             loop = asyncio.get_running_loop()
-            self._esp32_event_task = loop.create_task(
-                self._consume_esp32_events(),
+            task = loop.create_task(
+                self._consume_esp32_events(transport),
                 name="door-api-esp32-events",
             )
+            self._esp32_event_task = task
+            task.add_done_callback(
+                lambda finished: self._esp32_event_consumer_finished(finished, transport)
+            )
 
-    async def _consume_esp32_events(self) -> None:
-        assert self.esp32_transport is not None
-        async for event in self.esp32_transport.events():
-            self.handle_contract_event(event)
+    def esp32_consumer_alive(self) -> bool:
+        """Whether the controller's events are currently being drained."""
+        task = self._esp32_event_task
+        return task is not None and not task.done()
+
+    def _esp32_event_consumer_finished(self, task: asyncio.Task[None], transport: Any) -> None:
+        """Free the slot a finished consumer occupied, and bring it back if it died.
+
+        A finished task must not keep the slot: `start_esp32_event_consumer` returns
+        early while anything is there, so a dead consumer was previously
+        unrestartable until the descriptor itself was lost. Cancellation is the
+        supervisor's own detach and needs nothing; anything else is a death, logged
+        with its exception (which would otherwise never be retrieved) and restarted
+        after the link's base backoff, provided the same transport is still attached.
+        """
+        if self._esp32_event_task is task:
+            self._esp32_event_task = None
+        if task.cancelled():
+            return
+        self.esp32_consumer_deaths += 1
+        exc = task.exception()
+        if exc is None:
+            logger.error("esp32_event_consumer_ended", extra={"reason": "event stream ended"})
+        else:
+            logger.error("esp32_event_consumer_died", exc_info=exc)
+        if self.esp32_transport is not transport:
+            return
+        task.get_loop().call_later(
+            self.config.esp32_reconnect_base_s, self._restart_esp32_event_consumer, transport
+        )
+
+    def _restart_esp32_event_consumer(self, transport: Any) -> None:
+        if self.esp32_transport is not transport or self._esp32_event_task is not None:
+            return
+        self.esp32_consumer_restarts += 1
+        logger.warning("esp32_event_consumer_restarted")
+        self.start_esp32_event_consumer()
+
+    async def _consume_esp32_events(self, transport: Esp32Transport) -> None:
+        async for event in transport.events():
+            trace_id = str(event.trace_id)
+            logger.info(
+                "esp32_event",
+                extra={
+                    "event_type": event.type,
+                    "event_id": str(event.event_id),
+                    "trace_id": trace_id,
+                },
+            )
+            # One bad event must cost one log line, never the consumer. Mirrors
+            # MqttBridge.handle_payload: the exception is recorded (the machine has
+            # already refused to half-apply it) and the next press is handled.
+            try:
+                self.handle_contract_event(event)
+            except Exception as exc:
+                self.esp32_handler_errors += 1
+                self.esp32_handler_last_error = type(exc).__name__
+                self._esp32_handler_last_error_mono = time.monotonic()
+                logger.exception(
+                    "esp32_event_handler_failed",
+                    extra={"event_type": event.type, "trace_id": trace_id},
+                )
+
+    def _esp32_handler_error_is_recent(self) -> bool:
+        last = self._esp32_handler_last_error_mono
+        if last is None:
+            return False
+        return (time.monotonic() - last) < self.config.esp32_handler_error_window_s
+
+    def health_problems(self) -> list[str]:
+        """Everything /health should say is wrong, in the order it matters.
+
+        Local door behaviour is fine in each case; what is wrong is that something
+        the operator relies on has silently stopped, which is exactly the situation
+        a green health check must not paper over (ARCHITECTURE.md §10).
+        """
+        problems: list[str] = []
+        if self.esp32_transport is not None and not self.esp32_consumer_alive():
+            problems.append("esp32 event consumer is not running; the bell is not being read")
+        if self._esp32_handler_error_is_recent():
+            problems.append(
+                f"esp32 event handler failed: {self.esp32_handler_last_error} "
+                f"({self.esp32_handler_errors} errors)"
+            )
+        # A dead-lettered outbox event is a mirror the NUC will never receive. It no
+        # longer blocks the queue (healthy items forward past it), but the operator
+        # must know it happened — the door's local behaviour is fine, the off-door
+        # projection is not — so report degraded with a count, not OK.
+        media_dead = self.store.media_outbox_dead_total()
+        sync_dead = self.store.sync_outbox_dead_total()
+        if media_dead or sync_dead:
+            problems.append(
+                f"dead-lettered outbox events: media={media_dead} sync={sync_dead}; "
+                "these mirrors will not reach the NUC without operator action"
+            )
+        return problems
 
     def handle_contract_event(self, event: DoorboardEvent) -> bool:
         # `event` is a discriminated union keyed on `type`; read `event.payload`
@@ -1311,20 +1419,12 @@ def _sync_auth_headers() -> dict[str, str]:
 
 @app.get("/health", response_model=HealthPayload)
 async def health() -> HealthPayload:
-    # A dead-lettered outbox event is a mirror the NUC will never receive. It no
-    # longer blocks the queue (healthy items forward past it), but the operator
-    # must know it happened — the door's local behaviour is fine, the off-door
-    # projection is not — so report degraded with a count, not OK.
-    media_dead = state.store.media_outbox_dead_total()
-    sync_dead = state.store.sync_outbox_dead_total()
-    if media_dead or sync_dead:
+    problems = state.health_problems()
+    if problems:
         return HealthPayload(
             service="door-api",
             status=HealthStatus.DEGRADED,
-            detail=(
-                f"dead-lettered outbox events: media={media_dead} sync={sync_dead}; "
-                "these mirrors will not reach the NUC without operator action"
-            ),
+            detail="; ".join(problems),
         )
     return HealthPayload(service="door-api", status=HealthStatus.OK, detail=None)
 
@@ -1369,6 +1469,11 @@ async def metrics() -> Response:
             # failing", which is the first question to ask during bring-up.
             "door_api_esp32_link_enabled": int(state.esp32_link is not None),
             "door_api_esp32_transport_attached": int(state.esp32_transport is not None),
+            # The task that turns controller frames into session transitions. A
+            # transport attached with this at 0 is a bell nobody is listening to.
+            "door_api_esp32_consumer_alive": int(state.esp32_consumer_alive()),
+            "door_api_esp32_consumer_restarts_total": state.esp32_consumer_restarts,
+            "door_api_esp32_handler_errors_total": state.esp32_handler_errors,
             **(
                 state.esp32_link.metrics()
                 if state.esp32_link is not None
@@ -1386,6 +1491,7 @@ async def metrics() -> Response:
         "# TYPE door_api_media_outbox_depth gauge",
         "# TYPE door_api_sync_outbox_depth gauge",
         "# TYPE door_api_social_moderation_log_rows gauge",
+        "# TYPE door_api_esp32_consumer_alive gauge",
         *[f"{name} {value}" for name, value in data.items()],
         "",
     ]
