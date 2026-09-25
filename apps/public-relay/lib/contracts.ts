@@ -7,8 +7,9 @@
  *
  * They are **redeclared here rather than imported** because this app is the one
  * artifact deployed outside the house, and it has to build from its own directory
- * alone: a `workspace:*` dependency cannot resolve when Vercel uploads only this
- * subtree. Fidelity is not left to good intentions —
+ * alone: a `workspace:*` dependency cannot resolve when only this subtree is built
+ * and shipped (the Pages Function bundles with plain relative imports, ADR-0043 §1).
+ * Fidelity is not left to good intentions —
  * `tests/contractParity.test.ts` reads the generated file off disk and fails if
  * any field here drifts from it, so CI catches divergence even though the build
  * does not link the package.

@@ -1,8 +1,8 @@
--- Relay D1 schema (ADR-0043 §1). Apply with:
---   wrangler d1 execute doorboard-relay --file=./migrations/0001_init.sql --remote
--- This mirrors lib/d1/schema.ts (SCHEMA_SQL), which is the single source of truth: the Worker
--- also runs it lazily and idempotently on first request, so applying this by hand is optional.
--- If you edit one, edit both.
+-- Relay D1 migration 0001: the initial schema (ADR-0043 §1). Apply with:
+--   wrangler d1 execute doorboard-relay --remote --file=./migrations/0001_init.sql
+-- Mirrors INIT_0001 in lib/d1/schema.ts (MIGRATIONS[0]); a test fails if the two drift. Nothing
+-- applies a migration lazily on a request: apply every file under migrations/ in order, by hand
+-- or via the deploy script, before deploying code that expects it. If you edit one, edit both.
 
 CREATE TABLE IF NOT EXISTS door_key (
   id           TEXT PRIMARY KEY,

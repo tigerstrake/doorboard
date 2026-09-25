@@ -1,14 +1,21 @@
 /**
- * GET /api/health — reachability and configuration, nothing more.
+ * GET /api/health — reachability to the public; configuration detail to the door only.
  *
- * Deliberately says nothing about who has enrolled or which invites exist: this
- * is a public route on an untrusted host (ARCHITECTURE.md §2).
+ * The public body is `{service, status}` and nothing else. Whether the door has checked in
+ * and how many bundles are pending is "someone at this house is enrolling right now" to
+ * anyone who polls a public URL on an untrusted host (ARCHITECTURE.md §2) — ADR-0016 §1
+ * accepts that metadata being visible to a *compromised* relay, not to the internet. The
+ * detail is returned only to the door-visiond device token: one scope, not either (E-17).
  */
-import { deviceTokenConfigured, jsonOk } from "@/lib/device";
+import { deviceTokenConfigured, isDeviceRequest, jsonOk } from "@/lib/device";
 import type { RelayStore } from "@/lib/relayTypes";
 
 export async function handleGet(request: Request, store: RelayStore): Promise<Response> {
   const configured = store.configured() && deviceTokenConfigured();
+  if (!isDeviceRequest(request)) {
+    return jsonOk({ service: "public-relay", status: configured ? "ok" : "degraded" });
+  }
+
   if (!configured) {
     return jsonOk({
       service: "public-relay",

@@ -98,7 +98,8 @@ untouched). Wait for the certificate to go active.
 
 ```bash
 BASE=https://door.tigerstrake.com
-curl -s $BASE/api/health                     # {"...":"ok"...} with pending counts, no enrollee data
+curl -s $BASE/api/health                     # {"service":"public-relay","status":"ok"} — reachability only, nothing else without a token
+curl -s -H "Authorization: Bearer $RELAY_DEVICE_TOKEN" $BASE/api/health   # + door_checked_in / pending_bundles (door-visiond scope only)
 curl -s -o /dev/null -w '%{http_code}' $BASE/api/pickup           # 401 (device token required)
 curl -s -H "Authorization: Bearer $RELAY_DEVICE_TOKEN" $BASE/api/pickup   # {"items":[]}
 ```

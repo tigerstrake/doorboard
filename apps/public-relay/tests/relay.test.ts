@@ -266,12 +266,20 @@ describe("E-14 the relay exposes no privileged surface", () => {
     expect(resp.status).toBe(401);
   });
 
-  it("reports health without revealing who is enrolled", async () => {
+  it("reports reachability to the public and configuration detail only to the door-visiond token", async () => {
     await seedDoorKeyAndInvite();
-    const body = (await (
+
+    // `pending_bundles` is "someone at this house is enrolling right now" and
+    // `door_checked_in` is house state; neither belongs on a public URL.
+    const publicBody = await (
       await getHealth(publicRequest("https://relay.test/api/health"), resolveStore(db))
-    ).json()) as Record<string, unknown>;
-    expect(body).toEqual({
+    ).json();
+    expect(publicBody).toEqual({ service: "public-relay", status: "ok" });
+
+    const detail = await (
+      await getHealth(deviceRequest("https://relay.test/api/health", "GET"), resolveStore(db))
+    ).json();
+    expect(detail).toEqual({
       service: "public-relay",
       status: "ok",
       storage_configured: true,
@@ -279,6 +287,18 @@ describe("E-14 the relay exposes no privileged surface", () => {
       door_checked_in: true,
       pending_bundles: 0,
     });
+
+    // One scope, not either (E-17): door-api's token gets the public body.
+    process.env.RELAY_VISITOR_DEVICE_TOKEN = "test-visitor-device-token";
+    const visitorScoped = await (
+      await getHealth(
+        new Request("https://relay.test/api/health", {
+          headers: { authorization: "Bearer test-visitor-device-token" },
+        }),
+        resolveStore(db),
+      )
+    ).json();
+    expect(visitorScoped).toEqual({ service: "public-relay", status: "ok" });
   });
 });
 

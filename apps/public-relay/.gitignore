@@ -1,13 +1,13 @@
-# Vercel CLI link state and pulled env — machine-local, never committed.
+# Local env files, and any leftover link state from the Vercel era (the relay moved to
+# Cloudflare with ADR-0043) — machine-local, never committed.
 .vercel
 .env
 .env.local
 .env.*.local
 .env*
 
-# Vendor documentation installed by the Upstash marketplace integration
-# (`vercel integration add`). Regenerable third-party material, not project
-# source; ADR-0016/0017 and the READMEs are the reference for this app.
+# Vendor / agent material that tooling drops beside the app. Regenerable third-party
+# content, not project source; ADR-0016/0017/0043 and the READMEs are the reference.
 .agents/
 .claude/
 skills-lock.json
@@ -19,8 +19,8 @@ skills-lock.json
 .wrangler/
 
 # The example file documents which variables are required (values empty) and is
-# committed on purpose. This negation must stay LAST: `vercel link` and
-# `vercel integration add` append `.env*` to whichever .gitignore they run
-# beside, and for gitignore the last matching pattern wins. If a .env.example
-# ever stops being tracked, check whether the CLI appended below this line.
+# committed on purpose. This negation must stay LAST: some CLIs append `.env*` to
+# whichever .gitignore they run beside, and for gitignore the last matching pattern
+# wins. If .env.example ever stops being tracked, check whether something appended
+# below this line.
 !.env.example

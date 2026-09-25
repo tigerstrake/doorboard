@@ -50,7 +50,7 @@ describe("onRequest", () => {
     });
     expect(resp.status).toBe(401); // auth is checked before storage, as on every device route
     const health = await onRequest({ request: new Request("https://relay.test/api/health"), env: {} });
-    expect(((await health.json()) as { storage_configured: boolean }).storage_configured).toBe(false);
+    expect(await health.json()).toEqual({ service: "public-relay", status: "degraded" });
     const publicRoute = await onRequest({
       request: new Request("https://relay.test/api/door-key"),
       env: {},
