@@ -564,6 +564,12 @@ export function App() {
   // DoorPad local state
   const [doorPadScreen, setDoorPadScreen] = useState<DoorPadScreen>("home");
   const [videoStep, setVideoStep] = useState<VideoStep>("offer");
+  // Mirrors for the session-snapshot handler, which is created once and cannot close over
+  // the current screen. Assigned every render so a snapshot always sees the latest.
+  const doorPadScreenRef = useRef<DoorPadScreen>("home");
+  const videoStepRef = useRef<VideoStep>("offer");
+  doorPadScreenRef.current = doorPadScreen;
+  videoStepRef.current = videoStep;
   const [photoStep, setPhotoStep] = useState<PhotoStep>("offer");
   const [countdown, setCountdown] = useState<number>(3);
   const [photoCountdown, setPhotoCountdown] = useState<number>(3);
@@ -861,10 +867,20 @@ export function App() {
       if (snapshot?.profile_id !== undefined) setActiveProfile(snapshot.profile_id);
       if (snapshot?.accent_color !== undefined) setActiveAccent(snapshot.accent_color);
       const target = doorPadRouteForState(nextState);
-      // Only navigate when the new state actually implies a screen. Recognition and a lapsed
-      // session must never cancel whatever the visitor opened themselves.
-      if (target.screen !== null) setDoorPadScreen(target.screen);
-      setVideoStep(target.video);
+      // The visitor-link screen is sticky. While the QR is up the visitor is typing on
+      // their phone and the doorboard has nothing further to show them; a server-driven
+      // change (UNANSWERED_TIMEOUT routing back to "ringing", then the offer) replaced the
+      // code mid-sentence and re-armed the 30 s reset the ten-minute writing budget exists
+      // to avoid — which then ended the session and dead-ended the phone. Only the session
+      // ending (or the link's own expiry) moves them.
+      const visitorLinkShown =
+        doorPadScreenRef.current === "message" && videoStepRef.current === "qr";
+      if (!visitorLinkShown || nextState === "SESSION_END") {
+        // Only navigate when the new state actually implies a screen. Recognition and a
+        // lapsed session must never cancel whatever the visitor opened themselves.
+        if (target.screen !== null) setDoorPadScreen(target.screen);
+        setVideoStep(target.video);
+      }
       if (nextState === "IDLE") {
         // IDLE does not mean "nobody is here": door-api holds a recognised identity across
         // the approach timer (ADR-0020), and the name clears above, exactly when a snapshot

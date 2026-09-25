@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { FakeWebSocket, sessionDelta } from "./test/fakeWebSocket";
 
 /**
  * The doorpad's standing "who the door thinks you are" badge, and the tile hints.
@@ -133,39 +134,6 @@ describe("doorpad tile hints", () => {
  * identity as a snapshot; the two say different things about who is held, and the
  * doorpad has to keep them apart.
  */
-class FakeWebSocket {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSING = 2;
-  static CLOSED = 3;
-  static instances: FakeWebSocket[] = [];
-
-  readyState = FakeWebSocket.CONNECTING;
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-
-  constructor(public url: string) {
-    FakeWebSocket.instances.push(this);
-  }
-
-  send() {}
-
-  close() {
-    this.readyState = FakeWebSocket.CLOSED;
-    this.onclose?.();
-  }
-
-  open() {
-    this.readyState = FakeWebSocket.OPEN;
-    this.onopen?.();
-  }
-
-  emit(frame: unknown) {
-    this.onmessage?.({ data: JSON.stringify(frame) });
-  }
-}
 
 /** `GET /session` answers with each session in turn, then repeats the last one. */
 function mockSessionSequence(sessions: Array<Record<string, unknown>>) {
@@ -207,25 +175,10 @@ const NOBODY_HELD = {
 };
 
 function idleDelta(displayName: string | null) {
-  return {
-    type: "delta",
-    event: {
-      event_id: "018f6b2e-7c9a-7000-8000-3f9d2ba41c22",
-      type: "session.state_changed",
-      source: "door-api",
-      occurred_at: "2026-09-25T10:00:10Z",
-      monotonic_ms: 10_000,
-      door_id: "primary",
-      trace_id: "9d1e8a34-52a1-4b0e-9c0f-2a7d1f66b101",
-      payload: {
-        session_id: "ses-approach",
-        from_state: "APPROACH_DETECTED",
-        to_state: "IDLE",
-        trigger: "timeout:approach",
-        display_name: displayName,
-      },
-    },
-  };
+  return sessionDelta("APPROACH_DETECTED", "IDLE", {
+    trigger: "timeout:approach",
+    display_name: displayName,
+  });
 }
 
 describe("doorpad identity over /ws (ADR-0020)", () => {
