@@ -1,7 +1,13 @@
 """Versioned config bundle distributed by control-plane-api to the door Pi.
 
-The bundle is the *only* config surface the NUC pushes to the Pi (the Pi
-pulls it over `/config/door/{door_id}`, ADR-0002 trust model). It carries
+NOTE (audit H1, 2026-09): no Pi service consumes this bundle today — none of
+door-api, door-visiond, door-media or door-sync fetches `/config/door/{door_id}`;
+each reads its own environment. Wiring a puller or removing the bundle (route,
+`config` scope and this package) is an open owner decision; see
+packages/config/README.md.
+
+The bundle was designed as the *only* config surface the NUC pushes to the Pi
+(the Pi pulls it over `/config/door/{door_id}`, ADR-0002 trust model). It carries
 non-secret operational settings only — vision mode, feature flags, cache
 tuning. Nothing here may ever be a credential, DSN, or admin token; that is
 enforced both by the model shape (no field is typed to hold one) and by
