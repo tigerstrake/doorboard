@@ -42,3 +42,92 @@ test.describe("Wallboard — Flights focus", () => {
     expect(imageSources.filter((src) => !src.startsWith(origin))).toEqual([]);
   });
 });
+
+// Every focusable channel, with enough data routed in that the real layout renders (the
+// Vite e2e server has mock ambient data; guestbook and poll come from door-api).
+const FOCUS_CHANNELS = [
+  "aircraft",
+  "satellite",
+  "scoreboard",
+  "birds",
+  "printer",
+  "food",
+  "poll",
+  "guestbook",
+  "moments",
+  "about",
+] as const;
+
+const POLL = {
+  id: "poll-e2e",
+  question: "Best late-night study snack on this floor?",
+  status: "open",
+  created_at: "2026-09-20T00:00:00Z",
+  closed_at: null,
+  options: [
+    { id: "a", text: "Instant noodles" },
+    { id: "b", text: "Trail mix" },
+    { id: "c", text: "Cold pizza" },
+  ],
+};
+const POLL_RESULTS = [
+  { option_id: "a", text: "Instant noodles", votes: 7 },
+  { option_id: "b", text: "Trail mix", votes: 3 },
+  { option_id: "c", text: "Cold pizza", votes: 5 },
+];
+const GUESTBOOK = Array.from({ length: 5 }, (_, index) => ({
+  id: `gb-${index}`,
+  text:
+    index % 2 === 0
+      ? "Stopped by to say the door is the best thing on this floor — the bird tile made my week."
+      : "Call me later about the thing!",
+  author_label: index % 2 === 0 ? "A neighbour from 312" : null,
+  status: "approved",
+  created_at: "2026-09-24T18:00:00Z",
+}));
+
+const json = (body: unknown) => ({
+  status: 200,
+  contentType: "application/json",
+  body: JSON.stringify(body),
+});
+
+test.describe("Wallboard — every focused channel fits its panel", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route("**/guestbook?*", (route) => route.fulfill(json({ entries: GUESTBOOK })));
+    await page.route("**/polls/current", (route) => route.fulfill(json({ poll: POLL })));
+    await page.route("**/polls/*/results", (route) => route.fulfill(json({ results: POLL_RESULTS })));
+  });
+
+  for (const channel of FOCUS_CHANNELS) {
+    test(`${channel}: no clipped content in the focus panel`, async ({ page }) => {
+      // A wallboard has no scroll input, so "overflow: auto" is clipping with a decorative
+      // scrollbar: the About facts, the satellite legend and the Birds total were all
+      // drawn off the panel at 1920x1080 (E2 audit). Runs at both e2e resolutions.
+      await gotoWallboard(page);
+      if (channel === "poll") {
+        await expect(page.locator(".poll-tile-content")).toContainText("study snack");
+      }
+      if (channel === "guestbook") {
+        await expect(page.locator(".guestbook-tile-content")).toContainText(/neighbour|Call me/);
+      }
+      await publishWallboardFocus(page, channel);
+      const panel = page.getByTestId("wallboard-focus-panel");
+      await expect(panel).toBeVisible();
+      // Let the grow-in animation and any map/globe layout settle.
+      await page.waitForTimeout(700);
+      const box = await panel.evaluate((el) => ({
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+      }));
+      expect(box.scrollHeight, `vertical overflow ${JSON.stringify(box)}`).toBeLessThanOrEqual(
+        box.clientHeight,
+      );
+      expect(box.scrollWidth, `horizontal overflow ${JSON.stringify(box)}`).toBeLessThanOrEqual(
+        box.clientWidth,
+      );
+    });
+  }
+});

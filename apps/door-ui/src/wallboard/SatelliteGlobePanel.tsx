@@ -280,93 +280,74 @@ export function SatelliteGlobePanel({
           )}
         </svg>
 
-        <dl className="satellite-focus__stats">
-          <div className="satellite-focus__stat satellite-focus__stat--hero">
-            <dt>{progress.phase === "during" ? "Sets" : "Rises"}</dt>
-            <dd>
-              {progress.phase === "during"
-                ? humanizeSeconds(progress.secondsUntilSet)
-                : riseClock}
-            </dd>
-          </div>
-          {progress.phase === "before" ? (
-            <div className="satellite-focus__stat">
-              <dt>Starts</dt>
-              <dd>{humanizeSeconds(progress.secondsUntilRise)}</dd>
-            </div>
-          ) : null}
-          {closest !== null && closestClock !== null ? (
-            <div className="satellite-focus__stat">
-              {/* A pass does not literally cross a point, so this is the closest approach and
-                  its distance — not a claimed intersection. */}
-              <dt>Closest to here</dt>
+        {/* Stats and legend beside the globe: stacked under it they ran off a 1080p panel. */}
+        <div className="satellite-globe__aside">
+          <dl className="satellite-focus__stats">
+            <div className="satellite-focus__stat satellite-focus__stat--hero">
+              <dt>{progress.phase === "during" ? "Sets" : "Rises"}</dt>
               <dd>
-                {Math.round(closest.km).toLocaleString()} km · {closestClock}
+                {progress.phase === "during"
+                  ? humanizeSeconds(progress.secondsUntilSet)
+                  : riseClock}
               </dd>
             </div>
-          ) : null}
-          {progress.phase === "during" && nowKm !== null ? (
+            {progress.phase === "before" ? (
+              <div className="satellite-focus__stat">
+                <dt>Starts</dt>
+                <dd>{humanizeSeconds(progress.secondsUntilRise)}</dd>
+              </div>
+            ) : null}
+            {closest !== null && closestClock !== null ? (
+              <div className="satellite-focus__stat">
+                {/* A pass does not literally cross a point, so this is the closest approach and
+                    its distance — not a claimed intersection. */}
+                <dt>Closest to here</dt>
+                <dd>
+                  {Math.round(closest.km).toLocaleString()} km · {closestClock}
+                </dd>
+              </div>
+            ) : null}
+            {progress.phase === "during" && nowKm !== null ? (
+              <div className="satellite-focus__stat">
+                <dt>Distance now</dt>
+                <dd>{Math.round(nowKm).toLocaleString()} km</dd>
+              </div>
+            ) : null}
             <div className="satellite-focus__stat">
-              <dt>Distance now</dt>
-              <dd>{Math.round(nowKm).toLocaleString()} km</dd>
+              <dt>Look</dt>
+              <dd>{payload.direction}</dd>
+            </div>
+            {/* Kept from the sky-dome panel: a redesign should not quietly drop information the
+                old one carried. How high it gets is why a pass is worth watching at all. */}
+            <div className="satellite-focus__stat">
+              <dt>Max elevation</dt>
+              <dd>{Math.round(payload.max_elevation_deg)}°</dd>
+            </div>
+          </dl>
+
+          {orbitRenders.length > 0 ? (
+            <div className="satellite-orbit-legend" data-testid="satellite-orbit-legend">
+              {orbitRenders.map((orbit) => (
+                <span className="satellite-orbit-legend__item" key={orbit.noradId}>
+                  <span
+                    className="satellite-orbit-legend__swatch"
+                    aria-hidden="true"
+                    style={{ background: orbit.color }}
+                  />
+                  {/* Short catalogue tag, colour-matched to its loop and marker. */}
+                  <span className="satellite-orbit-legend__name" style={{ color: orbit.color }}>
+                    {orbit.name}
+                  </span>
+                  {/* The plain-English "what is it" the owner asked for, next to the abbreviation. */}
+                  {orbit.blurb ? (
+                    <span className="satellite-orbit-legend__blurb">{orbit.blurb}</span>
+                  ) : null}
+                </span>
+              ))}
             </div>
           ) : null}
-          <div className="satellite-focus__stat">
-            <dt>Look</dt>
-            <dd>{payload.direction}</dd>
-          </div>
-          {/* Kept from the sky-dome panel: a redesign should not quietly drop information the
-              old one carried. How high it gets is why a pass is worth watching at all. */}
-          <div className="satellite-focus__stat">
-            <dt>Max elevation</dt>
-            <dd>{Math.round(payload.max_elevation_deg)}°</dd>
-          </div>
-        </dl>
-      </div>
-
-      {orbitRenders.length > 0 ? (
-        <div
-          data-testid="satellite-orbit-legend"
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: "0.4rem 0.9rem",
-            justifyContent: "center",
-          }}
-        >
-          {orbitRenders.map((orbit) => (
-            <span
-              key={orbit.noradId}
-              style={{
-                display: "inline-flex",
-                alignItems: "baseline",
-                gap: "0.4rem",
-                fontFamily: "var(--db-font-mono)",
-                fontSize: "0.8rem",
-              }}
-            >
-              <span
-                aria-hidden="true"
-                style={{
-                  width: 11,
-                  height: 11,
-                  borderRadius: 999,
-                  background: orbit.color,
-                  display: "inline-block",
-                  alignSelf: "center",
-                  flex: "0 0 auto",
-                }}
-              />
-              {/* Short catalogue tag, colour-matched to its loop and marker. */}
-              <span style={{ color: orbit.color, fontWeight: 600 }}>{orbit.name}</span>
-              {/* The plain-English "what is it" the owner asked for, next to the abbreviation. */}
-              {orbit.blurb ? (
-                <span style={{ color: "var(--db-text-secondary)" }}>{orbit.blurb}</span>
-              ) : null}
-            </span>
-          ))}
         </div>
-      ) : null}
+      </div>
 
       {hasGround || orbitRenders.length > 0 ? (
         <p className="satellite-globe__credit">Coastline: {COASTLINE_CREDIT}</p>

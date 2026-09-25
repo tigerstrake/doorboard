@@ -141,12 +141,16 @@ export function AboutDoorboard({
 }) {
   return (
     <div className={`about-doorboard ${className}`} data-testid="about-doorboard">
-      {ABOUT_SECTIONS.map((section) => (
-        <section key={section.heading} className="about-doorboard__section">
-          <h3 className="about-doorboard__heading">{section.heading}</h3>
-          <p className="about-doorboard__body">{section.body}</p>
-        </section>
-      ))}
+      {/* Grouped so the focused view can lay the prose out as its own columns; the
+          wrapper is `display: contents` everywhere else, so the doorpad is unchanged. */}
+      <div className="about-doorboard__prose">
+        {ABOUT_SECTIONS.map((section) => (
+          <section key={section.heading} className="about-doorboard__section">
+            <h3 className="about-doorboard__heading">{section.heading}</h3>
+            <p className="about-doorboard__body">{section.body}</p>
+          </section>
+        ))}
+      </div>
 
       {showFacts ? (
         <>
@@ -166,7 +170,7 @@ export function AboutDoorboard({
             </p>
           </section>
 
-          <section className="about-doorboard__section">
+          <section className="about-doorboard__section about-doorboard__section--tech">
             <h3 className="about-doorboard__heading">How it actually works</h3>
             <ul className="about-tech-facts" data-testid="about-tech-facts">
               {ABOUT_TECH_FACTS.map((fact) => (

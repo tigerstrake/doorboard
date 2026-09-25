@@ -1888,10 +1888,17 @@ input:focus-visible {
 .wallboard-focus-panel .focus-guestbook,
 .wallboard-focus-panel .focus-moments,
 .wallboard-focus-panel .satellite-focus,
+.wallboard-focus-panel .satellite-globe,
 .wallboard-focus-panel .poll-focus,
 .wallboard-focus-panel .guestbook-focus,
-.wallboard-focus-panel .focus-empty-state {
+.wallboard-focus-panel .focus-empty-state,
+.wallboard-focus-panel .about-doorboard--focus {
   width: 100%;
+  /* Padding inside the 100%, or a padded block is wider than the panel and the wallboard
+     — which has no scroll input — clips its right edge (the Birds total lost half its
+     digit). */
+  box-sizing: border-box;
+  min-width: 0;
 }
 
 .wallboard-focus-panel .focus-hero-stat strong,
@@ -2311,6 +2318,7 @@ input:focus-visible {
 .focus-hero-stat,
 .focus-printer {
   width: min(1100px, 100%);
+  box-sizing: border-box;
   padding: clamp(2rem, 5vw, 4rem);
   border-radius: var(--db-radius-md);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -2337,7 +2345,10 @@ input:focus-visible {
 }
 
 .focus-hero-stat--inline {
-  grid-template-columns: 1fr auto;
+  /* minmax(0, …): a 1fr track's implicit min is its content, so the big number pushed
+     past the panel's edge and was drawn half off-screen. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  min-width: 0;
   align-items: center;
 }
 
@@ -2391,6 +2402,7 @@ input:focus-visible {
   align-content: center;
   gap: var(--db-spacing-md);
   padding: clamp(2rem, 5vw, 4rem);
+  box-sizing: border-box;
   text-align: center;
 }
 
@@ -2465,7 +2477,7 @@ input:focus-visible {
 .satellite-focus__name {
   font-family: var(--db-font-display);
   font-weight: 700;
-  font-size: clamp(2.75rem, 6.5vw, 6rem);
+  font-size: clamp(2.2rem, 4.5vw, 4.5rem);
   line-height: 0.98;
   color: var(--db-accent);
   text-shadow: 0 0 32px rgba(53, 214, 255, 0.3);
@@ -2532,7 +2544,14 @@ input:focus-visible {
 .satellite-focus__stats {
   margin: 0;
   display: grid;
-  gap: var(--db-spacing-md);
+  /* Two columns: five stacked stats made the column 540 px tall beside a 340 px globe and
+     pushed the legend and credit off the bottom of a 1080p panel. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--db-spacing-sm) var(--db-spacing-md);
+}
+
+.satellite-focus__stat--hero {
+  grid-column: 1 / -1;
 }
 
 .satellite-focus__stat {
@@ -2720,27 +2739,34 @@ input:focus-visible {
 
 /* ── Guestbook focus: readable single-column stack of approved notes ──────── */
 .guestbook-focus {
-  max-width: 1100px;
   display: grid;
-  gap: var(--db-spacing-lg);
+  /* Two columns of notes once the panel is wide enough: five notes stacked at hallway
+     type ran 90 px past the bottom of a 1080p panel that nobody can scroll. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  gap: var(--db-spacing-md);
+  min-height: 0;
 }
 
 .guestbook-focus .guestbook-quote {
   margin: 0;
-  padding: var(--db-spacing-lg) var(--db-spacing-xl);
+  padding: var(--db-spacing-md) var(--db-spacing-lg);
   border-left: 4px solid var(--db-accent);
   border-radius: var(--db-radius-md);
   background: rgba(255, 255, 255, 0.06);
+  min-width: 0;
 }
 
+/* Sized for two columns of five notes in a 1080p panel: a 280-character note at 2.4 rem
+   was four lines per note and three rows deep, 70 px past the bottom. */
 .guestbook-focus .guestbook-quote p {
-  margin: 0 0 var(--db-spacing-sm);
-  font-size: clamp(1.5rem, 2.8vw, 2.4rem);
+  margin: 0 0 var(--db-spacing-xs);
+  font-size: clamp(1.2rem, 1.7vw, 1.8rem);
   line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .guestbook-focus .guestbook-quote cite {
-  font-size: clamp(1.05rem, 1.7vw, 1.5rem);
+  font-size: clamp(0.95rem, 1.3vw, 1.3rem);
   color: var(--db-text-secondary);
 }
 
@@ -3448,15 +3474,97 @@ input:focus-visible {
   opacity: 0.9;
 }
 
-/* On the 1080p wallboard there is room to read it across two columns from a distance. */
+/* The prose wrapper is invisible to layout by default, so the doorpad's grid (and its
+   7"-panel two-column rule) still sees the sections as its own items. */
+.about-doorboard__prose {
+  display: contents;
+}
+
+/* The focused About view is a page of text (seven privacy sections, five hardware facts,
+   eight numbers) in a panel nobody can scroll. It fits 1920x1080 and 1080x1920 only as a
+   magazine layout: the prose in three columns, the hardware facts beside them, the
+   numbers as a strip underneath — at type scaled to the viewport, not a fixed 17 px. */
 .about-doorboard--focus {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1.1rem 2rem;
-  font-size: 1.05rem;
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 1.1fr);
+  grid-template-areas:
+    "prose tech"
+    "numbers numbers";
+  gap: clamp(0.7rem, 1.1vw, 1.2rem) clamp(1rem, 1.8vw, 2rem);
+  align-items: start;
+  align-content: start;
+  min-height: 0;
+  font-size: clamp(0.75rem, 0.75vw, 1rem);
+  line-height: 1.4;
+}
+
+.about-doorboard--focus .about-doorboard__prose {
+  grid-area: prose;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(0.6rem, 1vw, 1rem) clamp(0.8rem, 1.4vw, 1.5rem);
+  align-content: start;
+}
+
+.about-doorboard--focus .about-doorboard__section--tech {
+  grid-area: tech;
+}
+
+.about-doorboard--focus .about-doorboard__section--facts {
+  grid-area: numbers;
 }
 
 .about-doorboard--focus .about-doorboard__heading {
-  font-size: 1.15rem;
+  font-size: 1.05em;
+  margin-bottom: 0.15rem;
+}
+
+.about-doorboard--focus .about-doorboard__body {
+  line-height: 1.4;
+}
+
+.about-doorboard--focus .about-tech-facts {
+  margin-top: 0.25rem;
+  gap: 0.45rem;
+}
+
+.about-doorboard--focus .about-tech-facts__item {
+  font-size: 0.95em;
+  line-height: 1.4;
+}
+
+.about-doorboard--focus .about-facts {
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.about-doorboard--focus .about-facts__item {
+  padding: 0.45rem 0.6rem;
+  min-width: 0;
+}
+
+.about-doorboard--focus .about-facts__value {
+  font-size: clamp(1.1rem, 1.5vw, 1.9rem);
+}
+
+.about-doorboard--focus .about-facts__label {
+  font-size: 0.85em;
+  line-height: 1.2;
+}
+
+.about-doorboard--focus .about-facts__asof {
+  margin-top: 0.4rem;
+  font-size: 0.8em;
+}
+
+/* About is text, so it gets the wider panel: the rail shrinks to two columns of tiles. */
+.wallboard-focus-split--about .wallboard-focus-layout {
+  grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr);
+}
+
+.wallboard-focus-split--about .wallboard-focus-panel {
+  place-items: start stretch;
 }
 
 @media (max-height: 660px) {
@@ -3964,12 +4072,54 @@ input:focus-visible {
   gap: var(--db-spacing-lg);
   align-items: center;
   justify-content: center;
+  width: 100%;
 }
 
 .globe {
   width: min(340px, 42vw);
   height: auto;
   flex: 0 0 auto;
+}
+
+/* Stats and the orbit legend, beside the globe rather than stacked under it. */
+.satellite-globe__aside {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: grid;
+  gap: var(--db-spacing-md);
+}
+
+/* Which loop is which (ADR-0041): a colour swatch, the short catalogue tag, and the
+   plain-English "what is it". */
+.satellite-orbit-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+}
+
+.satellite-orbit-legend__item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-family: var(--db-font-mono);
+  font-size: clamp(0.8rem, 1vw, 1rem);
+}
+
+.satellite-orbit-legend__swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  display: inline-block;
+  align-self: center;
+  flex: 0 0 auto;
+}
+
+.satellite-orbit-legend__name {
+  font-weight: 600;
+}
+
+.satellite-orbit-legend__blurb {
+  color: var(--db-text-secondary);
 }
 
 .globe__ocean {
