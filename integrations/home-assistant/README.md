@@ -32,9 +32,17 @@ automations for this stack are repo-managed on purpose.
 | Entity | HA type | Topic (published by control-plane-api's audit fan-out) | Source event |
 |---|---|---|---|
 | Doorboard Bell | `binary_sensor` | `doorboard/door/button_pressed` | `door.button_pressed` |
-| Doorboard Presence | `sensor` | `doorboard/status/presence_changed` | `status.presence_changed` |
+| Doorboard Presence (owner) | `sensor` (device discovery, ADR-0048) | `doorboard/status/presence_changed/owner` | `status.presence_changed` |
+| Doorboard Presence (roommate) | `sensor` (device discovery, ADR-0048) | `doorboard/status/presence_changed/roommate` | `status.presence_changed` |
 | Doorboard Storage Alert | `sensor` | `doorboard/system/storage_alert` | `system.storage_alert` |
 | Doorboard Sync Status | `sensor` | `doorboard/media/storage_status` | `media.storage_status` (`oldest_unsynced_s`) |
+
+Presence is published once per subject (ADR-0048); the un-suffixed
+`doorboard/status/presence_changed` topic is still published for one release so an older
+door-api keeps receiving it. The presence entities are one *device-discovery* payload
+(`homeassistant/device/doorboard_presence/config`, one sensor per subject). After upgrading,
+clear the old single-sensor config once:
+`mosquitto_pub -r -n -t homeassistant/sensor/doorboard/presence/config`.
 
 Full envelope/payload shapes: [docs/protocols/events.md](../../docs/protocols/events.md).
 control-plane-api already publishes every ingested event to
