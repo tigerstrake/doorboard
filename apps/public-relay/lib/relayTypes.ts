@@ -83,7 +83,8 @@ export interface RelayStore {
   markInviteConsumed(inviteId: string): Promise<void>;
   deleteInvite(inviteId: string): Promise<void>;
 
-  putBundle(bundle: SealedBundle): Promise<string>;
+  /** The `submitted_at` recorded, or `null` when the bundle id is already held (never overwritten). */
+  putBundle(bundle: SealedBundle): Promise<string | null>;
   leaseBundles(): Promise<StoredBundle[]>;
   finishBundle(
     bundleId: string,

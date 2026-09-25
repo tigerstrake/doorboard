@@ -418,6 +418,62 @@ describe("pickup leasing", () => {
     expect(second.items).toHaveLength(0);
   });
 
+  it("refuses a second submit under a bundle id it already holds, leaving the first intact", async () => {
+    // The id appears in the request line of every /api/status poll — a hostile courier's
+    // vantage point. Learning it must not let another invite holder overwrite the ciphertext,
+    // re-point the bundle at their invite, or regress `enrolled` to `pending`.
+    const { token, inviteId, secret } = await seedDoorKeyAndInvite();
+    const key = await fakeDoorKey();
+    const victim = await makeSealedBundle({ key, inviteId });
+    await submitBundle(
+      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", victim, withSecret(secret)),
+      resolveStore(db),
+      { token },
+    );
+    await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore(db));
+    await ack(
+      deviceRequest("https://relay.test/api/pickup/ack", "POST", {
+        bundle_id: victim.bundle_id,
+        outcome: "enrolled",
+        reason: null,
+      }),
+      resolveStore(db),
+    );
+
+    const otherInvite = `inv_${"b".repeat(22)}`;
+    const otherSecret = "b3RoZXItaW52aXRlLXNlY3JldA";
+    await registerInvite(
+      deviceRequest("https://relay.test/api/invite", "PUT", {
+        invite_id: otherInvite,
+        secret_sha256: sha256Base64Url(otherSecret),
+        expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        max_images: 5,
+      }),
+      resolveStore(db),
+    );
+    const hijack = await makeSealedBundle({ key, inviteId: otherInvite, bundleId: victim.bundle_id });
+    const resp = await submitBundle(
+      publicRequest(`https://relay.test/api/enroll/${otherInvite}/submit`, "POST", hijack, withSecret(otherSecret)),
+      resolveStore(db),
+      { token: otherInvite },
+    );
+    expect(resp.status).toBe(409);
+    expect((await resp.json()) as unknown).toEqual({ error: "bundle_id_taken" });
+
+    const status = (await (
+      await getStatus(publicRequest(`https://relay.test/api/status/${victim.bundle_id}`), resolveStore(db), {
+        bundleId: victim.bundle_id,
+      })
+    ).json()) as { status: string };
+    expect(status.status).toBe("enrolled");
+    expect(db.dumpRows()).not.toContain(hijack.items[1]!.ciphertext);
+    // And the Pi is not handed the attacker's bundle.
+    const poll = (await (
+      await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore(db))
+    ).json()) as { items: unknown[] };
+    expect(poll.items).toEqual([]);
+  });
+
   it("does not let a late duplicate ack undo an enrollment", async () => {
     const { token, inviteId, secret } = await seedDoorKeyAndInvite();
     const key = await fakeDoorKey();

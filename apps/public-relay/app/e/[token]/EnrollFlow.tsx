@@ -307,34 +307,47 @@ export default function EnrollFlow({ inviteId: propInviteId }: { inviteId?: stri
         // colour with it (ADR-0021).
         accent_color: accentColor,
       };
-      const bundleId = newBundleId();
-
       const secret = hashParam("s") ?? "";
-      const bundle = await sealBundle({
-        doorPublicKey: doorKey.public_key,
-        doorKeyId: doorKey.door_key_id,
-        inviteId: invite.invite_id,
-        bundleId,
-        manifest: {
-          invite_secret: secret,
-          display_name: trimmed,
-          consent_version: doorKey.consent_version,
-          consent_confirmed: true,
-          profile,
-          captured_at: new Date().toISOString(),
-          image_count: photos.length,
-        },
-        images: photos,
-      });
+      const manifest = {
+        invite_secret: secret,
+        display_name: trimmed,
+        consent_version: doorKey.consent_version,
+        consent_confirmed: true as const,
+        profile,
+        captured_at: new Date().toISOString(),
+        image_count: photos.length,
+      };
 
-      const resp = await fetch(`/api/enroll/${encodeURIComponent(inviteId)}/submit`, {
-        method: "POST",
-        headers: { "content-type": "application/json", [INVITE_SECRET_HEADER]: secret },
-        body: JSON.stringify(bundle),
-      });
-      if (!resp.ok) {
+      const sealAndSend = async (id: string): Promise<{ ok: boolean; error?: string }> => {
+        const bundle = await sealBundle({
+          doorPublicKey: doorKey.public_key,
+          doorKeyId: doorKey.door_key_id,
+          inviteId: invite.invite_id,
+          bundleId: id,
+          manifest,
+          images: photos,
+        });
+        const resp = await fetch(`/api/enroll/${encodeURIComponent(inviteId)}/submit`, {
+          method: "POST",
+          headers: { "content-type": "application/json", [INVITE_SECRET_HEADER]: secret },
+          body: JSON.stringify(bundle),
+        });
+        if (resp.ok) return { ok: true };
         const body = (await resp.json().catch(() => ({}))) as { error?: string };
-        setError(uploadErrorMessage(body.error));
+        return { ok: false, error: body.error };
+      };
+
+      let bundleId = newBundleId();
+      let result = await sealAndSend(bundleId);
+      if (!result.ok && result.error === "bundle_id_taken") {
+        // The relay already holds a bundle under that id and will not overwrite it. The id
+        // is bound into the key derivation and the AAD, so this is a fresh seal under a
+        // fresh id — not a resend — and it is tried once.
+        bundleId = newBundleId();
+        result = await sealAndSend(bundleId);
+      }
+      if (!result.ok) {
+        setError(uploadErrorMessage(result.error));
         setStep("details");
         return;
       }
@@ -676,6 +689,9 @@ export function uploadErrorMessage(code: string | undefined): string {
       return "That is more photos than this invitation allows. Start the photos again.";
     case "bundle_too_large":
       return "Those photos came out too large to send. Start the photos again in plainer, even light — a busy background or bright patches make bigger files.";
+    case "bundle_id_taken":
+      // Only reached if the automatic retry under a fresh id was refused too.
+      return "The upload clashed with another one twice in a row, which should not happen. Tap 'Encrypt and send' again, and tell the household admin if it repeats.";
     case "storage_not_configured":
       return "The enrolment service is not fully set up yet. Ask the household admin.";
     case "invalid_bundle":

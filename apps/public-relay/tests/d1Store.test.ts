@@ -124,6 +124,23 @@ describe("bundles and pickup lease", () => {
     expect((await store.getStatus("bnd_1"))?.status).toBe("collected");
   });
 
+  it("never overwrites a bundle id it already holds", async () => {
+    expect(await store.putBundle(sealed("bnd_1", "inv_a"))).not.toBeNull();
+    await store.leaseBundles();
+    await store.finishBundle("bnd_1", "enrolled", null);
+
+    // A second submit under the same id — another invite, other ciphertext.
+    const again = { ...sealed("bnd_1", "inv_b"), items: [{ index: 0, nonce: "CC", ciphertext: "ATTACKER" }] };
+    expect(await store.putBundle(again as SealedBundle)).toBeNull();
+
+    // The first bundle's record is untouched: still enrolled, still inv_a, nothing new stored.
+    expect((await store.getStatus("bnd_1"))?.status).toBe("enrolled");
+    const rows = db.dumpRows();
+    expect(rows).not.toContain("ATTACKER");
+    expect(rows).not.toContain("inv_b");
+    expect(await store.leaseBundles()).toEqual([]);
+  });
+
   it("P-33: does not hand the same bundle to a second poll inside the lease", async () => {
     await store.putBundle(sealed("bnd_1", "inv_a"));
     expect((await store.leaseBundles()).length).toBe(1);

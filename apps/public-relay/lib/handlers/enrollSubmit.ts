@@ -73,7 +73,9 @@ export async function handlePost(
   // items = 1 manifest + N photos.
   if (bundle.items.length - 1 > invite.max_images) return jsonError(422, "too_many_images");
 
-  await store.putBundle(bundle);
+  // The id is minted on the phone. One already held is never overwritten (it may be another
+  // enrollee's, or an `enrolled` record): the phone re-seals under a fresh id and retries.
+  if ((await store.putBundle(bundle)) === null) return jsonError(409, "bundle_id_taken");
 
   return jsonOk(
     {

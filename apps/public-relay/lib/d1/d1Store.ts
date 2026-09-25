@@ -132,21 +132,23 @@ export class D1RelayStore implements RelayStore {
 
   // -- bundles --------------------------------------------------------------
 
-  async putBundle(bundle: SealedBundle): Promise<string> {
+  /**
+   * Store a bundle under its phone-minted id; `null` if that id is already held. A second
+   * submit must never overwrite another bundle's ciphertext, re-point it at a different
+   * invite, or regress a terminal status back to `pending` — the id is in the request line of
+   * every status poll, which is exactly a hostile courier's vantage point. The caller answers
+   * 409 and the phone re-seals under a fresh id.
+   */
+  async putBundle(bundle: SealedBundle): Promise<string | null> {
     const now = this.now();
     const submittedAt = new Date(now).toISOString();
-    await this.db
+    const result = await this.db
       .prepare(
         "INSERT INTO bundle (bundle_id, invite_id, bundle_json, submitted_at, created_ms, " +
           "bundle_expires_ms, lease_until_ms, in_pending, status, status_reason, " +
           "status_updated_at, status_expires_ms) " +
           "VALUES (?, ?, ?, ?, ?, ?, 0, 1, 'pending', NULL, ?, ?) " +
-          "ON CONFLICT(bundle_id) DO UPDATE SET " +
-          "invite_id = excluded.invite_id, bundle_json = excluded.bundle_json, " +
-          "submitted_at = excluded.submitted_at, created_ms = excluded.created_ms, " +
-          "bundle_expires_ms = excluded.bundle_expires_ms, lease_until_ms = 0, in_pending = 1, " +
-          "status = 'pending', status_reason = NULL, status_updated_at = excluded.status_updated_at, " +
-          "status_expires_ms = excluded.status_expires_ms",
+          "ON CONFLICT(bundle_id) DO NOTHING",
       )
       .bind(
         bundle.bundle_id,
@@ -159,7 +161,7 @@ export class D1RelayStore implements RelayStore {
         now + STATUS_TTL_S * 1000,
       )
       .run();
-    return submittedAt;
+    return result.meta.changes === 0 ? null : submittedAt;
   }
 
   /**

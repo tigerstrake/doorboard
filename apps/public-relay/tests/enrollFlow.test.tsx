@@ -71,6 +71,8 @@ interface Routes {
   doorKeyStatus?: number;
   submitStatus?: number;
   submitBody?: unknown;
+  /** Per-call submit responses, consumed in order; later calls fall back to submitStatus/Body. */
+  submitSequence?: Array<{ status: number; body?: unknown }>;
 }
 
 interface Call {
@@ -93,13 +95,10 @@ function mockApi(routes: Routes = {}): Call[] {
       });
 
       if (url.includes("/submit")) {
-        const status = routes.submitStatus ?? 202;
-        return {
-          ok: status < 400,
-          status,
-          json: async () =>
-            routes.submitBody ?? { bundle_id: "bnd_x", status: "pending" },
-        } as Response;
+        const next = routes.submitSequence?.shift();
+        const status = next?.status ?? routes.submitStatus ?? 202;
+        const body = next?.body ?? routes.submitBody ?? { bundle_id: "bnd_x", status: "pending" };
+        return { ok: status < 400, status, json: async () => body } as Response;
       }
       if (url.includes("/api/door-key")) {
         const status = routes.doorKeyStatus ?? 200;
@@ -446,6 +445,30 @@ describe("what leaves the phone", () => {
       items: [bundle.items[0], { ...bundle.items[1], index: 2 }],
     };
     await expect(openBundle(reordered)).rejects.toThrow();
+  });
+
+  it("re-seals under a fresh bundle id and retries once when the relay already holds that id", async () => {
+    const calls = mockApi({ submitSequence: [{ status: 409, body: { error: "bundle_id_taken" } }] });
+    await submitEnrolment(calls);
+    await waitFor(() => expect(calls.filter((call) => call.url.includes("/submit"))).toHaveLength(2));
+
+    const [first, second] = calls
+      .filter((call) => call.url.includes("/submit"))
+      .map((call) => JSON.parse(call.body!));
+    expect(first.bundle_id).not.toBe(second.bundle_id);
+    // A different id means a different key (it is in the HKDF info and the AAD): the retry
+    // is a fresh seal, not the refused ciphertext sent again.
+    expect(first.items[0].ciphertext).not.toBe(second.items[0].ciphertext);
+    await waitFor(() => expect(screen.getByText("Waiting for the door")).toBeTruthy());
+  });
+
+  it("gives up after one retry and keeps the enrollee's photos and name", async () => {
+    const taken = { status: 409, body: { error: "bundle_id_taken" } };
+    const calls = mockApi({ submitSequence: [taken, taken] });
+    await submitEnrolment(calls);
+    await waitFor(() => expect(screen.getByText(/clashed with another one twice/)).toBeTruthy());
+    expect(calls.filter((call) => call.url.includes("/submit"))).toHaveLength(2);
+    expect(screen.getByText(/How should the door greet you/)).toBeTruthy();
   });
 
   it("keeps the enrollee on the details step when the upload is refused", async () => {
