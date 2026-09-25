@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from "react";
-import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import { AdminEnrollmentPanel } from "./AdminEnrollmentPanel";
 
@@ -67,10 +67,6 @@ function defaultRoutes(overrides: Record<string, MockResponse> = {}): Record<str
 }
 
 describe("AdminEnrollmentPanel renders enrolled people and handles consent statement", () => {
-  beforeEach(() => {
-    window.localStorage.setItem("doorboard_admin_social_token", "test-token");
-  });
-
   it("renders hostile display name safely and inertly", async () => {
     mockFetchRoutes(
       defaultRoutes({
@@ -91,7 +87,7 @@ describe("AdminEnrollmentPanel renders enrolled people and handles consent state
       })
     );
 
-    render(<AdminEnrollmentPanel />);
+    render(<AdminEnrollmentPanel token="test-token" />);
 
     // Should display the name verbatim in text
     await waitFor(() => expect(screen.getByText(HOSTILE)).toBeTruthy());
@@ -104,7 +100,7 @@ describe("AdminEnrollmentPanel renders enrolled people and handles consent state
       defaultRoutes({ "/privacy-mode": { body: { enabled: true } } })
     );
 
-    render(<AdminEnrollmentPanel />);
+    render(<AdminEnrollmentPanel token="test-token" />);
 
     await waitFor(() => expect(screen.getByLabelText(/Privacy Mode:/i)).toBeTruthy());
     const toggle = screen.getByLabelText(/Privacy Mode:/i) as HTMLInputElement;
@@ -124,13 +120,9 @@ describe("AdminEnrollmentPanel renders enrolled people and handles consent state
 });
 
 describe("remote enrollment (ADR-0016) in the admin panel", () => {
-  beforeEach(() => {
-    window.localStorage.setItem("doorboard_admin_social_token", "test-token");
-  });
-
   it("warns when no relay is configured and still allows at-door enrollment", async () => {
     mockFetchRoutes(defaultRoutes());
-    render(<AdminEnrollmentPanel />);
+    render(<AdminEnrollmentPanel token="test-token" />);
 
     await waitFor(() => expect(screen.getByText(/Enroll from a phone/i)).toBeTruthy());
     expect(screen.getByText(/No relay is configured/i)).toBeTruthy();
@@ -146,7 +138,7 @@ describe("remote enrollment (ADR-0016) in the admin panel", () => {
         },
       })
     );
-    render(<AdminEnrollmentPanel />);
+    render(<AdminEnrollmentPanel token="test-token" />);
 
     await waitFor(() => expect(screen.getByText(/Relay unreachable/i)).toBeTruthy());
     expect(screen.getByText(/RelayTransportError/)).toBeTruthy();
@@ -170,7 +162,7 @@ describe("remote enrollment (ADR-0016) in the admin panel", () => {
       })
     );
 
-    render(<AdminEnrollmentPanel />);
+    render(<AdminEnrollmentPanel token="test-token" />);
     await waitFor(() => expect(screen.getByText("Create QR invite")).toBeTruthy());
     fireEvent.click(screen.getByText("Create QR invite"));
 
@@ -192,7 +184,7 @@ describe("remote enrollment (ADR-0016) in the admin panel", () => {
         "/relay-status": { body: { configured: true, status: "ok" } },
       })
     );
-    render(<AdminEnrollmentPanel />);
+    render(<AdminEnrollmentPanel token="test-token" />);
 
     await waitFor(() => expect(screen.getByText("Create QR invite")).toBeTruthy());
     expect((screen.getByText("Create QR invite") as HTMLButtonElement).disabled).toBe(true);
@@ -220,7 +212,7 @@ describe("remote enrollment (ADR-0016) in the admin panel", () => {
       })
     );
 
-    render(<AdminEnrollmentPanel />);
+    render(<AdminEnrollmentPanel token="test-token" />);
     await waitFor(() => expect(screen.getByText("Tiger's phone")).toBeTruthy());
     expect(screen.getByText("Open invites (1)")).toBeTruthy();
     expect(screen.getByText("Revoke")).toBeTruthy();
@@ -248,7 +240,7 @@ describe("remote enrollment (ADR-0016) in the admin panel", () => {
       })
     );
 
-    render(<AdminEnrollmentPanel />);
+    render(<AdminEnrollmentPanel token="test-token" />);
     await waitFor(() => expect(screen.getByText(/Past invites \(1\)/i)).toBeTruthy());
     // Consumed invites are history: no link, nothing rescannable.
     expect(screen.queryByText(/Scan this with the phone/i)).toBeNull();

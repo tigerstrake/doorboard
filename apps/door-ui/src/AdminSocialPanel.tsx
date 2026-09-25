@@ -10,21 +10,20 @@ import type {
 // Guestbook/poll/check-in moderation panel (T-403). Gated by door-api's
 // placeholder admin-token bearer auth (see door_api/social/routes.py) —
 // this is a stopgap until packages/auth ships real admin sessions. The
-// token is entered once and cached in localStorage for this browser only;
-// it is never linked from any public route.
-
-const ADMIN_TOKEN_KEY = "doorboard_admin_social_token";
+// token is the one the /admin gate collected; it is held in memory only
+// (ADR-0042: the console can open on the corridor touchscreen, so nothing
+// may leave it unlocked for the next visitor) and never linked publicly.
 
 function apiErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) return err.message || fallback;
   return fallback;
 }
 
-export function AdminSocialPanel() {
-  const [token, setToken] = useState<string>(
-    () => window.localStorage.getItem(ADMIN_TOKEN_KEY) || ""
-  );
-  const [tokenInput, setTokenInput] = useState(token);
+export interface AdminSocialPanelProps {
+  token: string;
+}
+
+export function AdminSocialPanel({ token }: AdminSocialPanelProps) {
   const [error, setError] = useState<string | null>(null);
 
   const [pending, setPending] = useState<GuestbookEntry[]>([]);
@@ -59,11 +58,6 @@ export function AdminSocialPanel() {
   useEffect(() => {
     if (token) loadAll(token);
   }, [token]);
-
-  const saveToken = () => {
-    window.localStorage.setItem(ADMIN_TOKEN_KEY, tokenInput);
-    setToken(tokenInput);
-  };
 
   const approve = (id: string) => {
     socialApi.admin
@@ -103,21 +97,7 @@ export function AdminSocialPanel() {
       .catch((err) => setError(apiErrorMessage(err, "Couldn't close that poll.")));
   };
 
-  if (!token) {
-    return (
-      <div className="admin-social-panel">
-        <h2>Guestbook / Poll / Check-in Moderation</h2>
-        <p className="placeholder-subtext">Enter the admin token to unlock this panel.</p>
-        <input
-          type="password"
-          value={tokenInput}
-          onChange={(e) => setTokenInput(e.target.value)}
-          placeholder="Admin token"
-        />
-        <button className="phrase-btn" onClick={saveToken}>Unlock</button>
-      </div>
-    );
-  }
+  if (!token) return null;
 
   return (
     <div className="admin-social-panel">

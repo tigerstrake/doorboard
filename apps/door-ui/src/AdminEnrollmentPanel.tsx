@@ -4,13 +4,15 @@ import { LiveVideoPreview } from "@doorboard/ui-kit";
 import { AdminRemoteEnrollPanel } from "./AdminRemoteEnrollPanel";
 import { AdminVisitLogPanel } from "./AdminVisitLogPanel";
 
-const ADMIN_TOKEN_KEY = "doorboard_admin_social_token";
+export interface AdminEnrollmentPanelProps {
+  /**
+   * The admin token the /admin gate collected. Held in memory by the caller, never
+   * persisted: the console can open on the corridor touchscreen (ADR-0042).
+   */
+  token: string;
+}
 
-export function AdminEnrollmentPanel() {
-  const [token, setToken] = useState<string>(
-    () => window.localStorage.getItem(ADMIN_TOKEN_KEY) || ""
-  );
-  const [tokenInput, setTokenInput] = useState(token);
+export function AdminEnrollmentPanel({ token }: AdminEnrollmentPanelProps) {
   const [people, setPeople] = useState<EnrolledPerson[]>([]);
   const [privacyEnabled, setPrivacyEnabled] = useState(false);
   const [consentStatement, setConsentStatement] = useState({ text: "", version: "" });
@@ -74,11 +76,6 @@ export function AdminEnrollmentPanel() {
       if (pollIntervalRef.current) window.clearInterval(pollIntervalRef.current);
     };
   }, []);
-
-  const saveToken = () => {
-    window.localStorage.setItem(ADMIN_TOKEN_KEY, tokenInput);
-    setToken(tokenInput);
-  };
 
   const handlePrivacyToggle = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const targetVal = e.target.checked;
@@ -203,21 +200,7 @@ export function AdminEnrollmentPanel() {
     loadData(token);
   };
 
-  if (!token) {
-    return (
-      <div className="admin-social-panel">
-        <h2>Face Recognition & Enrollment</h2>
-        <p className="placeholder-subtext">Enter the admin token to unlock this panel.</p>
-        <input
-          type="password"
-          value={tokenInput}
-          onChange={(e) => setTokenInput(e.target.value)}
-          placeholder="Admin token"
-        />
-        <button className="phrase-btn" onClick={saveToken}>Unlock</button>
-      </div>
-    );
-  }
+  if (!token) return null;
 
   const activeConfirmPerson = people.find((p) => p.person_id === confirmUnenrollId);
 

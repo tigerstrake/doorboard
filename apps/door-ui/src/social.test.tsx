@@ -110,10 +110,6 @@ const PICK_ONE_POLL = {
 };
 
 describe("AdminSocialPanel renders untrusted guestbook text inertly", () => {
-  beforeEach(() => {
-    window.localStorage.setItem("doorboard_admin_social_token", "test-token");
-  });
-
   it("shows hostile pending-entry text as plain text, never executes it", async () => {
     mockFetchRoutes([
       {
@@ -126,7 +122,7 @@ describe("AdminSocialPanel renders untrusted guestbook text inertly", () => {
       { match: "/moderation-log", body: { entries: [] } },
     ]);
 
-    render(<AdminSocialPanel />);
+    render(<AdminSocialPanel token="test-token" />);
 
     await waitFor(() => expect(screen.getByText(HOSTILE)).toBeTruthy());
     expect(document.querySelector("script")).toBeNull();

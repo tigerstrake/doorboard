@@ -79,13 +79,19 @@ type MyContentStore = Record<string, MyContentRef[]>;
 const MY_CONTENT_KEY = "doorboard_my_social_content_v2";
 import { doorpadResetTimeoutMs } from "./doorpadTimeouts";
 
-const ADMIN_TOKEN_KEY = "doorboard_admin_social_token";
-
 const MAX_STORED_VISITOR_SESSIONS = 16;
 const MAX_CONTENT_ITEMS_PER_SESSION = 32;
 
-function adminHeaders(json = false): Record<string, string> {
-  const token = window.localStorage.getItem(ADMIN_TOKEN_KEY);
+// The admin console locks itself after this much inactivity and the pad returns to the
+// visitor screen (ADR-0042: the console faces a shared corridor once it opens from the pad).
+const ADMIN_IDLE_RETURN_MS = 3 * 60_000;
+
+// The admin token lives in component state for exactly as long as the console is open. It
+// used to be written to localStorage, which on the door's own kiosk meant every later visit
+// to /admin — from the corridor touchscreen — opened the console already unlocked, with the
+// video inbox and the enrolled people's names on it. Re-entering the token each time is the
+// cost of an admin entrance on a public surface (ADR-0042).
+function adminHeaders(token: string, json = false): Record<string, string> {
   return {
     ...(json ? { "Content-Type": "application/json" } : {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -575,9 +581,7 @@ export function App() {
   const [adminInboxState, setAdminInboxState] = useState<"idle" | "loading" | "ready" | "unavailable">(
     "idle"
   );
-  const [adminToken, setAdminToken] = useState<string>(
-    () => window.localStorage.getItem(ADMIN_TOKEN_KEY) ?? ""
-  );
+  const [adminToken, setAdminToken] = useState<string>("");
   const [adminTokenDraft, setAdminTokenDraft] = useState<string>("");
   const [sessionObservedAt, setSessionObservedAt] = useState<number>(() => Date.now());
   const [galleryPhotos, setGalleryPhotos] = useState<GalleryPhoto[]>([]);
@@ -1261,7 +1265,7 @@ export function App() {
     setAdminInboxState("loading");
     fetch(`${API_BASE}/admin/media-inbox`, {
       signal: controller.signal,
-      headers: adminHeaders(),
+      headers: adminHeaders(adminToken),
     })
       .then((response) => {
         if (!response.ok) throw new Error(`admin inbox unavailable: ${response.status}`);
@@ -1286,7 +1290,7 @@ export function App() {
     const controller = new AbortController();
     fetch(`${API_BASE}/admin/gallery/photos`, {
       signal: controller.signal,
-      headers: adminHeaders(),
+      headers: adminHeaders(adminToken),
     })
       .then((response) => (response.ok ? response.json() : { photos: [] }))
       .then((data: { photos?: GalleryPhoto[] }) => {
@@ -1373,7 +1377,7 @@ export function App() {
         url += `&cursor=${encodeURIComponent(cursorVal)}`;
       }
       
-      const res = await fetch(url, { headers: adminHeaders() });
+      const res = await fetch(url, { headers: adminHeaders(adminToken) });
       if (res.ok) {
         const data = await res.json();
         setRecordings(data.recordings || []);
@@ -1386,7 +1390,7 @@ export function App() {
     } finally {
       setLoading(false);
     }
-  }, [currentCursor, pageSize, kindFilter, syncFilter]);
+  }, [adminToken, currentCursor, pageSize, kindFilter, syncFilter]);
 
   useEffect(() => {
     if (adminToken && (route === "/admin" || route === "/diagnostics")) {
@@ -1417,7 +1421,7 @@ export function App() {
     try {
       const res = await fetch(`${API_BASE}/admin/recordings/${recordingId}`, {
         method: "DELETE",
-        headers: adminHeaders(),
+        headers: adminHeaders(adminToken),
       });
       if (res.ok) {
         triggerToast("Recording deleted");
@@ -1439,14 +1443,14 @@ export function App() {
     if (!FEATURE_PHOTOBOOTH) return;
     try {
       const response = await fetch(`${API_BASE}/admin/gallery/photos`, {
-        headers: adminHeaders(),
+        headers: adminHeaders(adminToken),
       });
       const data = response.ok ? ((await response.json()) as { photos?: GalleryPhoto[] }) : {};
       setGalleryPhotos(data.photos ?? []);
     } catch {
       setGalleryPhotos([]);
     }
-  }, []);
+  }, [adminToken]);
 
   const approveGalleryPhoto = async (photo: GalleryPhoto) => {
     const tagText = window.prompt("Tags, comma-separated", photo.tags.join(", "));
@@ -1454,7 +1458,7 @@ export function App() {
     try {
       const response = await fetch(`${API_BASE}/admin/gallery/photos/${photo.recording_id}/approve`, {
         method: "POST",
-        headers: adminHeaders(true),
+        headers: adminHeaders(adminToken, true),
         body: JSON.stringify({
           tags: tagText.split(",").map((tag) => tag.trim()).filter(Boolean),
           wallboard_moment: photo.wallboard_moment,
@@ -1473,7 +1477,7 @@ export function App() {
     try {
       const response = await fetch(`${API_BASE}/admin/gallery/photos/${photo.recording_id}/tags`, {
         method: "PATCH",
-        headers: adminHeaders(true),
+        headers: adminHeaders(adminToken, true),
         body: JSON.stringify({
           tags: tagText === null ? photo.tags : tagText.split(",").map((tag) => tag.trim()),
           wallboard_moment: wallboardMoment ?? photo.wallboard_moment,
@@ -1491,7 +1495,7 @@ export function App() {
     try {
       const response = await fetch(`${API_BASE}/admin/gallery/photos/${photo.recording_id}`, {
         method: "DELETE",
-        headers: adminHeaders(),
+        headers: adminHeaders(adminToken),
       });
       triggerToast(response.ok ? "Photo deleted" : "Couldn't delete photo");
       void refreshGalleryPhotos();
@@ -3861,23 +3865,58 @@ export function App() {
     event.preventDefault();
     const token = adminTokenDraft.trim();
     if (!token) return;
-    window.localStorage.setItem(ADMIN_TOKEN_KEY, token);
     setAdminToken(token);
     setAdminTokenDraft("");
   };
 
   const logoutAdmin = () => {
-    window.localStorage.removeItem(ADMIN_TOKEN_KEY);
     setAdminToken("");
+    setAdminTokenDraft("");
     setAdminRecordings([]);
     setAdminInboxState("idle");
   };
+
+  // The way out of the console that a kiosk needs: there is no URL bar on the pad, so
+  // without this a 2.5 s touch on the title stranded the door on "Admin sign in" until the
+  // next reboot. Leaving also drops the token, so the next entry asks for it again.
+  const leaveAdmin = () => {
+    logoutAdmin();
+    navigateTo("/doorpad");
+  };
+
+  // Auto-lock (ADR-0042): while the console is open, any touch or key re-arms a window;
+  // when it lapses with nobody using it the token is dropped and the pad returns to the
+  // visitor screen. An unlocked console left on a corridor touchscreen is readable by a
+  // passer-by, so the lock is a timer rather than a courtesy.
+  useEffect(() => {
+    if (route !== "/admin" && route !== "/diagnostics") return undefined;
+    let timer: number | null = null;
+    const leave = () => {
+      setAdminToken("");
+      setAdminTokenDraft("");
+      setAdminRecordings([]);
+      setAdminInboxState("idle");
+      window.history.pushState(null, "", "/doorpad");
+      setRoute("/doorpad");
+    };
+    const arm = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(leave, ADMIN_IDLE_RETURN_MS);
+    };
+    const events = ["pointerdown", "keydown", "touchstart", "mousemove", "scroll"];
+    events.forEach((name) => window.addEventListener(name, arm, { passive: true }));
+    arm();
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      events.forEach((name) => window.removeEventListener(name, arm));
+    };
+  }, [route]);
 
   const runAdminSessionAction = async (path: "answer" | "cannot-answer" | "end") => {
     try {
       const response = await fetch(`${API_BASE}/admin/session/${path}`, {
         method: "POST",
-        headers: adminHeaders(),
+        headers: adminHeaders(adminToken),
       });
       if (!response.ok) {
         triggerToast(response.status === 401 ? "Admin token rejected" : "Session action unavailable");
@@ -3922,6 +3961,9 @@ export function App() {
             <BigButton variant="primary" disabled={!adminTokenDraft.trim()} type="submit">
               Continue
             </BigButton>
+            <BigButton type="button" onClick={leaveAdmin}>
+              Back to DoorPad
+            </BigButton>
           </form>
         </main>
       );
@@ -3951,6 +3993,7 @@ export function App() {
             {DEV_TOOLS_ENABLED && (
               <button className="back-home-btn" onClick={() => navigateTo("/")}>Back to Navigation</button>
             )}
+            <button className="back-home-btn" onClick={leaveAdmin}>Back to DoorPad</button>
             <button className="back-home-btn" onClick={logoutAdmin}>Sign out</button>
           </header>
 
@@ -4275,8 +4318,8 @@ export function App() {
             </section>
           )}
 
-          <AdminSocialPanel />
-          <AdminEnrollmentPanel />
+          <AdminSocialPanel token={adminToken} />
+          <AdminEnrollmentPanel token={adminToken} />
           <AdminAboutPanel />
         </div>
       </div>
