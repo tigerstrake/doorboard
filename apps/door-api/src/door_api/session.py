@@ -256,9 +256,15 @@ class SessionMachine:
         self._state = persisted.state
         self._session_id = persisted.session_id
         self._trace_id = persisted.trace_id
-        self._person_id = persisted.person_id
-        self._display_name = persisted.display_name
-        self._profile_id = persisted.profile_id
+        # The identity fields are deliberately not restored (ADR-0020): a restart
+        # forgets who is at the door, because the person the row names may have left
+        # and a name restored from disk would attribute a stranger's writes to them.
+        # The row is scrubbed below once the session is known to be live.
+        had_identity = any((persisted.person_id, persisted.display_name, persisted.profile_id))
+        self._person_id = None
+        self._display_name = None
+        self._profile_id = None
+        self._consent_version = None
         self._started_at_mono_ms = persisted.started_at_monotonic_ms
         self._last_transition_mono_ms = persisted.last_transition_monotonic_ms
         meta: dict[str, object] = {}
@@ -316,6 +322,48 @@ class SessionMachine:
 
         # Otherwise, schedule the remaining time for the current state's timer.
         self._schedule_timer_for_state(self._state, elapsed_s)
+        if had_identity:
+            logger.info(
+                "session_restore_dropped_identity",
+                extra={"session_id": str(persisted.session_id), "reason": "ADR-0020"},
+            )
+            self._persist()
+
+    def forget_identity(self, person_id: str | None = None) -> bool:
+        """Drop the session's copy of the recognised identity, on disk too.
+
+        Privacy mode and unenrollment (ADR-0009 §4, ADR-0029) already clear the
+        interaction-scoped holder in door-api; this machine keeps its own copy of
+        ``person_id``/``display_name``/``profile_id``/``consent_version`` for the
+        session's lifetime, persists it, and stamps ``display_name`` onto every later
+        ``session.state_changed`` that leaves for the NUC. So without this a name
+        outlived the deletion for the rest of the session — on the kiosks' snapshot,
+        in ``session.sqlite`` and in every event the sync outbox forwarded.
+
+        With ``person_id`` the clear applies only if the session names that person
+        (unenrollment of someone else must not blank the visitor at the door); without
+        it the clear is unconditional (privacy mode). Returns whether anything changed.
+        """
+        if person_id is not None and self._person_id != person_id:
+            return False
+        if (
+            self._person_id is None
+            and self._display_name is None
+            and self._profile_id is None
+            and self._consent_version is None
+        ):
+            return False
+        self._person_id = None
+        self._display_name = None
+        self._profile_id = None
+        self._consent_version = None
+        if self._state != SessionState.IDLE and self._session_id is not None:
+            self._persist()
+        logger.info(
+            "session_identity_forgotten",
+            extra={"session_id": str(self._session_id) if self._session_id else None},
+        )
+        return True
 
     def snapshot(self) -> SessionSnapshot:
         """Return the current session state as a snapshot for WebSocket."""

@@ -542,6 +542,13 @@ class DoorApiState:
             if payload.reason in ("admin", "privacy_mode"):
                 self.identity.forget_person(payload.person_id)
             changed = self.machine.handle_identity_expired(person_id=payload.person_id)
+            # The machine keeps its own copy of the name for the session and stamps
+            # it onto every session.state_changed bound for the NUC; a deletion has
+            # to reach that copy too, or the name outlives it on the kiosks, in
+            # session.sqlite and in the sync outbox. After the transition above, so
+            # the person check inside it still sees who the session named.
+            if payload.reason in ("admin", "privacy_mode"):
+                self.machine.forget_identity(payload.person_id)
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "vision.privacy_mode_changed":
             payload = event.payload
@@ -551,6 +558,7 @@ class DoorApiState:
             # on screen would be a privacy defect rather than a cosmetic one.
             if payload.enabled:
                 self.identity.forget()
+                self.machine.forget_identity()
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "door.contact_changed":
             payload = event.payload
