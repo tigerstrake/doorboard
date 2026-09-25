@@ -17,7 +17,7 @@ The local brain of the visitor experience. Owns the visitor session state machin
 
 ## The visitor QR works off the house wifi (ADR-0017)
 
-The QR encodes `DOOR_API_VISITOR_PUBLIC_BASE_URL`, which defaults to `http://door.local` — an mDNS name a stranger's phone on cellular cannot resolve. So the page it points at could not load for the exact person it exists for.
+The QR encodes `DOOR_API_VISITOR_PUBLIC_BASE_URL`, which defaults to `http://door-pi.local` — the door Pi's LAN-facing reverse proxy (ADR-0047; the services themselves bind loopback). That is an mDNS name a stranger's phone on cellular cannot resolve. So the page it points at could not load for the exact person it exists for.
 
 The fix is the same courier pattern door-visiond uses for enrollment: this service pushes a narrow snapshot of **public** session state to [apps/public-relay](../public-relay/) and collects queued visitor writes on an outbound poll. No inbound port, no tunnel.
 

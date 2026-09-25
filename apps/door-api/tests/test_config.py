@@ -83,3 +83,12 @@ def test_the_visitor_writing_window_is_not_shorter_than_the_doorpad_promises() -
     # a token TTL longer than the session window would promise a link the session
     # cannot honour.
     assert config.visitor_token_ttl_s <= config.inactivity_timeout_s
+
+
+def test_the_visitor_lan_url_defaults_to_the_proxy_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR-0047: the door Pi's one LAN listener is the reverse proxy at door-pi.local:80.
+    # door.local never resolved anywhere, and door-api itself binds loopback.
+    monkeypatch.setenv("DOOR_API_DB_PATH", ":memory:")
+    monkeypatch.delenv("DOOR_API_VISITOR_PUBLIC_BASE_URL", raising=False)
+    assert SessionConfig(db_path=":memory:").visitor_public_base_url == "http://door-pi.local"
+    assert SessionConfig.from_env().visitor_public_base_url == "http://door-pi.local"

@@ -265,7 +265,10 @@ class SessionConfig:
     # off instead. The exposure is one session's scoped capability (read snapshot,
     # leave a note, vote, request deletion), rate-limited, for five extra minutes.
     visitor_token_ttl_s: float = 600.0
-    visitor_public_base_url: str = "http://door.local"
+    # The LAN fallback origin for the visitor QR (E-19). The door Pi's one LAN-facing
+    # listener is the reverse proxy on door-pi.local:80 (ADR-0047); every door service
+    # itself binds loopback, so any other origin resolves to nothing a phone can reach.
+    visitor_public_base_url: str = "http://door-pi.local"
 
     # Public visitor relay (ADR-0017).  The LAN base URL above cannot load on a
     # phone that is on cellular — which is every stranger at the door — so the QR
@@ -403,7 +406,7 @@ class SessionConfig:
             visitor_token_ttl_s=_env_float("DOOR_API_VISITOR_TOKEN_TTL_S", 600.0),
             visitor_public_base_url=os.environ.get(
                 "DOOR_API_VISITOR_PUBLIC_BASE_URL",
-                "http://door.local",
+                "http://door-pi.local",
             ),
             visitor_relay_base_url=os.environ.get("DOOR_API_VISITOR_RELAY_BASE_URL", ""),
             visitor_relay_device_token=os.environ.get("DOOR_API_VISITOR_RELAY_DEVICE_TOKEN", ""),

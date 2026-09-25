@@ -318,7 +318,8 @@ def test_qr_uses_the_lan_url_before_the_relay_is_observed(relay_state: Any) -> N
     body = client.get("/visitor-token").json()
 
     assert body["via"] == "lan"
-    assert body["url"].startswith("http://door.local/visitor?token=")
+    # The proxy origin ADR-0047 puts on the LAN, not the loopback-bound service.
+    assert body["url"].startswith("http://door-pi.local/visitor?token=")
     assert relay_state.visitor_relay_status()["qr_target"] == "lan"
 
 
