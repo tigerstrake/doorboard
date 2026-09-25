@@ -36,6 +36,20 @@ done
 install -d -m 0755 /etc/doorboard /var/lib/doorboard
 install -m 0644 "$repo_root"/infra/systemd/*.service /etc/systemd/system/
 install -m 0644 "$repo_root"/infra/systemd/*.timer /etc/systemd/system/
+install -m 0644 "$repo_root"/infra/systemd/*.mount /etc/systemd/system/
+
+# ADR-0007: the journal is persistent but lives on the SSD, not the boot card.
+# journald.conf.d/doorboard.conf makes it persistent and bounded;
+# var-log-journal.mount binds /var/log/journal onto the SSD before journald
+# flushes. The directory is created only when the SSD is actually mounted —
+# creating it on the card would defeat the mount unit's condition.
+install -D -m 0644 "$repo_root"/deploy/pi-door/journald.conf.d/doorboard.conf /etc/systemd/journald.conf.d/doorboard.conf
+if mountpoint -q /mnt/ssd; then
+  install -d -m 2755 -o root -g systemd-journal /mnt/ssd/doorboard/journal
+  install -d -m 0755 -o doorboard -g doorboard /mnt/ssd/doorboard/visiond
+else
+  echo "warning: /mnt/ssd is not mounted; the journal and HailoRT log stay on the card until it is" >&2
+fi
 
 # The two scripts root runs (LUKS unlock, health agent) execute from a
 # root-owned copy, never from the checkout: a writable script run as root is
@@ -66,6 +80,7 @@ chmod 0640 "$env_file"
 
 systemctl daemon-reload
 systemctl enable \
+  var-log-journal.mount \
   doorboard-storage-ready.service \
   mediamtx.service \
   door-ui.service \
@@ -81,3 +96,4 @@ systemctl enable \
   doorboard-health-agent.timer
 
 echo "Units installed. Start with: systemctl start door-ui door-api door-sync doorboard-health-agent.timer"
+echo "Journal: the bind mount takes effect at the next boot (or: systemctl start var-log-journal.mount && journalctl --flush)."

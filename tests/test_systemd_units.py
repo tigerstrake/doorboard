@@ -218,3 +218,42 @@ def test_the_labwc_autostart_waits_for_door_api_before_each_kiosk() -> None:
     for kiosk in ("doorpad", "wallboard"):
         assert f"http://127.0.0.1:5173/{kiosk}" in text
     assert "--user-data-dir=" in text and "/mnt/ssd/doorboard" in text
+
+
+# --- ADR-0007: nothing continuous writes to the microSD ------------------------------
+
+
+def test_the_journal_bind_mount_is_early_boot_and_ssd_backed() -> None:
+    unit = _parse_unit(UNIT_DIR / "var-log-journal.mount")
+    assert unit["Mount"]["Where"] == ["/var/log/journal"]
+    assert unit["Mount"]["What"] == ["/mnt/ssd/doorboard/journal"]
+    assert "bind" in _words(unit, "Mount", "Options")
+    # Ordered after the SSD's own mount, never after doorboard-storage-ready: that
+    # service is After=sysinit.target while the journal flush runs before it, so the
+    # obvious dependency is an ordering cycle systemd resolves by dropping a job.
+    assert unit["Unit"]["RequiresMountsFor"] == ["/mnt/ssd/doorboard/journal"]
+    assert "doorboard-storage-ready.service" not in _words(unit, "Unit", "After")
+    assert unit["Unit"]["ConditionPathIsDirectory"] == ["/mnt/ssd/doorboard/journal"]
+
+
+def test_journald_is_persistent_bounded_and_installed() -> None:
+    conf = (REPO_ROOT / "deploy/pi-door/journald.conf.d/doorboard.conf").read_text()
+    assert "Storage=persistent" in conf
+    assert re.search(r"^SystemMaxUse=\d+M$", conf, re.M)
+    for installer, path in INSTALLERS.items():
+        text = path.read_text()
+        assert "/etc/systemd/journald.conf.d/doorboard.conf" in text, installer
+        assert "infra/systemd/*.mount" in text, installer
+        assert "var-log-journal.mount" in _enable_list(path), installer
+
+
+def test_hailort_logs_to_the_ssd() -> None:
+    env = " ".join(_units()["door-visiond.service"]["Service"].get("Environment", []))
+    assert "HAILORT_LOGGER_PATH=/mnt/ssd/doorboard/visiond" in env
+
+
+def test_the_storage_check_never_creates_the_data_root_on_the_card() -> None:
+    script = (REPO_ROOT / "scripts/check-door-storage").read_text()
+    check = script.index("is on the root filesystem")
+    mkdir = script.index("root.mkdir(")
+    assert mkdir > check, "mkdir before the mount check creates SSD_DATA_ROOT on the microSD"

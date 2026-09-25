@@ -6,7 +6,9 @@ Raspberry Pi OS 64-bit on the Pi 5. Hardware-facing services run under **systemd
 
 1. Cold boot → operational door with **no network and no NUC** (offline boot required).
 2. systemd ordering: SSD mount verified (`ssd.mount` dependency) → door-media + door-visiond + door-api → kiosk launch only after door-api `/health` is ok.
-3. Every service: `Restart=on-failure`, hardware watchdog enabled, journald → structured logs.
+3. Every service: `Restart=on-failure` with no start-rate limit; journald → structured
+   JSON logs, persistent and bounded (`journald.conf.d/doorboard.conf`) on the SSD
+   (`var-log-journal.mount`), never the boot card (ADR-0007).
 4. Chromium kiosks: two instances, HDMI-1 `/wallboard`, HDMI-2 `/doorpad`, crash-relaunch, no toolbars, no exit path from touch.
 5. LAN surface (ADR-0047): every door service binds `127.0.0.1`; `door-proxy.service`
    (Caddy, `deploy/pi-door/Caddyfile`) is the only LAN listener and forwards only the

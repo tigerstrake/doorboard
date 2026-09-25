@@ -16,7 +16,6 @@ def main() -> int:
     if not root_raw:
         raise SystemExit("SSD_DATA_ROOT is not configured")
     root = Path(root_raw).resolve()
-    root.mkdir(parents=True, exist_ok=True)
 
     mounts: list[Path] = []
     for line in Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines():
@@ -28,6 +27,9 @@ def main() -> int:
     if mountpoint == Path("/"):
         raise SystemExit(f"{root} is on the root filesystem, not the SSD")
 
+    # Only now: creating the directory before the check would put it on the
+    # microSD whenever the SSD is absent, which is the one place it must not be.
+    root.mkdir(parents=True, exist_ok=True)
     probe = root / ".doorboard-storage-probe"
     fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:

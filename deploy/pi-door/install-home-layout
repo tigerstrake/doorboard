@@ -69,6 +69,20 @@ fi
 
 install -m 0644 "$repo"/infra/systemd/*.service /etc/systemd/system/
 install -m 0644 "$repo"/infra/systemd/*.timer /etc/systemd/system/
+install -m 0644 "$repo"/infra/systemd/*.mount /etc/systemd/system/
+
+# ADR-0007: the journal is persistent but lives on the SSD, not the boot card.
+# journald.conf.d/doorboard.conf makes it persistent and bounded;
+# var-log-journal.mount binds /var/log/journal onto the SSD before journald
+# flushes. The directory is created only when the SSD is actually mounted —
+# creating it on the card would defeat the mount unit's condition.
+install -D -m 0644 "$repo"/deploy/pi-door/journald.conf.d/doorboard.conf /etc/systemd/journald.conf.d/doorboard.conf
+if mountpoint -q /mnt/ssd; then
+  install -d -m 2755 -o root -g systemd-journal /mnt/ssd/doorboard/journal
+  install -d -m 0755 -o $run_user -g $run_user /mnt/ssd/doorboard/visiond
+else
+  echo "warning: /mnt/ssd is not mounted; the journal and HailoRT log stay on the card until it is" >&2
+fi
 
 # The Pi's only LAN listener (ADR-0047): Caddy on :80 forwarding the allow-list
 # in deploy/pi-door/Caddyfile. The Debian package enables its own caddy.service
@@ -134,8 +148,10 @@ Wants=time-sync.target
 User=$run_user
 Group=$run_user
 WorkingDirectory=$repo
-# ProtectSystem=strict would otherwise make the repo read-only, and some
-# processes write beside it (door-visiond drops hailort.log in its cwd).
+# ProtectSystem=strict would otherwise make the repo read-only. door-visiond's
+# hailort.log used to be the writer here; the canonical unit now points
+# HAILORT_LOGGER_PATH at the SSD, and the grant stays only for anything else
+# that writes beside the checkout (the venvs' __pycache__, for one).
 ProtectHome=no
 ReadWritePaths=$repo
 # So journald receives log lines as they happen rather than per 8 KB block.
@@ -201,6 +217,7 @@ rm -f /etc/systemd/system/doorboard-enrollment-unlock.service.d/home-layout.conf
 
 systemctl daemon-reload
 systemctl enable \
+  var-log-journal.mount \
   doorboard-storage-ready.service \
   mediamtx.service \
   door-ui.service \
@@ -270,6 +287,7 @@ already active, `start` for one that is dead):
   systemctl start   door-visiond && curl -s localhost:8081/health
   systemctl start   door-voice   && curl -s localhost:8084/health   # only if FEATURE_VOICE_GREETING
   systemctl start   doorboard-enrollment-unlock.timer doorboard-health-agent.timer
+  systemctl start   var-log-journal.mount && journalctl --flush   # journal onto the SSD now, not at the next boot
 
 The kiosks are launched by the Wayland session, not by these units: install
 deploy/pi-door/labwc-autostart.example as ~/.config/labwc/autostart so they

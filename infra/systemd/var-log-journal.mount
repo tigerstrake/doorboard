@@ -1,0 +1,26 @@
+[Unit]
+Description=Doorboard persistent journal on the SSD (ADR-0007)
+Documentation=file:/opt/doorboard/deploy/pi-door/journald.conf.d/doorboard.conf
+# Bind /var/log/journal onto the SSD before journald flushes the runtime
+# journal to disk (systemd-journal-flush.service carries
+# RequiresMountsFor=/var/log/journal, so it waits for this unit on its own),
+# so the persistent journal lands on the SSD and never on the microSD.
+#
+# Ordered after the SSD's own mount (mnt-ssd.mount, from fstab) rather than
+# after doorboard-storage-ready.service: that service has default
+# dependencies, i.e. After=sysinit.target, while the journal flush runs
+# before sysinit.target — ordering this mount after it would be a cycle
+# systemd breaks by dropping a job. RequiresMountsFor is the early-boot
+# equivalent: no SSD, no bind mount, and journald falls back to
+# /var/log/journal on the card (logs survive, at the microSD's cost).
+RequiresMountsFor=/mnt/ssd/doorboard/journal
+ConditionPathIsDirectory=/mnt/ssd/doorboard/journal
+
+[Mount]
+What=/mnt/ssd/doorboard/journal
+Where=/var/log/journal
+Type=none
+Options=bind
+
+[Install]
+WantedBy=local-fs.target

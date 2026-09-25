@@ -18,6 +18,10 @@ User=doorboard
 Group=doorboard
 WorkingDirectory=/opt/doorboard
 EnvironmentFile=/etc/doorboard/doorboard.env
+# HailoRT writes hailort.log to its cwd by default — the checkout, on the boot
+# card. Point it at the SSD (ADR-0007); the cwd itself stays the repo because
+# VISIOND_CONSENT_STATEMENT_PATH is resolved relative to it.
+Environment=HAILORT_LOGGER_PATH=/mnt/ssd/doorboard/visiond
 ExecStart=/opt/doorboard/.venv/bin/python -m door_visiond
 Restart=on-failure
 RestartSec=2s
