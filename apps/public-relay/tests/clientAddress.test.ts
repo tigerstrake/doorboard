@@ -14,7 +14,7 @@ import { RATE_LIMITS, clientAddress, sha256Base64Url } from "@/lib/device";
 import { handleGet as getInviteState } from "@/lib/handlers/enrollInvite";
 import { resolveStore } from "@/lib/relayStore";
 
-import { NodeSqliteD1 } from "./nodeSqliteD1";
+import { type NodeSqliteD1, freshD1 } from "./nodeSqliteD1";
 
 const INVITE_ID = `inv_${"a".repeat(22)}`;
 
@@ -50,8 +50,7 @@ describe("per-IP limits on D1", () => {
   let db: NodeSqliteD1;
 
   beforeEach(async () => {
-    db = new NodeSqliteD1();
-    await new D1RelayStore(db).migrate();
+    db = await freshD1();
   });
 
   it("holds against a rotating X-Forwarded-For when CF-Connecting-IP is fixed", async () => {

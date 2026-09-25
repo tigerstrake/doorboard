@@ -4,21 +4,18 @@
  * dispatch, `:param` capture, and the ordering that makes literal segments win over `:token`
  * (so `/api/visitor/pickup` is the pickup route, not a visitor snapshot for token "pickup").
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { routeApi } from "@/lib/apiRouter";
 import { resolveStore } from "@/lib/relayStore";
-import { setRedisForTests } from "@/lib/store";
 
-import { FakeRedis } from "./fakeRedis";
+import { type NodeSqliteD1, freshD1 } from "./nodeSqliteD1";
 
-beforeEach(() => {
-  setRedisForTests(new FakeRedis());
-  process.env.UPSTASH_REDIS_REST_URL = "https://fake.upstash.test";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "fake-token";
+let db: NodeSqliteD1;
+
+beforeEach(async () => {
+  db = await freshD1();
 });
-
-afterEach(() => setRedisForTests(null));
 
 function req(path: string, method = "GET"): Request {
   return new Request(`https://relay.test${path}`, {
@@ -27,7 +24,7 @@ function req(path: string, method = "GET"): Request {
   });
 }
 
-const store = () => resolveStore();
+const store = () => resolveStore(db);
 
 describe("routeApi", () => {
   it("dispatches a known GET route", async () => {

@@ -5,7 +5,7 @@
  * the relay stores, no plaintext photo and no display name is ever recoverable
  * from this deployment.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { handleGet as getDoorKey, handlePut as putDoorKey } from "@/lib/handlers/doorKey";
 import { handleGet as getInviteState } from "@/lib/handlers/enrollInvite";
@@ -19,10 +19,8 @@ import { sha256Base64Url } from "@/lib/device";
 import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
 import { KeyFingerprintMismatch, assertKeyMatchesFingerprint, fingerprintFor } from "@/lib/seal";
-import { setRedisForTests } from "@/lib/store";
 import { INVITE_SECRET_HEADER, InvalidBody, MAX_BUNDLE_CHARS, parseSealedBundle } from "@/lib/validate";
 
-import { FakeRedis } from "./fakeRedis";
 import {
   DEVICE_TOKEN,
   IMAGE_SENTINEL,
@@ -31,19 +29,14 @@ import {
   fakeDoorKey,
   makeSealedBundle,
 } from "./helpers";
+import { type NodeSqliteD1, freshD1 } from "./nodeSqliteD1";
 
-let store: FakeRedis;
+/** The D1 store on real SQLite — the backend production uses, so the byte scans mean something. */
+let db: NodeSqliteD1;
 
-beforeEach(() => {
-  store = new FakeRedis();
-  setRedisForTests(store);
+beforeEach(async () => {
+  db = await freshD1();
   process.env.RELAY_DEVICE_TOKEN = DEVICE_TOKEN;
-  process.env.UPSTASH_REDIS_REST_URL = "https://fake.upstash.test";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "fake-token";
-});
-
-afterEach(() => {
-  setRedisForTests(null);
 });
 
 function deviceRequest(url: string, method: string, body?: unknown): Request {
@@ -80,7 +73,7 @@ async function seedDoorKeyAndInvite(): Promise<{ token: string; inviteId: string
   const key = await fakeDoorKey();
   const publishResp = await putDoorKey(
     deviceRequest("https://relay.test/api/door-key", "PUT", key.publication),
-    resolveStore(),
+    resolveStore(db),
   );
   expect(publishResp.status).toBe(200);
 
@@ -93,7 +86,7 @@ async function seedDoorKeyAndInvite(): Promise<{ token: string; inviteId: string
       expires_at: new Date(Date.now() + 3_600_000).toISOString(),
       max_images: 5,
     }),
-    resolveStore(),
+    resolveStore(db),
   );
   expect(registerResp.status).toBe(200);
 
@@ -111,13 +104,13 @@ describe("P-13 the relay never sees plaintext", () => {
 
     const resp = await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      resolveStore(),
+      resolveStore(db),
       { token },
     );
     expect(resp.status).toBe(202);
 
     // Everything this deployment ever wrote, scanned for the sentinels.
-    const written = store.dumpAll();
+    const written = db.dumpAll();
     expect(written).not.toContain(NAME_SENTINEL);
     expect(written).not.toContain(b64url(new TextEncoder().encode(IMAGE_SENTINEL)));
     expect(written).not.toContain(IMAGE_SENTINEL);
@@ -131,11 +124,11 @@ describe("P-13 the relay never sees plaintext", () => {
     const bundle = await makeSealedBundle({ key, inviteId });
     await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      resolveStore(),
+      resolveStore(db),
       { token },
     );
 
-    const resp = await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore());
+    const resp = await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore(db));
     const body = (await resp.json()) as { items: Array<{ bundle: typeof bundle }> };
     expect(body.items).toHaveLength(1);
     expect(body.items[0]!.bundle).toEqual(bundle);
@@ -148,10 +141,12 @@ describe("P-13 the relay never sees plaintext", () => {
     const bundle = await makeSealedBundle({ key, inviteId });
     await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      resolveStore(),
+      resolveStore(db),
       { token },
     );
-    await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore());
+    await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore(db));
+    const ciphertext = bundle.items[1]!.ciphertext;
+    expect(db.dumpRows()).toContain(ciphertext); // held until the ack —
 
     await ack(
       deviceRequest("https://relay.test/api/pickup/ack", "POST", {
@@ -159,14 +154,14 @@ describe("P-13 the relay never sees plaintext", () => {
         outcome: "enrolled",
         reason: null,
       }),
-      resolveStore(),
+      resolveStore(db),
     );
 
-    expect(await store.get(`bundle:${bundle.bundle_id}`)).toBeNull();
+    expect(db.dumpRows()).not.toContain(ciphertext); // — and gone after it.
     // The status survives so the phone can be told, and carries no user data.
     const statusResp = await getStatus(
       publicRequest(`https://relay.test/api/status/${bundle.bundle_id}`),
-      resolveStore(),
+      resolveStore(db),
       { bundleId: bundle.bundle_id },
     );
     const status = (await statusResp.json()) as { status: string };
@@ -174,7 +169,7 @@ describe("P-13 the relay never sees plaintext", () => {
     // And the invite is closed out, so a replay cannot be uploaded again.
     const second = await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      resolveStore(),
+      resolveStore(db),
       { token },
     );
     expect(second.status).toBe(409);
@@ -256,7 +251,7 @@ describe("E-14 the relay exposes no privileged surface", () => {
     const body = method === "GET" ? undefined : { bundle_id: "x", outcome: "enrolled" };
     const resp = await (handler as (r: Request, s: RelayStore) => Promise<Response>)(
       publicRequest(`https://relay.test${path}`, method, body),
-      resolveStore(),
+      resolveStore(db),
     );
     expect(resp.status).toBe(401);
   });
@@ -266,7 +261,7 @@ describe("E-14 the relay exposes no privileged surface", () => {
       new Request("https://relay.test/api/pickup", {
         headers: { authorization: "Bearer not-the-token" },
       }),
-      resolveStore(),
+      resolveStore(db),
     );
     expect(resp.status).toBe(401);
   });
@@ -274,7 +269,7 @@ describe("E-14 the relay exposes no privileged surface", () => {
   it("reports health without revealing who is enrolled", async () => {
     await seedDoorKeyAndInvite();
     const body = (await (
-      await getHealth(publicRequest("https://relay.test/api/health"), resolveStore())
+      await getHealth(publicRequest("https://relay.test/api/health"), resolveStore(db))
     ).json()) as Record<string, unknown>;
     expect(body).toEqual({
       service: "public-relay",
@@ -294,7 +289,7 @@ describe("invite state tells a phone only about its own invite", () => {
     const { token, inviteId, secret } = await seedDoorKeyAndInvite();
     const resp = await getInviteState(
       publicRequest(`https://relay.test/api/enroll/${token}`, "GET", undefined, withSecret(secret)),
-      resolveStore(),
+      resolveStore(db),
       { token },
     );
     const body = (await resp.json()) as { status: string; invite_id: string; max_images: number };
@@ -310,13 +305,13 @@ describe("invite state tells a phone only about its own invite", () => {
     const wrong = "d3Jvbmctc2VjcmV0LXZhbHVl";
     const wrongSecret = await getInviteState(
       publicRequest(`https://relay.test/api/enroll/${inviteId}`, "GET", undefined, withSecret(wrong)),
-      resolveStore(),
+      resolveStore(db),
       { token: inviteId },
     );
     const madeUpId = `inv_${"z".repeat(22)}`;
     const madeUp = await getInviteState(
       publicRequest(`https://relay.test/api/enroll/${madeUpId}`, "GET", undefined, withSecret(wrong)),
-      resolveStore(),
+      resolveStore(db),
       { token: madeUpId },
     );
 
@@ -331,7 +326,7 @@ describe("invite state tells a phone only about its own invite", () => {
     const pathToken = `${inviteId}.${secret}`;
     const resp = await getInviteState(
       publicRequest(`https://relay.test/api/enroll/${pathToken}`),
-      resolveStore(),
+      resolveStore(db),
       { token: pathToken },
     );
     const body = (await resp.json()) as { status: string; invite_id: string };
@@ -346,7 +341,7 @@ describe("invite state tells a phone only about its own invite", () => {
 
     const resp = await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      resolveStore(),
+      resolveStore(db),
       { token },
     );
     expect(resp.status).toBe(422);
@@ -363,18 +358,18 @@ describe("invite state tells a phone only about its own invite", () => {
 
     const resp = await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      resolveStore(),
+      resolveStore(db),
       { token },
     );
     expect(resp.status).toBe(413);
     expect((await resp.json()) as unknown).toEqual({ error: "bundle_too_large" });
     // Nothing of it was kept.
-    expect(store.dumpAll()).not.toContain(bundle.bundle_id);
+    expect(db.dumpAll()).not.toContain(bundle.bundle_id);
   });
 
   it("refuses more photos than the invite allows", async () => {
     const key = await fakeDoorKey();
-    await putDoorKey(deviceRequest("https://relay.test/api/door-key", "PUT", key.publication), resolveStore());
+    await putDoorKey(deviceRequest("https://relay.test/api/door-key", "PUT", key.publication), resolveStore(db));
     const inviteId = `inv_${"c".repeat(22)}`;
     const secret = "dGVzdC1pbnZpdGUtc2VjcmV0LXZhbHVl";
     await registerInvite(
@@ -384,14 +379,14 @@ describe("invite state tells a phone only about its own invite", () => {
         expires_at: new Date(Date.now() + 3_600_000).toISOString(),
         max_images: 1,
       }),
-      resolveStore(),
+      resolveStore(db),
     );
     const token = inviteId;
     const bundle = await makeSealedBundle({ key, inviteId, imageCount: 3 });
 
     const resp = await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      resolveStore(),
+      resolveStore(db),
       { token },
     );
     expect(resp.status).toBe(422);
@@ -408,14 +403,14 @@ describe("pickup leasing", () => {
     const bundle = await makeSealedBundle({ key, inviteId });
     await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      resolveStore(),
+      resolveStore(db),
       { token },
     );
 
-    const first = (await (await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore())).json()) as {
+    const first = (await (await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore(db))).json()) as {
       items: unknown[];
     };
-    const second = (await (await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore())).json()) as {
+    const second = (await (await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore(db))).json()) as {
       items: unknown[];
     };
 
@@ -429,10 +424,10 @@ describe("pickup leasing", () => {
     const bundle = await makeSealedBundle({ key, inviteId });
     await submitBundle(
       publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
-      resolveStore(),
+      resolveStore(db),
       { token },
     );
-    await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore());
+    await pickup(deviceRequest("https://relay.test/api/pickup", "GET"), resolveStore(db));
 
     for (const outcome of ["enrolled", "rejected"]) {
       await ack(
@@ -441,13 +436,13 @@ describe("pickup leasing", () => {
           outcome,
           reason: outcome === "rejected" ? "invite_already_consumed" : null,
         }),
-        resolveStore(),
+        resolveStore(db),
       );
     }
 
     const statusResp = await getStatus(
       publicRequest(`https://relay.test/api/status/${bundle.bundle_id}`),
-      resolveStore(),
+      resolveStore(db),
       { bundleId: bundle.bundle_id },
     );
     expect(((await statusResp.json()) as { status: string }).status).toBe("enrolled");
@@ -456,7 +451,7 @@ describe("pickup leasing", () => {
 
 describe("door key availability", () => {
   it("tells a phone the door has not checked in rather than serving nothing", async () => {
-    const resp = await getDoorKey(publicRequest("https://relay.test/api/door-key"), resolveStore());
+    const resp = await getDoorKey(publicRequest("https://relay.test/api/door-key"), resolveStore(db));
     expect(resp.status).toBe(503);
     expect((await resp.json()) as unknown).toEqual({ error: "door_key_unavailable" });
   });

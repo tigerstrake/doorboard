@@ -15,7 +15,8 @@ import { resolveStore } from "../../lib/relayStore";
 import type { D1Like } from "../../lib/d1/types";
 
 interface Env {
-  DB: D1Like;
+  /** Absent only on a misconfigured deployment; every route then answers 503. */
+  DB?: D1Like;
 }
 
 interface PagesFunctionContext {

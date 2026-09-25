@@ -10,6 +10,7 @@
  */
 import { DatabaseSync } from "node:sqlite";
 
+import { D1RelayStore } from "@/lib/d1/d1Store";
 import type { D1Like, D1PreparedStatement, D1Result } from "@/lib/d1/types";
 
 type Bindable = null | number | bigint | string | Uint8Array;
@@ -88,11 +89,18 @@ export class NodeSqliteD1 implements D1Like {
   }
 
   /**
-   * Everything ever bound to a statement plus everything currently held — the D1 twin of the
-   * old FakeRedis write log, so P-13/P-21 keep their meaning: if the relay ever touched a
+   * Everything ever bound to a statement plus everything currently held — the write log the
+   * old Redis double kept, so P-13/P-21 keep their meaning: if the relay ever touched a
    * plaintext sentinel or a raw token, it is in here.
    */
   dumpAll(): string {
     return [...this.writeLog, this.dumpRows()].join("\n");
   }
+}
+
+/** A fresh, fully migrated database — what a handler suite hands to `resolveStore`. */
+export async function freshD1(): Promise<NodeSqliteD1> {
+  const db = new NodeSqliteD1();
+  await new D1RelayStore(db).migrate();
+  return db;
 }

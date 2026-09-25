@@ -1,13 +1,11 @@
 /**
- * Storage-layer types, retention constants, and the `RelayStore` interface — the contract
- * shared by the two backends (Upstash Redis in `store.ts`, Cloudflare D1 in `d1/d1Store.ts`).
+ * Storage-layer types, retention constants, and the `RelayStore` interface the handlers are
+ * written against. One backend implements it (Cloudflare D1, `d1/d1Store.ts`); the interface
+ * stays so the handlers never touch SQL and the tests can drive them over a `node:sqlite`
+ * double of the same binding.
  *
- * Dependency-free on purpose: importing a backend must not drag in the other's client. The
- * D1 store imports its constants and types from here, so nothing on the Cloudflare path pulls
- * in `@upstash/redis`.
- *
- * Everything a store holds is ciphertext or an opaque identifier (E-9); the visitor snapshot
- * carries a boolean `attributed`, never a name (ADR-0044).
+ * Dependency-free on purpose. Everything a store holds is ciphertext or an opaque identifier
+ * (E-9); the visitor snapshot carries a boolean `attributed`, never a name (ADR-0044).
  */
 import type { SealedBundle } from "./contracts";
 
@@ -71,8 +69,8 @@ export interface StoredVisitorSnapshot {
 }
 
 /**
- * The storage contract both backends satisfy. `configured()` reports whether the backend has
- * what it needs to serve (a D1 binding, or the Redis env vars); a route returns 503 when not.
+ * The storage contract. `configured()` reports whether the backend has what it needs to serve
+ * (the D1 binding); a route returns 503 when not.
  */
 export interface RelayStore {
   configured(): boolean;

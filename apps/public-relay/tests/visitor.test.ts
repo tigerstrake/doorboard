@@ -5,7 +5,7 @@
  * handles plaintext, so what has to hold is that it handles only the enumerated
  * public fields, never a usable credential, and never the other scope's routes.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { handleGet as getDoorKey, handlePut as putDoorKey } from "@/lib/handlers/doorKey";
 import { handlePut as registerInvite } from "@/lib/handlers/invite";
@@ -19,28 +19,23 @@ import { handlePut as pushSnapshot } from "@/lib/handlers/visitorSession";
 import { sha256Base64Url } from "@/lib/device";
 import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
-import { setRedisForTests } from "@/lib/store";
 
-import { FakeRedis } from "./fakeRedis";
 import { DEVICE_TOKEN } from "./helpers";
+import { type NodeSqliteD1, freshD1 } from "./nodeSqliteD1";
 
 const VISITOR_TOKEN = "eyJ2IjoxfQ.c2lnbmF0dXJl";
 const VISITOR_DEVICE_TOKEN = "test-visitor-device-token";
 const SESSION_ID = `ses_${"a".repeat(22)}`;
 const NOTE_SENTINEL = "DOORBOARD_SENTINEL_NOTE_TEXT";
 
-let store: FakeRedis;
+/** The D1 store on real SQLite — the backend production uses, so the byte scans mean something. */
+let db: NodeSqliteD1;
 
-beforeEach(() => {
-  store = new FakeRedis();
-  setRedisForTests(store);
+beforeEach(async () => {
+  db = await freshD1();
   process.env.RELAY_DEVICE_TOKEN = DEVICE_TOKEN;
   process.env.RELAY_VISITOR_DEVICE_TOKEN = VISITOR_DEVICE_TOKEN;
-  process.env.UPSTASH_REDIS_REST_URL = "https://fake.upstash.test";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "fake-token";
 });
-
-afterEach(() => setRedisForTests(null));
 
 function req(
   url: string,
@@ -86,7 +81,7 @@ async function seedSnapshot(overrides: Record<string, unknown> = {}): Promise<vo
       body: snapshotBody(overrides),
       token: VISITOR_DEVICE_TOKEN,
     }),
-    resolveStore(),
+    resolveStore(db),
   );
   expect(resp.status).toBe(200);
 }
@@ -97,13 +92,13 @@ describe("P-21 the relay never holds a usable visitor token", () => {
   it("stores only the hash, yet still authorises the phone", async () => {
     await seedSnapshot();
 
-    const everything = store.dumpAll();
+    const everything = db.dumpAll();
     expect(everything).not.toContain(VISITOR_TOKEN);
     expect(everything).toContain(sha256Base64Url(VISITOR_TOKEN));
 
     const resp = await readVisitor(
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}`, "GET"),
-      resolveStore(),
+      resolveStore(db),
       { token: VISITOR_TOKEN },
     );
     expect(resp.status).toBe(200);
@@ -114,7 +109,7 @@ describe("P-21 the relay never holds a usable visitor token", () => {
     const body = (await (
       await readVisitor(
         req(`https://relay.test/api/visitor/${VISITOR_TOKEN}`, "GET"),
-        resolveStore(),
+        resolveStore(db),
         { token: VISITOR_TOKEN },
       )
     ).json()) as Record<string, unknown>;
@@ -139,12 +134,12 @@ describe("P-21 the relay never holds a usable visitor token", () => {
     await seedSnapshot();
     const wrong = await readVisitor(
       req("https://relay.test/api/visitor/nope.nope", "GET"),
-      resolveStore(),
+      resolveStore(db),
       { token: "nope.nope" },
     );
     const unknown = await readVisitor(
       req("https://relay.test/api/visitor/other.other", "GET"),
-      resolveStore(),
+      resolveStore(db),
       { token: "other.other" },
     );
     expect(wrong.status).toBe(404);
@@ -162,7 +157,7 @@ describe("P-22 device token scopes are disjoint", () => {
           body: snapshotBody(),
           token: DEVICE_TOKEN,
         }),
-        resolveStore(),
+        resolveStore(db),
       );
       expect(resp.status).toBe(401);
     }
@@ -175,7 +170,7 @@ describe("P-22 device token scopes are disjoint", () => {
         body: key.publication,
         token: VISITOR_DEVICE_TOKEN,
       }),
-      resolveStore(),
+      resolveStore(db),
     );
     expect(publish.status).toBe(401);
 
@@ -185,12 +180,12 @@ describe("P-22 device token scopes are disjoint", () => {
           body: { bundle_id: `bnd_${"a".repeat(22)}`, outcome: "enrolled" },
           token: VISITOR_DEVICE_TOKEN,
         }),
-        resolveStore(),
+        resolveStore(db),
       );
       expect(resp.status).toBe(401);
     }
     // Sanity: the door key was never published, so this is a real refusal.
-    expect((await getDoorKey(req("https://relay.test/api/door-key", "GET"), resolveStore())).status).toBe(503);
+    expect((await getDoorKey(req("https://relay.test/api/door-key", "GET"), resolveStore(db))).status).toBe(503);
   });
 });
 
@@ -203,7 +198,7 @@ describe("E-15 the snapshot is an allow-list", () => {
         body: { ...snapshotBody(), display_name: "Tiger", person_id: "prs_x" },
         token: VISITOR_DEVICE_TOKEN,
       }),
-      resolveStore(),
+      resolveStore(db),
     );
     expect(resp.status).toBe(422);
   });
@@ -214,7 +209,7 @@ describe("E-15 the snapshot is an allow-list", () => {
         body: snapshotBody({ state: "ADMIN_DIAGNOSTICS" }),
         token: VISITOR_DEVICE_TOKEN,
       }),
-      resolveStore(),
+      resolveStore(db),
     );
     expect(resp.status).toBe(422);
   });
@@ -241,7 +236,7 @@ describe("E-15 the snapshot is an allow-list", () => {
           body: snapshotBody({ outcomes: [{ ...OUTCOME, ...smuggled }] }),
           token: VISITOR_DEVICE_TOKEN,
         }),
-        resolveStore(),
+        resolveStore(db),
       );
       expect(resp.status, JSON.stringify(smuggled)).toBe(422);
     }
@@ -259,7 +254,7 @@ describe("E-15 the snapshot is an allow-list", () => {
           body: snapshotBody({ outcomes: [{ ...OUTCOME, ...oversized }] }),
           token: VISITOR_DEVICE_TOKEN,
         }),
-        resolveStore(),
+        resolveStore(db),
       );
       expect(resp.status, JSON.stringify(Object.keys(oversized))).toBe(422);
     }
@@ -272,7 +267,7 @@ describe("E-15 the snapshot is an allow-list", () => {
           body: snapshotBody({ outcomes }),
           token: VISITOR_DEVICE_TOKEN,
         }),
-        resolveStore(),
+        resolveStore(db),
       );
       expect(resp.status).toBe(422);
     }
@@ -283,7 +278,7 @@ describe("E-15 the snapshot is an allow-list", () => {
     const body = (await (
       await readVisitor(
         req(`https://relay.test/api/visitor/${VISITOR_TOKEN}`, "GET"),
-        resolveStore(),
+        resolveStore(db),
         { token: VISITOR_TOKEN },
       )
     ).json()) as { outcomes: unknown[] };
@@ -301,7 +296,7 @@ describe("visitor writes queue for the Pi", () => {
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
         body: { kind: "note", text: NOTE_SENTINEL },
       }),
-      resolveStore(),
+      resolveStore(db),
       { token: VISITOR_TOKEN },
     );
     expect(submit.status).toBe(202);
@@ -310,7 +305,7 @@ describe("visitor writes queue for the Pi", () => {
     const collected = (await (
       await pickupVisitor(
         req("https://relay.test/api/visitor/pickup", "GET", { token: VISITOR_DEVICE_TOKEN }),
-        resolveStore(),
+        resolveStore(db),
       )
     ).json()) as { items: Array<{ action_id: string; note: { text: string } | null }> };
     expect(collected.items).toHaveLength(1);
@@ -332,13 +327,13 @@ describe("visitor writes queue for the Pi", () => {
           ],
         },
       }),
-      resolveStore(),
+      resolveStore(db),
     );
 
     const after = (await (
       await readVisitor(
         req(`https://relay.test/api/visitor/${VISITOR_TOKEN}`, "GET"),
-        resolveStore(),
+        resolveStore(db),
         { token: VISITOR_TOKEN },
       )
     ).json()) as { outcomes: Array<{ action_id: string; status: string; entry_id: string }> };
@@ -352,7 +347,7 @@ describe("visitor writes queue for the Pi", () => {
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
         body: { kind: "note", text: "too late" },
       }),
-      resolveStore(),
+      resolveStore(db),
       { token: VISITOR_TOKEN },
     );
     expect(resp.status).toBe(409);
@@ -365,7 +360,7 @@ describe("visitor writes queue for the Pi", () => {
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
         body: { kind: "note", text: "expired" },
       }),
-      resolveStore(),
+      resolveStore(db),
       { token: VISITOR_TOKEN },
     );
     expect(resp.status).toBe(410);
@@ -377,7 +372,7 @@ describe("visitor writes queue for the Pi", () => {
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
         body: { kind: "note", text: "x".repeat(501) },
       }),
-      resolveStore(),
+      resolveStore(db),
       { token: VISITOR_TOKEN },
     );
     expect(resp.status).toBe(422);
@@ -389,7 +384,7 @@ describe("visitor writes queue for the Pi", () => {
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
         body: { kind: "unlock_the_door", text: "nice try" },
       }),
-      resolveStore(),
+      resolveStore(db),
       { token: VISITOR_TOKEN },
     );
     expect(resp.status).toBe(422);
@@ -401,20 +396,20 @@ describe("visitor writes queue for the Pi", () => {
       req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
         body: { kind: "vote", poll_id: "poll_1", option_id: "opt_a" },
       }),
-      resolveStore(),
+      resolveStore(db),
       { token: VISITOR_TOKEN },
     );
 
     const first = (await (
       await pickupVisitor(
         req("https://relay.test/api/visitor/pickup", "GET", { token: VISITOR_DEVICE_TOKEN }),
-        resolveStore(),
+        resolveStore(db),
       )
     ).json()) as { items: unknown[] };
     const second = (await (
       await pickupVisitor(
         req("https://relay.test/api/visitor/pickup", "GET", { token: VISITOR_DEVICE_TOKEN }),
-        resolveStore(),
+        resolveStore(db),
       )
     ).json()) as { items: unknown[] };
 
@@ -430,7 +425,7 @@ describe("visitor writes queue for the Pi", () => {
         req(`https://relay.test/api/visitor/${VISITOR_TOKEN}/action`, "POST", {
           body: { kind: "note", text: `spam ${i}` },
         }),
-        resolveStore(),
+        resolveStore(db),
         { token: VISITOR_TOKEN },
       );
       statuses.push(resp.status);

@@ -6,11 +6,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { D1RelayStore } from "@/lib/d1/d1Store";
 import type { D1Like } from "@/lib/d1/types";
 import { onRequest } from "@/functions/api/[[route]]";
 
-import { NodeSqliteD1 } from "./nodeSqliteD1";
+import { freshD1 } from "./nodeSqliteD1";
 
 const VISITOR_TOKEN = "eyJ2IjoxfQ.c2lnbmF0dXJl";
 
@@ -24,12 +23,6 @@ afterEach(() => {
   log.mockRestore();
 });
 
-async function migrated(): Promise<NodeSqliteD1> {
-  const db = new NodeSqliteD1();
-  await new D1RelayStore(db).migrate();
-  return db;
-}
-
 function logged(): Record<string, unknown> {
   expect(log).toHaveBeenCalledTimes(1);
   const line = log.mock.calls[0]![0];
@@ -41,16 +34,36 @@ describe("onRequest", () => {
   it("serves a routed request untouched", async () => {
     const resp = await onRequest({
       request: new Request("https://relay.test/api/health"),
-      env: { DB: await migrated() },
+      env: { DB: await freshD1() },
     });
     expect(resp.status).toBe(200);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("answers 503 storage_not_configured when the D1 binding is missing", async () => {
+    // A misconfigured deployment should say so, not TypeError its way to a 500.
+    const resp = await onRequest({
+      request: new Request("https://relay.test/api/pickup", {
+        headers: { authorization: "Bearer whatever" },
+      }),
+      env: {},
+    });
+    expect(resp.status).toBe(401); // auth is checked before storage, as on every device route
+    const health = await onRequest({ request: new Request("https://relay.test/api/health"), env: {} });
+    expect(((await health.json()) as { storage_configured: boolean }).storage_configured).toBe(false);
+    const publicRoute = await onRequest({
+      request: new Request("https://relay.test/api/door-key"),
+      env: {},
+    });
+    expect(publicRoute.status).toBe(503);
+    expect(await publicRoute.json()).toEqual({ error: "storage_not_configured" });
     expect(log).not.toHaveBeenCalled();
   });
 
   it("answers a malformed %-escape in a :param with 400, not a bare 500", async () => {
     const resp = await onRequest({
       request: new Request("https://relay.test/api/visitor/%E0%A4%A"),
-      env: { DB: await migrated() },
+      env: { DB: await freshD1() },
     });
     expect(resp.status).toBe(400);
     expect(await resp.json()).toEqual({ error: "bad_request" });

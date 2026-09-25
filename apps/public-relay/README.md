@@ -64,7 +64,6 @@ See [.env.example](.env.example). Two secrets, neither of which can decrypt anyt
 |---|---|
 | `RELAY_DEVICE_TOKEN` | door-visiond → enrollment routes. Must equal `VISIOND_RELAY_DEVICE_TOKEN`. |
 | `RELAY_VISITOR_DEVICE_TOKEN` | door-api → visitor routes. Must equal `DOOR_API_VISITOR_RELAY_DEVICE_TOKEN`. Separate credential on purpose (E-17). |
-| `UPSTASH_REDIS_REST_URL` / `_TOKEN` | Upstash Redis. The Vercel marketplace integration injects `KV_REST_API_URL` / `KV_REST_API_TOKEN` instead; both pairs are accepted. |
 
 Generate the device token:
 
@@ -82,7 +81,7 @@ pnpm --filter @doorboard/public-relay dev     # http://localhost:3100
 pnpm --filter @doorboard/public-relay test
 ```
 
-A local run still needs an Upstash database (the free tier is fine) — there is no in-memory fallback, deliberately, so local behaviour matches production.
+There is no Redis or in-memory backend: the tests run the real D1 store over `node:sqlite`, so what they byte-scan is what production holds.
 
 Point the Pi at it with `VISIOND_RELAY_BASE_URL=http://127.0.0.1:3100`. Loopback over plain HTTP is permitted for exactly this case; anything else must be `https`.
 
@@ -92,7 +91,6 @@ Point the Pi at it with `VISIOND_RELAY_BASE_URL=http://127.0.0.1:3100`. Loopback
 pnpm dlx vercel@latest login
 pnpm dlx vercel@latest link            # run from apps/public-relay
 pnpm dlx vercel@latest env add RELAY_DEVICE_TOKEN production
-# add the Upstash integration in the Vercel dashboard, or set UPSTASH_* manually
 pnpm dlx vercel@latest --prod
 ```
 

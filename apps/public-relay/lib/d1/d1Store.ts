@@ -1,10 +1,10 @@
 /**
- * The relay store on Cloudflare D1 (ADR-0043 §1) — a drop-in for the Redis store's method
- * surface, with the same retention windows and the lease/terminal/consumed/rate-limit
- * semantics made *atomic* by single guarded SQL statements (the Redis version relied on
- * per-key serialization plus a single-threaded poller). Everything here is either ciphertext
- * or an opaque identifier; no face image, display name, embedding, or `person_id` is stored
- * (E-9), and the visitor snapshot carries a boolean `attributed`, never a name (ADR-0044).
+ * The relay store on Cloudflare D1 (ADR-0043 §1). The retention windows of ADR-0016 §5, with
+ * the lease/terminal/consumed/rate-limit semantics made *atomic* by single guarded SQL
+ * statements (the Redis store this replaced relied on per-key serialization plus a
+ * single-threaded poller). Everything here is either ciphertext or an opaque identifier; no
+ * face image, display name, embedding, or `person_id` is stored (E-9), and the visitor
+ * snapshot carries a boolean `attributed`, never a name (ADR-0044).
  *
  * `now` is injectable so tests are deterministic; production leaves it as `Date.now`.
  */
@@ -45,13 +45,19 @@ const MAX_RATE_LIMIT_KEY_CHARS = 96;
 
 export class D1RelayStore implements RelayStore {
   constructor(
-    private readonly db: D1Like,
+    private readonly binding: D1Like | null,
     private readonly now: () => number = () => Date.now(),
   ) {}
 
-  /** A constructed D1 store always has its binding — the route's 503 gate is for the Redis path. */
+  /** Whether the D1 binding is present. Every route checks this first and 503s when not. */
   configured(): boolean {
-    return true;
+    return this.binding !== null;
+  }
+
+  /** The binding. Reaching here without one is a bug: routes gate on `configured()`. */
+  private get db(): D1Like {
+    if (!this.binding) throw new Error("D1 binding `DB` is not configured");
+    return this.binding;
   }
 
   /** Apply every migration in order. Idempotent (every statement is `IF NOT EXISTS`). */

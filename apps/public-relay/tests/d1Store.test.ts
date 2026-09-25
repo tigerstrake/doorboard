@@ -20,7 +20,7 @@ import {
   STATUS_TTL_S,
   SWEEP_INTERVAL_S,
   type StoredVisitorSnapshot,
-} from "@/lib/store";
+} from "@/lib/relayTypes";
 
 import { NodeSqliteD1 } from "./nodeSqliteD1";
 
@@ -247,6 +247,30 @@ describe("visitor surface", () => {
     await store.completeVisitorAction("ses_1", "act_1", { action_id: "act_1", entry_id: "g1" });
     const snap = await store.getVisitorSnapshotByTokenHash("tokhash");
     expect(snap?.outcomes).toEqual([{ action_id: "act_1", entry_id: "g1" }]);
+  });
+
+  it("folds an outcome once per action_id and keeps only the last 16", async () => {
+    await store.putVisitorSnapshot(visitorSnapshot());
+    for (let i = 0; i < 20; i += 1) {
+      await store.completeVisitorAction("ses_1", `act_${i}`, { action_id: `act_${i}`, status: "applied" });
+    }
+    // A duplicate ack (door-api retried after a missed response) replaces, never appends.
+    await store.completeVisitorAction("ses_1", "act_19", { action_id: "act_19", status: "rejected" });
+
+    const outcomes = (await store.getVisitorSnapshotByTokenHash("tokhash"))?.outcomes as Array<{
+      action_id: string;
+      status: string;
+    }>;
+    expect(outcomes.map((o) => o.action_id)).toEqual(
+      Array.from({ length: 16 }, (_unused, i) => `act_${i + 4}`),
+    );
+    expect(outcomes.at(-1)).toEqual({ action_id: "act_19", status: "rejected" });
+  });
+
+  it("folds nothing for a session it does not hold", async () => {
+    await expect(
+      store.completeVisitorAction("ses_missing", "act_1", { action_id: "act_1" }),
+    ).resolves.toBeUndefined();
   });
 
   it("carries the attribution boolean, never a name (ADR-0044)", async () => {
