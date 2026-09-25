@@ -542,3 +542,19 @@ def test_app_state_republishes_every_subject_on_each_connect(
         assert len(client.published) == 2 * first
     finally:
         state.dispose()
+
+
+def test_app_state_dispose_closes_the_publisher(fake_clients: list[FakeClient], engine) -> None:
+    from control_plane_api.state import AppState
+
+    from .conftest import TestSettings
+
+    class MqttSettings(TestSettings):
+        mqtt_url: str = "mqtt://localhost:1883"
+
+    state = AppState(MqttSettings())
+    client = fake_clients[0]
+    assert client.loop_started is True
+    state.dispose()
+    assert client.disconnected is True
+    assert client.loop_started is False

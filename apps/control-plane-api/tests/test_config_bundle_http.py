@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from doorboard_config import ConfigBundle, assert_secret_free
+import pytest
+from control_plane_api import app as app_module
+from doorboard_config import BundleContainsSecretError, ConfigBundle, assert_secret_free
 from fastapi.testclient import TestClient
 
 ADMIN_HEADERS = {"Authorization": "Bearer test-admin-token"}
@@ -84,3 +86,29 @@ def test_served_bundle_is_secret_free_by_denylist_scan(client: TestClient) -> No
     # denylist" check, run against the real HTTP response body.
     bundle = ConfigBundle.model_validate(body)
     assert_secret_free(bundle)  # must not raise
+
+
+def test_the_service_runs_the_denylist_scan_on_get_and_put(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """packages/config promised this scan ran in control-plane-api; it never did."""
+    token = _issue_config_token(client)
+    before = client.get("/config/door/primary", headers={"Authorization": f"Bearer {token}"}).json()
+
+    def refuse(bundle) -> None:
+        raise BundleContainsSecretError("simulated denylist hit")
+
+    monkeypatch.setattr(app_module, "assert_secret_free", refuse)
+    served = client.get("/config/door/primary", headers={"Authorization": f"Bearer {token}"})
+    assert served.status_code == 500
+    assert "settings" not in served.json()  # nothing of the bundle leaves
+
+    stored = client.put(
+        "/config/door/primary", json={"vision_mode": "hardware"}, headers=ADMIN_HEADERS
+    )
+    assert stored.status_code == 500
+
+    monkeypatch.setattr(app_module, "assert_secret_free", assert_secret_free)
+    after = client.get("/config/door/primary", headers={"Authorization": f"Bearer {token}"}).json()
+    assert after["version"] == before["version"]  # the refused PUT was rolled back
+    assert after["settings"] == before["settings"]

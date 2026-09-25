@@ -58,7 +58,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 
 from doorboard_auth import ServiceTokenRecord, ServiceTokenScope
-from doorboard_config import DoorConfigSettings
+from doorboard_config import BundleContainsSecretError, DoorConfigSettings, assert_secret_free
 from doorboard_contracts import PresenceLabel
 from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request, status
 from fastapi.responses import Response
@@ -402,7 +402,23 @@ def get_config(
     state = _state(request)
     with session_scope(state.session_factory) as session:
         bundle = get_or_create_bundle(session, door_id=door_id, now=datetime.now(UTC))
+    _refuse_secret_bearing_bundle(bundle)
     return bundle.model_dump(mode="json")
+
+
+def _refuse_secret_bearing_bundle(bundle: Any) -> None:
+    """Defense in depth (packages/config): a denylist scan on every bundle served or stored.
+
+    The model shape already cannot hold a credential; this is the second lock,
+    and it was documented as running here for a year without being called.
+    """
+    try:
+        assert_secret_free(bundle)
+    except BundleContainsSecretError as exc:
+        logger.error("config_bundle_refused", extra={"door_id": bundle.door_id, "error": str(exc)})
+        raise HTTPException(
+            status_code=500, detail="config bundle refused: it would carry a secret"
+        ) from exc
 
 
 @app.put("/config/door/{door_id}")
@@ -416,6 +432,8 @@ def put_config(door_id: str, body: dict, request: Request, _auth: AdminAuth) -> 
         bundle = update_bundle(
             session, door_id=door_id, settings=new_settings, now=datetime.now(UTC)
         )
+        # Inside the transaction: a refused bundle is rolled back, not stored.
+        _refuse_secret_bearing_bundle(bundle)
     return bundle.model_dump(mode="json")
 
 

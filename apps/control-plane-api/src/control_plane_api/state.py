@@ -224,4 +224,13 @@ class AppState:
         stop_calendar = getattr(self.calendar_provider, "stop", None)
         if callable(stop_calendar):
             stop_calendar()
+        # Graceful DISCONNECT + loop stop; a publisher that was never closed left
+        # paho's network thread running past the lifespan and the broker seeing
+        # an unclean drop on every restart.
+        close_mqtt = getattr(self.mqtt_publisher, "close", None)
+        if callable(close_mqtt):
+            try:
+                close_mqtt()
+            except Exception:
+                logger.warning("mqtt_close_failed", exc_info=True)
         self.engine.dispose()
