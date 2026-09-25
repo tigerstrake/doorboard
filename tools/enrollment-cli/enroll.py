@@ -74,12 +74,23 @@ def cli() -> None:
     help="door-media admin auth token.",
 )
 @click.option("--images-count", default=3, type=int, help="Number of images to capture.")
+@click.option(
+    "--allow-mock-frames",
+    is_flag=True,
+    default=False,
+    help=(
+        "If door-media cannot supply a snapshot, submit placeholder bytes instead of "
+        "aborting. Only for mock/CI runs: on a real door it would enrol garbage and "
+        "leave door-visiond's quality gate as the only thing stopping it."
+    ),
+)
 def enroll(
     visiond_url: str,
     media_url: str,
     token: str,
     media_token: str,
     images_count: int,
+    allow_mock_frames: bool,
 ) -> None:
     """Run the guided enrollment flow."""
     click.clear()
@@ -140,8 +151,12 @@ def enroll(
             click.echo(f"-> Could not connect to media service ({exc}).")
 
         if captured_bytes is None:
-            # Fallback to dummy bytes to support CI/mock mode.
-            click.echo("-> Falling back to dummy image bytes (mock/CI mode).")
+            if not allow_mock_frames:
+                raise click.ClickException(
+                    "no frame from door-media; fix the camera/snapshot path, or pass "
+                    "--allow-mock-frames for a mock/CI run"
+                )
+            click.echo("-> Substituting placeholder image bytes (--allow-mock-frames).")
             captured_bytes = b"dummy_image_bytes_at_least_8_bytes"
 
         images.append(captured_bytes)

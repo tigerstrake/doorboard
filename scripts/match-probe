@@ -55,6 +55,12 @@ if [[ ${#images[@]-0} -eq 0 && $use_live -eq 0 ]]; then
   exit 2
 fi
 
+# Validate the arguments BEFORE touching the door: a typo here used to cost a
+# recognition outage (visiond stopped, then "no such file", then the trap restart).
+for image in "${images[@]+"${images[@]}"}"; do
+  [[ -f "$image" ]] || { echo "no such file: $image" >&2; exit 1; }
+done
+
 cleanup() {
   # Face images must not be left lying in /tmp on the door, and recognition must come
   # back even if the probe died halfway through.
@@ -72,7 +78,6 @@ sleep 2
 ssh -o ConnectTimeout=10 "$host" "mkdir -p '$remote_dir'"
 
 for image in "${images[@]+"${images[@]}"}"; do
-  [[ -f "$image" ]] || { echo "no such file: $image" >&2; exit 1; }
   scp -q -o ConnectTimeout=10 "$image" "$host:$remote_dir/"
 done
 

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Keep the venv outside the repo: cloud-synced folders (iCloud) corrupt
-# .pth files in .venv via eviction/conflict copies. Override if needed.
-export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$HOME/.venvs/doorboard}"
-
+# Same venv resolution as lint/test/typecheck (scripts/_uv-env): an explicit
+# UV_PROJECT_ENVIRONMENT, else the active VIRTUAL_ENV, else <repo>/.venv. This
+# used to default to ~/.venvs/doorboard alone, so the simulator ran from a
+# different environment than every other script and CI.
+# shellcheck source=_uv-env
+. "$(dirname "${BASH_SOURCE[0]}")/_uv-env"
 
 uv run python -m doorboard_simulator panel "$@"

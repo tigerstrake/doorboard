@@ -27,7 +27,10 @@ class SpaHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def end_headers(self) -> None:
-        if urlsplit(self.path).path in ("/", "/index.html"):
+        # The shell and the health probe must never be served from a cache: a stale
+        # index.html pins the kiosk to old asset hashes after a deploy, and a cached
+        # /healthz would tell doorboard-health-agent the server is up when it is not.
+        if urlsplit(self.path).path in ("/", "/index.html", "/healthz"):
             self.send_header("Cache-Control", "no-store")
         else:
             self.send_header("Cache-Control", "public, max-age=3600")

@@ -159,3 +159,29 @@ def test_cli_guided_enroll_and_unenroll(served_apps: tuple[str, str]) -> None:
     )
     assert unenroll_result.exit_code == 0, f"Unenroll failed: {unenroll_result.output}"
     assert f"Successfully unenrolled {person_id}" in unenroll_result.output
+
+
+def test_cli_refuses_to_enrol_without_a_frame_unless_mock_frames_are_allowed(
+    served_apps: tuple[str, str],
+) -> None:
+    """A snapshot failure used to be papered over with placeholder bytes on every run,
+    hardware included, leaving door-visiond's quality gate as the only thing between a
+    dead camera and a garbage enrollment. The fallback is now opt-in."""
+    visiond_url, _media_url = served_apps
+    cli = _load_cli()
+    runner = CliRunner()
+    # A media URL nothing listens on: every capture fails.
+    dead_media = "http://127.0.0.1:9"
+    common = ["--visiond-url", visiond_url, "--media-url", dead_media, "--images-count", "1"]
+    common += ["--token", VISIOND_TOKEN, "--media-token", MEDIA_TOKEN]
+    inputs = "y\n\nNoFrame\nmint_pulse\n#00ff00\n\n"
+
+    refused = runner.invoke(cli, ["enroll", *common], input=inputs)
+    assert refused.exit_code != 0
+    assert "--allow-mock-frames" in refused.output
+    assert "Enrollment successful" not in refused.output
+
+    allowed = runner.invoke(cli, ["enroll", *common, "--allow-mock-frames"], input=inputs)
+    assert allowed.exit_code == 0, allowed.output
+    assert "Substituting placeholder image bytes" in allowed.output
+    assert "Enrollment successful!" in allowed.output

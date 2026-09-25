@@ -45,20 +45,28 @@ fi
 	exit 1
 }
 
-token="$(cat "$TOKEN_FILE")"
+# The bearer goes to curl through a header file, never as an argument: argv is
+# readable in /proc/<pid>/cmdline by every local user for the life of the request,
+# and this token yields the LUKS passphrase. The file lives in a private tmpdir,
+# mode 0600, and is removed on every exit path.
+hdr_dir="$(mktemp -d)"
+hdr_file="${hdr_dir}/authorization"
+cleanup_hdr() { rm -rf "$hdr_dir"; }
+trap cleanup_hdr EXIT
+(umask 077; printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$hdr_file")
 
 # Fetch the passphrase. -f makes curl fail on HTTP >= 400; pipefail makes the
 # whole pipeline fail if either curl or the JSON extraction fails.
 pass="$(
 	curl -fsS --max-time "$CURL_MAX_TIME" \
-		-H "Authorization: Bearer ${token}" "$KEY_URL" |
+		-H @"$hdr_file" "$KEY_URL" |
 		python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])'
 )" || {
-	unset token
+	cleanup_hdr
 	log "key fetch failed (NUC unreachable or unauthorized) — staying locked"
 	exit 1
 }
-unset token
+cleanup_hdr
 [ -n "$pass" ] || {
 	log "control-plane returned an empty passphrase — staying locked"
 	exit 1

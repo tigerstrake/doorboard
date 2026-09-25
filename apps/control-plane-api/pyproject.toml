@@ -19,6 +19,9 @@ dependencies = [
     # RECURRENCE-ID for moved ones. This resolves "what is happening at time T"
     # including all of that; hand-rolling recurrence would get those wrong.
     "recurring-ical-events>=3.0",
+    # calendar_ics.py imports icalendar directly (Calendar.from_ical); declaring it
+    # keeps the import from depending on recurring-ical-events' transitive pin.
+    "icalendar>=6.0",
     "httpx>=0.28",
 ]
 
