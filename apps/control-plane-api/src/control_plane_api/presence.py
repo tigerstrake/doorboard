@@ -22,11 +22,14 @@ both writes and reads).
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from datetime import time as dtime
+from pathlib import Path
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from doorboard_contracts import PresenceLabel
 
@@ -156,6 +159,30 @@ def parse_window(raw: str) -> tuple[dtime, dtime] | None:
         raise ValueError(msg) from exc
 
 
+def local_zone() -> tzinfo:
+    """The container's local zone as a real (DST-aware) tzinfo.
+
+    `datetime.astimezone()` with no argument yields a FIXED-offset tzinfo — the
+    offset in force right now. Arithmetic done in it is one hour off on the two
+    nights the offset changes. So: `TZ` when set (compose passes it), else the
+    zone `/etc/localtime` points at, else the fixed offset as a last resort.
+    """
+    name = os.environ.get("TZ", "").strip()
+    if name:
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            logger.warning("presence_schedule_tz_unknown", extra={"tz": name})
+    try:
+        target = str(Path("/etc/localtime").resolve())
+        marker = "zoneinfo/"
+        if marker in target:
+            return ZoneInfo(target.split(marker, 1)[1])
+    except (OSError, ZoneInfoNotFoundError, ValueError):
+        pass
+    return datetime.now().astimezone().tzinfo or UTC
+
+
 class NightlyScheduleProvider:
     """Reports a label inside a recurring local-time window.
 
@@ -169,17 +196,19 @@ class NightlyScheduleProvider:
         *,
         label: PresenceLabel,
         subject_ids: Sequence[str] | None = None,
+        tz: tzinfo | None = None,
     ) -> None:
         self._start, self._end = window
         self._label = label
         # None = every subject. A window is a household-level habit, but the
         # roommate should not inherit it just because they share the door.
         self._subject_ids = frozenset(subject_ids) if subject_ids else None
+        self._tz = tz if tz is not None else local_zone()
 
     def get_label(self, subject_id: str, *, now: datetime) -> SourceEntry | None:
         if self._subject_ids is not None and subject_id not in self._subject_ids:
             return None
-        local = now.astimezone()
+        local = now.astimezone(self._tz)
         if not self._inside(local.time()):
             return None
         return SourceEntry(label=self._label, until=self._window_end_after(local))
@@ -194,11 +223,20 @@ class NightlyScheduleProvider:
         return moment >= self._start or moment < self._end  # wraps midnight
 
     def _window_end_after(self, local: datetime) -> datetime:
-        end_today = local.replace(
-            hour=self._end.hour, minute=self._end.minute, second=0, microsecond=0
-        )
+        """The next wall-clock `end` at or after `local`, as a UTC instant.
+
+        Built with `datetime.combine(date, time, tzinfo=zone)` rather than
+        `local.replace(hour=...)`: `replace` keeps the offset `local` happened to
+        carry, so across a DST change the window ended an hour early or late.
+        `fold=0` picks the first of a repeated hour on the fall-back night; a
+        window end inside the skipped spring-forward hour resolves to the instant
+        after the gap, which is the earliest moment that wall time exists.
+        """
+        end_today = datetime.combine(local.date(), self._end, tzinfo=self._tz).replace(fold=0)
         if end_today <= local:
-            end_today += timedelta(days=1)
+            end_today = datetime.combine(
+                local.date() + timedelta(days=1), self._end, tzinfo=self._tz
+            ).replace(fold=0)
         return end_today.astimezone(UTC)
 
 

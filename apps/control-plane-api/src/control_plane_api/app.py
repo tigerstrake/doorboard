@@ -583,17 +583,17 @@ def get_presence_history(
     state = _state(request)
     with session_scope(state.session_factory) as session:
         _require_known_subject(session, subject_id)
-        rows = presence_engine.list_history(session, subject_id=subject_id, limit=limit)
+        entries = presence_engine.list_history(session, subject_id=subject_id, limit=limit)
     return {
         "subject_id": subject_id,
         "history": [
             {
-                "label": row.label,
-                "source": row.source,
-                "until": row.until.isoformat() if row.until is not None else None,
-                "occurred_at": row.occurred_at.isoformat(),
+                "label": entry.label,
+                "source": entry.source,
+                "until": entry.until.isoformat() if entry.until is not None else None,
+                "occurred_at": entry.occurred_at.isoformat(),
             }
-            for row in rows
+            for entry in entries
         ],
     }
 

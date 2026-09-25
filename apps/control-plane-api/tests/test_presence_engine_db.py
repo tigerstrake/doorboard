@@ -25,7 +25,7 @@ from control_plane_api.presence import (
 )
 from doorboard_contracts import PresenceLabel, parse_event
 from doorboard_contracts.events import StatusPresenceChangedEvent
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 NOW = datetime.now(UTC)
 
@@ -406,3 +406,46 @@ def test_republish_lands_each_subject_on_its_own_retained_topic(session_factory)
         assert replayed.payload.label == label
         assert replayed.payload.source == "manual"
     assert len({t for t, _p, _r in published}) == 3  # owner, roommate, and the legacy topic
+
+
+def test_stored_expiries_are_rendered_in_utc_whatever_zone_the_server_uses(
+    session_factory,
+) -> None:
+    """Postgres renders timestamptz in the SESSION's zone; admin JSON must still say UTC.
+
+    `_build_entries` already normalised for the contract event, but
+    `get_subject_status` (per-source `until`) and `list_history` handed the
+    server-zoned values straight to the admin JSON. This NUC's Postgres runs in
+    Europe/Rome; CI runs UTC and would agree with itself, so the zone is forced here.
+    """
+    mqtt = RecordingMqttPublisher()
+    calendar = MockCalendarProvider()
+    until = NOW.replace(microsecond=0) + timedelta(hours=2)
+
+    with session_scope(session_factory) as session:
+        session.execute(text("SET TIME ZONE 'Europe/Rome'"))
+        presence_engine.set_manual_override(
+            session, subject_id="owner", label=PresenceLabel.BUSY, until=until, now=NOW
+        )
+        status = presence_engine.get_subject_status(
+            session,
+            subject_id="owner",
+            now=NOW,
+            door_id="primary",
+            calendar_provider=calendar,
+            mqtt_publisher=mqtt,
+            history_max_rows=500,
+        )
+        history = presence_engine.list_history(session, subject_id="owner")
+
+    manual = next(s for s in status.sources if s.source == "manual")
+    assert manual.until is not None
+    assert manual.until.tzinfo is UTC
+    assert manual.until == until
+    assert status.until is not None and status.until.tzinfo is UTC
+    assert history, "the override produced a history row"
+    for entry in history:
+        assert entry.occurred_at.tzinfo is UTC
+        assert entry.until is None or entry.until.tzinfo is UTC
+    assert history[0].until == until
+    assert history[0].until is not None and history[0].until.isoformat().endswith("+00:00")

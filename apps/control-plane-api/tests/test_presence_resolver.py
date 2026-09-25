@@ -9,13 +9,17 @@ test coverage."
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from control_plane_api.presence import (
     CoordinatePayloadError,
     MockCalendarProvider,
+    NightlyScheduleProvider,
     SourceEntry,
     is_stale,
+    local_zone,
+    parse_window,
     reject_coordinate_payload,
     resolve_presence,
 )
@@ -276,3 +280,53 @@ def test_is_stale_false_within_threshold() -> None:
 
 def test_is_stale_true_past_threshold() -> None:
     assert is_stale(NOW, now=NOW + timedelta(seconds=61), max_age_s=60) is True
+
+
+# ---------------------------------------------------------------------------
+# Nightly window across the two DST-change nights (ADR-0037)
+# ---------------------------------------------------------------------------
+
+
+def _rome_provider() -> NightlyScheduleProvider:
+    window = parse_window("23:00-07:00")
+    assert window is not None
+    return NightlyScheduleProvider(window, label=PresenceLabel.SLEEPING, tz=ZoneInfo("Europe/Rome"))
+
+
+def test_window_end_on_the_spring_forward_night_is_the_real_local_seven() -> None:
+    """2026-03-29: 02:00 CET -> 03:00 CEST. 07:00 local is 05:00Z, not 06:00Z.
+
+    The fixed-offset arithmetic (`now.astimezone()` + `replace(hour=7)`) kept the
+    +01:00 the night started with and expired the window at 06:00Z = 08:00 local.
+    """
+    now = datetime(2026, 3, 29, 1, 0, tzinfo=ZoneInfo("Europe/Rome"))  # 00:00Z, still CET
+    entry = _rome_provider().get_label("owner", now=now)
+    assert entry is not None
+    assert entry.until == datetime(2026, 3, 29, 5, 0, tzinfo=UTC)
+    assert entry.until.astimezone(ZoneInfo("Europe/Rome")).strftime("%H:%M %Z") == "07:00 CEST"
+
+
+def test_window_end_on_the_fall_back_night_is_the_real_local_seven() -> None:
+    """2026-10-25: 03:00 CEST -> 02:00 CET. 07:00 local is 06:00Z, not 05:00Z."""
+    now = datetime(2026, 10, 25, 1, 0, tzinfo=ZoneInfo("Europe/Rome"))  # 23:00Z, still CEST
+    entry = _rome_provider().get_label("owner", now=now)
+    assert entry is not None
+    assert entry.until == datetime(2026, 10, 25, 6, 0, tzinfo=UTC)
+    assert entry.until.astimezone(ZoneInfo("Europe/Rome")).strftime("%H:%M %Z") == "07:00 CET"
+
+
+def test_window_membership_uses_the_zone_not_a_frozen_offset() -> None:
+    # 06:30 CEST on the spring-forward morning is inside the window; 07:30 is not.
+    inside = datetime(2026, 3, 29, 6, 30, tzinfo=ZoneInfo("Europe/Rome"))
+    outside = datetime(2026, 3, 29, 7, 30, tzinfo=ZoneInfo("Europe/Rome"))
+    assert _rome_provider().get_label("owner", now=inside) is not None
+    assert _rome_provider().get_label("owner", now=outside) is None
+
+
+def test_local_zone_prefers_tz_and_is_dst_aware(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TZ", "America/New_York")
+    zone = local_zone()
+    assert isinstance(zone, ZoneInfo)
+    assert str(zone) == "America/New_York"
+    monkeypatch.setenv("TZ", "Not/AZone")
+    assert local_zone() is not None  # falls back rather than raising at startup

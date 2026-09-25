@@ -187,7 +187,7 @@ def list_source_rows(session: Session, subject_id: str) -> dict[str, PresenceSou
     return {row.source: row for row in rows}
 
 
-def _as_utc(value: datetime | None) -> datetime | None:
+def as_utc(value: datetime | None) -> datetime | None:
     """Normalise a stored timestamp to UTC.
 
     Postgres `timestamptz` stores an instant but renders it in the *session's*
@@ -207,6 +207,9 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+_as_utc = as_utc  # older call sites/tests
 
 
 def set_source_value(
@@ -331,7 +334,7 @@ def _build_entries(
         if row is None or not row.enabled or row.label is None:
             entries[source] = None
         else:
-            entries[source] = SourceEntry(label=PresenceLabel(row.label), until=_as_utc(row.until))
+            entries[source] = SourceEntry(label=PresenceLabel(row.label), until=as_utc(row.until))
     return entries, tracking_enabled
 
 
@@ -572,7 +575,8 @@ def get_subject_status(
                 label=PresenceLabel(row.label)
                 if row is not None and row.label is not None
                 else None,
-                until=row.until if row is not None else None,
+                # Rendered in admin JSON: UTC, not the database server's zone.
+                until=as_utc(row.until) if row is not None else None,
                 enabled=row.enabled if row is not None else True,
                 stored=True,
             )
@@ -613,13 +617,30 @@ def list_subject_statuses(
     ]
 
 
-def list_history(
-    session: Session, *, subject_id: str, limit: int = 100
-) -> list[PresenceHistoryRow]:
+@dataclass(frozen=True, slots=True)
+class HistoryEntry:
+    """One label change, with every timestamp already normalised to UTC."""
+
+    label: str
+    source: str
+    until: datetime | None
+    occurred_at: datetime
+
+
+def list_history(session: Session, *, subject_id: str, limit: int = 100) -> list[HistoryEntry]:
     stmt = (
         select(PresenceHistoryRow)
         .where(PresenceHistoryRow.subject_id == subject_id)
         .order_by(PresenceHistoryRow.occurred_at.desc(), PresenceHistoryRow.recorded_at.desc())
         .limit(limit)
     )
-    return list(session.execute(stmt).scalars().all())
+    rows = session.execute(stmt).scalars().all()
+    return [
+        HistoryEntry(
+            label=row.label,
+            source=row.source,
+            until=as_utc(row.until),
+            occurred_at=as_utc(row.occurred_at) or row.occurred_at,
+        )
+        for row in rows
+    ]
