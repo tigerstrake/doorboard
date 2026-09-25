@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS media_outbox (
     next_attempt_epoch REAL NOT NULL DEFAULT 0,
     created_epoch REAL NOT NULL,
     last_error TEXT,
-    dead INTEGER NOT NULL DEFAULT 0
+    dead INTEGER NOT NULL DEFAULT 0,
+    poison_attempts INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_outbox_ready
@@ -76,7 +77,8 @@ CREATE TABLE IF NOT EXISTS sync_outbox (
     next_attempt_epoch REAL NOT NULL DEFAULT 0,
     created_epoch REAL NOT NULL,
     last_error TEXT,
-    dead INTEGER NOT NULL DEFAULT 0
+    dead INTEGER NOT NULL DEFAULT 0,
+    poison_attempts INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_sync_outbox_ready
@@ -96,6 +98,8 @@ class MediaOutboxItem:
     event_id: str
     event: dict[str, Any]
     attempts: int
+    # When the row was queued, so the forwarder can bound the total retry window.
+    created_epoch: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -103,6 +107,7 @@ class SyncOutboxItem:
     event_id: str
     event: dict[str, Any]
     attempts: int
+    created_epoch: float = 0.0
 
 
 class SessionStore:
@@ -150,6 +155,10 @@ class SessionStore:
             if "dead" not in columns:
                 self._conn.execute(
                     f"ALTER TABLE {table} ADD COLUMN dead INTEGER NOT NULL DEFAULT 0"
+                )
+            if "poison_attempts" not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN poison_attempts INTEGER NOT NULL DEFAULT 0"
                 )
 
     def load(self) -> PersistedSession | None:
@@ -296,15 +305,17 @@ class SessionStore:
     def next_media_event(self, now_epoch: float) -> MediaOutboxItem | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT event_id, event_json, attempts, next_attempt_epoch FROM media_outbox "
-                "WHERE dead = 0 ORDER BY rowid LIMIT 1",
+                "SELECT event_id, event_json, attempts, next_attempt_epoch, created_epoch "
+                "FROM media_outbox WHERE dead = 0 ORDER BY rowid LIMIT 1",
             ).fetchone()
         if row is None or float(row[3]) > now_epoch:
             return None
         event = json.loads(row[1])
         if not isinstance(event, dict):
             raise ValueError("media outbox event_json is not an object")
-        return MediaOutboxItem(event_id=row[0], event=event, attempts=row[2])
+        return MediaOutboxItem(
+            event_id=row[0], event=event, attempts=row[2], created_epoch=float(row[4])
+        )
 
     def complete_media_event(self, event_id: str) -> None:
         with self._lock:
@@ -319,25 +330,83 @@ class SessionStore:
         next_attempt_epoch: float,
         last_error: str,
         max_attempts: int,
-    ) -> None:
-        """Record a failed forward attempt.
+        poison: bool = True,
+        expired: bool = False,
+    ) -> bool:
+        """Record a failed forward attempt; returns whether the item was dead-lettered.
 
-        When ``attempts`` reaches ``max_attempts`` the item is dead-lettered
-        (``dead = 1``) rather than left retryable: a permanently-failing head is
-        tried a bounded number of times, then parked so it stops blocking every
-        healthy item queued behind it. The attempt count and last error are still
-        recorded, so the parked item is surfaced (via /metrics and /health), never
+        Only a *poison* failure — the sibling refused the event outright, a 4xx —
+        counts toward ``max_attempts``: a permanently-refused head is tried a bounded
+        number of times, then parked (``dead = 1``) so it stops blocking every
+        healthy item queued behind it. A transient failure (door-media unreachable,
+        a 5xx) is an outage, and ARCHITECTURE.md §10 says events *queue* through an
+        outage: ``attempts`` still grows so the backoff does, but the row stays live.
+        ``expired`` is the forwarder saying the total retry window has run out,
+        which dead-letters regardless. The attempt count and last error are always
+        recorded, so a parked item is surfaced (via /metrics and /health), never
         silently dropped.
         """
-        dead = 1 if attempts >= max_attempts else 0
+        return self._retry_locked(
+            "media_outbox",
+            event_id,
+            attempts=attempts,
+            next_attempt_epoch=next_attempt_epoch,
+            last_error=last_error,
+            max_attempts=max_attempts,
+            poison=poison,
+            expired=expired,
+        )
+
+    def _retry_locked(
+        self,
+        table: str,
+        event_id: str,
+        *,
+        attempts: int,
+        next_attempt_epoch: float,
+        last_error: str,
+        max_attempts: int,
+        poison: bool,
+        expired: bool,
+    ) -> bool:
+        counted = 1 if poison else 0
         with self._lock:
             self._conn.execute(
-                "UPDATE media_outbox "
-                "SET attempts = ?, next_attempt_epoch = ?, last_error = ?, dead = ? "
+                f"UPDATE {table} "
+                "SET attempts = ?, poison_attempts = poison_attempts + ?, "
+                "next_attempt_epoch = ?, last_error = ?, "
+                "dead = CASE WHEN ? OR poison_attempts + ? >= ? THEN 1 ELSE 0 END "
                 "WHERE event_id = ?",
-                (attempts, next_attempt_epoch, last_error[:500], dead, event_id),
+                (
+                    attempts,
+                    counted,
+                    next_attempt_epoch,
+                    last_error[:500],
+                    int(expired),
+                    counted,
+                    max_attempts,
+                    event_id,
+                ),
+            )
+            row = self._conn.execute(
+                f"SELECT dead FROM {table} WHERE event_id = ?", (event_id,)
+            ).fetchone()
+            self._conn.commit()
+        return bool(row and row[0])
+
+    def _requeue_dead_locked(self, table: str) -> int:
+        """Put every dead-lettered row back in play, as if freshly queued."""
+        with self._lock:
+            cursor = self._conn.execute(
+                f"UPDATE {table} SET dead = 0, attempts = 0, poison_attempts = 0, "
+                "next_attempt_epoch = 0, created_epoch = strftime('%s','now') "
+                "WHERE dead = 1"
             )
             self._conn.commit()
+            return int(cursor.rowcount)
+
+    def requeue_dead_media_events(self) -> int:
+        return self._requeue_dead_locked("media_outbox")
 
     def media_outbox_depth(self) -> int:
         with self._lock:
@@ -397,15 +466,17 @@ class SessionStore:
     def next_sync_event(self, now_epoch: float) -> SyncOutboxItem | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT event_id, event_json, attempts, next_attempt_epoch FROM sync_outbox "
-                "WHERE dead = 0 ORDER BY rowid LIMIT 1",
+                "SELECT event_id, event_json, attempts, next_attempt_epoch, created_epoch "
+                "FROM sync_outbox WHERE dead = 0 ORDER BY rowid LIMIT 1",
             ).fetchone()
         if row is None or float(row[3]) > now_epoch:
             return None
         event = json.loads(row[1])
         if not isinstance(event, dict):
             raise ValueError("sync outbox event_json is not an object")
-        return SyncOutboxItem(event_id=row[0], event=event, attempts=row[2])
+        return SyncOutboxItem(
+            event_id=row[0], event=event, attempts=row[2], created_epoch=float(row[4])
+        )
 
     def complete_sync_event(self, event_id: str) -> None:
         with self._lock:
@@ -420,21 +491,27 @@ class SessionStore:
         next_attempt_epoch: float,
         last_error: str,
         max_attempts: int,
-    ) -> None:
-        """Record a failed forward attempt; dead-letter at the cap.
+        poison: bool = True,
+        expired: bool = False,
+    ) -> bool:
+        """Record a failed forward attempt; dead-letter only poison, or at the window.
 
-        See :meth:`retry_media_event` — same bounded-retry contract for the
-        sync outbox (door-sync delivery).
+        See :meth:`retry_media_event` — same contract for the sync outbox
+        (door-sync delivery).
         """
-        dead = 1 if attempts >= max_attempts else 0
-        with self._lock:
-            self._conn.execute(
-                "UPDATE sync_outbox "
-                "SET attempts = ?, next_attempt_epoch = ?, last_error = ?, dead = ? "
-                "WHERE event_id = ?",
-                (attempts, next_attempt_epoch, last_error[:500], dead, event_id),
-            )
-            self._conn.commit()
+        return self._retry_locked(
+            "sync_outbox",
+            event_id,
+            attempts=attempts,
+            next_attempt_epoch=next_attempt_epoch,
+            last_error=last_error,
+            max_attempts=max_attempts,
+            poison=poison,
+            expired=expired,
+        )
+
+    def requeue_dead_sync_events(self) -> int:
+        return self._requeue_dead_locked("sync_outbox")
 
     def sync_outbox_depth(self) -> int:
         with self._lock:

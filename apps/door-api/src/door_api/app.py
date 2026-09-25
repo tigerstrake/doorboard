@@ -53,7 +53,7 @@ from door_api.broadcast import DisplayBroadcast
 from door_api.config import SessionConfig
 from door_api.esp32_link import Esp32LinkSettings, Esp32LinkSupervisor
 from door_api.mqtt_bridge import MqttBridge
-from door_api.persistence import SessionStore
+from door_api.persistence import MediaOutboxItem, SessionStore, SyncOutboxItem
 from door_api.recognised_identity import RecognisedIdentity
 from door_api.service_proxy import (
     MEDIA_ROUTES,
@@ -84,6 +84,20 @@ from door_api.visitor_tokens import (
 )
 
 logger = logging.getLogger("door_api.app")
+
+
+def _classify_forward_failure(exc: Exception) -> tuple[str, bool]:
+    """``(last_error, poison)`` for a failed outbox forward.
+
+    Only a definite refusal is poison: an HTTP 4xx other than 408 (request
+    timeout) or 429 (throttled) means the sibling understood the event and will
+    not take it, and no retry changes that. A transport error (connection refused,
+    timeout) or a 5xx is an outage, which the outbox exists to ride out.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return f"HTTPStatusError {code}", 400 <= code < 500 and code not in (408, 429)
+    return type(exc).__name__, False
 
 
 def _visitor_reject_reason(exc: Exception) -> str:
@@ -706,22 +720,65 @@ class DoorApiState:
                 raise
             except Exception as exc:
                 self.media_forward_errors += 1
-                attempts = item.attempts + 1
-                delay_s = min(
-                    self.config.media_retry_max_s,
-                    self.config.media_retry_base_s * (2 ** min(attempts - 1, 16)),
-                )
-                self.store.retry_media_event(
-                    item.event_id,
-                    attempts=attempts,
-                    next_attempt_epoch=time.time() + delay_s,
-                    last_error=type(exc).__name__,
-                    max_attempts=self.config.media_forward_max_attempts,
-                )
+                self._record_forward_failure("media", item, exc)
+                # Yield before the next item: a failure that raises without ever
+                # suspending must not turn this loop into a spin on the event loop.
+                await asyncio.sleep(self.config.media_forward_poll_s)
                 continue
 
             self.store.complete_media_event(item.event_id)
             self.media_forward_successes += 1
+
+    def _record_forward_failure(
+        self, outbox: str, item: MediaOutboxItem | SyncOutboxItem, exc: Exception
+    ) -> None:
+        """Schedule the retry, and dead-letter only poison or a run-out window.
+
+        A sibling service down for two minutes used to park the head as dead after
+        ten connection refusals -- permanently losing session events and pinning
+        /health at degraded for an ordinary outage. Now only a definite refusal
+        counts toward the cap; an outage keeps retrying with the capped backoff
+        until the retry window (a day) has run out, and then says so loudly.
+        """
+        last_error, poison = _classify_forward_failure(exc)
+        attempts = item.attempts + 1
+        if outbox == "media":
+            base_s, max_s = self.config.media_retry_base_s, self.config.media_retry_max_s
+            max_attempts, window_s = (
+                self.config.media_forward_max_attempts,
+                self.config.media_retry_window_s,
+            )
+            retry = self.store.retry_media_event
+        else:
+            base_s, max_s = self.config.sync_retry_base_s, self.config.sync_retry_max_s
+            max_attempts, window_s = (
+                self.config.sync_forward_max_attempts,
+                self.config.sync_retry_window_s,
+            )
+            retry = self.store.retry_sync_event
+        delay_s = min(max_s, base_s * (2 ** min(attempts - 1, 16)))
+        now = time.time()
+        expired = (now - item.created_epoch) >= window_s
+        dead = retry(
+            item.event_id,
+            attempts=attempts,
+            next_attempt_epoch=now + delay_s,
+            last_error=last_error,
+            max_attempts=max_attempts,
+            poison=poison,
+            expired=expired,
+        )
+        if dead:
+            logger.error(
+                f"{outbox}_outbox_dead_lettered",
+                extra={
+                    "event_id": item.event_id,
+                    "event_type": item.event.get("type"),
+                    "attempts": attempts,
+                    "last_error": last_error,
+                    "reason": "refused" if poison else "retry_window_exceeded",
+                },
+            )
 
     def start_sync_forwarder(self) -> None:
         if self._sync_forward_task is not None:
@@ -756,18 +813,8 @@ class DoorApiState:
                 raise
             except Exception as exc:
                 self.sync_forward_errors += 1
-                attempts = item.attempts + 1
-                delay_s = min(
-                    self.config.sync_retry_max_s,
-                    self.config.sync_retry_base_s * (2 ** min(attempts - 1, 16)),
-                )
-                self.store.retry_sync_event(
-                    item.event_id,
-                    attempts=attempts,
-                    next_attempt_epoch=time.time() + delay_s,
-                    last_error=type(exc).__name__,
-                    max_attempts=self.config.sync_forward_max_attempts,
-                )
+                self._record_forward_failure("sync", item, exc)
+                await asyncio.sleep(self.config.sync_forward_poll_s)
                 continue
 
             self.store.complete_sync_event(item.event_id)
@@ -1680,6 +1727,26 @@ async def doorpad_session_end() -> dict[str, Any]:
     # already touched the identity on the way in — forgetting last is what sticks.
     state.identity.forget()
     return {"accepted": accepted, **state.snapshot_response()}
+
+
+@app.post("/admin/outbox/{outbox}/requeue-dead", dependencies=[Depends(_require_admin)])
+async def admin_outbox_requeue_dead(outbox: str) -> dict[str, Any]:
+    """Put an outbox's dead-lettered events back in play.
+
+    Dead-lettering is loud (``/health`` degraded, ``/metrics`` count) precisely so
+    the operator acts; this is the action. Rows come back as freshly queued —
+    attempts and the retry window reset — so a poison event that door-media has
+    since learned to accept, or a window that ran out during a long outage, can be
+    delivered after all rather than only deleted.
+    """
+    if outbox == "media":
+        requeued = state.store.requeue_dead_media_events()
+    elif outbox == "sync":
+        requeued = state.store.requeue_dead_sync_events()
+    else:
+        raise HTTPException(status_code=404, detail="unknown outbox")
+    logger.info("outbox_dead_requeued", extra={"outbox": outbox, "requeued": requeued})
+    return {"outbox": outbox, "requeued": requeued}
 
 
 @app.post("/admin/session/answer", dependencies=[Depends(_require_admin)])
