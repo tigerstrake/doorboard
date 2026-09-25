@@ -54,6 +54,10 @@ _Static_assert(
 #define DOORBOARD_UART_PORT_NUM 1
 #define DOORBOARD_UART_BAUD_RATE 115200
 #define DOORBOARD_BUTTON_DEBOUNCE_MS 40
+/* How often the input task re-reads the button level while a press is being
+ * released; the pin must read HIGH for DOORBOARD_BUTTON_DEBOUNCE_MS before the
+ * next falling edge counts. */
+#define DOORBOARD_BUTTON_SAMPLE_MS 10
 #define DOORBOARD_EFFECT_QUEUE_DEPTH 8
 #define DOORBOARD_LINK_QUEUE_DEPTH 8
 #define DOORBOARD_INPUT_QUEUE_DEPTH 8

@@ -6,6 +6,7 @@
 
 #include "door_protocol.h"
 #include "door_effects.h"
+#include "door_button.h"
 #include "doorboard_pinout.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
@@ -158,25 +159,38 @@ static void input_task(void *arg)
 {
     (void)arg;
     button_isr_event_t event;
-    uint64_t last_press_mono_ms = 0;
+    door_button_debounce_t debounce;
 
+    door_button_debounce_init(&debounce, DOORBOARD_BUTTON_DEBOUNCE_MS);
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     for (;;) {
-        if (xQueueReceive(
-                s_input_queue,
-                &event,
-                pdMS_TO_TICKS(WATCHDOG_QUEUE_WAIT_MS)
-            ) != pdTRUE) {
+        /*
+         * Armed: nothing to do but wait for the ISR. Disarmed (a press was
+         * accepted and its release not yet seen): poll the pin level so the
+         * debounce state machine can re-arm once it has read HIGH for the
+         * debounce interval -- a release bounce arriving after the human's
+         * hold no longer counts as a second press.
+         */
+        const bool armed = door_button_debounce_armed(&debounce);
+        TickType_t wait_ticks = armed
+            ? pdMS_TO_TICKS(WATCHDOG_QUEUE_WAIT_MS)
+            : pdMS_TO_TICKS(DOORBOARD_BUTTON_SAMPLE_MS);
+        if (xQueueReceive(s_input_queue, &event, wait_ticks) != pdTRUE) {
+            if (!armed) {
+                door_button_debounce_sample(
+                    &debounce,
+                    gpio_get_level(DOORBOARD_PIN_BUTTON_GPIO) != 0,
+                    mono_ms()
+                );
+            }
             esp_task_wdt_reset();
             continue;
         }
 
-        if (last_press_mono_ms != 0 &&
-            event.observed_at_mono_ms - last_press_mono_ms < DOORBOARD_BUTTON_DEBOUNCE_MS) {
+        if (!door_button_debounce_edge(&debounce, event.observed_at_mono_ms)) {
             esp_task_wdt_reset();
             continue;
         }
-        last_press_mono_ms = event.observed_at_mono_ms;
 
         /*
          * The local effect is scheduled before the link event is queued. This

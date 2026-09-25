@@ -8,6 +8,6 @@ idf_component_register(
     # esp_check.h (esp_common) — both common, both deliberately absent below.
     #
     # led_strip comes from the component registry; see main/idf_component.yml.
-    REQUIRES driver esp_timer door_protocol door_effects led_strip
+    REQUIRES driver esp_timer door_protocol door_effects door_button led_strip
 )
 
