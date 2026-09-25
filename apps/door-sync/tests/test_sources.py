@@ -212,5 +212,6 @@ def test_the_sse_client_has_a_read_timeout_longer_than_the_keepalive() -> None:
 
     assert SSE_KEEPALIVE_S == 30.0
     assert timeout.read == SSE_READ_TIMEOUT_S == 90.0
+    assert timeout.read is not None
     assert timeout.read > SSE_KEEPALIVE_S, "a timeout shorter than the keepalive reconnects forever"
     assert timeout.connect is not None
