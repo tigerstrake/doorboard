@@ -19,8 +19,10 @@ Greeting cooldown 30 s per person. Unknown faces: `vision.face_visible` only —
 The repository currently contains the complete privacy/matching pipeline and a
 hardware adapter boundary, but not a verified Hailo camera/model implementation.
 Hardware modes therefore fail closed to `disabled` unless runtime and model
-metadata can both be verified. Hardware bring-up remains gated by issue #84;
-the service must never claim `hailo_ok` while the placeholder adapter is active.
+metadata can both be verified. Hardware bring-up remains gated by issue #84.
+`hailo_ok` is true only while a real Hailo backend is inferring: the mock backend
+reports `hailo_ok: false` even as it emits scripted identities, so a dev box or CI
+run never reads as a door with working hardware.
 
 ## Modes
 

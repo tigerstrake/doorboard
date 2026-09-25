@@ -24,6 +24,8 @@ def test_health(client: TestClient) -> None:
     assert data["service"] == "door-visiond"
     assert data["mode"] == "mock"
     assert data["privacy_enabled"] is False
+    # Mock emits scripted identities but has no accelerator: it must not claim one.
+    assert data["hailo_ok"] is False
 
 
 def test_consent_endpoint_returns_canonical_statement_verbatim(
@@ -48,7 +50,7 @@ def test_metrics(client: TestClient) -> None:
 def test_metrics_export_recognition_state_gauges(client: TestClient) -> None:
     """A door sitting in `disabled` mode was invisible to Prometheus: nothing to page on."""
     lines = client.get("/metrics").text.splitlines()
-    assert "door_visiond_hailo_ok 0.0" in lines or "door_visiond_hailo_ok 1.0" in lines
+    assert "door_visiond_hailo_ok 0.0" in lines  # mock: no accelerator, see test_health
     assert "door_visiond_privacy_enabled 0.0" in lines
     assert "door_visiond_enrollment_locked 0.0" in lines
     # Neither hop is configured in mock, and that must read as "not ok", not as absent.

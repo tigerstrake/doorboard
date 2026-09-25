@@ -458,9 +458,13 @@ class ScriptedBackend:
         return capture
 
     def status(self) -> BackendStatus:
+        # A scripted run has no accelerator: its identities come from the script, not a
+        # Hailo. `hailo_ok` means "the device is inferring", so it is false here whatever
+        # mode label the backend wears — a dev box or CI must never read as a door with
+        # working hardware.
         return BackendStatus(
             mode=self._mode,
-            hailo_ok=self._mode != "disabled",
+            hailo_ok=False,
             fps=1.0 / self._interval_s if self._interval_s else 0.0,
             inference_ms_p50=self._last_inference_ms,
         )
