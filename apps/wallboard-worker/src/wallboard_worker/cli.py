@@ -202,7 +202,6 @@ def printer_status(mock: bool, state: str | None) -> None:
         config = PrinterConfig(
             octoprint_url=settings.octoprint_url,
             octoprint_api_key=settings.octoprint_api_key,
-            camera_stream_url=settings.printer_camera_stream_url,
         )
         provider = OctoPrintProvider(config)
 

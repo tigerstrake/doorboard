@@ -6,10 +6,17 @@ Task: T-604 (Gemini). Feature flag: `FEATURE_PRINTER`.
 - **Public screens never get printer control.** No pause/cancel/temperature endpoints exist in this adapter at all; control stays in the printer's own UI.
 - Interface: `PrinterProvider` with `mock` and `octoprint` implementations.
 
-## Camera Preview Stream Configuration
+## No camera stream
 
-To display a 3D printer camera preview stream securely:
-1. **Never expose the raw OctoPrint camera port** (e.g. `8080` or `5000`) directly on public screens or public frontends.
-2. Configure a proxied and relabeled stream URL via `door-media` or your NUC-side reverse proxy.
-3. Set the environment variable `PRINTER_CAMERA_STREAM_URL` on the worker to point to the secure proxied path.
-4. The frontend wallboard client retrieves the stream metadata from the control plane API.
+There is none. `ambient.printer_status` carries state, job name, progress and
+ETA and nothing else, and the wallboard's printer tile renders exactly that. A
+`PRINTER_CAMERA_STREAM_URL` setting existed for a while: it was parsed, passed
+into `PrinterConfig`, and read by nothing, while this README described a
+proxied webcam preview that no code implemented. It has been removed rather
+than left as a promise.
+
+If a preview is ever wanted it is a contract change (a new field on the
+payload, so an ADR) and a privacy question first: the raw OctoPrint camera
+port must never be reachable from a public screen, so any stream would have
+to be a NUC-side proxied, relabeled URL -- and a camera pointed at a desk is
+not obviously something a corridor-facing display should show at all.

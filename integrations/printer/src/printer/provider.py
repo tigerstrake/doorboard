@@ -17,7 +17,6 @@ PrinterState = Literal["idle", "printing", "paused", "error", "offline"]
 class PrinterConfig(BaseModel):
     octoprint_url: str
     octoprint_api_key: str
-    camera_stream_url: str = ""
 
 
 class PrinterProvider(abc.ABC):

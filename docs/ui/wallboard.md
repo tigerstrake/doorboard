@@ -11,7 +11,7 @@ Public 21.5–24" display. Two modes; visitor mode takes over on `session.state_
 | Birds | today's top species/counts | `ambient.bird_summary` |
 | Aircraft | nearby summary | `ambient.aircraft_summary` |
 | Next satellite pass | ISS/selected pass, rise time, direction | `ambient.satellite_pass` |
-| Printer | state/progress, optional thumbnail | `ambient.printer_status` |
+| Printer | state/progress/ETA (no camera or thumbnail — the payload carries none) | `ambient.printer_status` |
 | Mood | current mood check-in | `social.mood_updated` |
 | Scoreboard | casual roommate board | `social.scoreboard_updated` |
 | Food | daily recommendation | `ambient.food_recommendation` |

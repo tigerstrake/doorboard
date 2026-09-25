@@ -284,7 +284,6 @@ def build_jobs(settings: Settings, *, force_mock: bool = False) -> list[Schedule
                 PrinterConfig(
                     octoprint_url=settings.octoprint_url,
                     octoprint_api_key=settings.octoprint_api_key,
-                    camera_stream_url=settings.printer_camera_stream_url,
                 )
             )
         )

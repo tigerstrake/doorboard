@@ -159,7 +159,6 @@ class Settings(BaseSettings):
     feature_printer: bool = Field(default=False, alias="FEATURE_PRINTER")
     octoprint_url: str = Field(default="http://octopi.local", alias="OCTOPRINT_URL")
     octoprint_api_key: str = Field(default="", alias="OCTOPRINT_API_KEY")
-    printer_camera_stream_url: str = Field(default="", alias="PRINTER_CAMERA_STREAM_URL")
 
     feature_food: bool = Field(default=False, alias="FEATURE_FOOD")
     food_cache_path: str = Field(
