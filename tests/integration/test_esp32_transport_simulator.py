@@ -41,8 +41,10 @@ async def _fake_esp32_peer(
                 if isinstance(raw_boot_id, str):
                     sender_boot_id = raw_boot_id
             ack = fake.receive_from_pi(msg, sender_boot_id=sender_boot_id)
-            if ack is not None:
-                writer.write(encode_wire_message(ack))
+            frames = ([ack] if ack is not None else []) + fake.take_outbound()
+            for frame in frames:
+                writer.write(encode_wire_message(frame))
+            if frames:
                 await writer.drain()
     finally:
         writer.close()
@@ -161,6 +163,85 @@ def test_real_engine_receives_simulator_button_event_exactly_once() -> None:
         assert event.type == "door.button_pressed"
         assert str(event.payload.press_id) == msg.payload["press_id"]
         assert transport.metrics().duplicate_rx == 1
+        await transport.close()
+        peer_task.cancel()
+        await asyncio.gather(peer_task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_pi_recovers_when_the_controller_reboots_with_a_constant_boot_id() -> None:
+    # The firmware used to announce the same boot_id on every boot. The Pi's
+    # (boot_id, seq) dedupe then took the post-reboot hello (seq 1), heartbeats
+    # and button events for stale retransmits of the previous run and acked and
+    # dropped them until seq climbed back past the old high-water mark -- the
+    # bell was dead for as long as the controller had previously been up. The
+    # constant-boot_id knob reproduces that firmware; the Pi now treats a
+    # non-retransmit hello as a link restart and recovers on the spot.
+    async def run() -> None:
+        pi_reader, pi_writer, fake_reader, fake_writer = await open_socketpair_streams()
+        clock = SimClock()
+        fake = FakeEsp32Transport(clock, EventFactory(clock), random_boot_id=False)
+        peer_task = asyncio.create_task(_fake_esp32_peer(fake_reader, fake_writer, fake))
+        transport = Esp32ProtocolTransport.from_streams(
+            pi_reader,
+            pi_writer,
+            options=Esp32TransportOptions(
+                auto_start_tasks=False, dedupe_recent_window=8, event_queue_size=1024
+            ),
+        )
+        await transport.start()
+        events = transport.events()
+
+        # First boot: a hello and a run long enough to push the Pi's high-water
+        # mark well past the dedupe window.
+        await _send_fake_event(fake_writer, fake.make_hello())
+        for _ in range(20):
+            await _send_fake_event(fake_writer, await fake.heartbeat_from_esp32())
+        first_boot_id = fake.boot_id
+
+        fake.reboot()
+        assert fake.boot_id == first_boot_id
+        for frame in fake.take_outbound():  # the boot hello, seq 1 again
+            await _send_fake_event(fake_writer, frame)
+        press = await fake.emit_button_press()
+        assert press.seq == 2
+        await _send_fake_event(fake_writer, press)
+
+        event = await _next_event(events)
+        while event.type != "door.button_pressed":
+            event = await _next_event(events)
+
+        assert str(event.payload.press_id) == press.payload["press_id"]
+        assert transport.metrics().duplicate_rx == 0
+        assert transport.status().connected is True
+        await transport.close()
+        peer_task.cancel()
+        await asyncio.gather(peer_task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_pi_hello_is_answered_by_the_fake_and_learns_its_firmware() -> None:
+    async def run() -> None:
+        pi_reader, pi_writer, fake_reader, fake_writer = await open_socketpair_streams()
+        clock = SimClock()
+        fake = FakeEsp32Transport(clock, EventFactory(clock))
+        peer_task = asyncio.create_task(_fake_esp32_peer(fake_reader, fake_writer, fake))
+        transport = Esp32ProtocolTransport.from_streams(
+            pi_reader,
+            pi_writer,
+            options=Esp32TransportOptions(
+                pi_boot_id="pi-test", sw_version="doorboard-test", ack_timeout_ms=50
+            ),
+        )
+
+        await transport.start()  # sends the Pi's hello and awaits its ack
+        await asyncio.sleep(0.05)  # the fake's answering hello is right behind the ack
+
+        assert "hello" in fake.side_effects
+        assert transport.status().connected is True
+        assert transport.metrics().duplicate_rx == 0
         await transport.close()
         peer_task.cancel()
         await asyncio.gather(peer_task, return_exceptions=True)
