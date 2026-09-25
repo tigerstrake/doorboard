@@ -173,3 +173,34 @@ jobs:
         run: |
           .venv/bin/python -m tests.performance.harness --report-out latency-report.txt
           cat latency-report.txt >> $GITHUB_STEP_SUMMARY
+
+  # The device build cannot rot silently. The host harnesses in tests/firmware
+  # compile only the pure-C components; nothing else on this workflow ever
+  # compiled main.c against ESP-IDF, which is how a missing registry dependency
+  # went unnoticed (see main/idf_component.yml). Gated on firmware/** inside the
+  # job so the rest of the workflow is untouched.
+  firmware-build:
+    name: Firmware Device Build (ESP-IDF v5.3.2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: firmware
+        with:
+          filters: |
+            changed:
+              - 'firmware/**'
+      - name: Cache managed components
+        if: steps.firmware.outputs.changed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: firmware/esp32-door-controller/managed_components
+          key: idf-managed-${{ hashFiles('firmware/esp32-door-controller/dependencies.lock') }}
+      - name: idf.py build
+        if: steps.firmware.outputs.changed == 'true'
+        # set-target is explicit rather than trusting sdkconfig.defaults'
+        # CONFIG_IDF_TARGET_ESP32S3 to pick the chip on a fresh tree.
+        run: >-
+          docker run --rm -v "$PWD":/w -w /w/firmware/esp32-door-controller
+          espressif/idf:v5.3.2 idf.py set-target esp32s3 build
