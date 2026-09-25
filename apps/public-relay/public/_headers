@@ -1,7 +1,17 @@
 # Cloudflare Pages headers (ADR-0043). Replaces next.config.ts `headers()`, which does not run
 # under a static export. Keep in sync with the security posture there.
+#
+# The CSP is the cheap complement to ADR-0016 §9's accepted residual risk ("a compromised
+# deployment can serve JavaScript that exfiltrates plaintext before sealing"): it cannot stop a
+# malicious bundle from *reading* the photos and the name, but it removes every network sink
+# except this origin — fetch, beacon, <img>, forms, frames — which is exactly the exfiltration
+# path that risk describes. `'unsafe-inline'` for scripts is forced by Next's static-export
+# hydration; styles are inline too. `blob:`/`data:` images are the local camera previews.
+# HSTS closes the one-time downgrade on a typed URL (the QR itself is https).
 
 /*
+  Content-Security-Policy: default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
   Referrer-Policy: no-referrer
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
