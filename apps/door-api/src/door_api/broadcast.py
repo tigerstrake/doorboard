@@ -53,9 +53,25 @@ class DisplayBroadcast:
         """Update the snapshot that new clients receive on connect."""
         self._last_snapshot = snapshot
 
+    def broadcast_snapshot(self, snapshot: dict[str, Any] | None = None) -> None:
+        """Push a snapshot frame to every connected client, and keep it for new ones.
+
+        ``update_snapshot`` only changes what the *next* client is told. A kiosk that
+        was already connected when a recognised identity lapsed, or was cleared by
+        privacy mode, kept rendering a name the server had stopped honouring — the one
+        server-side "stop showing this" signal never reached a live screen. The event
+        client accepts a snapshot frame at any time, so this is the same envelope a
+        connect sends, just unprompted.
+        """
+        if snapshot is not None:
+            self._last_snapshot = snapshot
+        self._fan_out(json.dumps({"type": "snapshot", "state": self._last_snapshot}))
+
     def send_delta(self, event: dict[str, Any]) -> None:
         """Broadcast a transition delta to all connected clients."""
-        msg = json.dumps({"type": "delta", "event": event})
+        self._fan_out(json.dumps({"type": "delta", "event": event}))
+
+    def _fan_out(self, msg: str) -> None:
         stale: list[asyncio.Queue[str]] = []
         for queue in self._clients:
             try:

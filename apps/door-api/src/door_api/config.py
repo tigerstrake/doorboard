@@ -235,6 +235,14 @@ class SessionConfig:
     # some unrelated event triggers a broadcast.
     identity_sweep_interval_s: float = 2.0
 
+    # How often the /ws writer sends a ping frame when it has nothing else to say.
+    # The event client (packages/event-client) declares an OPEN socket stale after
+    # 45 s of silence and force-reconnects; the slowest guaranteed frame otherwise
+    # is door-media's storage status at 60 s, so a quiet-but-healthy door was
+    # reconnected every cycle. Well inside the watchdog, with margin for a busy Pi.
+    # 0 disables the keepalive.
+    ws_ping_interval_s: float = 15.0
+
     # Feature gate for the explicit photo-booth + private gallery flow.
     feature_photobooth: bool = False
 
@@ -371,6 +379,7 @@ class SessionConfig:
                 "DOOR_API_IDENTITY_INTERACTION_TTL_S", 120.0
             ),
             identity_sweep_interval_s=_env_float("DOOR_API_IDENTITY_SWEEP_INTERVAL_S", 2.0),
+            ws_ping_interval_s=_env_float("DOOR_API_WS_PING_INTERVAL_S", 15.0),
             feature_photobooth=_env_bool("FEATURE_PHOTOBOOTH", False),
             visitor_token_secret=os.environ.get(
                 "DOOR_API_VISITOR_TOKEN_SECRET",

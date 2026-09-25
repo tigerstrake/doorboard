@@ -505,6 +505,9 @@ class DoorApiState:
         # `event` is a discriminated union keyed on `type`; read `event.payload`
         # inside each branch so it narrows to the concrete payload type.
         changed = False
+        # A deletion clear is pushed to the kiosks already connected, not merely
+        # kept for the next one: the name has to come off the live screens now.
+        identity_cleared = False
         if event.type == "door.button_pressed":
             payload = event.payload
             changed = self.machine.handle_button_pressed(
@@ -549,6 +552,7 @@ class DoorApiState:
             # the person check inside it still sees who the session named.
             if payload.reason in ("admin", "privacy_mode"):
                 self.machine.forget_identity(payload.person_id)
+                identity_cleared = True
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "vision.privacy_mode_changed":
             payload = event.payload
@@ -559,6 +563,7 @@ class DoorApiState:
             if payload.enabled:
                 self.identity.forget()
                 self.machine.forget_identity()
+                identity_cleared = True
             self.broadcast.send_delta(event.model_dump(mode="json"))
         elif event.type == "door.contact_changed":
             payload = event.payload
@@ -583,7 +588,9 @@ class DoorApiState:
             dropped = self.store.enqueue_sync_event(as_dict)
             if dropped:
                 self.sync_forward_errors += dropped
-        if changed or event.type.startswith("vision."):
+        if identity_cleared:
+            self.broadcast.broadcast_snapshot(self.session_snapshot_dict())
+        elif changed or event.type.startswith("vision."):
             self.broadcast.update_snapshot(self.session_snapshot_dict())
         return changed
 
@@ -600,13 +607,17 @@ class DoorApiState:
         }
 
     def start_identity_sweeper(self) -> None:
-        """Push one snapshot when a recognised identity lapses.
+        """Push one snapshot to every connected kiosk when a recognised identity lapses.
 
         Expiry is lazy — ``RecognisedIdentity.current()`` only notices on read — and
         nothing else emits an event when the window runs out. So the badge and the named
         check-in button stayed on screen until some unrelated event happened to trigger a
         broadcast, which on a quiet door can be minutes. The visitor sees a name that the
         server has already stopped honouring.
+
+        Pushed, not merely stored: ``update_snapshot`` only changed what the next client
+        would be told, so a kiosk already connected received nothing at all — the
+        docstring above claimed a push and the code did not make one.
 
         Cheap by construction: it broadcasts on the *edge*, when a held identity becomes
         absent, never on a tick where nothing changed.
@@ -626,7 +637,7 @@ class DoorApiState:
             await asyncio.sleep(self.config.identity_sweep_interval_s)
             now_held = self.identity.current() is not None
             if held and not now_held:
-                self.broadcast.update_snapshot(self.session_snapshot_dict())
+                self.broadcast.broadcast_snapshot(self.session_snapshot_dict())
                 logger.info("recognised_identity_expired")
             held = now_held
 
@@ -2434,7 +2445,21 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     async def _send() -> None:
         while True:
-            msg = await queue.get()
+            # Nothing to say is not the same as gone. door-api pushes frames only when
+            # something happens, and the event client declares an OPEN socket stale
+            # after 45 s of silence and force-reconnects it; with the NUC quiet
+            # overnight the wallboard pulsed "RECONNECTING" all night while nothing
+            # was wrong, and every false reconnect re-applied the snapshot to the
+            # doorpad, yanking a visitor back to the state's default screen. A
+            # keepalive well inside that window keeps a quiet door honest.
+            interval = state.config.ws_ping_interval_s
+            try:
+                msg = await asyncio.wait_for(
+                    queue.get(), timeout=interval if interval > 0 else None
+                )
+            except TimeoutError:
+                await websocket.send_text(json.dumps({"type": "ping", "ts": int(time.time())}))
+                continue
             try:
                 decoded = json.loads(msg)
                 event_type = decoded.get("event", {}).get("type")
