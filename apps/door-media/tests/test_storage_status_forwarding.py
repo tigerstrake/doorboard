@@ -16,7 +16,7 @@ import uuid
 import pytest
 from door_media.emitter import emit_storage_status
 from door_media.event_forwarder import FORWARDED_EVENT_TYPES, EventForwarder
-from doorboard_contracts.events import DoorboardEvent
+from doorboard_contracts.events import DoorboardEvent, MediaStorageStatusEvent
 
 
 class _Recorder:
@@ -151,4 +151,6 @@ async def test_it_recovers_once_door_api_comes_back() -> None:
         await forwarder.stop()
 
     assert forwarder.forwarded == 1, "the second event should have got through"
-    assert transport.sent[-1].payload.recording_allowed is True
+    event = transport.sent[-1]
+    assert isinstance(event, MediaStorageStatusEvent)
+    assert event.payload.recording_allowed is True
