@@ -153,12 +153,19 @@ jobs:
       - name: Door UI browser tests
         run: pnpm --filter @doorboard/door-ui test:e2e
 
+      # The root suite (tests/e2e) is the only place the doorpad is checked at the
+      # 7" panel's 1024x600; it was never wired in and rotted unobserved.
+      - name: DoorPad 1024x600 browser tests
+        run: pnpm test:e2e
+
       - name: Upload Playwright failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-failure-artifacts
-          path: apps/door-ui/test-results
+          path: |
+            apps/door-ui/test-results
+            test-results
           if-no-files-found: ignore
           retention-days: 7
 
