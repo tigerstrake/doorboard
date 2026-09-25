@@ -5,34 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef enum {
-    MSG_UNKNOWN = 0,
-    MSG_HELLO,
-    MSG_HEARTBEAT,
-    MSG_PROFILE_UPDATE,
-    MSG_PROFILE_CLEAR,
-    MSG_EFFECT_PLAY,
-    MSG_BUTTON_EVENT,
-    MSG_KNOCK_EVENT,
-    MSG_CONTACT_EVENT,
-    MSG_ACK,
-} message_type_t;
-
-typedef struct {
-    int version;
-    uint32_t seq;
-    message_type_t type;
-    bool has_ack;
-    uint32_t ack;
-    char boot_id[DOOR_PROTOCOL_BOOT_ID_BYTES];
-    char profile_id[DOOR_PROTOCOL_PROFILE_ID_BYTES];
-    char priority[16];
-    char reason[24];
-    char effect_id[DOOR_PROTOCOL_EFFECT_ID_BYTES];
-    uint32_t ttl_ms;
-    uint32_t duration_ms;
-} parsed_message_t;
-
 static void copy_text(char *dst, size_t dst_len, const char *src)
 {
     if (dst_len == 0) {
@@ -53,6 +25,13 @@ static const char *skip_ws(const char *cursor)
     return cursor;
 }
 
+/*
+ * Locate `"key"` where it is an object member name: preceded (after optional
+ * whitespace) by `{` or `,` and followed (after optional whitespace) by `:`.
+ * A bare strstr also matched the same text inside a string *value* -- the Pi
+ * sorts keys, so `"profile_id":"t"` in the payload came before the top-level
+ * `"t"` and a profile named "t" made the frame unparseable.
+ */
 static const char *find_key(const char *json, const char *key)
 {
     char needle[48];
@@ -60,7 +39,21 @@ static const char *find_key(const char *json, const char *key)
     if (written <= 0 || (size_t)written >= sizeof(needle)) {
         return NULL;
     }
-    return strstr(json, needle);
+
+    const char *cursor = json;
+    while ((cursor = strstr(cursor, needle)) != NULL) {
+        const char *before = cursor;
+        while (before > json && (before[-1] == ' ' || before[-1] == '\t')) {
+            before--;
+        }
+        bool opens_member = before > json && (before[-1] == '{' || before[-1] == ',');
+        const char *after = skip_ws(cursor + written);
+        if (opens_member && *after == ':') {
+            return cursor;
+        }
+        cursor++;
+    }
+    return NULL;
 }
 
 static bool json_uint(const char *json, const char *key, uint32_t *value)
@@ -118,43 +111,44 @@ static bool json_string(const char *json, const char *key, char *out, size_t out
     return true;
 }
 
-static message_type_t parse_type(const char *text)
+static door_protocol_message_type_t parse_type(const char *text)
 {
     if (strcmp(text, "hello") == 0) {
-        return MSG_HELLO;
+        return DOOR_PROTOCOL_MSG_HELLO;
     }
     if (strcmp(text, "heartbeat") == 0) {
-        return MSG_HEARTBEAT;
+        return DOOR_PROTOCOL_MSG_HEARTBEAT;
     }
     if (strcmp(text, "profile_update") == 0) {
-        return MSG_PROFILE_UPDATE;
+        return DOOR_PROTOCOL_MSG_PROFILE_UPDATE;
     }
     if (strcmp(text, "profile_clear") == 0) {
-        return MSG_PROFILE_CLEAR;
+        return DOOR_PROTOCOL_MSG_PROFILE_CLEAR;
     }
     if (strcmp(text, "effect_play") == 0) {
-        return MSG_EFFECT_PLAY;
+        return DOOR_PROTOCOL_MSG_EFFECT_PLAY;
     }
     if (strcmp(text, "button_event") == 0) {
-        return MSG_BUTTON_EVENT;
+        return DOOR_PROTOCOL_MSG_BUTTON_EVENT;
     }
     if (strcmp(text, "knock_event") == 0) {
-        return MSG_KNOCK_EVENT;
+        return DOOR_PROTOCOL_MSG_KNOCK_EVENT;
     }
     if (strcmp(text, "contact_event") == 0) {
-        return MSG_CONTACT_EVENT;
+        return DOOR_PROTOCOL_MSG_CONTACT_EVENT;
     }
     if (strcmp(text, "ack") == 0) {
-        return MSG_ACK;
+        return DOOR_PROTOCOL_MSG_ACK;
     }
-    return MSG_UNKNOWN;
+    return DOOR_PROTOCOL_MSG_UNKNOWN;
 }
 
-static bool ack_required(message_type_t type)
+static bool ack_required(door_protocol_message_type_t type)
 {
-    return type == MSG_HELLO || type == MSG_PROFILE_UPDATE || type == MSG_PROFILE_CLEAR ||
-           type == MSG_EFFECT_PLAY || type == MSG_BUTTON_EVENT || type == MSG_KNOCK_EVENT ||
-           type == MSG_CONTACT_EVENT;
+    return type == DOOR_PROTOCOL_MSG_HELLO || type == DOOR_PROTOCOL_MSG_PROFILE_UPDATE ||
+           type == DOOR_PROTOCOL_MSG_PROFILE_CLEAR || type == DOOR_PROTOCOL_MSG_EFFECT_PLAY ||
+           type == DOOR_PROTOCOL_MSG_BUTTON_EVENT || type == DOOR_PROTOCOL_MSG_KNOCK_EVENT ||
+           type == DOOR_PROTOCOL_MSG_CONTACT_EVENT;
 }
 
 static bool next_seq(door_protocol_t *ctx, uint32_t *seq)
@@ -167,7 +161,7 @@ static bool next_seq(door_protocol_t *ctx, uint32_t *seq)
     return true;
 }
 
-static bool parse_message(const char *json, parsed_message_t *msg)
+static bool parse_message(const char *json, door_protocol_message_t *msg)
 {
     char type_text[32];
     uint32_t version = 0;
@@ -180,25 +174,25 @@ static bool parse_message(const char *json, parsed_message_t *msg)
 
     msg->version = (int)version;
     msg->type = parse_type(type_text);
-    if (msg->type == MSG_UNKNOWN) {
+    if (msg->type == DOOR_PROTOCOL_MSG_UNKNOWN) {
         return false;
     }
 
     msg->has_ack = json_uint(json, "ack", &msg->ack);
 
-    if (msg->type == MSG_HELLO) {
+    if (msg->type == DOOR_PROTOCOL_MSG_HELLO) {
         (void)json_string(json, "boot_id", msg->boot_id, sizeof(msg->boot_id));
-    } else if (msg->type == MSG_PROFILE_UPDATE) {
+    } else if (msg->type == DOOR_PROTOCOL_MSG_PROFILE_UPDATE) {
         if (!json_string(json, "profile_id", msg->profile_id, sizeof(msg->profile_id)) ||
             !json_uint(json, "ttl_ms", &msg->ttl_ms) ||
             !json_string(json, "priority", msg->priority, sizeof(msg->priority))) {
             return false;
         }
-    } else if (msg->type == MSG_PROFILE_CLEAR) {
+    } else if (msg->type == DOOR_PROTOCOL_MSG_PROFILE_CLEAR) {
         if (!json_string(json, "reason", msg->reason, sizeof(msg->reason))) {
             return false;
         }
-    } else if (msg->type == MSG_EFFECT_PLAY) {
+    } else if (msg->type == DOOR_PROTOCOL_MSG_EFFECT_PLAY) {
         if (!json_string(json, "effect_id", msg->effect_id, sizeof(msg->effect_id)) ||
             !json_uint(json, "duration_ms", &msg->duration_ms)) {
             return false;
@@ -261,6 +255,7 @@ static bool start_pending(door_protocol_t *ctx, uint32_t seq, const char *frame)
         return false;
     }
     if (ctx->pending_count >= DOOR_PROTOCOL_PENDING_DEPTH) {
+        ctx->stats.tx_dropped++;
         return false;
     }
 
@@ -316,9 +311,9 @@ static void ack_pending(door_protocol_t *ctx, uint32_t ack_seq)
     }
 }
 
-static void apply_message_once(door_protocol_t *ctx, const parsed_message_t *msg, uint64_t now_mono_ms)
+static void apply_message_once(door_protocol_t *ctx, const door_protocol_message_t *msg, uint64_t now_mono_ms)
 {
-    if (msg->type == MSG_HELLO) {
+    if (msg->type == DOOR_PROTOCOL_MSG_HELLO) {
         ctx->connected = true;
         ctx->fallback_active = false;
         ctx->have_pi_heartbeat = true;
@@ -326,10 +321,17 @@ static void apply_message_once(door_protocol_t *ctx, const parsed_message_t *msg
         if (msg->boot_id[0] != '\0') {
             copy_text(ctx->peer_boot_id, sizeof(ctx->peer_boot_id), msg->boot_id);
         }
+        /*
+         * Answer a Pi handshake with our own: the Pi learns fw_version and our
+         * boot_id, and resets its inbound dedupe against a link that has just
+         * (re)started. The boot-time hello alone reached only a Pi that was
+         * already listening.
+         */
+        (void)door_protocol_start_hello(ctx);
         return;
     }
 
-    if (msg->type == MSG_HEARTBEAT) {
+    if (msg->type == DOOR_PROTOCOL_MSG_HEARTBEAT) {
         ctx->connected = true;
         ctx->fallback_active = false;
         ctx->have_pi_heartbeat = true;
@@ -337,7 +339,7 @@ static void apply_message_once(door_protocol_t *ctx, const parsed_message_t *msg
         return;
     }
 
-    if (msg->type == MSG_PROFILE_UPDATE) {
+    if (msg->type == DOOR_PROTOCOL_MSG_PROFILE_UPDATE) {
         ctx->cached_profile.active = true;
         ctx->cached_profile.expires_at_mono_ms = now_mono_ms + msg->ttl_ms;
         copy_text(ctx->cached_profile.profile_id, sizeof(ctx->cached_profile.profile_id), msg->profile_id);
@@ -346,17 +348,22 @@ static void apply_message_once(door_protocol_t *ctx, const parsed_message_t *msg
         return;
     }
 
-    if (msg->type == MSG_PROFILE_CLEAR) {
+    if (msg->type == DOOR_PROTOCOL_MSG_PROFILE_CLEAR) {
         memset(&ctx->cached_profile, 0, sizeof(ctx->cached_profile));
         ctx->stats.profile_clears_applied++;
         return;
     }
 
-    if (msg->type == MSG_EFFECT_PLAY) {
+    if (msg->type == DOOR_PROTOCOL_MSG_EFFECT_PLAY) {
         ctx->stats.effect_plays_applied++;
-        if (ctx->effect_play_cb != NULL) {
-            ctx->effect_play_cb(msg->effect_id, msg->duration_ms, ctx->effect_play_cb_user);
-        }
+        /*
+         * Left for the caller to collect rather than delivered through a
+         * callback here: on the device this runs inside a critical section, and
+         * the effect queue must not be touched with interrupts masked.
+         */
+        ctx->effect_request.pending = true;
+        ctx->effect_request.duration_ms = msg->duration_ms;
+        copy_text(ctx->effect_request.effect_id, sizeof(ctx->effect_request.effect_id), msg->effect_id);
     }
 }
 
@@ -366,6 +373,7 @@ void door_protocol_init(door_protocol_t *ctx, const char *boot_id, const char *f
     copy_text(ctx->boot_id, sizeof(ctx->boot_id), boot_id);
     copy_text(ctx->fw_version, sizeof(ctx->fw_version), fw_version);
     ctx->fallback_active = true;
+    ctx->fallback_reported = true;
 }
 
 void door_protocol_apply_timeouts(door_protocol_t *ctx, uint64_t now_mono_ms)
@@ -434,6 +442,131 @@ bool door_protocol_make_uuid_v4(
     return written == 36;
 }
 
+size_t door_protocol_rx_byte(door_protocol_t *ctx, uint8_t byte, uint64_t now_mono_ms)
+{
+    bool stale = now_mono_ms - ctx->rx.last_byte_mono_ms >= DOOR_PROTOCOL_PARTIAL_FRAME_TIMEOUT_MS;
+
+    if (ctx->rx.discarding) {
+        if (byte == '\n' || stale) {
+            /* The oversize line ended, or the sender fell silent long enough
+             * that whatever follows is a new line, not the tail of that one. */
+            ctx->rx.discarding = false;
+        }
+        if (byte == '\n' || !stale) {
+            ctx->rx.last_byte_mono_ms = now_mono_ms;
+            return 0;
+        }
+    }
+
+    if (ctx->rx.len > 0 && stale) {
+        ctx->rx.len = 0;
+        ctx->stats.rx_errors++;
+    }
+    ctx->rx.last_byte_mono_ms = now_mono_ms;
+
+    if (byte == '\n') {
+        if (ctx->rx.len == 0) {
+            return 0;
+        }
+        ctx->rx.line[ctx->rx.len++] = '\n';
+        ctx->rx.line[ctx->rx.len] = '\0';
+        size_t line_len = ctx->rx.len;
+        ctx->rx.len = 0;
+        return line_len;
+    }
+
+    if (ctx->rx.len >= DOOR_PROTOCOL_MAX_FRAME_BYTES) {
+        ctx->rx.len = 0;
+        ctx->rx.discarding = true;
+        ctx->stats.rx_errors++;
+        return 0;
+    }
+
+    ctx->rx.line[ctx->rx.len++] = (char)byte;
+    return 0;
+}
+
+bool door_protocol_parse_line(const char *line, size_t line_len, door_protocol_message_t *msg)
+{
+    char buffer[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+
+    if (line == NULL || msg == NULL || line_len == 0) {
+        return false;
+    }
+    while (line_len > 0 && (line[line_len - 1] == '\n' || line[line_len - 1] == '\r')) {
+        line_len--;
+    }
+    if (line_len == 0 || line_len > DOOR_PROTOCOL_MAX_FRAME_BYTES) {
+        return false;
+    }
+    memcpy(buffer, line, line_len);
+    buffer[line_len] = '\0';
+
+    return parse_message(buffer, msg) && msg->version == DOOR_PROTOCOL_VERSION;
+}
+
+void door_protocol_count_rx_error(door_protocol_t *ctx)
+{
+    ctx->stats.rx_errors++;
+}
+
+door_protocol_rx_result_t door_protocol_apply_message(
+    door_protocol_t *ctx,
+    const door_protocol_message_t *msg,
+    uint64_t now_mono_ms,
+    const char *sender_boot_id,
+    char *ack_out,
+    size_t ack_out_len
+)
+{
+    bool duplicate = false;
+    const char *dedupe_boot_id = sender_boot_id;
+
+    if (ack_out_len > 0) {
+        ack_out[0] = '\0';
+    }
+    door_protocol_apply_timeouts(ctx, now_mono_ms);
+
+    if (msg->type == DOOR_PROTOCOL_MSG_ACK) {
+        if (msg->has_ack) {
+            ack_pending(ctx, msg->ack);
+        }
+        return DOOR_PROTOCOL_RX_ACCEPTED;
+    }
+
+    if ((dedupe_boot_id == NULL || dedupe_boot_id[0] == '\0') && msg->boot_id[0] != '\0') {
+        dedupe_boot_id = msg->boot_id;
+    }
+    if ((dedupe_boot_id == NULL || dedupe_boot_id[0] == '\0') && ctx->peer_boot_id[0] != '\0') {
+        dedupe_boot_id = ctx->peer_boot_id;
+    }
+    if (msg->type == DOOR_PROTOCOL_MSG_HELLO && msg->boot_id[0] != '\0' &&
+        strcmp(msg->boot_id, ctx->peer_boot_id) != 0) {
+        /*
+         * A hello from a boot we have not seen: the Pi's sequence numbers start
+         * over at 1, so nothing remembered from its previous run may dedupe them.
+         * The ring is keyed by boot_id, which already keeps the two runs apart;
+         * clearing it as well means a stale entry cannot outlive the run it came
+         * from, whatever boot_id the Pi advertises for frames after the hello.
+         */
+        forget_seen(ctx);
+    }
+    duplicate = remember_seen(ctx, dedupe_boot_id, msg->seq);
+    if (!duplicate) {
+        apply_message_once(ctx, msg, now_mono_ms);
+    }
+
+    if (ack_required(msg->type)) {
+        if (!make_ack(ctx, msg->seq, ack_out, ack_out_len)) {
+            ctx->stats.rx_errors++;
+            return DOOR_PROTOCOL_RX_DROPPED;
+        }
+        return DOOR_PROTOCOL_RX_ACK_EMITTED;
+    }
+
+    return DOOR_PROTOCOL_RX_ACCEPTED;
+}
+
 door_protocol_rx_result_t door_protocol_receive_from_pi(
     door_protocol_t *ctx,
     const char *line,
@@ -444,74 +577,44 @@ door_protocol_rx_result_t door_protocol_receive_from_pi(
     size_t ack_out_len
 )
 {
-    char buffer[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
-    parsed_message_t msg;
-    bool duplicate = false;
-    const char *dedupe_boot_id = sender_boot_id;
+    door_protocol_message_t msg;
+    char effect_id[DOOR_PROTOCOL_EFFECT_ID_BYTES];
+    uint32_t duration_ms = 0;
 
     if (ack_out_len > 0) {
         ack_out[0] = '\0';
     }
-    door_protocol_apply_timeouts(ctx, now_mono_ms);
-
-    if (line == NULL || line_len == 0 || line_len > DOOR_PROTOCOL_MAX_FRAME_BYTES) {
-        ctx->stats.rx_errors++;
+    if (!door_protocol_parse_line(line, line_len, &msg)) {
+        door_protocol_apply_timeouts(ctx, now_mono_ms);
+        door_protocol_count_rx_error(ctx);
         return DOOR_PROTOCOL_RX_DROPPED;
     }
 
-    while (line_len > 0 && (line[line_len - 1] == '\n' || line[line_len - 1] == '\r')) {
-        line_len--;
+    door_protocol_rx_result_t result =
+        door_protocol_apply_message(ctx, &msg, now_mono_ms, sender_boot_id, ack_out, ack_out_len);
+    if (ctx->effect_play_cb != NULL &&
+        door_protocol_take_effect_play(ctx, effect_id, sizeof(effect_id), &duration_ms)) {
+        ctx->effect_play_cb(effect_id, duration_ms, ctx->effect_play_cb_user);
     }
-    if (line_len > DOOR_PROTOCOL_MAX_FRAME_BYTES) {
-        ctx->stats.rx_errors++;
-        return DOOR_PROTOCOL_RX_DROPPED;
-    }
-    memcpy(buffer, line, line_len);
-    buffer[line_len] = '\0';
+    return result;
+}
 
-    if (!parse_message(buffer, &msg) || msg.version != DOOR_PROTOCOL_VERSION) {
-        ctx->stats.rx_errors++;
-        return DOOR_PROTOCOL_RX_DROPPED;
+bool door_protocol_take_effect_play(
+    door_protocol_t *ctx,
+    char *effect_id_out,
+    size_t effect_id_out_len,
+    uint32_t *duration_ms_out
+)
+{
+    if (!ctx->effect_request.pending) {
+        return false;
     }
-
-    if (msg.type == MSG_ACK) {
-        if (msg.has_ack) {
-            ack_pending(ctx, msg.ack);
-        }
-        return DOOR_PROTOCOL_RX_ACCEPTED;
+    copy_text(effect_id_out, effect_id_out_len, ctx->effect_request.effect_id);
+    if (duration_ms_out != NULL) {
+        *duration_ms_out = ctx->effect_request.duration_ms;
     }
-
-    if ((dedupe_boot_id == NULL || dedupe_boot_id[0] == '\0') && msg.boot_id[0] != '\0') {
-        dedupe_boot_id = msg.boot_id;
-    }
-    if ((dedupe_boot_id == NULL || dedupe_boot_id[0] == '\0') && ctx->peer_boot_id[0] != '\0') {
-        dedupe_boot_id = ctx->peer_boot_id;
-    }
-    if (msg.type == MSG_HELLO && msg.boot_id[0] != '\0' &&
-        strcmp(msg.boot_id, ctx->peer_boot_id) != 0) {
-        /*
-         * A hello from a boot we have not seen: the Pi's sequence numbers start
-         * over at 1, so nothing remembered from its previous run may dedupe them.
-         * The ring is keyed by boot_id, which already keeps the two runs apart;
-         * clearing it as well means a stale entry cannot outlive the run it came
-         * from, whatever boot_id the Pi advertises for frames after the hello.
-         */
-        forget_seen(ctx);
-    }
-    duplicate = remember_seen(ctx, dedupe_boot_id, msg.seq);
-    if (!duplicate) {
-        apply_message_once(ctx, &msg, now_mono_ms);
-    }
-
-    if (ack_required(msg.type)) {
-        if (!make_ack(ctx, msg.seq, ack_out, ack_out_len)) {
-            ctx->stats.rx_errors++;
-            return DOOR_PROTOCOL_RX_DROPPED;
-        }
-        return DOOR_PROTOCOL_RX_ACK_EMITTED;
-    }
-
-    return DOOR_PROTOCOL_RX_ACCEPTED;
+    memset(&ctx->effect_request, 0, sizeof(ctx->effect_request));
+    return true;
 }
 
 bool door_protocol_start_hello(door_protocol_t *ctx)
@@ -519,6 +622,11 @@ bool door_protocol_start_hello(door_protocol_t *ctx)
     uint32_t seq = 0;
     char frame[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
     int written = 0;
+
+    if (ctx->rx.len > 0) {
+        ctx->rx.len = 0;
+        ctx->stats.rx_errors++;
+    }
 
     if (!next_seq(ctx, &seq)) {
         return false;
@@ -536,6 +644,38 @@ bool door_protocol_start_hello(door_protocol_t *ctx)
         return false;
     }
     return start_pending(ctx, seq, frame);
+}
+
+bool door_protocol_fallback_edge(door_protocol_t *ctx, uint64_t now_mono_ms)
+{
+    door_protocol_apply_timeouts(ctx, now_mono_ms);
+    bool edge = ctx->fallback_active && !ctx->fallback_reported;
+    ctx->fallback_reported = ctx->fallback_active;
+    if (edge) {
+        (void)door_protocol_start_hello(ctx);
+    }
+    return edge;
+}
+
+door_protocol_press_followup_t door_protocol_press_followup(
+    door_protocol_t *ctx,
+    uint64_t now_mono_ms,
+    char *profile_id_out,
+    size_t profile_id_out_len
+)
+{
+    door_protocol_apply_timeouts(ctx, now_mono_ms);
+    if (profile_id_out_len > 0) {
+        profile_id_out[0] = '\0';
+    }
+    if (ctx->cached_profile.active) {
+        copy_text(profile_id_out, profile_id_out_len, ctx->cached_profile.profile_id);
+        return DOOR_PROTOCOL_PRESS_PROFILE;
+    }
+    if (ctx->fallback_active) {
+        return DOOR_PROTOCOL_PRESS_FALLBACK;
+    }
+    return DOOR_PROTOCOL_PRESS_GENERIC_ONLY;
 }
 
 bool door_protocol_emit_button_event(

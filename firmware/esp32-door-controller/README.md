@@ -15,7 +15,7 @@ Bell button (debounced GPIO), WS2812B LED ring, speaker via class-D amp (I2S/DAC
 | Generic feedback | Button press → LED+sound < **30 ms**, purely local, before any transmission (ISR-driven, no network/UART wait) |
 | Personalized feedback | Valid cached profile → personalized effect < **100 ms** total |
 | Profile cache | Single active profile: `{profile_id, expiry on local monotonic clock}` pushed by Pi (TTL-based, ADR-0006); expired = generic |
-| Knock detection | On-device pattern matching (piezo), emits `knock_event` — no hallway audio streaming, ever |
+| Knock detection | **Optional, planned.** Behind `CONFIG_DOORBOARD_ENABLE_KNOCK_DETECTION` (Kconfig, off by default); today the sensors task is a threshold stub that never fires. When implemented: on-device pattern matching (piezo), emits `knock_event` — no hallway audio streaming, ever |
 | Fallback | Pi heartbeat lost > 5 s → fallback animation/unavailable state; button keeps giving generic feedback |
 | Watchdog | Hardware watchdog; reboot lands in fallback state with working button |
 | Telemetry | 1 Hz heartbeat with uptime, fw version, cached profile, fallback flag |
@@ -95,17 +95,27 @@ The project skeleton is intentionally split along the required four tasks:
 | `input` | Button GPIO ISR, firmware debounce, immediate local `generic_press` effect scheduling, then link event enqueue |
 | `effects` | Placeholder `generic_press`, `fallback`, `blue_wave`, and `green_pulse` physical effects |
 | `link` | UART framing, ack/retry, inbound profile/effect handling, outbound button/knock/heartbeat frames |
-| `sensors` | Piezo threshold stub behind `CONFIG_DOORBOARD_ENABLE_KNOCK_DETECTION` |
+| `sensors` | Piezo threshold stub behind `CONFIG_DOORBOARD_ENABLE_KNOCK_DETECTION` (off by default; knock detection is optional and not yet implemented) |
 
 The wire protocol engine lives in `components/door_protocol`. It is pure C and includes only standard library headers, so host-side tests compile it directly without ESP-IDF or FreeRTOS. The module owns:
 
-- newline-delimited JSON framing with a 512-byte maximum;
+- newline-delimited JSON framing with a 512-byte maximum (newline excluded, matching the Pi): an
+  oversize line is skipped to its newline, a partial line older than 1 s is dropped, and both count
+  as `rx_errors`;
 - protocol version rejection and `rx_errors`;
 - ack generation for state-bearing Pi messages;
-- outbound retry state, 3 retries at 50 ms spacing;
-- `(boot_id, seq)` dedupe for inbound Pi messages;
+- outbound retry state, 3 retries at 50 ms spacing; a full pending queue counts `tx_dropped`;
+- `(boot_id, seq)` dedupe for inbound Pi messages, cleared when the Pi's boot_id changes;
+- a per-boot random `boot_id` (`door_protocol_make_boot_id`) so the Pi can tell a reboot from a
+  retransmit;
 - single cached profile with local monotonic expiry;
-- heartbeat-loss fallback after 5 seconds.
+- heartbeat-loss fallback after 5 seconds, re-sending `hello` on that edge and whenever the Pi
+  says `hello`; while in fallback a press plays the fallback animation after the generic flash.
+
+`main.c` keeps interrupts masked only around the state mutation: bytes are framed and copied out
+under the lock, the JSON is parsed outside it, and an `effect_play` is collected with
+`door_protocol_take_effect_play` after the lock is released so no FreeRTOS queue is touched inside a
+critical section.
 
 The firmware starts in fallback state after boot. Button feedback is local and is scheduled before any UART frame is queued, preserving the critical path when the Pi, NUC, NAS, or network is unavailable.
 

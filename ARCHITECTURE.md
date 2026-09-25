@@ -66,7 +66,7 @@ Each service has a full spec in its directory README. Every service exposes `GET
 | [wallboard-worker](apps/wallboard-worker/) | NUC | Scheduled jobs: satellite passes, aircraft polling, bird summaries, collages | Run on the door Pi |
 | [public-relay](apps/public-relay/) | Vercel | Public relay for phone enrollment (ciphertext only) and the visitor page (allow-listed public session state) | Hold a decryption key; receive an enrollee's name or photo in the clear; publish identity, media, or diagnostics; expose an admin surface; initiate anything toward the Pi |
 | [simulator](apps/simulator/) | dev | Fake button/vision/camera/outage events for hardware-free development | — |
-| [esp32-door-controller](firmware/esp32-door-controller/) | ESP32 | Button debounce, generic <30 ms feedback, profile cache, LED/audio, knock detection, watchdog fallback | Hold secrets; wait on anything before generic feedback |
+| [esp32-door-controller](firmware/esp32-door-controller/) | ESP32 | Button debounce, generic <30 ms feedback, profile cache, LED/audio, watchdog fallback; knock detection is optional and planned (`CONFIG_DOORBOARD_ENABLE_KNOCK_DETECTION`, off by default, stub only) | Hold secrets; wait on anything before generic feedback |
 
 ## 4. Latency budgets (measured, not assumed)
 

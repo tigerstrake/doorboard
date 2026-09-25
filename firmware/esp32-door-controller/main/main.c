@@ -184,16 +184,22 @@ static void input_task(void *arg)
          */
         enqueue_effect(DOOR_EFFECT_GENERIC_PRESS, NULL);
 
-        portENTER_CRITICAL(&s_protocol_mux);
-        const char *profile_id = door_protocol_cached_profile_id(&s_protocol, event.observed_at_mono_ms);
         char cached_profile[DOOR_PROTOCOL_PROFILE_ID_BYTES] = {0};
-        if (profile_id != NULL) {
-            snprintf(cached_profile, sizeof(cached_profile), "%s", profile_id);
-        }
+        portENTER_CRITICAL(&s_protocol_mux);
+        door_protocol_press_followup_t followup = door_protocol_press_followup(
+            &s_protocol,
+            event.observed_at_mono_ms,
+            cached_profile,
+            sizeof(cached_profile)
+        );
         portEXIT_CRITICAL(&s_protocol_mux);
 
-        if (cached_profile[0] != '\0') {
+        if (followup == DOOR_PROTOCOL_PRESS_PROFILE) {
             enqueue_effect(profile_effect_for_id(cached_profile), cached_profile);
+        } else if (followup == DOOR_PROTOCOL_PRESS_FALLBACK) {
+            /* Fallback is a state, not a one-shot: while the Pi is lost every
+             * press shows it, as the wire protocol doc requires. */
+            enqueue_effect(DOOR_EFFECT_FALLBACK, NULL);
         }
 
         link_button_event_t link_event = {
@@ -377,35 +383,65 @@ static void protocol_send_due(uint64_t now_mono_ms)
 
 static void handle_uart_rx(uint64_t now_mono_ms)
 {
-    static char line[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
-    static size_t line_len;
     uint8_t byte = 0;
+    char line[DOOR_PROTOCOL_MAX_FRAME_BYTES + 2];
     char ack[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    char effect_id[DOOR_PROTOCOL_EFFECT_ID_BYTES];
+    uint32_t effect_duration_ms = 0;
+    door_protocol_message_t msg;
 
     while (uart_read_bytes(DOORBOARD_UART_PORT_NUM, &byte, 1, 0) == 1) {
-        if (line_len >= DOOR_PROTOCOL_MAX_FRAME_BYTES) {
-            line_len = 0;
+        /*
+         * The framer (partial-line timeout, oversize discard) lives in the
+         * protocol context; the completed line is copied out under the lock and
+         * parsed with interrupts enabled. Only the apply step, which mutates
+         * shared state, runs inside the critical section, and it never touches
+         * a FreeRTOS queue: an effect_play is collected afterwards.
+         */
+        portENTER_CRITICAL(&s_protocol_mux);
+        size_t line_len = door_protocol_rx_byte(&s_protocol, byte, now_mono_ms);
+        if (line_len > 0) {
+            memcpy(line, s_protocol.rx.line, line_len + 1);
         }
-        line[line_len++] = (char)byte;
-        if (byte != '\n') {
+        portEXIT_CRITICAL(&s_protocol_mux);
+        if (line_len == 0) {
             continue;
         }
 
+        bool parsed = door_protocol_parse_line(line, line_len, &msg);
+        door_protocol_rx_result_t result = DOOR_PROTOCOL_RX_DROPPED;
+        bool have_effect = false;
+
         portENTER_CRITICAL(&s_protocol_mux);
-        door_protocol_rx_result_t result = door_protocol_receive_from_pi(
-            &s_protocol,
-            line,
-            line_len,
-            now_mono_ms,
-            NULL,
-            ack,
-            sizeof(ack)
-        );
+        if (parsed) {
+            result = door_protocol_apply_message(
+                &s_protocol,
+                &msg,
+                now_mono_ms,
+                NULL,
+                ack,
+                sizeof(ack)
+            );
+            have_effect = door_protocol_take_effect_play(
+                &s_protocol,
+                effect_id,
+                sizeof(effect_id),
+                &effect_duration_ms
+            );
+        } else {
+            door_protocol_count_rx_error(&s_protocol);
+        }
         portEXIT_CRITICAL(&s_protocol_mux);
+
         if (result == DOOR_PROTOCOL_RX_ACK_EMITTED) {
             uart_write_frame(ack);
         }
-        line_len = 0;
+        if (have_effect) {
+            door_effect_id_t id = door_effect_from_name(effect_id);
+            if (id != DOOR_EFFECT_NONE) {
+                enqueue_effect(id, NULL);
+            }
+        }
     }
 }
 
@@ -429,7 +465,6 @@ static void link_task(void *arg)
     link_button_event_t button_event;
     uint64_t last_heartbeat_mono_ms = 0;
     uint64_t last_drop_log_mono_ms = 0;
-    bool fallback_was_active = true;
 
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
 
@@ -457,15 +492,14 @@ static void link_task(void *arg)
                 heartbeat,
                 sizeof(heartbeat)
             );
-            bool fallback_active = s_protocol.fallback_active;
+            bool entered_fallback = door_protocol_fallback_edge(&s_protocol, now);
             portEXIT_CRITICAL(&s_protocol_mux);
             if (have_heartbeat) {
                 uart_write_frame(heartbeat);
             }
-            if (fallback_active && !fallback_was_active) {
+            if (entered_fallback) {
                 enqueue_effect(DOOR_EFFECT_FALLBACK, NULL);
             }
-            fallback_was_active = fallback_active;
             last_heartbeat_mono_ms = now;
         }
 
@@ -599,20 +633,17 @@ static void configure_watchdog(void)
         .idle_core_mask = 0,
         .trigger_panic = true,
     };
-    esp_err_t err = esp_task_wdt_init(&twdt_config);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_ERROR_CHECK(err);
+    /*
+     * sdkconfig.defaults already initialises the TWDT during boot, so
+     * esp_task_wdt_init() returned ESP_ERR_INVALID_STATE and these values were
+     * never applied. esp_task_wdt_reconfigure() (IDF 5.x) changes a running
+     * watchdog; init() is only the fallback for a build that left it disabled.
+     */
+    esp_err_t err = esp_task_wdt_reconfigure(&twdt_config);
+    if (err == ESP_ERR_INVALID_STATE) {
+        err = esp_task_wdt_init(&twdt_config);
     }
-}
-
-static void on_effect_play_received(const char *effect_id, uint32_t duration_ms, void *user)
-{
-    (void)duration_ms;
-    (void)user;
-    door_effect_id_t id = door_effect_from_name(effect_id);
-    if (id != DOOR_EFFECT_NONE) {
-        enqueue_effect(id, NULL);
-    }
+    ESP_ERROR_CHECK(err);
 }
 
 void app_main(void)
@@ -640,8 +671,6 @@ void app_main(void)
         door_protocol_make_boot_id(s_boot_id, sizeof(s_boot_id), esp_random) ? ESP_OK : ESP_FAIL
     );
     door_protocol_init(&s_protocol, s_boot_id, "t-101-0.1.0");
-    s_protocol.effect_play_cb = on_effect_play_received;
-    s_protocol.effect_play_cb_user = NULL;
 
     configure_gpio();
     configure_leds();

@@ -389,6 +389,389 @@ static void test_peer_reboot_resets_dedupe_identity_for_frames_without_boot_id(v
     assert(esp32.stats.profile_updates_applied == 2);
 }
 
+static void test_pending_queue_overflow_counts_tx_dropped(void)
+{
+    door_protocol_t esp32;
+    char press_id[DOOR_PROTOCOL_PRESS_ID_BYTES];
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+    for (int index = 0; index < DOOR_PROTOCOL_PENDING_DEPTH; index++) {
+        snprintf(press_id, sizeof(press_id), "00000000-0000-4000-8000-%012d", index);
+        assert(door_protocol_emit_button_event(&esp32, press_id, (uint64_t)index));
+    }
+    assert(esp32.pending_count == DOOR_PROTOCOL_PENDING_DEPTH);
+    assert(esp32.stats.tx_dropped == 0);
+
+    assert(!door_protocol_emit_button_event(&esp32, "00000000-0000-4000-8000-000000000099", 99));
+    assert(esp32.stats.tx_dropped == 1);
+    assert(esp32.pending_count == DOOR_PROTOCOL_PENDING_DEPTH);
+}
+
+static void test_seen_ring_evicts_after_sixteen_frames(void)
+{
+    door_protocol_t esp32;
+    char ack[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    char frame[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    const size_t ring = sizeof(esp32.seen) / sizeof(esp32.seen[0]);
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+    for (size_t seq = 1; seq <= ring; seq++) {
+        snprintf(
+            frame,
+            sizeof(frame),
+            "{\"v\":1,\"seq\":%zu,\"t\":\"profile_update\",\"ack\":null,\"p\":{\"profile_id\":"
+            "\"blue_wave\",\"ttl_ms\":2500,\"priority\":\"normal\"}}\n",
+            seq
+        );
+        assert(door_protocol_receive_from_pi(
+            &esp32, frame, strlen(frame), seq, "pi-boot", ack, sizeof(ack)
+        ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    }
+    assert(esp32.stats.profile_updates_applied == ring);
+
+    /* seq 1 is still remembered: the ring is exactly full. */
+    snprintf(
+        frame,
+        sizeof(frame),
+        "{\"v\":1,\"seq\":1,\"t\":\"profile_update\",\"ack\":null,\"p\":{\"profile_id\":"
+        "\"blue_wave\",\"ttl_ms\":2500,\"priority\":\"normal\"}}\n"
+    );
+    assert(door_protocol_receive_from_pi(
+        &esp32, frame, strlen(frame), 20, "pi-boot", ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(esp32.stats.profile_updates_applied == ring);
+
+    /* One more distinct frame evicts the oldest entry (seq 1) ... */
+    snprintf(
+        frame,
+        sizeof(frame),
+        "{\"v\":1,\"seq\":%zu,\"t\":\"profile_update\",\"ack\":null,\"p\":{\"profile_id\":"
+        "\"blue_wave\",\"ttl_ms\":2500,\"priority\":\"normal\"}}\n",
+        ring + 1
+    );
+    assert(door_protocol_receive_from_pi(
+        &esp32, frame, strlen(frame), 21, "pi-boot", ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(esp32.stats.profile_updates_applied == ring + 1);
+
+    /* ... so a replay of seq 1 is applied again. */
+    snprintf(
+        frame,
+        sizeof(frame),
+        "{\"v\":1,\"seq\":1,\"t\":\"profile_update\",\"ack\":null,\"p\":{\"profile_id\":"
+        "\"blue_wave\",\"ttl_ms\":2500,\"priority\":\"normal\"}}\n"
+    );
+    assert(door_protocol_receive_from_pi(
+        &esp32, frame, strlen(frame), 22, "pi-boot", ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(esp32.stats.profile_updates_applied == ring + 2);
+}
+
+static char cb_effect_id[DOOR_PROTOCOL_EFFECT_ID_BYTES];
+static uint32_t cb_duration_ms;
+static int cb_calls;
+
+static void record_effect_play(const char *effect_id, uint32_t duration_ms, void *user)
+{
+    int *calls = (int *)user;
+    snprintf(cb_effect_id, sizeof(cb_effect_id), "%s", effect_id);
+    cb_duration_ms = duration_ms;
+    (*calls)++;
+}
+
+static void test_effect_play_reaches_callback_once_and_is_collectable_without_one(void)
+{
+    door_protocol_t esp32;
+    char ack[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    char taken_id[DOOR_PROTOCOL_EFFECT_ID_BYTES];
+    uint32_t taken_duration = 0;
+    const char *frame =
+        "{\"v\":1,\"seq\":1,\"t\":\"effect_play\",\"ack\":null,\"p\":{\"effect_id\":\"sparkle\","
+        "\"duration_ms\":900}}\n";
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+    esp32.effect_play_cb = record_effect_play;
+    esp32.effect_play_cb_user = &cb_calls;
+    cb_calls = 0;
+
+    assert(door_protocol_receive_from_pi(
+        &esp32, frame, strlen(frame), 0, "pi-boot", ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(cb_calls == 1);
+    assert(strcmp(cb_effect_id, "sparkle") == 0);
+    assert(cb_duration_ms == 900);
+    assert(esp32.stats.effect_plays_applied == 1);
+    /* Delivered through the callback: nothing left to collect. */
+    assert(!door_protocol_take_effect_play(&esp32, taken_id, sizeof(taken_id), &taken_duration));
+
+    /* A retransmit is acked but not replayed. */
+    assert(door_protocol_receive_from_pi(
+        &esp32, frame, strlen(frame), 1, "pi-boot", ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(cb_calls == 1);
+
+    /* Without a callback (the device path, which holds a lock around apply) the
+     * request waits in the context for the caller to collect it. */
+    esp32.effect_play_cb = NULL;
+    door_protocol_message_t msg;
+    const char *second =
+        "{\"v\":1,\"seq\":2,\"t\":\"effect_play\",\"ack\":null,\"p\":{\"effect_id\":\"rainbow\","
+        "\"duration_ms\":1500}}\n";
+    assert(door_protocol_parse_line(second, strlen(second), &msg));
+    assert(msg.type == DOOR_PROTOCOL_MSG_EFFECT_PLAY);
+    assert(door_protocol_apply_message(&esp32, &msg, 2, "pi-boot", ack, sizeof(ack)) ==
+           DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(door_protocol_take_effect_play(&esp32, taken_id, sizeof(taken_id), &taken_duration));
+    assert(strcmp(taken_id, "rainbow") == 0);
+    assert(taken_duration == 1500);
+    assert(!door_protocol_take_effect_play(&esp32, taken_id, sizeof(taken_id), &taken_duration));
+    assert(cb_calls == 1);
+}
+
+static void test_pi_hello_after_peer_is_known_is_answered_with_a_hello(void)
+{
+    door_protocol_t esp32;
+    char ack[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    char tx[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    const char *hello_one =
+        "{\"v\":1,\"seq\":1,\"t\":\"hello\",\"ack\":null,\"p\":{\"sw_version\":"
+        "\"doorboard-test\",\"proto_v\":1,\"boot_id\":\"pi-boot-one\"}}\n";
+    const char *hello_two =
+        "{\"v\":1,\"seq\":1,\"t\":\"hello\",\"ack\":null,\"p\":{\"sw_version\":"
+        "\"doorboard-test\",\"proto_v\":1,\"boot_id\":\"pi-boot-two\"}}\n";
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+    assert(door_protocol_receive_from_pi(
+        &esp32, hello_one, strlen(hello_one), 0, NULL, ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(strcmp(esp32.peer_boot_id, "pi-boot-one") == 0);
+    /* The ack was built after our hello was queued, so it carries the next seq. */
+    assert(door_protocol_next_tx(&esp32, 0, tx, sizeof(tx)));
+    assert_contains(tx, "\"t\":\"hello\"");
+    assert_contains(tx, "\"seq\":1");
+    assert_contains(ack, "\"seq\":2");
+    door_protocol_message_t pi_ack;
+    const char *ack_frame = "{\"v\":1,\"seq\":2,\"t\":\"ack\",\"ack\":1,\"p\":{}}\n";
+    assert(door_protocol_parse_line(ack_frame, strlen(ack_frame), &pi_ack));
+    assert(door_protocol_apply_message(&esp32, &pi_ack, 1, NULL, ack, sizeof(ack)) ==
+           DOOR_PROTOCOL_RX_ACCEPTED);
+    assert(esp32.pending_count == 0);
+
+    /* A retransmitted hello: acked, no second handshake from our side. */
+    assert(door_protocol_receive_from_pi(
+        &esp32, hello_one, strlen(hello_one), 2, NULL, ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(esp32.pending_count == 0);
+
+    /* The Pi restarted: new boot_id, and we introduce ourselves again. */
+    assert(door_protocol_receive_from_pi(
+        &esp32, hello_two, strlen(hello_two), 3, NULL, ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(strcmp(esp32.peer_boot_id, "pi-boot-two") == 0);
+    assert(esp32.pending_count == 1);
+    assert(door_protocol_next_tx(&esp32, 3, tx, sizeof(tx)));
+    assert_contains(tx, "\"t\":\"hello\"");
+    assert_contains(tx, "\"boot_id\":\"esp32-test\"");
+}
+
+static size_t feed_bytes(door_protocol_t *esp32, const char *bytes, uint64_t now_mono_ms)
+{
+    size_t line_len = 0;
+
+    for (const char *cursor = bytes; *cursor != '\0'; cursor++) {
+        size_t ready = door_protocol_rx_byte(esp32, (uint8_t)*cursor, now_mono_ms);
+        if (ready > 0) {
+            line_len = ready;
+        }
+    }
+    return line_len;
+}
+
+static void test_partial_frame_is_discarded_after_silence_and_on_hello(void)
+{
+    door_protocol_t esp32;
+    door_protocol_message_t msg;
+    const char *heartbeat =
+        "{\"v\":1,\"seq\":7,\"t\":\"heartbeat\",\"ack\":null,\"p\":{\"uptime_s\":1,"
+        "\"fallback_active\":false}}\n";
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+
+    /* Half a frame, then a second of silence: the stale prefix must not be
+     * glued onto the next frame. */
+    assert(feed_bytes(&esp32, "{\"v\":1,\"seq\":", 100) == 0);
+    assert(esp32.rx.len > 0);
+    size_t line_len = feed_bytes(&esp32, heartbeat, 1100);
+    assert(line_len == strlen(heartbeat));
+    assert(esp32.stats.rx_errors == 1);
+    assert(door_protocol_parse_line(esp32.rx.line, line_len, &msg));
+    assert(msg.type == DOOR_PROTOCOL_MSG_HEARTBEAT);
+    assert(msg.seq == 7);
+
+    /* Within the timeout a frame may still arrive in pieces. */
+    assert(feed_bytes(&esp32, "{\"v\":1,\"seq\":8,", 2000) == 0);
+    line_len = feed_bytes(&esp32, "\"t\":\"heartbeat\",\"ack\":null,\"p\":{}}\n", 2500);
+    assert(line_len > 0);
+    assert(door_protocol_parse_line(esp32.rx.line, line_len, &msg));
+    assert(msg.seq == 8);
+    assert(esp32.stats.rx_errors == 1);
+
+    /* A hello (link restart) drops whatever was half-received. */
+    assert(feed_bytes(&esp32, "{\"v\":1,", 3000) == 0);
+    assert(door_protocol_start_hello(&esp32));
+    assert(esp32.rx.len == 0);
+    assert(esp32.stats.rx_errors == 2);
+
+    /* A bare newline is not a frame and not an error. */
+    assert(feed_bytes(&esp32, "\n", 3001) == 0);
+    assert(esp32.stats.rx_errors == 2);
+}
+
+static void test_oversize_line_is_skipped_to_its_newline(void)
+{
+    door_protocol_t esp32;
+    door_protocol_message_t msg;
+    char oversize[DOOR_PROTOCOL_MAX_FRAME_BYTES + 2 + 1];
+    char at_cap[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1 + 1];
+    const char *heartbeat =
+        "{\"v\":1,\"seq\":9,\"t\":\"heartbeat\",\"ack\":null,\"p\":{\"uptime_s\":1,"
+        "\"fallback_active\":false}}\n";
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+
+    /* 513 payload bytes: over the cap the Pi applies (512 excluding '\n'). Nothing
+     * of it -- not even its tail -- may surface as a line, and it counts once. */
+    memset(oversize, 'x', sizeof(oversize) - 1);
+    oversize[sizeof(oversize) - 2] = '\n';
+    oversize[sizeof(oversize) - 1] = '\0';
+    assert(feed_bytes(&esp32, oversize, 100) == 0);
+    assert(esp32.stats.rx_errors == 1);
+    assert(!esp32.rx.discarding);
+
+    size_t line_len = feed_bytes(&esp32, heartbeat, 200);
+    assert(line_len == strlen(heartbeat));
+    assert(door_protocol_parse_line(esp32.rx.line, line_len, &msg));
+    assert(msg.seq == 9);
+    assert(esp32.stats.rx_errors == 1);
+
+    /* Exactly 512 payload bytes is a line (the parser then rejects it as JSON). */
+    memset(at_cap, 'y', sizeof(at_cap) - 1);
+    at_cap[sizeof(at_cap) - 2] = '\n';
+    at_cap[sizeof(at_cap) - 1] = '\0';
+    line_len = feed_bytes(&esp32, at_cap, 300);
+    assert(line_len == DOOR_PROTOCOL_MAX_FRAME_BYTES + 1);
+    assert(!door_protocol_parse_line(esp32.rx.line, line_len, &msg));
+    assert(esp32.stats.rx_errors == 1);
+
+    /* An oversize line whose sender goes quiet mid-line: after the partial-frame
+     * timeout the next bytes are a fresh line, not more of the junk. */
+    memset(oversize, 'z', sizeof(oversize) - 1);
+    oversize[sizeof(oversize) - 2] = 'z';
+    oversize[sizeof(oversize) - 1] = '\0';
+    assert(feed_bytes(&esp32, oversize, 400) == 0);
+    assert(esp32.rx.discarding);
+    assert(esp32.stats.rx_errors == 2);
+    line_len = feed_bytes(&esp32, heartbeat, 1500);
+    assert(line_len == strlen(heartbeat));
+    assert(door_protocol_parse_line(esp32.rx.line, line_len, &msg));
+    assert(msg.seq == 9);
+}
+
+static void test_key_lookup_ignores_matching_string_values(void)
+{
+    door_protocol_t esp32;
+    char ack[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    /* Keys sorted the way the Pi's json.dumps(sort_keys=True) emits them: the
+     * payload's "profile_id":"t" comes before the top-level "t" key, and a
+     * priority of "seq" sits before "seq" -- an unanchored search matched the
+     * values. */
+    const char *frame =
+        "{\"ack\":null,\"p\":{\"priority\":\"seq\",\"profile_id\":\"t\",\"ttl_ms\":2500},"
+        "\"seq\":11,\"t\":\"profile_update\",\"v\":1}\n";
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+    assert(door_protocol_receive_from_pi(
+        &esp32, frame, strlen(frame), 0, "pi-boot", ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert_contains(ack, "\"ack\":11");
+    assert(strcmp(door_protocol_cached_profile_id(&esp32, 0), "t") == 0);
+    assert(strcmp(esp32.cached_profile.priority, "seq") == 0);
+    assert(esp32.stats.rx_errors == 0);
+}
+
+static void test_fallback_edge_fires_once_and_requeues_hello(void)
+{
+    door_protocol_t esp32;
+    char ack[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    char tx[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    const char *hello =
+        "{\"v\":1,\"seq\":1,\"t\":\"hello\",\"ack\":null,\"p\":{\"sw_version\":\"doorboard-test\","
+        "\"proto_v\":1,\"boot_id\":\"pi-test\"}}\n";
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+    /* Boot state is fallback but is not an edge: no animation, no extra hello. */
+    assert(!door_protocol_fallback_edge(&esp32, 0));
+    assert(esp32.pending_count == 0);
+
+    assert(door_protocol_receive_from_pi(
+        &esp32, hello, strlen(hello), 100, "pi-test", ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    /* Drain the hello we answered with. */
+    assert(door_protocol_next_tx(&esp32, 100, tx, sizeof(tx)));
+    for (uint64_t at = 150; at <= 300; at += 50) {
+        (void)door_protocol_next_tx(&esp32, at, tx, sizeof(tx));
+    }
+    assert(!door_protocol_next_tx(&esp32, 400, tx, sizeof(tx)));
+    assert(esp32.pending_count == 0);
+
+    assert(!door_protocol_fallback_edge(&esp32, 5100));
+    assert(door_protocol_fallback_edge(&esp32, 5101));
+    assert(esp32.fallback_active);
+    assert(esp32.pending_count == 1);
+    assert(door_protocol_next_tx(&esp32, 5101, tx, sizeof(tx)));
+    assert_contains(tx, "\"t\":\"hello\"");
+    /* Still in fallback a second later: the edge does not repeat. */
+    assert(!door_protocol_fallback_edge(&esp32, 6101));
+}
+
+static void test_press_followup_is_profile_then_fallback_then_nothing(void)
+{
+    door_protocol_t esp32;
+    char ack[DOOR_PROTOCOL_MAX_FRAME_BYTES + 1];
+    char profile_id[DOOR_PROTOCOL_PROFILE_ID_BYTES];
+    const char *hello =
+        "{\"v\":1,\"seq\":1,\"t\":\"hello\",\"ack\":null,\"p\":{\"sw_version\":\"doorboard-test\","
+        "\"proto_v\":1,\"boot_id\":\"pi-test\"}}\n";
+    const char *profile =
+        "{\"v\":1,\"seq\":2,\"t\":\"profile_update\",\"ack\":null,\"p\":{\"profile_id\":"
+        "\"blue_wave\",\"ttl_ms\":2500,\"priority\":\"normal\"}}\n";
+
+    door_protocol_init(&esp32, "esp32-test", "host-test");
+    /* Fresh from boot the Pi is unknown: a press shows the fallback animation. */
+    assert(door_protocol_press_followup(&esp32, 0, profile_id, sizeof(profile_id)) ==
+           DOOR_PROTOCOL_PRESS_FALLBACK);
+    assert(profile_id[0] == '\0');
+
+    assert(door_protocol_receive_from_pi(
+        &esp32, hello, strlen(hello), 100, "pi-test", ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(door_protocol_press_followup(&esp32, 200, profile_id, sizeof(profile_id)) ==
+           DOOR_PROTOCOL_PRESS_GENERIC_ONLY);
+
+    assert(door_protocol_receive_from_pi(
+        &esp32, profile, strlen(profile), 300, "pi-test", ack, sizeof(ack)
+    ) == DOOR_PROTOCOL_RX_ACK_EMITTED);
+    assert(door_protocol_press_followup(&esp32, 400, profile_id, sizeof(profile_id)) ==
+           DOOR_PROTOCOL_PRESS_PROFILE);
+    assert(strcmp(profile_id, "blue_wave") == 0);
+
+    /* The profile expires at 2800; the Pi is lost at 5101. */
+    assert(door_protocol_press_followup(&esp32, 2800, profile_id, sizeof(profile_id)) ==
+           DOOR_PROTOCOL_PRESS_GENERIC_ONLY);
+    assert(door_protocol_press_followup(&esp32, 5101, profile_id, sizeof(profile_id)) ==
+           DOOR_PROTOCOL_PRESS_FALLBACK);
+}
+
 int main(void)
 {
     test_boot_id_is_sixteen_hex_chars_and_differs_per_boot();
@@ -406,6 +789,15 @@ int main(void)
     test_protocol_version_rejection_counts_rx_error();
     test_oversized_frame_counts_rx_error();
     test_peer_reboot_resets_dedupe_identity_for_frames_without_boot_id();
+    test_pending_queue_overflow_counts_tx_dropped();
+    test_seen_ring_evicts_after_sixteen_frames();
+    test_effect_play_reaches_callback_once_and_is_collectable_without_one();
+    test_pi_hello_after_peer_is_known_is_answered_with_a_hello();
+    test_partial_frame_is_discarded_after_silence_and_on_hello();
+    test_oversize_line_is_skipped_to_its_newline();
+    test_key_lookup_ignores_matching_string_values();
+    test_fallback_edge_fires_once_and_requeues_hello();
+    test_press_followup_is_profile_then_fallback_then_nothing();
     puts("wire protocol conformance passed");
     return 0;
 }
