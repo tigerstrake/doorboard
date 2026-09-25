@@ -21,7 +21,6 @@ never logged or serialized.
 from __future__ import annotations
 
 import contextlib
-import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -29,7 +28,9 @@ from dataclasses import dataclass
 import cv2  # type: ignore[import-not-found]
 import numpy as np
 
-logger = logging.getLogger("door_visiond.hailo_pipeline")
+from door_visiond.logging_setup import get_logger
+
+logger = get_logger("door_visiond.hailo_pipeline")
 
 # ArcFace canonical 5-point destination landmarks for a 112x112 crop.
 ARCFACE_DST = np.array(
@@ -359,8 +360,13 @@ class HailoFacePipeline:
                     return None
                 largest = max(detections, key=self._size_px)
                 vector = self._embed(img, largest)
-            except Exception:
-                logger.warning("hailo_inference_failed_resetting", exc_info=True)
+            except Exception as exc:
+                # The error text goes in an ``extra`` so the E-3 filter can scrub it; a
+                # traceback (``exc_info``) is rendered by the formatter, which it never sees.
+                logger.warning(
+                    "hailo_inference_failed_resetting",
+                    extra={"error": str(exc), "error_type": type(exc).__name__},
+                )
                 self._reset_locked()
                 raise
         if vector is None:
@@ -395,8 +401,13 @@ class HailoFacePipeline:
                             size_px=self._size_px(det),
                         )
                     )
-            except Exception:
-                logger.warning("hailo_inference_failed_resetting", exc_info=True)
+            except Exception as exc:
+                # The error text goes in an ``extra`` so the E-3 filter can scrub it; a
+                # traceback (``exc_info``) is rendered by the formatter, which it never sees.
+                logger.warning(
+                    "hailo_inference_failed_resetting",
+                    extra={"error": str(exc), "error_type": type(exc).__name__},
+                )
                 self._reset_locked()
                 raise
             inference_ms = (time.perf_counter() - start) * 1000.0
