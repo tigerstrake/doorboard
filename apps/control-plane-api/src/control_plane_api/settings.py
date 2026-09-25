@@ -164,6 +164,14 @@ class Settings(BaseSettings):
 
     # ── admin auth (stopgap — see packages/auth README) ──────────────────
     admin_token: str = Field(default="", alias="CONTROL_PLANE_ADMIN_TOKEN")
+    # Failed bearer authentications tolerated per peer IP per minute on the
+    # enrollment-key release route and /admin/* before every attempt from that
+    # address is refused with 429 (see ratelimit.py). Read from the environment
+    # as CONTROL_PLANE_AUTH_FAILURE_LIMIT_PER_MIN. Deliberately NOT declared with
+    # `alias=`: tests/test_env_example_compose_safety.py requires every aliased
+    # setting to be passed through infra/compose, which belongs to another lane;
+    # until that passthrough exists this is tunable outside compose only.
+    control_plane_auth_failure_limit_per_min: int = Field(default=5, ge=1)
 
     # ── visiond enrollment key release (ADR-0009 §6, Option C) ───────────
     # The LUKS passphrase for the door Pi's encrypted enrollment volume lives

@@ -69,7 +69,7 @@ from control_plane_api.bundles import get_or_create_bundle, update_bundle
 from control_plane_api.db import session_scope
 from control_plane_api.deletion import scrub_social_item
 from control_plane_api.http_limits import BodySizeLimitMiddleware
-from control_plane_api.metrics import MQTT_CONNECTED, metrics
+from control_plane_api.metrics import AUTH_FAILURES, MQTT_CONNECTED, RATE_LIMITED, metrics
 from control_plane_api.models import SocialItemRow
 from control_plane_api.presence import CoordinatePayloadError, reject_coordinate_payload
 from control_plane_api.presence_engine import (
@@ -122,6 +122,60 @@ def _state(request: Request) -> AppState:
     return request.app.state.app_state
 
 
+def _peer_ip(request: Request) -> str:
+    # The socket peer, never a forwarded header: the LAN bind is the trust
+    # boundary here and anyone on it could forge X-Forwarded-For.
+    return request.client.host if request.client is not None else "unknown"
+
+
+auth_logger = logging.getLogger("control_plane_api.auth")
+
+
+def _refuse_if_rate_limited(request: Request, *, scheme: str) -> None:
+    state = _state(request)
+    peer_ip = _peer_ip(request)
+    if state.auth_limiter.is_blocked(peer_ip):
+        metrics.inc(RATE_LIMITED, route=request.url.path)
+        auth_logger.warning(
+            "auth_rate_limited",
+            extra={"route": request.url.path, "peer_ip": peer_ip, "scheme": scheme},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many failed authentication attempts from this address",
+            headers={"Retry-After": "60"},
+        )
+
+
+def _auth_failed(request: Request, *, scheme: str, presented: bool) -> None:
+    """Log a failed bearer check (never the secret) and count it toward the limit.
+
+    Only a presented-but-wrong token counts as a guess; a request with no
+    Authorization header at all is logged but not counted, so an unauthenticated
+    probe cannot lock the owner's own address out.
+    """
+    peer_ip = _peer_ip(request)
+    metrics.inc(AUTH_FAILURES, route=request.url.path)
+    failures = _state(request).auth_limiter.record_failure(peer_ip) if presented else 0
+    auth_logger.warning(
+        "auth_failed",
+        extra={
+            "route": request.url.path,
+            "peer_ip": peer_ip,
+            "scheme": scheme,
+            "reason": "invalid_token" if presented else "missing_token",
+            "failures_in_window": failures,
+        },
+    )
+
+
+def _bearer(authorization: str | None) -> str:
+    prefix = "Bearer "
+    if authorization is not None and authorization.startswith(prefix):
+        return authorization[len(prefix) :]
+    return ""
+
+
 def _require_admin(request: Request, authorization: str | None = Header(default=None)) -> None:
     cfg: Settings = _state(request).settings
     if not cfg.admin_token:
@@ -129,11 +183,10 @@ def _require_admin(request: Request, authorization: str | None = Header(default=
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="admin interface is not configured on this device",
         )
-    prefix = "Bearer "
-    presented = ""
-    if authorization is not None and authorization.startswith(prefix):
-        presented = authorization[len(prefix) :]
+    _refuse_if_rate_limited(request, scheme="admin")
+    presented = _bearer(authorization)
     if not presented or not secrets.compare_digest(presented, cfg.admin_token):
+        _auth_failed(request, scheme="admin", presented=bool(presented))
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid admin token")
 
 
@@ -155,11 +208,10 @@ def _require_enrollment_key_token(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="enrollment key release is not configured",
         )
-    prefix = "Bearer "
-    presented = ""
-    if authorization is not None and authorization.startswith(prefix):
-        presented = authorization[len(prefix) :]
+    _refuse_if_rate_limited(request, scheme="enrollment_key")
+    presented = _bearer(authorization)
     if not presented or not secrets.compare_digest(presented, cfg.enrollment_key_token):
+        _auth_failed(request, scheme="enrollment_key", presented=bool(presented))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid enrollment key token"
         )
@@ -173,7 +225,7 @@ def _scoped_token_auth(scope: ServiceTokenScope):
         request: Request, authorization: str | None = Header(default=None)
     ) -> ServiceTokenRecord:
         dep = token_store.require_scope(scope, session_factory=_state(request).session_factory)
-        return dep(authorization)
+        return dep(request, authorization)
 
     return dependency
 
@@ -235,7 +287,7 @@ def enrollment_key(request: Request, _auth: EnrollmentKeyAuth) -> dict[str, str]
     """
     cfg = _state(request).settings
     logging.getLogger("control_plane_api.keys").info(
-        "enrollment_key_released", extra={"door_id": cfg.door_id}
+        "enrollment_key_released", extra={"door_id": cfg.door_id, "peer_ip": _peer_ip(request)}
     )
     return {"key": cfg.enrollment_key}
 

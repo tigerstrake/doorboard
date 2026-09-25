@@ -10,6 +10,7 @@ cache, in-process or otherwise, of "is this token currently valid."
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -21,12 +22,21 @@ from doorboard_auth import (
     authenticate,
     issue_service_token,
 )
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from control_plane_api.db import session_scope
+from control_plane_api.metrics import AUTH_FAILURES, metrics
 from control_plane_api.models import ServiceTokenRow
+
+auth_logger = logging.getLogger("control_plane_api.auth")
+
+
+def _token_id_prefix(raw: str) -> str | None:
+    """The first characters of the PUBLIC token id (`dbt_<id>.<secret>`), never the secret."""
+    head, sep, _secret = raw.partition(".")
+    return head[:12] if sep else None
 
 
 def _row_to_record(row: ServiceTokenRow) -> ServiceTokenRecord:
@@ -114,9 +124,13 @@ def require_scope(
     last-used bookkeeping.
     """
 
-    def dependency(authorization: str | None = Header(default=None)) -> ServiceTokenRecord:
+    def dependency(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> ServiceTokenRecord:
+        peer_ip = request.client.host if request.client is not None else "unknown"
         prefix = "Bearer "
         if authorization is None or not authorization.startswith(prefix):
+            _log_failure(request.url.path, peer_ip, reason="missing_token", token_id_prefix=None)
             raise InvalidTokenHTTPError(TokenError("missing bearer token"))
         raw = authorization[len(prefix) :]
         with session_scope(session_factory) as session:
@@ -128,8 +142,27 @@ def require_scope(
                     now=datetime.now(UTC),
                 )
             except TokenError as exc:
+                _log_failure(
+                    request.url.path,
+                    peer_ip,
+                    reason=type(exc).__name__,
+                    token_id_prefix=_token_id_prefix(raw),
+                )
                 raise InvalidTokenHTTPError(exc) from exc
             mark_used(session, token_id=record.token_id)
         return record
+
+    def _log_failure(route: str, peer_ip: str, *, reason: str, token_id_prefix: str | None) -> None:
+        metrics.inc(AUTH_FAILURES, route=route)
+        auth_logger.warning(
+            "auth_failed",
+            extra={
+                "route": route,
+                "peer_ip": peer_ip,
+                "scheme": "service_token",
+                "reason": reason,
+                "token_id_prefix": token_id_prefix,
+            },
+        )
 
     return dependency

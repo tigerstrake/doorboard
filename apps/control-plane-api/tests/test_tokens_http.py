@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+
+import pytest
 from fastapi.testclient import TestClient
 
 from .factories import build_event
@@ -129,3 +132,47 @@ def test_admin_endpoints_require_admin_token(client: TestClient) -> None:
     assert resp.status_code == 401
     resp2 = client.get("/admin/tokens", headers={"Authorization": "Bearer wrong"})
     assert resp2.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Failed auth is logged (never the secret) and rate limited per peer
+# ---------------------------------------------------------------------------
+
+_AUTH_LOGGER = "control_plane_api.auth"
+
+
+def test_six_bad_admin_tokens_in_a_minute_are_refused_with_429(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger=_AUTH_LOGGER):
+        codes = [
+            client.get("/admin/tokens", headers={"Authorization": f"Bearer guess-{i}"}).status_code
+            for i in range(6)
+        ]
+    assert codes == [401, 401, 401, 401, 401, 429]
+    # The whole admin surface shares the budget, including the presence routes.
+    assert client.get("/status/presence", headers=ADMIN_HEADERS).status_code == 429
+    failures = [r for r in caplog.records if r.getMessage() == "auth_failed"]
+    assert len(failures) == 5
+    assert {r.scheme for r in failures} == {"admin"}  # type: ignore[attr-defined]
+    assert {r.route for r in failures} == {"/admin/tokens"}  # type: ignore[attr-defined]
+    assert "guess-0" not in caplog.text
+    assert "test-admin-token" not in caplog.text
+
+
+def test_a_wrong_service_token_is_logged_with_its_public_id_prefix_only(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger=_AUTH_LOGGER):
+        resp = client.post(
+            "/ingest",
+            json={"batch_id": "b1", "events": []},
+            headers={"Authorization": "Bearer dbt_abcdefghijklmnop.the-secret-half"},
+        )
+    assert resp.status_code == 401
+    record = next(r for r in caplog.records if r.getMessage() == "auth_failed")
+    assert record.scheme == "service_token"  # type: ignore[attr-defined]
+    assert record.route == "/ingest"  # type: ignore[attr-defined]
+    assert record.peer_ip == "testclient"  # type: ignore[attr-defined]
+    assert record.token_id_prefix == "dbt_abcdefgh"  # type: ignore[attr-defined]
+    assert "the-secret-half" not in caplog.text

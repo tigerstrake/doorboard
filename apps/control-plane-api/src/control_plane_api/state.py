@@ -20,6 +20,7 @@ from control_plane_api.presence import (
     ScheduleProvider,
     parse_window,
 )
+from control_plane_api.ratelimit import FailureRateLimiter
 from control_plane_api.settings import Settings
 from control_plane_api.telegram import (
     RingPhotoDelivery,
@@ -41,6 +42,9 @@ class AppState:
         calendar_provider: CalendarProvider | None = None,
     ) -> None:
         self.settings = cfg
+        self.auth_limiter = FailureRateLimiter(
+            limit=cfg.control_plane_auth_failure_limit_per_min, window_s=60.0
+        )
         self.engine = make_engine(cfg.postgres_dsn)
         self.session_factory = make_session_factory(self.engine)
         # Owner notifications go to whichever channels are configured — ntfy
