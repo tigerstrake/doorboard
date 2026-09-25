@@ -136,7 +136,7 @@ Button press enters visitor mode immediately; generic feedback precedes any netw
 - Video messages are always visitor-initiated; visible camera notice text on the assembly.
 - Privacy mode disables recognition while preserving basic door interaction.
 - Deletion flows exist for messages, guestbook entries, photos, and enrollments.
-- Presence uses broad labels only (Available/Busy/DND/Sleeping/At Class/At Library/Away/Unknown); manual override outranks inference; no raw GPS anywhere.
+- Presence uses broad labels only (Social/Available/Busy/Knock if urgent/DND/Sleeping/At Class/At Library/Away/Unknown — `PresenceLabel` in `packages/contracts`, ADR-0035); manual override outranks inference; no raw GPS anywhere.
 - Never log raw biometric data.
 - Face templates never leave the door Pi. Enrollment *photos* may cross the internet on the phone path, but only sealed to a door-held key that no intermediary has — and the relay never receives an enrollee's name (ADR-0016).
 - The public visitor surface carries only what a hallway wallboard already shows: ring state, the current poll, and the visitor's own note. Never identity, media, or diagnostics (ADR-0017 §2).

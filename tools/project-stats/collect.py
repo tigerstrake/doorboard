@@ -86,9 +86,16 @@ def _count_glob(
     exclude = exclude or set()
     # rglob skips nothing, so keep build/vendor trees out by name — the repo has
     # node_modules and .venv directories that would otherwise dwarf the real counts.
+    # Judged on the path *inside* the repo: a checkout that itself sits under a
+    # directory with one of these names (a git worktree in .claude/worktrees/, a CI
+    # runner's build/) would otherwise count zero of everything.
     skip_parts = {"node_modules", ".venv", "dist", "build", "__pycache__", ".claude"}
     found = d.rglob(pattern) if recursive else d.glob(pattern)
-    return sum(1 for p in found if p.name not in exclude and not (skip_parts & set(p.parts)))
+    return sum(
+        1
+        for p in found
+        if p.name not in exclude and not (skip_parts & set(p.relative_to(REPO_ROOT).parts))
+    )
 
 
 def collect() -> dict[str, object]:
@@ -120,11 +127,14 @@ def collect() -> dict[str, object]:
 
     # Task briefs: real T-<id> briefs, excluding the index and the review template.
     task_briefs = _count_glob("docs/tasks", "T-*.md", exclude={"T-x90-milestone-review.md"})
-    # Contract event types: one schema file per event, minus the combined union.
-    event_types = _count_glob(
-        "packages/contracts/schemas",
-        "*.schema.json",
-        exclude={"doorboard-event.schema.json"},
+    # Contract event types: one schema file per event. The schemas directory also holds
+    # the combined union, the enrollment-relay API models and the error/health payloads —
+    # none of which are events — so this counted 66 while the catalogue had 40.
+    event_types = sum(
+        1
+        for path in (REPO_ROOT / "packages" / "contracts" / "schemas").glob("*.schema.json")
+        if path.name != "doorboard-event.schema.json"
+        and not path.name.startswith(("enrollment-relay-", "error-envelope", "health-payload"))
     )
 
     # A few counts that are actually interesting to a visitor rather than to a maintainer.

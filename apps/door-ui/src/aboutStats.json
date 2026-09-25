@@ -1,17 +1,17 @@
 {
-  "generated_at": "2026-08-18",
-  "lines_of_code": 82438,
-  "tracked_files": 882,
+  "generated_at": "2026-09-25",
+  "lines_of_code": 96461,
+  "tracked_files": 982,
   "languages": [
     {
       "name": "Python",
-      "lines": 56725,
-      "files": 280
+      "lines": 65859,
+      "files": 313
     },
     {
       "name": "TypeScript",
-      "lines": 22943,
-      "files": 125
+      "lines": 27662,
+      "files": 146
     },
     {
       "name": "C/C++",
@@ -20,24 +20,24 @@
     },
     {
       "name": "Shell",
-      "lines": 227,
-      "files": 4
+      "lines": 390,
+      "files": 5
     },
     {
       "name": "JavaScript",
-      "lines": 40,
+      "lines": 47,
       "files": 1
     }
   ],
   "counts": {
-    "services": 9,
+    "services": 10,
     "packages": 8,
-    "integrations": 7,
-    "adrs": 27,
+    "integrations": 8,
+    "adrs": 46,
     "task_briefs": 46,
-    "contract_event_types": 64,
+    "contract_event_types": 40,
     "milestones": 8,
-    "test_files": 137,
-    "runbooks": 15
+    "test_files": 161,
+    "runbooks": 16
   }
 }

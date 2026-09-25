@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
+import glob
 import os
 import sys
 import re
 import urllib.parse
 import argparse
+
+# Vendored/build trees that can sit under apps/ or packages/ and carry their own READMEs.
+SKIP_DIRS = {"node_modules", ".venv", "dist", "build", ".claude"}
 
 def load_exclusions(exclusion_file):
     """
@@ -168,6 +172,17 @@ def main():
             for file in files:
                 if file.endswith('.md'):
                     md_files.append(os.path.join(root, file))
+
+    # Per-directory READMEs and deploy docs. These drifted for months while only
+    # root *.md and docs/** were scanned: tools/diagnostics and tools/seed-data
+    # described code that never existed and nothing noticed.
+    for pattern in ("apps/*/README.md", "packages/*/README.md", "tools/*/README.md", "deploy/**/*.md"):
+        for path in sorted(glob.glob(os.path.join(repo_root, pattern), recursive=True)):
+            # Judged on the path inside the repo, not the absolute one: a checkout that
+            # itself lives under .claude/ or build/ must not skip everything.
+            inside = os.path.relpath(path, repo_root).split(os.sep)
+            if os.path.isfile(path) and not any(part in SKIP_DIRS for part in inside):
+                md_files.append(path)
 
     # 2. Perform checks
     for file_path in md_files:
