@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 import shutil
 
 logger = logging.getLogger("door_voice.speech")
@@ -108,64 +110,70 @@ class Speaker:
             argv += ["-D", self._alsa_device]
         return argv
 
-    async def _speak_piper(self, text: str) -> bool:
-        # piper writes a WAV to stdout; hand it straight to aplay rather than
-        # via a temp file, so nothing lands on disk.
-        piper = await asyncio.create_subprocess_exec(
-            self._piper,
-            "--model",
-            self._piper_voice,
-            "--output_file",
-            "-",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        assert piper.stdout is not None  # stdout=PIPE above
-        aplay = await asyncio.create_subprocess_exec(
-            *self._aplay_argv(),
-            stdin=piper.stdout,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        if piper.stdin is not None:
-            piper.stdin.write(text.encode())
-            await piper.stdin.drain()
-            piper.stdin.close()
+    async def _pipe_into_aplay(
+        self, argv: list[str], *, stdin_text: str | None
+    ) -> tuple[asyncio.subprocess.Process, asyncio.subprocess.Process]:
+        """Spawn ``argv`` with its stdout joined to aplay's stdin by an OS pipe.
+
+        Straight to aplay rather than via a temp file, so nothing lands on disk.
+        An asyncio ``StreamReader`` is not a file descriptor and cannot be handed
+        to a child as ``stdin``; the pipe has to be a real one, and the parent's
+        two ends are closed once both children hold theirs, or aplay never sees
+        EOF when the synthesiser finishes.
+        """
+        read_fd, write_fd = os.pipe()
+        try:
+            producer = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE if stdin_text is not None else None,
+                stdout=write_fd,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                aplay = await asyncio.create_subprocess_exec(
+                    *self._aplay_argv(),
+                    stdin=read_fd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+            except BaseException:
+                with contextlib.suppress(ProcessLookupError):
+                    producer.kill()
+                raise
+        finally:
+            os.close(read_fd)
+            os.close(write_fd)
+        if stdin_text is not None and producer.stdin is not None:
+            producer.stdin.write(stdin_text.encode())
+            await producer.stdin.drain()
+            producer.stdin.close()
+        return producer, aplay
+
+    async def _wait_pipeline(
+        self, producer: asyncio.subprocess.Process, aplay: asyncio.subprocess.Process
+    ) -> bool:
         try:
             await asyncio.wait_for(aplay.wait(), timeout=self._timeout_s)
         except TimeoutError:
-            for proc in (piper, aplay):
-                proc.kill()
+            for proc in (producer, aplay):
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
             raise
-        await piper.wait()
+        await producer.wait()
         return aplay.returncode == 0
+
+    async def _speak_piper(self, text: str) -> bool:
+        piper, aplay = await self._pipe_into_aplay(
+            [self._piper, "--model", self._piper_voice, "--output_file", "-"],
+            stdin_text=text,
+        )
+        return await self._wait_pipeline(piper, aplay)
 
     async def _speak_espeak(self, text: str) -> bool:
         # espeak-ng plays directly; -a/-s keep it from being startling.
         argv = [self._espeak, "-a", "130", "-s", "150"]
         if self._alsa_device:
             # espeak-ng has no -D; route via aplay by writing a WAV to stdout.
-            argv += ["--stdout"]
-            espeak = await asyncio.create_subprocess_exec(
-                *argv,
-                text,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            assert espeak.stdout is not None  # stdout=PIPE above
-            aplay = await asyncio.create_subprocess_exec(
-                *self._aplay_argv(),
-                stdin=espeak.stdout,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            try:
-                await asyncio.wait_for(aplay.wait(), timeout=self._timeout_s)
-            except TimeoutError:
-                for proc in (espeak, aplay):
-                    proc.kill()
-                raise
-            await espeak.wait()
-            return aplay.returncode == 0
+            espeak, aplay = await self._pipe_into_aplay([*argv, "--stdout", text], stdin_text=None)
+            return await self._wait_pipeline(espeak, aplay)
         return await self._run([*argv, text])

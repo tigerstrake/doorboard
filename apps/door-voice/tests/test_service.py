@@ -405,3 +405,69 @@ def test_logging_is_structured_json_and_honours_the_level():
     finally:
         root.handlers[:] = saved_handlers
         root.setLevel(saved_level)
+
+
+# --- the synthesiser-to-aplay pipe -----------------------------------------------
+#
+# piper/espeak wrote a WAV to stdout and aplay was spawned with `stdin=<asyncio
+# StreamReader>`, which is not a file descriptor. Stand-in binaries prove the bytes
+# actually cross an OS pipe and that aplay sees EOF.
+
+
+def _stand_in(tmp_path, name: str, script: str):
+    path = tmp_path / name
+    path.write_text("#!/bin/sh\n" + script)
+    path.chmod(0o755)
+    return str(path)
+
+
+@pytest.mark.anyio
+async def test_piper_output_reaches_aplay_through_a_real_pipe(tmp_path):
+    received = tmp_path / "aplay-received.bin"
+    piper = _stand_in(tmp_path, "piper", 'cat >/dev/null; printf "RIFF-wav:%s" "$2"\n')
+    aplay = _stand_in(tmp_path, "aplay", f'cat > "{received}"\n')
+    speaker = Speaker(
+        piper_binary=piper,
+        piper_voice="/voices/en.onnx",
+        espeak_binary="also-not-real",
+        aplay_binary=aplay,
+        alsa_device="plughw:2,0",
+        timeout_s=5.0,
+    )
+    assert speaker.available_backend() == "piper"
+
+    assert await speaker.speak("Hi Tiger") is True
+    assert received.read_bytes() == b"RIFF-wav:/voices/en.onnx"
+
+
+@pytest.mark.anyio
+async def test_espeak_with_an_alsa_device_is_routed_through_aplay(tmp_path):
+    received = tmp_path / "aplay-received.bin"
+    espeak = _stand_in(tmp_path, "espeak-ng", 'for a in "$@"; do :; done; printf "wav:%s" "$a"\n')
+    aplay = _stand_in(tmp_path, "aplay", f'cat > "{received}"\n')
+    speaker = Speaker(
+        piper_binary="not-installed",
+        piper_voice="",
+        espeak_binary=espeak,
+        aplay_binary=aplay,
+        alsa_device="plughw:2,0",
+        timeout_s=5.0,
+    )
+
+    assert await speaker.speak("Hi Bo") is True
+    assert received.read_bytes() == b"wav:Hi Bo"
+
+
+@pytest.mark.anyio
+async def test_a_failing_aplay_reports_false_not_an_exception(tmp_path):
+    piper = _stand_in(tmp_path, "piper", 'cat >/dev/null; printf "RIFF"\n')
+    aplay = _stand_in(tmp_path, "aplay", "cat >/dev/null; exit 3\n")
+    speaker = Speaker(
+        piper_binary=piper,
+        piper_voice="/voices/en.onnx",
+        espeak_binary="also-not-real",
+        aplay_binary=aplay,
+        alsa_device="",
+        timeout_s=5.0,
+    )
+    assert await speaker.speak("Hi") is False

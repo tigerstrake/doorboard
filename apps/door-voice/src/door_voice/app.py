@@ -225,7 +225,7 @@ class VoiceService:
 
     async def serve_http(
         self, *, host: str | None = None, port: int | None = None
-    ) -> asyncio.AbstractServer:
+    ) -> asyncio.Server:
         """A minimal HTTP/1.0 server for /health and /metrics on loopback.
 
         asyncio's own streams rather than a framework: this service is deliberately
@@ -278,7 +278,7 @@ class VoiceService:
 
 async def main_async() -> None:
     service = VoiceService(Settings())
-    server: asyncio.AbstractServer | None = None
+    server: asyncio.Server | None = None
     try:
         server = await service.serve_http()
         logger.info("health_listening", extra={"bind": service._settings.health_bind})
