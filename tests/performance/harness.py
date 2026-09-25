@@ -13,8 +13,8 @@ Usage::
     # Run in-process (default):
     python -m tests.performance.harness
 
-    # Save a new baseline:
-    python -m tests.performance.harness --save-baseline
+    # Save a new baseline (the per-stat median of three runs):
+    python -m tests.performance.harness --save-baseline --runs 3
 
     # Specify output paths:
     python -m tests.performance.harness \\
@@ -51,9 +51,11 @@ from doorboard_observability.harness_core import (
     BUDGET_P95_MS,
     build_json,
     build_report,
+    check_budgets,
     check_regressions,
     load_baseline,
-    save_baseline,
+    median_baseline,
+    write_baseline,
 )
 
 # The committed baseline lives alongside this runner.
@@ -418,22 +420,28 @@ def _main(args: argparse.Namespace) -> int:
     collect: Callable[[], dict[str, list[float]]] = (
         run_hardware if args.mode == "hardware" else collect_samples
     )
-    samples = collect()
+    runs = [collect() for _ in range(args.runs)]
+    # The gate judges the last run; extra runs only feed the baseline's median.
+    samples = runs[-1]
 
     baseline = load_baseline(BASELINE_PATH)
     if baseline is None and BASELINE_PATH.exists():
         print(f"Warning: could not load baseline from {BASELINE_PATH}", file=sys.stderr)
 
     regressions = check_regressions(samples, baseline) if baseline else []
+    budget_failures = check_budgets(samples)
 
-    report_json = build_json(samples, regressions)
-    report_text = build_report(samples, baseline=baseline, regressions=regressions)
+    report_json = build_json(samples, regressions, budget_failures=budget_failures)
+    report_text = build_report(
+        samples, baseline=baseline, regressions=regressions, budget_failures=budget_failures
+    )
     report_json["measurement_mode"] = args.mode
     report_json["hardware_acceptance"] = args.mode == "hardware"
     if args.mode == "simulator":
         report_text = (
-            "SIMULATOR CODE-PATH REGRESSION REPORT\n"
-            "Not valid for physical latency or hardware acceptance.\n\n" + report_text
+            "IN-PROCESS CODE-PATH REGRESSION REPORT\n"
+            "Real door-api and door-media code on this machine, not the door: "
+            "not physical latency, not hardware acceptance.\n\n" + report_text
         )
 
     if args.json_out:
@@ -451,10 +459,10 @@ def _main(args: argparse.Namespace) -> int:
     print(report_text)
 
     if args.save_baseline:
-        save_baseline(BASELINE_PATH, samples, regressions)
-        print(f"Baseline saved to {BASELINE_PATH}", file=sys.stderr)
+        write_baseline(BASELINE_PATH, median_baseline([build_json(run, []) for run in runs]))
+        print(f"Baseline saved to {BASELINE_PATH} ({len(runs)} run(s))", file=sys.stderr)
 
-    return 1 if regressions else 0
+    return 1 if regressions or budget_failures else 0
 
 
 def main() -> None:
@@ -470,11 +478,20 @@ def main() -> None:
     parser.add_argument(
         "--save-baseline",
         action="store_true",
-        help="Overwrite baseline.json with current results.",
+        help="Overwrite baseline.json with this run (or the per-stat median of --runs).",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Collect N times; the gate judges the last run, the baseline takes the median.",
     )
     parser.add_argument("--json-out", metavar="PATH", default=None)
     parser.add_argument("--report-out", metavar="PATH", default=None)
     args = parser.parse_args()
+    if args.runs < 1:
+        parser.error("--runs must be at least 1")
     sys.exit(_main(args))
 
 

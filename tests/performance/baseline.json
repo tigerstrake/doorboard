@@ -1,57 +1,50 @@
 {
+  "budget_failures": [],
   "paths": {
     "bell_to_recording_event": {
       "budget_p95_ms": 500.0,
       "count": 50,
-      "max_ms": 0.24954101536422968,
-      "min_ms": 0.10066598770208657,
-      "p50_ms": 0.10945898247882724,
-      "p95_ms": 0.14062499394640326,
-      "p99_ms": 0.24954101536422968
+      "max_ms": 3.7760830018669367,
+      "min_ms": 0.41158300155075267,
+      "over_budget": false,
+      "p50_ms": 0.4727910054498352,
+      "p95_ms": 0.6047909992048517,
+      "p99_ms": 3.7760830018669367,
+      "runs": 3
     },
     "bell_to_visitor_mode": {
       "budget_p95_ms": 250.0,
       "count": 50,
-      "max_ms": 0.016584002878516912,
-      "min_ms": 0.006999995093792677,
-      "p50_ms": 0.008041010005399585,
-      "p95_ms": 0.009790994226932526,
-      "p99_ms": 0.016584002878516912
+      "max_ms": 1.0391670002718456,
+      "min_ms": 0.5047499944339506,
+      "over_budget": false,
+      "p50_ms": 0.5755000020144507,
+      "p95_ms": 0.7359590017586015,
+      "p99_ms": 1.0391670002718456,
+      "runs": 3
     },
     "button_to_generic_feedback": {
-      "budget_p95_ms": 30.0,
-      "count": 50,
-      "max_ms": 0.04095799522474408,
-      "min_ms": 0.004832982085645199,
-      "p50_ms": 0.005209003575146198,
-      "p95_ms": 0.007166992872953415,
-      "p99_ms": 0.04095799522474408
+      "reason": "ESP32-local (ISR \u2192 LED/audio), never reaches the Pi; bench only",
+      "simulator_na": true
     },
     "button_to_personalized_feedback": {
-      "budget_p95_ms": 100.0,
-      "count": 50,
-      "max_ms": 0.013375014532357454,
-      "min_ms": 0.004958012141287327,
-      "p50_ms": 0.005415990017354488,
-      "p95_ms": 0.0069160014390945435,
-      "p99_ms": 0.013375014532357454
+      "reason": "ESP32-local (cached profile \u2192 effect); bench only",
+      "simulator_na": true
     },
     "face_to_stable_identity": {
+      "reason": "needs a camera and the Hailo; on the door: door-visiond's face_to_identity_ms_p95",
       "simulator_na": true
     },
     "tap_to_local_response": {
-      "budget_p95_ms": 100.0,
-      "count": 50,
-      "max_ms": 0.015207973774522543,
-      "min_ms": 0.005332985892891884,
-      "p50_ms": 0.005750014679506421,
-      "p95_ms": 0.007124996045604348,
-      "p99_ms": 0.015207973774522543
+      "reason": "browser-side (pointerdown \u2192 first paint on /doorpad); bench only",
+      "simulator_na": true
     },
     "webrtc_glass_to_glass": {
+      "reason": "needs MediaMTX and a browser; bench only",
       "simulator_na": true
     }
   },
   "regression_factor": 3.0,
+  "regression_floor_fraction": 0.02,
   "regressions": []
 }

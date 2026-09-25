@@ -11,6 +11,7 @@ also imports from here and provides the argparse entrypoint.
 from __future__ import annotations
 
 import json
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,13 @@ from doorboard_observability.percentiles import p50, p95, p99
 # is a regression.  3× catches order-of-magnitude regressions while ignoring
 # measurement noise.
 REGRESSION_FACTOR: float = 3.0
+
+# ...but never below this fraction of the path's budget. The measured paths run
+# in well under a millisecond on a laptop, where scheduler jitter alone is 3× of
+# that; a fixed 1 ms floor, on the other hand, let a 250 ms path grow 300× before
+# the gate noticed. Two percent of budget (5 ms of 250) is the smallest change
+# the budget itself cares about.
+REGRESSION_FLOOR_FRACTION: float = 0.02
 
 # Canonical path names → p95 budget in milliseconds.
 # Keep in sync with ARCHITECTURE.md §4.
@@ -82,6 +90,8 @@ def _ordered_paths(samples: dict[str, list[float]]) -> list[str]:
 def build_json(
     samples: dict[str, list[float]],
     regressions: list[str],
+    *,
+    budget_failures: list[str] | None = None,
 ) -> dict[str, Any]:
     """Return the full JSON report structure.
 
@@ -96,21 +106,31 @@ def build_json(
             continue
         if not vals:
             continue
+        budget = BUDGET_P95_MS.get(path)
+        vp95 = p95(vals)
         paths[path] = {
             "p50_ms": p50(vals),
-            "p95_ms": p95(vals),
+            "p95_ms": vp95,
             "p99_ms": p99(vals),
             "min_ms": min(vals),
             "max_ms": max(vals),
             "count": len(vals),
-            "budget_p95_ms": BUDGET_P95_MS.get(path),
+            "budget_p95_ms": budget,
+            "over_budget": budget is not None and vp95 > budget,
         }
 
     return {
         "regressions": regressions,
+        "budget_failures": list(budget_failures or []),
         "regression_factor": REGRESSION_FACTOR,
+        "regression_floor_fraction": REGRESSION_FLOOR_FRACTION,
         "paths": paths,
     }
+
+
+def _names(failures: list[str]) -> set[str]:
+    """The path names in a list of "<path>: …" failure messages."""
+    return {message.partition(":")[0] for message in failures}
 
 
 def build_report(
@@ -118,8 +138,12 @@ def build_report(
     *,
     baseline: dict[str, Any] | None,
     regressions: list[str],
+    budget_failures: list[str] | None = None,
 ) -> str:
     """Return a human-readable latency table."""
+    budget_failures = list(budget_failures or [])
+    regressed = _names(regressions)
+    over_budget = _names(budget_failures)
     lines: list[str] = [
         "═" * 78,
         "  Doorboard latency harness — in-process run (real service code, no hardware)",
@@ -144,11 +168,10 @@ def build_report(
         budget = BUDGET_P95_MS.get(path)
         budget_str = f"{budget:.0f} ms" if budget is not None else "—"
 
-        # Regression entries are messages, "<path>: current p95=…", not bare names.
-        if any(r.startswith(f"{path}:") for r in regressions):
+        if path in over_budget:
+            status = "❌ OVER BUDGET"
+        elif path in regressed:
             status = "❌ REGRESSION"
-        elif budget is not None and vp95 > budget:
-            status = "⚠ over budget"
         else:
             status = "✓ measured"
 
@@ -163,11 +186,19 @@ def build_report(
         for path in not_measured:
             lines.append(f"     • {path}: {_na_reason(path)}")
 
+    if budget_failures:
+        lines.append(f"\n  ⛔ {len(budget_failures)} path(s) over the §4 budget:")
+        for message in budget_failures:
+            lines.append(f"     • {message}")
+
     if regressions:
         lines.append(f"\n  ⛔ {len(regressions)} regression(s) detected vs baseline:")
         for r in regressions:
             lines.append(f"     • {r}")
-        lines.append(f"\n  Regression threshold: {REGRESSION_FACTOR}× the baseline p95.")
+        lines.append(
+            f"\n  Regression threshold: max({REGRESSION_FACTOR:g} × baseline p95, "
+            f"{REGRESSION_FLOOR_FRACTION:.0%} of budget)."
+        )
     elif baseline is not None:
         lines.append("\n  ✓ No regressions vs baseline.")
     else:
@@ -186,7 +217,10 @@ def check_regressions(
     samples: dict[str, list[float]],
     baseline: dict[str, Any],
 ) -> list[str]:
-    """Return list of path names where p95 exceeds baseline_p95 × REGRESSION_FACTOR.
+    """Return "<path>: …" messages for every path whose p95 regressed vs the baseline.
+
+    The threshold is ``max(REGRESSION_FACTOR × baseline p95, REGRESSION_FLOOR_FRACTION
+    × budget)``; a path with no budget gets the factor alone.
 
     Rules:
     - Empty sample lists are skipped (not a regression).
@@ -208,7 +242,8 @@ def check_regressions(
             continue
         base_p95: float = float(base_p95_raw)
         current_p95 = p95(vals)
-        threshold = max(base_p95, 1.0) * REGRESSION_FACTOR
+        floor = REGRESSION_FLOOR_FRACTION * BUDGET_P95_MS.get(path, 0.0)
+        threshold = max(REGRESSION_FACTOR * base_p95, floor)
         if current_p95 > threshold:
             regressions.append(
                 f"{path}: current p95={current_p95:.1f}ms, "
@@ -219,11 +254,72 @@ def check_regressions(
     return regressions
 
 
+def check_budgets(samples: dict[str, list[float]]) -> list[str]:
+    """Return "<path>: …" messages for every measured path whose p95 is over budget.
+
+    Independent of any baseline: a baseline saved while a path was already over
+    budget must not turn that into the accepted state.
+    """
+    failures: list[str] = []
+    for path, vals in samples.items():
+        budget = BUDGET_P95_MS.get(path)
+        if budget is None or not vals or _is_na(path, vals):
+            continue
+        current_p95 = p95(vals)
+        if current_p95 > budget:
+            failures.append(
+                f"{path}: p95={current_p95:.1f}ms exceeds the {budget:.0f}ms budget "
+                f"(ARCHITECTURE.md §4)"
+            )
+    return failures
+
+
+def median_baseline(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    """Fold several runs' JSON reports into one baseline: the per-stat median.
+
+    One run's p95 is one draw from a noisy machine; the median of three is what a
+    later run is compared against. N/A entries pass through; a path is only kept
+    if every run measured it.
+    """
+    if not reports:
+        raise ValueError("median_baseline needs at least one report")
+    paths: dict[str, Any] = {}
+    for path in reports[0]["paths"]:
+        entries = [report["paths"].get(path) for report in reports]
+        if any(entry is None for entry in entries):
+            continue
+        if any(entry.get("simulator_na") for entry in entries):
+            paths[path] = entries[0]
+            continue
+        folded: dict[str, Any] = {}
+        for key, first in entries[0].items():
+            if isinstance(first, bool) or not isinstance(first, int | float):
+                folded[key] = first
+            else:
+                folded[key] = statistics.median(float(entry[key]) for entry in entries)
+        folded["count"] = int(folded["count"])
+        folded["over_budget"] = any(entry.get("over_budget") for entry in entries)
+        folded["runs"] = len(reports)
+        paths[path] = folded
+    return {
+        "regressions": [],
+        "budget_failures": [],
+        "regression_factor": REGRESSION_FACTOR,
+        "regression_floor_fraction": REGRESSION_FLOOR_FRACTION,
+        "paths": paths,
+    }
+
+
 def load_baseline(path: Path) -> dict[str, Any] | None:
     """Load a baseline JSON file.  Returns None on missing file; raises on parse error."""
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+
+
+def write_baseline(path: Path, report: dict[str, Any]) -> None:
+    """Write a JSON report (one run's, or a median of several) as the baseline."""
+    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def save_baseline(
@@ -232,5 +328,4 @@ def save_baseline(
     regressions: list[str],
 ) -> None:
     """Write the current run as the new baseline."""
-    report = build_json(samples, regressions)
-    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_baseline(path, build_json(samples, regressions))

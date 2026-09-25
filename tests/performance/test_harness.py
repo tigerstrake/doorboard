@@ -7,7 +7,10 @@ tests.performance.harness. No sys.path manipulation is needed for either.
 Test coverage:
 - check_regressions: intentionally slowed fixture MUST trip the check
   (acceptance criterion from the brief).
-- No regression below the 3× threshold; only the regressing path is flagged.
+- No regression below the 3× threshold; only the regressing path is flagged;
+  the threshold never drops below 2% of the path's budget.
+- check_budgets: a measured path over its §4 budget fails with no baseline at all.
+- median_baseline folds several runs into a per-stat median.
 - N/A paths — by name (SIMULATOR_NA) or the legacy all-zero sentinel — are
   never flagged and are labelled, with a reason, in both report formats.
 - Unknown paths in samples, empty samples, malformed baseline — all safe.
@@ -18,6 +21,7 @@ Test coverage:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import sqlite3
@@ -25,17 +29,23 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import pytest
 from doorboard_observability.harness_core import (
     BUDGET_P95_MS,
     MEASURED_PATHS,
     REGRESSION_FACTOR,
+    REGRESSION_FLOOR_FRACTION,
     SIMULATOR_NA,
     build_json,
     build_report,
+    check_budgets,
     check_regressions,
     load_baseline,
+    median_baseline,
     save_baseline,
+    write_baseline,
 )
+from tests.performance import harness
 from tests.performance.harness import (
     measure_bell_to_recording_event,
     measure_bell_to_visitor_mode,
@@ -215,6 +225,103 @@ class TestRegressionDetection:
             f"Expected regression for {target!r}. regressions={regressions}"
         )
 
+    def test_floor_ignores_jitter_on_sub_millisecond_baselines(self) -> None:
+        """A 0.5 ms baseline on a 250 ms budget has a 5 ms floor: 4 ms (8×) is noise."""
+        target = "bell_to_visitor_mode"
+        fast = _make_samples()
+        fast[target] = [0.5] * 50
+        baseline = _make_baseline(fast)
+        current = dict(fast)
+        current[target] = [4.0] * 50
+        assert check_regressions(current, baseline) == []
+
+    def test_floor_is_two_percent_of_budget(self) -> None:
+        """...and 5.5 ms is past the floor — the smallest change the budget cares about."""
+        target = "bell_to_visitor_mode"
+        floor = REGRESSION_FLOOR_FRACTION * BUDGET_P95_MS[target]
+        assert floor == 5.0
+        fast = _make_samples()
+        fast[target] = [0.5] * 50
+        baseline = _make_baseline(fast)
+        current = dict(fast)
+        current[target] = [floor + 0.5] * 50
+        regressions = check_regressions(current, baseline)
+        assert len(regressions) == 1 and regressions[0].startswith(f"{target}:")
+        assert f"threshold={floor:.1f}ms" in regressions[0]
+
+    def test_factor_rules_once_the_baseline_is_above_the_floor(self) -> None:
+        """A 10 ms baseline (3× = 30 ms > the 5 ms floor) regresses at 30 ms, not 5."""
+        target = "bell_to_visitor_mode"
+        fast = _make_samples()
+        fast[target] = [10.0] * 50
+        baseline = _make_baseline(fast)
+        just_under = dict(fast)
+        just_under[target] = [29.0] * 50
+        assert check_regressions(just_under, baseline) == []
+        just_over = dict(fast)
+        just_over[target] = [31.0] * 50
+        assert [r.partition(":")[0] for r in check_regressions(just_over, baseline)] == [target]
+
+
+# ---------------------------------------------------------------------------
+# check_budgets — the gate that needs no baseline
+# ---------------------------------------------------------------------------
+
+
+class TestBudgetGate:
+    def test_under_budget_passes(self) -> None:
+        assert check_budgets(_make_samples()) == []
+
+    def test_over_budget_measured_path_fails_without_a_baseline(self) -> None:
+        target = "bell_to_recording_event"
+        samples = _make_samples()
+        samples[target] = [BUDGET_P95_MS[target] + 1.0] * 50
+        failures = check_budgets(samples)
+        assert len(failures) == 1
+        assert failures[0].startswith(f"{target}:")
+        assert "budget" in failures[0]
+
+    def test_exactly_at_budget_passes(self) -> None:
+        target = "bell_to_recording_event"
+        samples = _make_samples()
+        samples[target] = [BUDGET_P95_MS[target]] * 50
+        assert check_budgets(samples) == []
+
+    def test_na_paths_never_fail_the_budget(self) -> None:
+        samples = _make_samples()
+        for path in SIMULATOR_NA:
+            samples[path] = [999_999.0] * 50
+        assert check_budgets(samples) == []
+
+    def test_a_baseline_saved_over_budget_does_not_launder_it(self) -> None:
+        """Regression-free vs a bad baseline, still a budget failure."""
+        target = "bell_to_visitor_mode"
+        slow = _make_samples()
+        slow[target] = [BUDGET_P95_MS[target] * 2] * 50
+        baseline = _make_baseline(slow)
+        assert check_regressions(slow, baseline) == []
+        assert [f.partition(":")[0] for f in check_budgets(slow)] == [target]
+
+    def test_report_marks_the_row_and_summarises(self) -> None:
+        target = "bell_to_visitor_mode"
+        samples = _make_samples()
+        samples[target] = [BUDGET_P95_MS[target] + 1.0] * 50
+        failures = check_budgets(samples)
+        text = build_report(samples, baseline=None, regressions=[], budget_failures=failures)
+        row = next(line for line in text.splitlines() if line.strip().startswith(target))
+        assert "OVER BUDGET" in row
+        assert "over the §4 budget" in text
+
+    def test_json_carries_the_flag_and_the_failures(self) -> None:
+        target = "bell_to_visitor_mode"
+        samples = _make_samples()
+        samples[target] = [BUDGET_P95_MS[target] + 1.0] * 50
+        failures = check_budgets(samples)
+        report = build_json(samples, [], budget_failures=failures)
+        assert report["paths"][target]["over_budget"] is True
+        assert report["paths"]["bell_to_recording_event"]["over_budget"] is False
+        assert report["budget_failures"] == failures
+
 
 # ---------------------------------------------------------------------------
 # build_json
@@ -271,13 +378,16 @@ class TestBuildReport:
         for path, reason in SIMULATOR_NA.items():
             assert f"{path}: {reason}" in text
 
-    def test_regression_marker_present(self) -> None:
+    def test_regression_marker_on_the_row_and_in_the_summary(self) -> None:
         text = build_report(
             _make_samples(),
             baseline=None,
             regressions=["bell_to_visitor_mode: current p95=999ms"],
         )
-        assert "REGRESSION" in text
+        row = next(line for line in text.splitlines() if "bell_to_visitor_mode" in line)
+        assert "REGRESSION" in row
+        assert "regression(s) detected" in text
+        assert f"{REGRESSION_FLOOR_FRACTION:.0%} of budget" in text
 
     def test_no_baseline_note_shown(self) -> None:
         text = build_report(_make_samples(), baseline=None, regressions=[])
@@ -323,6 +433,129 @@ class TestBaselineRoundTrip:
             assert isinstance(data["paths"], dict)
         finally:
             path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# median_baseline — several runs folded into one
+# ---------------------------------------------------------------------------
+
+
+class TestMedianBaseline:
+    def _reports(self) -> list[dict[str, Any]]:
+        reports = []
+        for p95_ms in (1.0, 10.0, 2.0):
+            samples = _make_samples()
+            samples["bell_to_visitor_mode"] = [p95_ms] * 50
+            reports.append(build_json(samples, []))
+        return reports
+
+    def test_takes_the_per_stat_median(self) -> None:
+        folded = median_baseline(self._reports())
+        entry = folded["paths"]["bell_to_visitor_mode"]
+        assert entry["p95_ms"] == 2.0
+        assert entry["count"] == 50
+        assert entry["runs"] == 3
+        assert entry["budget_p95_ms"] == BUDGET_P95_MS["bell_to_visitor_mode"]
+
+    def test_na_entries_pass_through(self) -> None:
+        folded = median_baseline(self._reports())
+        for path, reason in SIMULATOR_NA.items():
+            assert folded["paths"][path] == {"simulator_na": True, "reason": reason}
+
+    def test_a_path_missing_from_one_run_is_dropped(self) -> None:
+        reports = self._reports()
+        del reports[1]["paths"]["bell_to_recording_event"]
+        folded = median_baseline(reports)
+        assert "bell_to_recording_event" not in folded["paths"]
+        assert "bell_to_visitor_mode" in folded["paths"]
+
+    def test_round_trips_as_a_baseline(self, tmp_path: Path) -> None:
+        path = tmp_path / "baseline.json"
+        write_baseline(path, median_baseline(self._reports()))
+        loaded = load_baseline(path)
+        assert loaded is not None
+        assert loaded["regressions"] == [] and loaded["budget_failures"] == []
+        samples = _make_samples()
+        samples["bell_to_visitor_mode"] = [2.0] * 50
+        assert check_regressions(samples, loaded) == []
+        samples["bell_to_visitor_mode"] = [7.0] * 50  # > max(3 × 2.0, 5.0)
+        assert len(check_regressions(samples, loaded)) == 1
+
+    def test_needs_at_least_one_report(self) -> None:
+        with pytest.raises(ValueError):
+            median_baseline([])
+
+
+# ---------------------------------------------------------------------------
+# The CLI's verdict
+# ---------------------------------------------------------------------------
+
+
+def _args(**overrides: Any) -> argparse.Namespace:
+    defaults: dict[str, Any] = {
+        "mode": "simulator",
+        "save_baseline": False,
+        "runs": 1,
+        "json_out": None,
+        "report_out": None,
+    }
+    return argparse.Namespace(**{**defaults, **overrides})
+
+
+class TestCliVerdict:
+    """_main with the collection stubbed: the exit code is the gate."""
+
+    def _stub(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, runs: list[dict]) -> None:
+        queue = list(runs)
+        monkeypatch.setattr(harness, "collect_samples", lambda: queue.pop(0))
+        monkeypatch.setattr(harness, "BASELINE_PATH", tmp_path / "baseline.json")
+
+    def test_clean_run_against_its_own_baseline_exits_zero(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._stub(monkeypatch, tmp_path, [_make_samples()])
+        write_baseline(tmp_path / "baseline.json", build_json(_make_samples(), []))
+        assert harness._main(_args()) == 0
+
+    def test_regression_exits_one(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        slow = _make_samples(multiplier=REGRESSION_FACTOR + 1.0)
+        self._stub(monkeypatch, tmp_path, [slow])
+        write_baseline(tmp_path / "baseline.json", build_json(_make_samples(), []))
+        assert harness._main(_args()) == 1
+
+    def test_over_budget_exits_one_even_with_no_baseline(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        over = _make_samples()
+        over["bell_to_visitor_mode"] = [BUDGET_P95_MS["bell_to_visitor_mode"] + 1.0] * 50
+        self._stub(monkeypatch, tmp_path, [over])
+        assert harness._main(_args()) == 1
+
+    def test_report_out_labels_measured_and_na(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._stub(monkeypatch, tmp_path, [_make_samples()])
+        out = tmp_path / "latency-report.txt"
+        assert harness._main(_args(report_out=str(out))) == 0
+        text = out.read_text()
+        assert "IN-PROCESS" in text and "not hardware acceptance" in text
+        assert text.count("✓ measured") == len(MEASURED_PATHS)
+        assert text.count("simulator N/A") >= len(SIMULATOR_NA)
+
+    def test_save_baseline_with_runs_writes_the_median(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        runs = []
+        for p95_ms in (1.0, 10.0, 2.0):
+            samples = _make_samples()
+            samples["bell_to_visitor_mode"] = [p95_ms] * 50
+            runs.append(samples)
+        self._stub(monkeypatch, tmp_path, runs)
+        assert harness._main(_args(save_baseline=True, runs=3)) == 0
+        saved = load_baseline(tmp_path / "baseline.json")
+        assert saved is not None
+        assert saved["paths"]["bell_to_visitor_mode"]["p95_ms"] == 2.0
+        assert saved["paths"]["bell_to_visitor_mode"]["runs"] == 3
 
 
 # ---------------------------------------------------------------------------

@@ -162,7 +162,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Simulator code-path regression check (not hardware acceptance)
+      - name: In-process latency regression check (real service code, not hardware acceptance)
         run: |
           .venv/bin/python -m tests.performance.harness --report-out latency-report.txt
           cat latency-report.txt >> $GITHUB_STEP_SUMMARY
