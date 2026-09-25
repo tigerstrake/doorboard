@@ -218,6 +218,9 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def enabled_jobs_require_ingest_auth(self) -> Settings:
+        # Every job that publishes to /ingest. The academic countdown was missing: with
+        # only that flag on and no token, the worker started cleanly and then logged a
+        # 401 on every run, where the other five refuse to start at all.
         enabled = any(
             (
                 self.feature_birdnet,
@@ -225,6 +228,7 @@ class Settings(BaseSettings):
                 self.feature_aircraft,
                 self.feature_printer,
                 self.feature_food,
+                self.feature_academic_countdown,
             )
         )
         if enabled and not (self.ingest_token or self.control_plane_admin_token):

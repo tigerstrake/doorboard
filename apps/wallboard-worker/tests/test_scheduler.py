@@ -4,8 +4,10 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from food_recommendation.provider import MockFoodRecommendationProvider
 from food_recommendation.stanford.provider import StanfordDiningProvider
+from pydantic import ValidationError
 from wallboard_worker.jobs import get_ingest_token
 from wallboard_worker.scheduler import (
     ScheduledJob,
@@ -136,3 +138,39 @@ def test_preissued_ingest_token_never_uses_admin_endpoint() -> None:
     with patch("httpx.post") as post:
         assert get_ingest_token(settings) == "tok_preissued"
     post.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "FEATURE_BIRDNET",
+        "FEATURE_SATELLITES",
+        "FEATURE_AIRCRAFT",
+        "FEATURE_PRINTER",
+        "FEATURE_FOOD",
+        "FEATURE_ACADEMIC_COUNTDOWN",
+    ],
+)
+def test_every_publishing_job_refuses_to_start_without_ingest_auth(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, flag: str
+) -> None:
+    """Each job posts to /ingest, so each one alone must trip the startup check.
+
+    The validator listed five and forgot the academic countdown. With only that flag
+    on and no token, Settings() loaded, the scheduler ran the job hourly, and every
+    run was a 401 in the log -- the failure the check exists to turn into a refusal
+    at startup. Parametrised over all six so the next job cannot be forgotten the
+    same way.
+    """
+    # No .env under this cwd and no token in the process environment, so the only
+    # source of a token is the one this test supplies.
+    monkeypatch.chdir(tmp_path)
+    for key in ("WALLBOARD_WORKER_INGEST_TOKEN", "CONTROL_PLANE_ADMIN_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+
+    enabled: dict[str, Any] = {flag: True}
+    with pytest.raises(ValidationError, match="WALLBOARD_WORKER_INGEST_TOKEN"):
+        Settings(**enabled)
+    # And the same flag loads once either credential is present.
+    Settings(**enabled, WALLBOARD_WORKER_INGEST_TOKEN="tok")
+    Settings(**enabled, CONTROL_PLANE_ADMIN_TOKEN="dev-admin")
