@@ -56,34 +56,53 @@ const ROUTES: Route[] = [
   { method: "POST", segments: ["visitor", ":token", "action"], handler: visitorAction.handlePost },
 ];
 
-/** Match a route pattern against actual segments; return captured params or null. */
-function match(pattern: string[], actual: string[]): Record<string, string> | null {
-  if (pattern.length !== actual.length) return null;
+/** The path under `/api/`, split into raw (still percent-encoded) segments. */
+function pathSegments(url: string): string[] {
+  const { pathname } = new URL(url);
+  const rel = pathname.replace(/^\/+api\/*/, "").replace(/\/+$/, "");
+  return rel.length ? rel.split("/") : [];
+}
+
+/** Whether actual segments fit a pattern, by shape alone — no decoding, so it never throws. */
+function fits(pattern: string[], actual: string[]): boolean {
+  return (
+    pattern.length === actual.length &&
+    pattern.every((p, i) => p.startsWith(":") || p === actual[i])
+  );
+}
+
+/** Captured params for a fitting pattern. A malformed %-escape throws `URIError` here. */
+function capture(pattern: string[], actual: string[]): Record<string, string> {
   const params: Record<string, string> = {};
-  for (let i = 0; i < pattern.length; i += 1) {
-    const p = pattern[i]!;
-    const a = actual[i]!;
-    if (p.startsWith(":")) params[p.slice(1)] = decodeURIComponent(a);
-    else if (p !== a) return null;
-  }
+  pattern.forEach((p, i) => {
+    if (p.startsWith(":")) params[p.slice(1)] = decodeURIComponent(actual[i]!);
+  });
   return params;
+}
+
+/**
+ * The matched route *pattern* for a log line — `GET enroll/:token/submit`, never the path
+ * itself, which can carry a visitor token or an invite id. Shape-only, so it cannot throw on
+ * the very request it is describing.
+ */
+export function routeLabel(request: Request): string {
+  const segments = pathSegments(request.url);
+  const route = ROUTES.find((candidate) => fits(candidate.segments, segments));
+  return `${request.method} ${route ? route.segments.join("/") : "(unmatched)"}`;
 }
 
 /** Route one `/api/*` request to its handler with the given store. */
 export async function routeApi(request: Request, store: RelayStore): Promise<Response> {
-  const { pathname } = new URL(request.url);
-  const rel = pathname.replace(/^\/+api\/*/, "").replace(/\/+$/, "");
-  const segments = rel.length ? rel.split("/") : [];
+  const segments = pathSegments(request.url);
 
   let pathMatchedWrongMethod = false;
   for (const route of ROUTES) {
-    const params = match(route.segments, segments);
-    if (!params) continue;
+    if (!fits(route.segments, segments)) continue;
     if (route.method !== request.method) {
       pathMatchedWrongMethod = true;
       continue;
     }
-    return route.handler(request, store, params);
+    return route.handler(request, store, capture(route.segments, segments));
   }
   return jsonError(pathMatchedWrongMethod ? 405 : 404, pathMatchedWrongMethod ? "method_not_allowed" : "not_found");
 }

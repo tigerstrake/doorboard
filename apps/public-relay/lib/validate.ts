@@ -17,6 +17,15 @@ const MAX_ITEMS = 16;
 const MAX_CIPHERTEXT_CHARS = 1_400_000;
 const MAX_CONSENT_CHARS = 32_000;
 
+/**
+ * Cap on the whole serialised bundle. It is stored as one D1 row, and D1 refuses a row over
+ * 2,000,000 bytes — with an unhandled throw, not a status. Three phone photos at the old
+ * capture size landed within 10-20 % of that. The phone's capture settings (800 px, q0.85)
+ * keep a real enrollment well under this; the cap is what turns the residual case into a
+ * 413 the enrollee can act on.
+ */
+export const MAX_BUNDLE_CHARS = 1_500_000;
+
 export class InvalidBody extends Error {}
 
 function fail(message: string): never {

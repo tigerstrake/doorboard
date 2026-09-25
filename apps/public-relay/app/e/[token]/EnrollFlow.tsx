@@ -65,7 +65,14 @@ const POSES = [
   "One more, straight on.",
 ];
 
-const MAX_EDGE_PX = 1000;
+/**
+ * Capture size and JPEG quality. A face embedding needs neither more pixels nor more
+ * quality than this, and the whole sealed bundle has to fit one relay row (the relay refuses
+ * over `MAX_BUNDLE_CHARS`; D1 refuses over 2 MB outright). At 1000 px / q0.9, three photos of
+ * a bright, busy room landed within 10-20 % of that limit.
+ */
+const MAX_EDGE_PX = 800;
+const JPEG_QUALITY = 0.85;
 const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 3 * 60 * 1000;
 
@@ -256,7 +263,7 @@ export default function EnrollFlow({ inviteId: propInviteId }: { inviteId?: stri
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/jpeg", 0.9),
+      canvas.toBlob(resolve, "image/jpeg", JPEG_QUALITY),
     );
     if (!blob) {
       setError("Could not save the photo. Try again.");
@@ -667,6 +674,8 @@ export function uploadErrorMessage(code: string | undefined): string {
       return "Too many attempts. Wait a few minutes and try again.";
     case "too_many_images":
       return "That is more photos than this invitation allows. Start the photos again.";
+    case "bundle_too_large":
+      return "Those photos came out too large to send. Start the photos again in plainer, even light — a busy background or bright patches make bigger files.";
     case "storage_not_configured":
       return "The enrolment service is not fully set up yet. Ask the household admin.";
     case "invalid_bundle":

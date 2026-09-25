@@ -20,7 +20,7 @@ import { resolveStore } from "@/lib/relayStore";
 import type { RelayStore } from "@/lib/relayTypes";
 import { KeyFingerprintMismatch, assertKeyMatchesFingerprint, fingerprintFor } from "@/lib/seal";
 import { setRedisForTests } from "@/lib/store";
-import { INVITE_SECRET_HEADER, InvalidBody, parseSealedBundle } from "@/lib/validate";
+import { INVITE_SECRET_HEADER, InvalidBody, MAX_BUNDLE_CHARS, parseSealedBundle } from "@/lib/validate";
 
 import { FakeRedis } from "./fakeRedis";
 import {
@@ -350,6 +350,26 @@ describe("invite state tells a phone only about its own invite", () => {
       { token },
     );
     expect(resp.status).toBe(422);
+  });
+
+  it("refuses a bundle too large for one relay row with 413, rather than throwing", async () => {
+    // D1 caps a row at 2,000,000 bytes and throws past it; three 600 kB photos are ~2.4 MB
+    // of base64url. That used to surface as an unhandled 500 after the enrollee had taken
+    // every photo and typed their name.
+    const { token, inviteId, secret } = await seedDoorKeyAndInvite();
+    const key = await fakeDoorKey();
+    const bundle = await makeSealedBundle({ key, inviteId, imageCount: 3, imageBytes: 600_000 });
+    expect(JSON.stringify(bundle).length).toBeGreaterThan(MAX_BUNDLE_CHARS);
+
+    const resp = await submitBundle(
+      publicRequest(`https://relay.test/api/enroll/${token}/submit`, "POST", bundle, withSecret(secret)),
+      resolveStore(),
+      { token },
+    );
+    expect(resp.status).toBe(413);
+    expect((await resp.json()) as unknown).toEqual({ error: "bundle_too_large" });
+    // Nothing of it was kept.
+    expect(store.dumpAll()).not.toContain(bundle.bundle_id);
   });
 
   it("refuses more photos than the invite allows", async () => {

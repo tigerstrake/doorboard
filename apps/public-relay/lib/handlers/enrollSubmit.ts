@@ -19,7 +19,14 @@ import {
 } from "@/lib/device";
 import { BUNDLE_TTL_S } from "@/lib/relayTypes";
 import type { RelayStore } from "@/lib/relayTypes";
-import { INVITE_SECRET_HEADER, InvalidBody, parseInviteId, parseInviteSecret, parseSealedBundle } from "@/lib/validate";
+import {
+  INVITE_SECRET_HEADER,
+  InvalidBody,
+  MAX_BUNDLE_CHARS,
+  parseInviteId,
+  parseInviteSecret,
+  parseSealedBundle,
+} from "@/lib/validate";
 
 export async function handlePost(
   request: Request,
@@ -49,9 +56,14 @@ export async function handlePost(
   if (invite.consumed) return jsonError(409, "invite_already_used");
   if (Date.parse(invite.expires_at) <= Date.now()) return jsonError(410, "invite_expired");
 
+  // Read as text so the size is checked before anything is parsed: the whole bundle becomes
+  // one D1 row, and an over-limit row would otherwise surface as an unhandled 500.
+  const text = await request.text();
+  if (text.length > MAX_BUNDLE_CHARS) return jsonError(413, "bundle_too_large");
+
   let bundle;
   try {
-    bundle = parseSealedBundle(await request.json());
+    bundle = parseSealedBundle(JSON.parse(text));
   } catch (error) {
     if (error instanceof InvalidBody) return jsonError(422, "invalid_bundle");
     return jsonError(400, "malformed_json");

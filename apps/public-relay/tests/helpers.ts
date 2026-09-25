@@ -58,17 +58,27 @@ export async function fakeDoorKey(label = "primary"): Promise<FakeDoorKey> {
   return key;
 }
 
-/** Seal a bundle carrying the sentinels, through the production seal path. */
+/**
+ * Seal a bundle carrying the sentinels, through the production seal path. `imageBytes` pads
+ * each photo to a realistic size (a phone JPEG is hundreds of kB), so size limits can be
+ * exercised with real ciphertext rather than a fake string.
+ */
 export async function makeSealedBundle(options: {
   key: FakeDoorKey;
   inviteId: string;
   imageCount?: number;
+  imageBytes?: number;
   bundleId?: string;
 }): Promise<SealedBundle> {
-  const { key, inviteId, imageCount = 2, bundleId = newBundleId() } = options;
-  const images = Array.from({ length: imageCount }, (_unused, index) =>
-    new TextEncoder().encode(`${IMAGE_SENTINEL}-photo-${index}`),
-  );
+  const { key, inviteId, imageCount = 2, imageBytes = 0, bundleId = newBundleId() } = options;
+  const images = Array.from({ length: imageCount }, (_unused, index) => {
+    const marker = new TextEncoder().encode(`${IMAGE_SENTINEL}-photo-${index}`);
+    if (marker.length >= imageBytes) return marker;
+    const padded = new Uint8Array(imageBytes);
+    padded.set(marker);
+    padded.fill(0x5a, marker.length);
+    return padded;
+  });
 
   return sealBundle({
     doorPublicKey: key.publication.public_key,
