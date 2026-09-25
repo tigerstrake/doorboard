@@ -60,6 +60,18 @@ class FailingReadTransport:
         pass
 
 
+class StalledWriteTransport(QueueByteTransport):
+    """A tty whose kernel buffer never drains: every write blocks forever."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stalled = asyncio.Event()
+
+    async def write(self, data: bytes) -> None:
+        self.stalled.set()
+        await asyncio.Event().wait()
+
+
 def _options(*, max_retries: int = 2) -> Esp32TransportOptions:
     return Esp32TransportOptions(
         pi_boot_id="pi-test",
@@ -113,7 +125,11 @@ def test_decode_rejects_malformed_and_oversize_frames() -> None:
 
         assert event.type == "door.controller_health"
         assert transport.status().rx_errors == 2
-        assert transport.health_check().status == "degraded"
+        # The garbage degraded the link; the well-formed heartbeat that followed
+        # cleared it. The count and the last detail survive the clear.
+        assert transport.health_check().status == "ok"
+        assert transport.metrics().protocol_errors == 2
+        assert transport.last_protocol_error == f"oversize ESP32 frame over {MAX_FRAME_BYTES} bytes"
         await transport.close()
 
     asyncio.run(run())
@@ -166,7 +182,8 @@ def test_malformed_payload_is_counted_and_read_loop_continues() -> None:
         assert event.type == "door.button_pressed"
         assert str(event.payload.press_id) == good.payload["press_id"]
         assert transport.status().rx_errors == 1
-        assert transport.health_check().status == "degraded"
+        assert transport.health_check().status == "ok"
+        assert transport.metrics().protocol_errors == 1
         acknowledgements = [
             decode_wire_message((await bytes_.writes.get()).strip()),
             decode_wire_message((await bytes_.writes.get()).strip()),
@@ -211,6 +228,76 @@ def test_send_retries_until_ack_arrives() -> None:
 
         assert ack.ack == msg.seq
         assert transport.status().tx_retries == 1
+        await transport.close()
+
+    asyncio.run(run())
+
+
+def test_a_write_that_never_completes_fails_the_send_within_the_ack_timeout() -> None:
+    # A wedged USB bridge leaves the kernel write buffer full; before the
+    # deadline the writer sat on it forever while holding the send lock, so acks,
+    # heartbeats and profile pushes all queued behind one DoorPad tap.
+    async def run() -> None:
+        bytes_ = StalledWriteTransport()
+        options = replace(_options(max_retries=0), ack_timeout_ms=20)
+        transport = Esp32ProtocolTransport(bytes_, options=options)
+        await transport.start()
+        msg = transport.make_message("effect_play", {"effect_id": "sparkle", "duration_ms": 900})
+
+        started = asyncio.get_running_loop().time()
+        try:
+            await transport.send(msg)
+        except AckTimeoutError:
+            pass
+        else:  # pragma: no cover
+            raise AssertionError("expected the stalled write to fail the send")
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert bytes_.stalled.is_set()
+        assert elapsed < 0.5
+        assert transport.metrics().tx_write_timeouts == 1
+        assert transport.metrics().tx_timeouts == 0
+        assert "esp32_link_tx_write_timeouts_total 1" in transport.metrics_text()
+        # The lock was released with the write: a heartbeat write fails the same
+        # way instead of hanging behind it.
+        try:
+            await transport.send(transport.make_message("heartbeat", {"uptime_s": 1}))
+        except AckTimeoutError:
+            pass
+        else:  # pragma: no cover
+            raise AssertionError("expected the second write to time out too")
+        assert transport.metrics().tx_write_timeouts == 2
+        await transport.close()
+
+    asyncio.run(run())
+
+
+def test_an_ack_the_tty_will_not_take_does_not_hold_back_the_button() -> None:
+    async def run() -> None:
+        bytes_ = StalledWriteTransport()
+        options = replace(_options(max_retries=0), ack_timeout_ms=20)
+        transport = Esp32ProtocolTransport(bytes_, options=options)
+        await transport.start()
+        events = transport.events()
+        await bytes_.feed(
+            WireMessage(
+                v=1,
+                seq=1,
+                message_type="button_event",
+                ack=None,
+                payload={
+                    "press_id": "c0a8b1d2-0f0e-4a6b-b111-5a4e2f9b7788",
+                    "pressed_at_mono_ms": 123,
+                    "had_cached_profile": False,
+                    "profile_id": None,
+                },
+            )
+        )
+
+        event = await _next_event(events)
+
+        assert event.type == "door.button_pressed"
+        assert transport.metrics().tx_write_timeouts == 1
         await transport.close()
 
     asyncio.run(run())

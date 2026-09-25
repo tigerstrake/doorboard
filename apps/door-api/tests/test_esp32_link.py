@@ -177,6 +177,19 @@ def test_udp_without_usable_addresses_is_refused_not_guessed(
     assert "esp32_link_udp_addresses_invalid" in caplog.text
 
 
+def test_each_process_announces_its_own_boot_id() -> None:
+    # The controller dedupes Pi frames by (boot_id, seq) in a 16-entry ring.
+    # With the constant default "door-pi", a door-api restart inside that
+    # window had its hello, first heartbeats and any profile push acked and
+    # ignored -- "sent" on the Pi, never played at the door.
+    config = SessionConfig(db_path=":memory:", esp32_transport="uart")
+    first = _settings(config).options()
+    second = _settings(config).options()
+    assert first.pi_boot_id != second.pi_boot_id
+    assert first.pi_boot_id != "door-pi"
+    assert (first.door_id, first.source) == (config.door_id, "door-api")
+
+
 def test_udp_with_both_addresses_produces_an_opener() -> None:
     settings = _settings(
         SessionConfig(

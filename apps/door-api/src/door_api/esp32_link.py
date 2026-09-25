@@ -42,7 +42,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Final
 
-from doorboard_esp32_link import Esp32ProtocolTransport, Esp32TransportOptions
+from doorboard_esp32_link import Esp32ProtocolTransport, Esp32TransportOptions, uuid7_now
 
 logger = logging.getLogger("door_api.esp32_link")
 
@@ -110,7 +110,9 @@ class Esp32LinkSettings:
         return self.kind
 
     def options(self) -> Esp32TransportOptions:
-        return Esp32TransportOptions(door_id=self.door_id, source="door-api")
+        return Esp32TransportOptions(
+            pi_boot_id=str(uuid7_now()), door_id=self.door_id, source="door-api"
+        )
 
     def opener(self) -> Opener | None:
         """Build the coroutine factory that opens this link, or None if disabled."""

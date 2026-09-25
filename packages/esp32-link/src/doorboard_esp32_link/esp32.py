@@ -80,6 +80,8 @@ class Esp32TransportMetrics:
     duplicate_rx: int
     event_queue_drops: int
     link_state_queue_drops: int
+    tx_write_timeouts: int = 0
+    protocol_errors: int = 0
 
 
 class Esp32Transport(Protocol):
@@ -122,6 +124,17 @@ class Esp32Transport(Protocol):
 
 class AckTimeoutError(TimeoutError):
     pass
+
+
+class Esp32WriteTimeoutError(AckTimeoutError):
+    """The byte transport did not accept a frame within the ack timeout.
+
+    A stalled tty (kernel write buffer full because the USB bridge stopped
+    draining) used to block the writer forever while it held the send lock, so
+    every other frame -- acks, heartbeats, profile pushes -- queued behind it and
+    the controller dropped into fallback with the Pi alive. From the caller's
+    side this is an unacknowledged send, hence the parent class.
+    """
 
 
 class Esp32ProtocolError(ValueError):
@@ -272,10 +285,17 @@ class Esp32ProtocolTransport:
         self._rx_errors = 0
         self._tx_retries = 0
         self._tx_timeouts = 0
+        self._tx_write_timeouts = 0
         self._duplicate_rx = 0
         self._event_queue_drops = 0
         self._link_state_queue_drops = 0
+        # The error currently degrading the link, cleared by the next well-formed
+        # frame; the counter and the last detail survive the clear. Without the
+        # clear, the ROM boot banner the bridge port carries after every reset
+        # would report the link as degraded for the life of the transport.
         self._protocol_error: str | None = None
+        self._last_protocol_error: str | None = None
+        self._protocol_errors = 0
         self._closed = False
         self._started = False
         self._line_buffer = bytearray()
@@ -438,6 +458,8 @@ class Esp32ProtocolTransport:
             duplicate_rx=self._duplicate_rx,
             event_queue_drops=self._event_queue_drops,
             link_state_queue_drops=self._link_state_queue_drops,
+            tx_write_timeouts=self._tx_write_timeouts,
+            protocol_errors=self._protocol_errors,
         )
 
     def metrics_text(self) -> str:
@@ -451,12 +473,24 @@ class Esp32ProtocolTransport:
             "esp32_link_duplicate_rx_total": metrics.duplicate_rx,
             "esp32_link_event_queue_drops_total": metrics.event_queue_drops,
             "esp32_link_state_queue_drops_total": metrics.link_state_queue_drops,
+            "esp32_link_tx_write_timeouts_total": metrics.tx_write_timeouts,
+            "esp32_link_protocol_errors_total": metrics.protocol_errors,
         }
         return "".join(f"{name} {value}\n" for name, value in values.items())
 
     @property
     def inbound_dedupe_entries(self) -> int:
         return len(self._dedupe_recent_seqs)
+
+    @property
+    def last_protocol_error(self) -> str | None:
+        """Detail of the most recent protocol error, kept after the link recovers."""
+        return self._last_protocol_error
+
+    def _note_protocol_error(self, detail: str) -> None:
+        self._protocol_error = detail
+        self._last_protocol_error = detail
+        self._protocol_errors += 1
 
     async def _event_stream(self) -> AsyncGenerator[DoorboardEvent, None]:
         while True:
@@ -477,7 +511,7 @@ class Esp32ProtocolTransport:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._protocol_error = f"ESP32 byte transport read failed: {exc}"
+                self._note_protocol_error(f"ESP32 byte transport read failed: {exc}")
                 self._set_connected(False, "byte transport read failed")
                 await asyncio.sleep(self._options.monitor_interval_ms / 1000)
 
@@ -517,7 +551,7 @@ class Esp32ProtocolTransport:
             self._line_buffer.append(byte)
             if len(self._line_buffer) > MAX_FRAME_BYTES:
                 self._rx_errors += 1
-                self._protocol_error = f"oversize ESP32 frame over {MAX_FRAME_BYTES} bytes"
+                self._note_protocol_error(f"oversize ESP32 frame over {MAX_FRAME_BYTES} bytes")
                 self._line_buffer.clear()
                 self._discarding_oversize_line = True
 
@@ -526,11 +560,11 @@ class Esp32ProtocolTransport:
             msg = decode_wire_message(line)
         except Esp32ProtocolError as exc:
             self._rx_errors += 1
-            self._protocol_error = str(exc)
+            self._note_protocol_error(str(exc))
             return
         if msg.v != PROTO_V:
             self._rx_errors += 1
-            self._protocol_error = f"unsupported ESP32 protocol version {msg.v}"
+            self._note_protocol_error(f"unsupported ESP32 protocol version {msg.v}")
             return
         if msg.message_type == "ack":
             self._handle_ack(msg)
@@ -555,8 +589,11 @@ class Esp32ProtocolTransport:
                 raise Esp32ProtocolError(f"unsupported inbound ESP32 message: {msg.message_type}")
         except (KeyError, Esp32ProtocolError, ValidationError) as exc:
             self._rx_errors += 1
-            self._protocol_error = f"invalid ESP32 {msg.message_type} payload: {exc}"
+            self._note_protocol_error(f"invalid ESP32 {msg.message_type} payload: {exc}")
             return
+        # A well-formed frame from the controller: whatever degraded the link
+        # before is over. The counter and last_protocol_error keep the history.
+        self._protocol_error = None
 
         if msg.message_type == "hello" and not self._is_remembered_inbound(
             peer_boot_id or "unknown", msg.seq
@@ -572,11 +609,14 @@ class Esp32ProtocolTransport:
 
         duplicate = self._is_duplicate_inbound(peer_boot_id or "unknown", msg.seq)
         if msg.message_type in ACK_REQUIRED:
-            await self._write_message(
-                WireMessage(
-                    v=PROTO_V, seq=self._next_seq(), message_type="ack", ack=msg.seq, payload={}
+            # A stalled tty must not stop the frame reaching door-api: the
+            # controller retransmits and gives up on its own, the bell must not.
+            with contextlib.suppress(Esp32WriteTimeoutError):
+                await self._write_message(
+                    WireMessage(
+                        v=PROTO_V, seq=self._next_seq(), message_type="ack", ack=msg.seq, payload={}
+                    )
                 )
-            )
         if duplicate:
             self._duplicate_rx += 1
             return
@@ -600,8 +640,9 @@ class Esp32ProtocolTransport:
     def _handle_ack(self, msg: WireMessage) -> None:
         if msg.ack is None:
             self._rx_errors += 1
-            self._protocol_error = "ack frame missing ack sequence"
+            self._note_protocol_error("ack frame missing ack sequence")
             return
+        self._protocol_error = None
         future = self._pending_acks.get(msg.ack)
         if future is not None and not future.done():
             future.set_result(msg)
@@ -676,8 +717,20 @@ class Esp32ProtocolTransport:
         return False
 
     async def _write_message(self, msg: WireMessage) -> None:
+        # The ack timeout doubles as the write deadline: a frame the tty has not
+        # accepted by then is not going to be acked by then either, and nothing
+        # on the door path may block without bound (ARCHITECTURE.md §4).
         async with self._send_lock:
-            await self._bytes.write(encode_wire_message(msg))
+            try:
+                await asyncio.wait_for(
+                    self._bytes.write(encode_wire_message(msg)),
+                    timeout=self._options.ack_timeout_ms / 1000,
+                )
+            except TimeoutError as exc:
+                self._tx_write_timeouts += 1
+                raise Esp32WriteTimeoutError(
+                    f"timed out writing {msg.message_type} seq {msg.seq} to the ESP32"
+                ) from exc
 
     def _next_seq(self) -> int:
         self._seq = (self._seq % 0xFFFFFFFF) + 1
@@ -810,9 +863,27 @@ class PosixSerialByteTransport:
             try:
                 written = os.write(self._fd, view)
             except BlockingIOError:
-                await asyncio.sleep(0)
+                await self._wait_writable()
                 continue
             view = view[written:]
+
+    async def _wait_writable(self) -> None:
+        # Sleep until the kernel drains the tty rather than spinning on
+        # `sleep(0)` -- which, under the send lock, pinned a CPU on a device that
+        # is also running face recognition, and never ended for a wedged bridge.
+        if self._closed:
+            raise OSError("serial port is closed")
+        future: asyncio.Future[None] = self._loop.create_future()
+
+        def writable() -> None:
+            if not future.done():
+                future.set_result(None)
+
+        self._loop.add_writer(self._fd, writable)
+        try:
+            await future
+        finally:
+            self._loop.remove_writer(self._fd)
 
     async def close(self) -> None:
         if self._closed:
