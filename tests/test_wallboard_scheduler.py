@@ -9,18 +9,13 @@ being a 30s interval doing exactly that.
 from __future__ import annotations
 
 import logging
-import sys
 import threading
 import time as real_time
 from pathlib import Path
 
 import pytest
-
-REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "apps/wallboard-worker/src"))
-
-from wallboard_worker.scheduler import ScheduledJob, Scheduler  # noqa: E402
-from wallboard_worker.settings import Settings  # noqa: E402
+from wallboard_worker.scheduler import ScheduledJob, Scheduler
+from wallboard_worker.settings import Settings
 
 
 class FakeClock:

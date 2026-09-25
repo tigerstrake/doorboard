@@ -8,16 +8,13 @@ that has already passed.
 from __future__ import annotations
 
 import json
-import sys
 from datetime import date
 from pathlib import Path
 
 import pytest
+from wallboard_worker.jobs import load_academic_milestones
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "apps/wallboard-worker/src"))
-
-from wallboard_worker.jobs import load_academic_milestones  # noqa: E402
 
 SHIPPED_TABLE = REPO / "integrations/academic-calendar/stanford-2026-2027.json"
 

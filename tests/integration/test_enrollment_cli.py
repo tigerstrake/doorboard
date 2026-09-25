@@ -1,73 +1,110 @@
-import os
-import sys
+"""tools/enrollment-cli against the real door-visiond and door-media apps, over HTTP.
+
+The CLI is a stand-alone script that reaches the two services with plain
+``httpx.get``/``httpx.post`` calls, so this serves both apps with uvicorn the way
+the Pi does — but on kernel-assigned loopback ports (two pytest processes on one
+machine cannot collide), and each server is stopped and joined when the module
+finishes, so nothing keeps writing to pytest's capture after it closes.
+
+Environment goes through ``MonkeyPatch`` so ``VISION_MODE=mock`` and the admin
+tokens do not leak into every test collected after this one.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import socket
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 import uvicorn
 from click.testing import CliRunner
+from fastapi import FastAPI
 
-# Add repository root to sys.path to find tools directory
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CLI_PATH = REPO_ROOT / "tools" / "enrollment-cli" / "enroll.py"
 
-
-# Set up test environment variables before importing apps
-@pytest.fixture(scope="module", autouse=True)
-def setup_test_env(tmp_path_factory):
-    tmp_dir = tmp_path_factory.mktemp("cli_test_ssd")
-    os.environ["SSD_DATA_ROOT"] = str(tmp_dir)
-    os.environ["DOOR_VISIOND_ADMIN_TOKEN"] = "test-vision-admin"
-    os.environ["DOOR_MEDIA_ADMIN_TOKEN"] = "test-media-admin"
-    os.environ["VISION_MODE"] = "mock"
-    os.environ["DOOR_VISIOND_BIND"] = "127.0.0.1:8089"
-    os.environ["DOOR_MEDIA_BIND"] = "127.0.0.1:8092"
-    yield
+VISIOND_TOKEN = "test-vision-admin"
+MEDIA_TOKEN = "test-media-admin"
 
 
-# Start background servers
-@pytest.fixture(scope="module")
-def run_servers(setup_test_env):
-    from door_media.app import app as media_app
-    from door_visiond.app import app as visiond_app
-
-    def start_visiond():
-        uvicorn.run(visiond_app, host="127.0.0.1", port=8089, log_level="warning")
-
-    def start_media():
-        uvicorn.run(media_app, host="127.0.0.1", port=8092, log_level="warning")
-
-    t1 = threading.Thread(target=start_visiond, daemon=True)
-    t2 = threading.Thread(target=start_media, daemon=True)
-    t1.start()
-    t2.start()
-
-    # Wait for uvicorn to bind and start accepting connections
-    time.sleep(1.5)
-    yield "http://127.0.0.1:8089", "http://127.0.0.1:8092"
+def _loopback_listener() -> socket.socket:
+    """A listening socket on a port the kernel picked; uvicorn adopts it as-is."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(128)
+    return sock
 
 
-def test_cli_guided_enroll_and_unenroll(run_servers):
-    visiond_url, media_url = run_servers
-    import importlib.util
-
-    cli_path = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "../../tools/enrollment-cli/enroll.py")
+@contextmanager
+def _serve(app: FastAPI) -> Iterator[str]:
+    sock = _loopback_listener()
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(
+        target=server.run, kwargs={"sockets": [sock]}, name=f"uvicorn-{app.title}-{port}"
     )
-    spec = importlib.util.spec_from_file_location("enroll", cli_path)
-    enroll_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(enroll_module)
-    cli = enroll_module.cli
+    thread.start()
+    try:
+        deadline = time.monotonic() + 15.0
+        while not server.started:
+            if not thread.is_alive():
+                raise RuntimeError(f"{app.title} exited before it finished starting")
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"{app.title} did not start within 15 s")
+            time.sleep(0.02)
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=15.0)
+        sock.close()
 
+
+@pytest.fixture(scope="module")
+def served_apps(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str, str]]:
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("SSD_DATA_ROOT", str(tmp_path_factory.mktemp("cli_test_ssd")))
+        mp.setenv("DOOR_VISIOND_ADMIN_TOKEN", VISIOND_TOKEN)
+        mp.setenv("DOOR_MEDIA_ADMIN_TOKEN", MEDIA_TOKEN)
+        mp.setenv("VISION_MODE", "mock")
+
+        from door_media import settings as media_settings
+        from door_media.app import app as media_app
+        from door_visiond import settings as visiond_settings
+        from door_visiond.app import app as visiond_app
+
+        # Both services cache Settings() in a module singleton, and another suite in the
+        # same session may already have filled it from its own environment.
+        media_settings.reset_settings()
+        visiond_settings.reset_settings()
+        try:
+            with _serve(visiond_app) as visiond_url, _serve(media_app) as media_url:
+                yield visiond_url, media_url
+        finally:
+            media_settings.reset_settings()
+            visiond_settings.reset_settings()
+
+
+def _load_cli():  # noqa: ANN202 — a click.Group loaded from a script, not a package
+    spec = importlib.util.spec_from_file_location("enroll", CLI_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.cli
+
+
+def test_cli_guided_enroll_and_unenroll(served_apps: tuple[str, str]) -> None:
+    visiond_url, media_url = served_apps
+    cli = _load_cli()
     runner = CliRunner()
 
-    # Test Guided Enroll
-    # Inputs:
-    # 1. consent_confirmed: 'y'
-    # 2. image captures: press enter 3 times (since images_count=3)
-    # 3. display_name: 'TestCLIUser'
-    # 4. profile_id: 'mint_pulse'
-    # 5. color: '#00ff00'
-    # 6. sound: ''
+    # Guided enroll, answering every prompt in order:
+    #   consent, three captures (Enter each), display name, profile, colour, no sound.
     inputs = [
         "y",  # consent
         "",  # capture 1
@@ -89,9 +126,9 @@ def test_cli_guided_enroll_and_unenroll(run_servers):
             "--images-count",
             "3",
             "--token",
-            "test-vision-admin",
+            VISIOND_TOKEN,
             "--media-token",
-            "test-media-admin",
+            MEDIA_TOKEN,
         ],
         input="\n".join(inputs) + "\n",
     )
@@ -100,8 +137,6 @@ def test_cli_guided_enroll_and_unenroll(run_servers):
     assert "Enrollment successful!" in result.output
     assert "Generated Person ID: prs_" in result.output
 
-    # Extract Person ID from output
-    # e.g., "Generated Person ID: prs_xxxxxx"
     person_id = None
     for line in result.output.splitlines():
         if "Generated Person ID:" in line:
@@ -111,7 +146,6 @@ def test_cli_guided_enroll_and_unenroll(run_servers):
     assert person_id is not None
     assert person_id.startswith("prs_")
 
-    # Test Unenroll
     unenroll_result = runner.invoke(
         cli,
         [
@@ -120,7 +154,7 @@ def test_cli_guided_enroll_and_unenroll(run_servers):
             "--visiond-url",
             visiond_url,
             "--token",
-            "test-vision-admin",
+            VISIOND_TOKEN,
         ],
     )
     assert unenroll_result.exit_code == 0, f"Unenroll failed: {unenroll_result.output}"

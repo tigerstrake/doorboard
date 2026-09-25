@@ -25,15 +25,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from door_media.db import _SCHEMA as MEDIA_SCHEMA
+from door_sync.queue import _SCHEMA as SYNC_SCHEMA
 
 REPO = Path(__file__).resolve().parents[1]
 TOOL = REPO / "tools" / "recover-stale-hash-clips.py"
-
-sys.path.insert(0, str(REPO / "apps/door-sync/src"))
-sys.path.insert(0, str(REPO / "apps/door-media/src"))
-
-from door_media.db import _SCHEMA as MEDIA_SCHEMA  # noqa: E402
-from door_sync.queue import _SCHEMA as SYNC_SCHEMA  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     shutil.which("ffprobe") is None or shutil.which("ffmpeg") is None,
