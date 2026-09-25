@@ -28,7 +28,21 @@ visitor cam + mic → rpicam/libcamera → H.264/AAC → MediaMTX
 - Events out: `media.recording_started/_finalized`, `media.thumbnail_ready`, `media.retention_deleted`, `media.storage_status`.
 - Events in: `session.state_changed` (record window triggers), deletion requests.
 - HTTP: `/health`, `/metrics`, `GET /streams` (endpoint metadata for UIs), `GET /recordings` + `DELETE /recordings/{id}` (admin), and `/photos/*` still-capture review endpoints used by the feature-gated DoorPad photo booth.
-- MediaMTX sits behind a `MediaRouter` adapter (`mediamtx | mock`); raw MediaMTX/RTSP ports are never exposed off-host (security §16).
+- MediaMTX sits behind a `MediaRouter` adapter (`mediamtx | mock`); raw MediaMTX/RTSP ports are never exposed off-host (security §16, see *Ports*).
+
+## Ports
+
+Nothing MediaMTX listens on is reachable off the Pi (ARCHITECTURE §2, ADR-0047). MediaMTX fills every key the generated `mediamtx.yml` omits from defaults that bind **all interfaces**, so the template names every protocol the pinned release has, and `tests/test_mediamtx_config_surface.py` checks the rendering against `tests/fixtures/mediamtx-<MEDIAMTX_VERSION>-defaults.yml`.
+
+| Listener | Setting | Address |
+|---|---|---|
+| RTSP: the `rpicam-vid \| ffmpeg` publisher and the read-only snapshot/still ffmpegs, TCP only | `rtsp: yes`, `protocols: [tcp]` | `127.0.0.1:8554` (`MEDIAMTX_RTSP_PORT`) |
+| WebRTC WHEP signalling (kiosks on this Pi) | `webrtc: yes` | `127.0.0.1:8889` |
+| WebRTC ICE, UDP | `webrtcLocalUDPAddress` | `127.0.0.1:8189`; only `127.0.0.1` is advertised as a candidate |
+| Control API (`/health`, `/streams`) | `api: yes` | `127.0.0.1:9997` |
+| RTSPS, UDP RTP/RTCP, multicast, RTMP/RTMPS, HLS, SRT, playback, metrics, pprof | off | pinned to loopback anyway |
+
+`authInternalUsers` grants `read`/`publish`/`api` to `127.0.0.1` and `::1` only; MediaMTX's default `any` user from any IP is not present. door-media's own HTTP API binds `DOOR_MEDIA_BIND` (`127.0.0.1:8082`). Bumping `MEDIAMTX_VERSION` means fetching that release's `mediamtx.yml` into `tests/fixtures/` and, if the test then fails, deciding what the new listener should be; that failure is the point. MediaMTX rejects unknown keys, so the test also refuses any key the pinned release does not know.
 
 ## Key metrics
 
