@@ -240,12 +240,19 @@ class RecordingDB:
             if cursor:
                 try:
                     decoded = base64.b64decode(cursor.encode("utf-8")).decode("utf-8")
-                    query += " AND started_at_utc > ?"
-                    params.append(decoded)
+                    if "|" in decoded:
+                        cursor_started_at, cursor_recording_id = decoded.split("|", 1)
+                        query += (
+                            " AND (started_at_utc > ? OR (started_at_utc = ? AND recording_id > ?))"
+                        )
+                        params.extend([cursor_started_at, cursor_started_at, cursor_recording_id])
+                    else:
+                        query += " AND started_at_utc > ?"
+                        params.append(decoded)
                 except Exception:
                     logger.warning("invalid_cursor_ignored", extra={"cursor": cursor})
 
-            query += " ORDER BY started_at_utc ASC"
+            query += " ORDER BY started_at_utc ASC, recording_id ASC"
 
             if limit is not None:
                 query += " LIMIT ?"
@@ -259,7 +266,8 @@ class RecordingDB:
         next_cursor = None
         if limit is not None and len(recording_rows) > limit:
             last_item = recording_rows[limit - 1]
-            next_cursor = base64.b64encode(last_item.started_at_utc.encode("utf-8")).decode("utf-8")
+            cursor_val = f"{last_item.started_at_utc}|{last_item.recording_id}"
+            next_cursor = base64.b64encode(cursor_val.encode("utf-8")).decode("utf-8")
             recording_rows = recording_rows[:limit]
 
         return recording_rows, next_cursor

@@ -92,7 +92,17 @@ def test_session_event_lifecycle(client: TestClient):
     assert resp.status_code == 200
 
     resp = client.get("/recordings")
-    assert resp.json()["recordings"][0]["sync_status"] == "synced"
+    rec = resp.json()["recordings"][0]
+    assert rec["sync_status"] == "synced"
+
+    import os
+    from pathlib import Path
+
+    ssd_root = Path(os.environ["SSD_DATA_ROOT"])
+    clip_file = ssd_root / rec["path"]
+    thumb_file = ssd_root / rec["thumbnail_path"]
+    assert clip_file.exists()
+    assert thumb_file.exists()
 
     # 4. Delete
     resp = client.delete(f"/recordings/{recording_id}")
@@ -100,3 +110,6 @@ def test_session_event_lifecycle(client: TestClient):
 
     resp = client.get("/recordings")
     assert len(resp.json()["recordings"]) == 0
+
+    assert not clip_file.exists()
+    assert not thumb_file.exists()
