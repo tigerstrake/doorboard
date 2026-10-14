@@ -83,6 +83,20 @@ async function doorpadOverflow(page: Page): Promise<number> {
   });
 }
 
+/**
+ * The drill-in / recede transitions run for 320 ms after a screen mounts, and they are
+ * transforms: geometry read mid-animation is scaled and lands a couple of pixels off. That
+ * read as "the badge shifts the title by 2 px" for a month. Let every running animation
+ * finish before measuring anything.
+ */
+async function settleAnimations(page: Page) {
+  await page.evaluate(() =>
+    Promise.all(
+      document.getAnimations().map((animation) => animation.finished.catch(() => undefined))
+    )
+  );
+}
+
 test.beforeEach(async ({ page }) => {
   await mockIdleSession(page);
 });
@@ -157,25 +171,49 @@ test("the badge does not shift the title, and the layout returns when it goes", 
   await page.goto("/doorpad");
   const title = page.getByRole("heading", { name: /DoorPad/ });
   await expect(title).toBeVisible();
+  await settleAnimations(page);
   const before = await title.boundingBox();
 
   await recogniseSomeone(page, "Tiger");
-  await expect(page.getByTestId("doorpad-identity")).toBeVisible();
+  const badge = page.getByTestId("doorpad-identity");
+  await expect(badge).toBeVisible();
+  await settleAnimations(page);
   const during = await title.boundingBox();
 
   // The badge was a flex sibling first, which silently re-aligned the centred title the
   // moment it unmounted — the header never went back to normal (T-317).
   expect(Math.round(during!.x)).toBe(Math.round(before!.x));
   expect(Math.round(during!.y)).toBe(Math.round(before!.y));
+  // And the pill, with its 48 px Admin target, stays inside the panel — it must not poke
+  // above the top edge.
+  const badgeBox = await badge.boundingBox();
+  expect(badgeBox!.y).toBeGreaterThanOrEqual(0);
 });
 
-test("the About screen fits without scrolling", async ({ page }) => {
+test("the My Data & Privacy screen fits without scrolling", async ({ page }) => {
+  // The About prose moved to a wallboard channel; the privacy tile now opens the
+  // visitor's own "what have I left here, and how do I erase it" controls.
   await page.goto("/doorpad");
   await page.locator("#btn-privacy").click();
 
-  await expect(page.getByTestId("about-doorboard")).toBeVisible();
-  // Six sections of prose on a 600px-tall panel: the case most likely to overflow.
+  await expect(page.getByRole("button", { name: "Request Deletion of My Data" })).toBeVisible();
   expect(await doorpadOverflow(page)).toBe(0);
+});
+
+test("the header shows a connection dot without moving the title", async ({ page }) => {
+  await page.goto("/doorpad");
+  const title = page.getByRole("heading", { name: /DoorPad/ });
+  await expect(title).toBeVisible();
+  const dot = page.getByTestId("connection-dot");
+  await expect(dot).toBeVisible();
+  await settleAnimations(page);
+  const dotBox = await dot.boundingBox();
+  const titleBox = await title.boundingBox();
+  // Out of flow, tucked into the left end of the header row; the (full-width, centred)
+  // title block is unaffected.
+  expect(dotBox!.x).toBeLessThan(40);
+  expect(dotBox!.y + dotBox!.height).toBeLessThan(60);
+  expect(Math.abs(titleBox!.x + titleBox!.width / 2 - VIEWPORT_WIDTH / 2)).toBeLessThan(40);
 });
 
 test("the check-in screen offers the recognised person by name", async ({ page }) => {

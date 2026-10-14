@@ -626,6 +626,11 @@ export function App() {
   const [guestbookPhoto, setGuestbookPhoto] = useState<PhotoReview | null>(null);
   const [guestbookPhotoStatus, setGuestbookPhotoStatus] = useState<PhotoCaptureStatus>("idle");
   const [visitorQrUrl, setVisitorQrUrl] = useState<string | null>(null);
+  // Whether a phone link exists for this session, so the QR screen can say "not right
+  // now" rather than "preparing" forever after a failed mint.
+  const [visitorQrState, setVisitorQrState] = useState<"idle" | "loading" | "ready" | "failed">(
+    "idle"
+  );
   // Self-service enrollment (ADR-0019). "closed" carries the reason door-visiond
   // gave, because a visitor who is refused deserves a sentence, not a spinner that
   // stops: they are standing at a door deciding whether to knock.
@@ -1319,29 +1324,43 @@ export function App() {
     };
   }, [applySessionSnapshot, resyncSession, showAmbientAlert]);
 
+  // One visitor token per session, not per transition. door-api hands the same token
+  // back for the whole session, and minting on every state change re-fetched it up to
+  // eight times per visit on every surface. Keyed on the session id, so a new session
+  // mints afresh; a failure clears the key so the next transition retries.
+  const visitorTokenSessionRef = useRef<string | null>(null);
+  const mintVisitorToken = useCallback(async (sessionId: string): Promise<void> => {
+    visitorTokenSessionRef.current = sessionId;
+    setVisitorQrState("loading");
+    try {
+      const response = await fetch(`${API_BASE}/visitor-token`);
+      if (!response.ok) throw new Error("visitor token unavailable");
+      const data = (await response.json()) as { token: string; url: string };
+      // A later session may have taken over while this was in flight.
+      if (visitorTokenSessionRef.current !== sessionId) return;
+      socialApi.setVisitorToken(data.token);
+      setVisitorQrUrl(data.url);
+      setVisitorQrState("ready");
+    } catch {
+      if (visitorTokenSessionRef.current !== sessionId) return;
+      visitorTokenSessionRef.current = null;
+      setVisitorQrUrl(null);
+      setVisitorQrState("failed");
+    }
+  }, []);
+
   useEffect(() => {
     if (!WALLBOARD_TAKEOVER_STATES.includes(sessionState)) {
-      if (sessionState === "IDLE") setVisitorQrUrl(null);
-      return undefined;
+      if (sessionState === "IDLE") {
+        visitorTokenSessionRef.current = null;
+        setVisitorQrUrl(null);
+        setVisitorQrState("idle");
+      }
+      return;
     }
-    let cancelled = false;
-    void fetch(`${API_BASE}/visitor-token`)
-      .then(async (response) => {
-        if (!response.ok) throw new Error("visitor token unavailable");
-        return response.json() as Promise<{ token: string; url: string }>;
-      })
-      .then((data) => {
-        if (cancelled) return;
-        socialApi.setVisitorToken(data.token);
-        setVisitorQrUrl(data.url);
-      })
-      .catch(() => {
-        if (!cancelled) setVisitorQrUrl(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionState]);
+    if (visitorTokenSessionRef.current === mockSessionId) return;
+    void mintVisitorToken(mockSessionId);
+  }, [mintVisitorToken, mockSessionId, sessionState]);
 
   useEffect(() => {
     void resyncSession();
@@ -1393,11 +1412,24 @@ export function App() {
     return () => controller.abort();
   }, [adminToken, route]);
 
-  // Show temporary toast feedback
-  const triggerToast = (msg: string) => {
+  // Show temporary toast feedback. One timer, tracked: a second toast inside the window
+  // used to be cleared by the first toast's untracked timeout, and an unmount left it
+  // running.
+  const toastTimerRef = useRef<number | null>(null);
+  const triggerToast = useCallback((msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3000);
-  };
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      toastTimerRef.current = null;
+      setToastMessage(null);
+    }, 3000);
+  }, []);
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    },
+    []
+  );
 
   const navigateTo = (path: string) => {
     window.history.pushState(null, "", path);
@@ -1995,6 +2027,20 @@ export function App() {
     void endVisitorSession();
   };
 
+  // The 30 s inactivity reset on a read-only screen. Reading the poll for half a minute
+  // is not "walking away" in the sense that ends a visit: ending the session here called
+  // /doorpad/session/end, which also forgets the recognised identity — undercutting
+  // ADR-0020's 120 s window for no reason. Without a live visitor session the pad simply
+  // goes home; with one (they rang, then wandered into the guestbook) the visit ends as
+  // before.
+  const handleIdleReturn = () => {
+    if (VISITOR_STATES.includes(sessionState)) {
+      handleReset();
+      return;
+    }
+    setDoorPadScreen("home");
+  };
+
   // Render Simulator panel overlay (for interactive dev)
   const renderSimPanel = () => {
     if (!DEV_TOOLS_ENABLED) return null;
@@ -2464,7 +2510,7 @@ export function App() {
       triggerToast(unavailableMessage);
       return null;
     }
-  }, []);
+  }, [triggerToast]);
 
   // The preview is fetched by an effect on the review step, not from the Stop button.
   // Two paths reach review without that button: the server's own max-duration stop
@@ -2506,18 +2552,26 @@ export function App() {
     };
   }, [doorPadScreen, latestRecording, videoStep]);
 
+  // A synchronous guard alongside the pending state: the cap effect and the Stop button
+  // can both ask to stop in the same tick, before React has re-rendered the state.
+  const stopInFlightRef = useRef(false);
   const stopRecording = useCallback(async () => {
-    if (mediaActionPending) return;
+    if (mediaActionPending || stopInFlightRef.current) return;
+    stopInFlightRef.current = true;
     setMediaActionPending(true);
-    const result = await postDoorApi(
-      "/doorpad/video-message/stop",
-      "Couldn't stop the recording. Please try again."
-    );
-    const stopped = result?.accepted || result?.session?.state === "VIDEO_MESSAGE_REVIEW";
-    // Pending ends with the POST. It used to span the preview poll as well, which
-    // greyed out Send/Discard/Re-record for up to 30 s under copy promising the opposite.
-    setMediaActionPending(false);
-    if (stopped) setVideoStep("review");
+    try {
+      const result = await postDoorApi(
+        "/doorpad/video-message/stop",
+        "Couldn't stop the recording. Please try again."
+      );
+      const stopped = result?.accepted || result?.session?.state === "VIDEO_MESSAGE_REVIEW";
+      // Pending ends with the POST. It used to span the preview poll as well, which
+      // greyed out Send/Discard/Re-record for up to 30 s under copy promising the opposite.
+      setMediaActionPending(false);
+      if (stopped) setVideoStep("review");
+    } finally {
+      stopInFlightRef.current = false;
+    }
   }, [mediaActionPending, postDoorApi]);
 
   const beginRecording = useCallback(async () => {
@@ -2548,18 +2602,18 @@ export function App() {
 
   useEffect(() => {
     if (doorPadScreen !== "message" || videoStep !== "recording") return undefined;
-    const timer = window.setInterval(() => {
-      setRecordingElapsed((value) => {
-        const next = value + 1;
-        if (next >= maxRecordingS) {
-          window.clearInterval(timer);
-          void stopRecording();
-        }
-        return next;
-      });
-    }, 1000);
+    const timer = window.setInterval(() => setRecordingElapsed((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
-  }, [doorPadScreen, maxRecordingS, stopRecording, videoStep]);
+  }, [doorPadScreen, videoStep]);
+
+  // The cap is enforced from an effect on the elapsed count, not inside the state
+  // updater above. An updater must be pure — StrictMode runs it twice, which doubled
+  // the stop request.
+  useEffect(() => {
+    if (doorPadScreen !== "message" || videoStep !== "recording") return;
+    if (recordingElapsed < maxRecordingS) return;
+    void stopRecording();
+  }, [doorPadScreen, maxRecordingS, recordingElapsed, stopRecording, videoStep]);
 
   const startVideoFlow = async () => {
     if (!storageStatus.recording_allowed) {
@@ -2659,7 +2713,7 @@ export function App() {
     } finally {
       setMediaActionPending(false);
     }
-  }, []);
+  }, [triggerToast]);
 
   useEffect(() => {
     if (doorPadScreen !== "photo" || photoStep !== "countdown") return undefined;
@@ -2890,18 +2944,10 @@ export function App() {
   const showVisitorQr = async () => {
     setDoorPadScreen("message");
     setVideoStep("qr");
-    try {
-      const response = await fetch(`${API_BASE}/visitor-token`);
-      if (response.ok) {
-        const data = (await response.json()) as { token: string; url: string };
-        socialApi.setVisitorToken(data.token);
-        setVisitorQrUrl(data.url);
-      } else {
-        triggerToast("QR token unavailable");
-      }
-    } catch {
-      triggerToast("QR token unavailable");
-    }
+    // The session's token is usually minted already (see mintVisitorToken); only mint
+    // here when there is none — door-api opens a doorpad session from IDLE for it.
+    if (visitorQrUrl) return;
+    await mintVisitorToken(mockSessionId);
   };
 
   const ringDoorbell = async () => {
@@ -3025,13 +3071,14 @@ export function App() {
       }
     };
 
-    const handleActionClick = (actionName: string, targetScreen: DoorPadScreen) => {
+    // The screen changing is the feedback; a "Guestbook flow opened" toast on top of it
+    // only covered the E-23 notice on the next screen.
+    const handleActionClick = (targetScreen: DoorPadScreen) => {
       if (targetScreen === "ringing") {
         ringDoorbell();
       } else {
         setDoorPadScreen(targetScreen);
         reportDoorpadActivity();
-        triggerToast(`${actionName} flow opened`);
       }
     };
 
@@ -3054,6 +3101,9 @@ export function App() {
           />
           <header className="doorpad-header">
             <div className="doorpad-header__row">
+              {/* A small dot so a pad that has lost door-api is visible as such, the way
+                  the wallboard already is. Out of flow, like the badge, so it moves nothing. */}
+              <ConnectionDot liveness={wallboardLiveness} className="doorpad-connection-dot" />
               <div>
                 {/* Long-press the title to reach admin — the hidden bootstrap that works
                     even when recognition is down. It only opens the /admin token gate. */}
@@ -3151,7 +3201,7 @@ export function App() {
               id="btn-guestbook"
               icon={<span aria-hidden="true">G</span>}
               hint="Leave a note on the big screen"
-              onClick={() => handleActionClick("Guestbook", "guestbook")}
+              onClick={() => handleActionClick("guestbook")}
             >
               Guestbook
             </BigButton>
@@ -3160,7 +3210,7 @@ export function App() {
               id="btn-poll"
               icon={<span aria-hidden="true">Q</span>}
               hint="Answer today's question"
-              onClick={() => handleActionClick("Vote in Poll", "poll")}
+              onClick={() => handleActionClick("poll")}
             >
               Vote in Poll
             </BigButton>
@@ -3173,7 +3223,7 @@ export function App() {
                   ? `Sign in as ${activeDisplayName}`
                   : "Add yourself to today's visitor count"
               }
-              onClick={() => handleActionClick("Check In", "checkin")}
+              onClick={() => handleActionClick("checkin")}
             >
               Visitor Check-In
             </BigButton>
@@ -3182,7 +3232,7 @@ export function App() {
               id="btn-remote"
               icon={<span aria-hidden="true">W</span>}
               hint="Change what the big screen shows"
-              onClick={() => handleActionClick("Wallboard", "remote")}
+              onClick={() => handleActionClick("remote")}
             >
               Wallboard Control
             </BigButton>
@@ -3191,7 +3241,7 @@ export function App() {
               id="btn-privacy"
               icon={<span aria-hidden="true">I</span>}
               hint="See what you've left here and erase it"
-              onClick={() => handleActionClick("My Data", "privacy")}
+              onClick={() => handleActionClick("privacy")}
             >
               My Data &amp; Privacy
             </BigButton>
@@ -3209,7 +3259,7 @@ export function App() {
               : discardVideoFlow
             : doorPadScreen === "photo"
               ? discardPhotoFlow
-              : handleReset
+              : handleIdleReturn
         }
         timeoutMs={doorpadResetTimeoutMs(doorPadScreen, videoStep)}
         paused={
@@ -3219,7 +3269,7 @@ export function App() {
         }
       >
         <div
-          className="doorpad-view db-app-theme doorpad-enter"
+          className={`doorpad-view db-app-theme doorpad-enter${guestbookKeyboardOpen ? " doorpad-view--osk" : ""}`}
           // Keyed on the screen so moving between sub-screens replays the transition. The
           // wrapper stays mounted across them, so a mount-only animation covered just the
           // first step in. Photo/video sub-steps keep the same key, which matters: those
@@ -3498,7 +3548,16 @@ export function App() {
             <div className="doorpad-sub-content">
               <h2>Visitor Link</h2>
               <p>Use your phone to see ring status, leave a text note, vote, or request deletion.</p>
-              {visitorQrUrl ? <QRPlaceholder url={visitorQrUrl} /> : <p>Preparing QR token...</p>}
+              {visitorQrUrl ? (
+                <QRPlaceholder url={visitorQrUrl} />
+              ) : visitorQrState === "failed" ? (
+                <p className="placeholder-subtext" data-testid="visitor-link-unavailable">
+                  The phone link isn't available right now. You can still record a video or
+                  leave a note here at the DoorPad.
+                </p>
+              ) : (
+                <p>Preparing QR token...</p>
+              )}
               <div className="action-button-group">
                 <BigButton variant="primary" onClick={startVideoFlow}>Record a Video Here</BigButton>
                 <BigButton onClick={returnDoorPadToContext}>Back</BigButton>
@@ -3660,10 +3719,10 @@ export function App() {
                 value={guestbookText}
                 onFocus={(e) => {
                   setGuestbookKeyboardOpen(true);
-                  // Scroll the field to the top of the view so it sits ABOVE the
-                  // fixed on-screen keyboard (which covers the bottom ~half of the
-                  // 1024x600 kiosk). `center` used to land it behind the keyboard.
-                  window.setTimeout(() => e.target.scrollIntoView({ block: "start" }), 0);
+                  // The composer is laid out above the keyboard's reserved height (see
+                  // .doorpad-sub-content.osk-open), so this only nudges a field that is
+                  // already partly out of view — "start" scrolled the E-23 notice away.
+                  window.setTimeout(() => e.target.scrollIntoView({ block: "nearest" }), 0);
                 }}
                 onChange={(e) => {
                   setGuestbookText(e.target.value);
