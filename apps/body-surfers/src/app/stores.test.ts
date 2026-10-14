@@ -41,6 +41,27 @@ describe('leaderboard', () => {
   });
 });
 
+describe('leaderboard retention (door, ADR-0049)', () => {
+  it('drops entries and their photos older than the cutoff, in storage too', () => {
+    const st = new MemoryStorage();
+    const lb = new LeaderboardStore(st);
+    lb.add([{ ...entry('old', 900, 1_000), photo: 'data:image/jpeg;base64,AAAA' }, entry('new', 100, 5_000)]);
+    lb.retainSince(2_000);
+    expect(lb.entries.map((e) => e.id)).toEqual(['new']);
+    const raw = st.getItem(STORAGE_KEYS.leaderboard) ?? '';
+    expect(raw).not.toContain('old');
+    expect(raw).not.toContain('data:image');
+  });
+  it('leaves storage untouched when nothing is that old', () => {
+    const st = new MemoryStorage();
+    const lb = new LeaderboardStore(st);
+    lb.add([entry('a', 10, 5_000)]);
+    const before = lb.entries;
+    lb.retainSince(1_000);
+    expect(lb.entries).toBe(before);
+  });
+});
+
 describe('settings', () => {
   it('defaults on corrupt JSON and clamps ranges', () => {
     const st = new MemoryStorage();

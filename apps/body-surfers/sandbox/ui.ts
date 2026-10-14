@@ -23,6 +23,7 @@ import type {
 } from '../src/shared/types';
 import { DEFAULT_SETTINGS } from '../src/shared/constants';
 import { LM } from '../src/shared/pose';
+import { DOOR_NOTICE } from '../src/door/config';
 
 const q = new URLSearchParams(location.search);
 const flag = (k: string): boolean => q.has(k) && q.get(k) !== '0' && q.get(k) !== 'false';
@@ -422,6 +423,7 @@ function model(t: number): UIModel {
     ],
     debug: flag('debug') ? { fps: 60, frameMs: 6.4, visionFps: 29, inferenceMs: 14.2, drawCalls: 180 } : null,
     toast: screen === 'playing' ? { text: n === 2 && flag('out') ? 'P1 WINS — KEEP GOING!' : 'SPEED UP!', t: Math.floor((performance.now() - timeOrigin) / 4000) * 4000 + timeOrigin + 200 } : null,
+    door: flag('door') ? { notice: DOOR_NOTICE } : null,
   };
 }
 

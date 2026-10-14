@@ -564,6 +564,8 @@ export interface UIModel {
   debug: DebugStats | null;
   /** Transient banner text ("SPEED UP!", "P2 WINS — keep going!"); t = performance.now() when raised. */
   toast: { text: string; t: number } | null;
+  /** Door mode (ADR-0049): lobby notice shown before anyone plays. */
+  door: { notice: string } | null;
 }
 
 export type UICommand =
@@ -611,6 +613,19 @@ export interface AppParams {
   quality: Quality | null;
   /** ?mute=1 */
   mute: boolean;
+  /** ?door=1: hosted by the doorboard wallboard (ADR-0049); null everywhere else. */
+  door: DoorParams | null;
+}
+
+export interface DoorParams {
+  /** door-media's GET /streams (?media=). */
+  mediaUrl: string;
+  /** Stream to read (?stream=, default 'visitor'). */
+  stream: string;
+  /** The hosting wallboard's origin (?parent=); null turns the postMessage bridge off. */
+  parentOrigin: string | null;
+  /** ?webcam=1: use getUserMedia instead of door-media (testing door mode on a laptop). */
+  webcam: boolean;
 }
 
 // ---------------------------------------------------------------------------

@@ -82,6 +82,8 @@ export class LobbyView implements ScreenView {
   private readonly join: Show;
   private readonly joinNum: NumText;
   private readonly board: LeaderboardPanel;
+  private readonly doorNotice: Text;
+  private readonly doorShow: Show;
   private readonly controls = new ControlsLine('bs-lobby__controls');
   private lastJoinNum = -1;
   private lastGuide: GuideState | null = null;
@@ -148,6 +150,8 @@ export class LobbyView implements ScreenView {
     settings.addEventListener('click', () => emit({ type: 'settings-open', open: true }));
     full.addEventListener('click', () => emit({ type: 'fullscreen' }));
     const legend = h('div', 'bs-legend', solo, race, settings, full);
+    // Door mode: the wallboard can't be clicked, so the legend gives way to the photo notice.
+    const doorNoticeEl = h('p', 'bs-door-notice is-hidden');
 
     this.board = new LeaderboardPanel(LEADERBOARD_ROWS_LOBBY, 'TOP SURFERS', 'No scores yet. Be the first!', 'bs-lobby__board');
 
@@ -158,6 +162,7 @@ export class LobbyView implements ScreenView {
       h('div', 'bs-lobby__main', camWrap, doRow, this.controls.root, actions),
       this.board.root,
       legend,
+      doorNoticeEl,
     );
 
     this.kbMode = new Flag(this.root, 'is-keyboard');
@@ -169,11 +174,15 @@ export class LobbyView implements ScreenView {
     this.ghost = new Show(ghostEl);
     this.join = new Show(joinEl);
     this.joinNum = new NumText(joinNum);
+    this.doorNotice = new Text(doorNoticeEl);
+    this.doorShow = new Show(doorNoticeEl);
   }
 
   update(m: UIModel): void {
     const keyboard = m.inputMode === 'keyboard';
     this.kbMode.set(keyboard);
+    this.doorShow.set(m.door !== null);
+    if (m.door) this.doorNotice.set(m.door.notice);
     this.controls.set(keyboard);
     const people = m.lobby.people;
     const mirror = m.settings.vision.mirror;

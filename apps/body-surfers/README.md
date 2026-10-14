@@ -1,3 +1,10 @@
+> **Doorboard copy.** This is Body Surfers as vendored into the doorboard (`@doorboard/body-surfers`), from the
+> upstream repo `tigerstrake/body-surfers`. With `?door=1` it runs inside the wallboard. In that mode it reads the
+> visitor camera through door-media's WHEP stream, exits by itself, and keeps crash photos for 30 days. That code
+> lives in `src/door/`; see [ADR-0049](../../docs/adr/0049-body-surfers-runs-on-the-wallboard.md). Without
+> `?door=1` it is the game below, unchanged. The Vercel deploy and git notes in `HANDOVER.md` describe the
+> upstream repo, not this copy.
+
 # BODY SURFERS
 
 **A Subway-Surfers-style endless runner you play with your whole body.** Your laptop webcam

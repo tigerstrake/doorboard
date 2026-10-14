@@ -3,6 +3,7 @@ import { CAMERA_DISCONNECTED_MESSAGE, MODEL_DOWNLOAD_FAILED_MESSAGE, VisionSyste
 import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
 import { VISION_CONFIG as C } from './config';
 import { makeBody } from './synthetic';
+import type { CameraSource } from './cameraSource';
 
 const mediapipe = vi.hoisted(() => ({
   detectForVideo: vi.fn(),
@@ -238,5 +239,79 @@ describe('VisionSystem model loading', () => {
     await expect(vision.loadModel('lite')).rejects.toThrow(MODEL_DOWNLOAD_FAILED_MESSAGE);
     expect(vision.status).toBe('error');
     expect(vision.error).toBe(MODEL_DOWNLOAD_FAILED_MESSAGE);
+  });
+});
+
+describe('VisionSystem with a CameraSource (door, ADR-0049)', () => {
+  function fakeSource(): {
+    source: CameraSource;
+    track: FakeTrack;
+    release: ReturnType<typeof vi.fn>;
+    lose: () => void;
+  } {
+    const track = new FakeTrack('');
+    const release = vi.fn();
+    let lost: (() => void) | null = null;
+    const source: CameraSource = {
+      label: 'The door camera',
+      open: vi.fn(async (onLost: () => void) => {
+        lost = onLost;
+        const stream = { getTracks: () => [track], getVideoTracks: () => [track] } as unknown as MediaStream;
+        return { stream, release };
+      }),
+    };
+    return { source, track, release, lose: () => lost?.() };
+  }
+
+  it('reads the source instead of opening a camera device', async () => {
+    const { source } = fakeSource();
+    vision.dispose();
+    vision = new VisionSystem({ source });
+    await start();
+    expect(source.open).toHaveBeenCalledTimes(1);
+    expect(media.getUserMedia).not.toHaveBeenCalled();
+    expect(vision.status).toBe('running');
+  });
+
+  it('releases the source stream on dispose', async () => {
+    const { source, release } = fakeSource();
+    vision.dispose();
+    vision = new VisionSystem({ source });
+    await start();
+    vision.dispose();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a lost source stream as a disconnect and releases it', async () => {
+    const { source, release, lose } = fakeSource();
+    vision.dispose();
+    vision = new VisionSystem({ source });
+    await start();
+    lose();
+    expect(vision.status).toBe('error');
+    expect(vision.error).toBe(CAMERA_DISCONNECTED_MESSAGE);
+    expect(release).toHaveBeenCalled();
+  });
+
+  it('names the source when it cannot open', async () => {
+    const source: CameraSource = { label: 'The door camera', open: vi.fn(async () => { throw new Error('stream visitor is unavailable'); }) };
+    vision.dispose();
+    vision = new VisionSystem({ source });
+    await vision.loadModel('lite');
+    await expect(vision.startCamera()).rejects.toThrow("The door camera isn't available right now (stream visitor is unavailable).");
+    expect(vision.status).toBe('error');
+  });
+
+  it('caps inference at minInferenceIntervalMs', async () => {
+    const { source } = fakeSource();
+    vision.dispose();
+    vision = new VisionSystem({ source, minInferenceIntervalMs: 50 });
+    await start();
+    // 40 fps of new frames for 200 ms → at most one inference per 50 ms.
+    for (let t = 1000; t <= 1200; t += 25) {
+      video.present(t, t / 1000);
+      vision.update(t);
+    }
+    expect(mediapipe.detectForVideo).toHaveBeenCalledTimes(5);
   });
 });

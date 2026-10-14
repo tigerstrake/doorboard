@@ -6,6 +6,10 @@ import { KeyboardInput } from '../input';
 import { Renderer } from '../render';
 import { UIManager } from '../ui';
 import { VisionSystem } from '../vision';
+import { DoorBridge } from '../door/bridge';
+import { DOOR, DOOR_NOTICE } from '../door/config';
+import { doorExitReason } from '../door/watchdog';
+import { whepCameraSource } from '../door/whepSource';
 import { PLAYER_LABELS, STORAGE_KEYS } from '../shared/constants';
 import { randomSeed } from '../shared/rng';
 import type {
@@ -159,6 +163,14 @@ export class App {
   private last = 0;
   private running = false;
   readonly log: AppLogEntry[] = [];
+  // door mode (ADR-0049): hosted by the doorboard wallboard
+  private door: DoorBridge | null = null;
+  /** Last time anyone was in view (door watchdog). */
+  private doorSeenAt = 0;
+  /** When the current boot / tracking error first showed (door watchdog), or null. */
+  private doorErrorAt: number | null = null;
+  /** The exit message went out; the wallboard is unmounting us. */
+  private doorExited = false;
 
   constructor(readonly params: AppParams) {
     const loaded = this.settingsStore.load();
@@ -223,7 +235,9 @@ export class App {
     }
 
     this.setScreen('boot', now);
-    if (this.params.autostart && this.graphics === 'ok') {
+    if (this.params.door) {
+      this.startDoor(this.params.door.parentOrigin, now);
+    } else if (this.params.autostart && this.graphics === 'ok') {
       this.clicked = true;
       if (this.vision) void this.startCamera(false);
       this.beginCountdown(this.params.players === 2 ? [0, 1] : [0], now);
@@ -249,6 +263,7 @@ export class App {
       this.vision = null;
     }
     this.guard('booth.dispose', () => this.booth.dispose());
+    this.door = null;
     this.audio.dispose();
     if (window.__bodySurfers?.app === this) delete window.__bodySurfers;
   }
@@ -314,7 +329,16 @@ export class App {
 
   private initVision(): void {
     try {
-      const v = new SafeVision(new VisionSystem(), this.report);
+      const door = this.params.door;
+      // ?webcam=1 (dev only): door mode on a laptop, with its own camera instead of door-media.
+      const system = door && !door.webcam
+        ? new VisionSystem({
+            source: whepCameraSource({ metadataUrl: door.mediaUrl, streamName: door.stream }),
+            minInferenceIntervalMs: DOOR.minInferenceIntervalMs,
+            lowFpsThreshold: DOOR.lowFpsThreshold,
+          })
+        : new VisionSystem();
+      const v = new SafeVision(system, this.report);
       this.vision = v;
       v.setTuning(this.settings.vision);
       v.setPlayerCount(this.params.players ?? 2);
@@ -420,6 +444,41 @@ export class App {
       this.vision.dispose();
       this.vision = null;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Door mode
+  // ---------------------------------------------------------------------------
+
+  /** Hosted by the wallboard: nothing here can be clicked, so start the camera now. */
+  private startDoor(parentOrigin: string | null, now: number): void {
+    this.clicked = true;
+    this.doorSeenAt = now;
+    document.documentElement.classList.add('bs-door');
+    this.leaderboard.retainSince(Date.now() - DOOR.leaderboardMaxAgeDays * 86_400_000);
+    const bridge = new DoorBridge(window, parentOrigin);
+    this.door = bridge;
+    if (this.vision) void this.startCamera(true);
+    bridge.post({ type: 'ready' });
+  }
+
+  /** Hand the wallboard back once the run is over, nobody is there, or the camera failed. */
+  private updateDoor(now: number): void {
+    if (!this.door || this.doorExited) return;
+    if (this.frame && this.frame.people.length > 0) this.doorSeenAt = now;
+    const error = this.bootError !== null || this.vision?.status === 'error';
+    if (!error) this.doorErrorAt = null;
+    else if (this.doorErrorAt === null) this.doorErrorAt = now;
+    const reason = doorExitReason({
+      screen: this.screen,
+      screenFor: now - this.screenAt,
+      nobodyFor: now - this.doorSeenAt,
+      errorFor: this.doorErrorAt === null ? null : now - this.doorErrorAt,
+    });
+    if (!reason) return;
+    this.doorExited = true;
+    this.note(`door-exit:${reason}`);
+    this.door.post({ type: 'exit', reason });
   }
 
   // ---------------------------------------------------------------------------
@@ -919,6 +978,7 @@ export class App {
       }
     }
     if (this.cameraTracked()) this.updatePresence(now);
+    this.updateDoor(now);
     if (
       this.inputMode === 'camera' && this.vision?.status === 'error' &&
       (this.screen === 'playing' || this.screen === 'paused' || (this.screen === 'countdown' && this.goAt !== null))
@@ -1360,6 +1420,7 @@ export class App {
       cameras: this.cameras,
       debug: this.debugOn ? this.debug : null,
       toast: this.toast,
+      door: this.params.door ? { notice: DOOR_NOTICE } : null,
     };
   }
 

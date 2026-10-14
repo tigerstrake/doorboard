@@ -251,6 +251,12 @@
 .bs-lb__empty-icon { width: calc(var(--u) * 6); height: calc(var(--u) * 6); opacity: .8; }
 .bs-legend { position: absolute; left: calc(var(--u) * 2); bottom: calc(var(--u) * 1.6); display: flex; flex-direction: column; align-items: flex-start; gap: calc(var(--u) * 0.4); opacity: .92; transition: opacity .15s; }
 .bs-legend:hover { opacity: 1; }
+
+/* Door mode (ADR-0049): hosted by the doorboard wallboard, which has no pointer or keyboard,
+   so every control that needs one is hidden; play is started from the DoorPad. */
+.bs-door .bs-legend, .bs-door .bs-play-row, .bs-door .bs-boot__startwrap, .bs-door .bs-err__actions, .bs-door .bs-corner { display: none !important; }
+.bs-door-notice { position: absolute; left: 50%; bottom: calc(var(--u) * 1.6); transform: translateX(-50%); margin: 0; padding: calc(var(--u) * 0.5) calc(var(--u) * 1.4); border-radius: 999px; background: rgba(11, 16, 32, .78); color: #fff; font-size: calc(var(--u) * 1.15); font-weight: 800; white-space: nowrap; }
+.bs-door-notice.is-hidden { display: none; }
 .bs-legend__btn { display: inline-flex; align-items: center; gap: calc(var(--u) * 0.4); background: rgba(27,27,47,.86); border: calc(var(--u) * 0.15) solid rgba(255,255,255,.35); color: #fff; font-size: calc(var(--u) * 1.5); font-weight: 900; cursor: pointer; padding: calc(var(--u) * 0.25) calc(var(--u) * 0.9) calc(var(--u) * 0.25) calc(var(--u) * 0.3); border-radius: 999px; }
 .bs-legend__btn:hover { background: rgba(27,27,47,.85); }
 .bs-legend__btn .bs-kbd { min-width: calc(var(--u) * 2.3); height: calc(var(--u) * 2.3); font-size: calc(var(--u) * 1.2); box-shadow: none; border-width: calc(var(--u) * 0.2); }

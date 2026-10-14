@@ -10,7 +10,8 @@ export default defineConfig({
     target: 'es2022',
     chunkSizeWarningLimit: 4000,
     rolldownOptions: {
-      input: { main: 'index.html', hall: 'hall.html' },
+      // clear.html: the doorboard wallboard's leaderboard wipe (src/door/clear.ts, ADR-0049).
+      input: { main: 'index.html', hall: 'hall.html', clear: 'clear.html' },
       // Vendor libraries change far less often than game code: separate long-cached chunks
       // (also downloaded in parallel with the app chunk).
       output: {

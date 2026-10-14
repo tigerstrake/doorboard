@@ -9,6 +9,16 @@ import { assetUrl } from '../shared/params';
 import { VISION_CONFIG as C } from './config';
 import { VisionCore } from './VisionCore';
 import { captureSelfieFromVideo } from './selfie';
+import type { CameraSource, OpenedCamera } from './cameraSource';
+
+export interface VisionOptions {
+  /** Read frames from here instead of getUserMedia (the door's visitor stream). */
+  source?: CameraSource;
+  /** Never run inference more often than this (ms). 0 = every new frame. */
+  minInferenceIntervalMs?: number;
+  /** Delivered camera fps below this ⇒ 'low-visibility' hint. Defaults to VISION_CONFIG. */
+  lowFpsThreshold?: number;
+}
 
 type WasmFileset = Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>;
 
@@ -65,6 +75,11 @@ export class VisionSystem implements IVisionSystem {
   private loading = false;
   private video: HTMLVideoElement | null = null;
   private stream: MediaStream | null = null;
+  /** Releases a CameraSource stream (null for getUserMedia streams). */
+  private releaseStream: (() => void) | null = null;
+  private readonly source: CameraSource | null;
+  private readonly minInferenceIntervalMs: number;
+  private readonly lowFpsThreshold: number;
   private cameraToken = 0;
   private latestStart: { token: number; promise: Promise<void> } | null = null;
   private cameraReady = false;
@@ -98,6 +113,12 @@ export class VisionSystem implements IVisionSystem {
   private deliveredFps = 0;
   private lowFpsSince = -1;
   private lastFrame: VisionFrame | null = null;
+
+  constructor(options: VisionOptions = {}) {
+    this.source = options.source ?? null;
+    this.minInferenceIntervalMs = options.minInferenceIntervalMs ?? 0;
+    this.lowFpsThreshold = options.lowFpsThreshold ?? C.lowFpsThreshold;
+  }
 
   get status(): VisionStatus {
     return this._status;
@@ -260,7 +281,7 @@ export class VisionSystem implements IVisionSystem {
     this.detachTrackListeners = () => {
       for (const t of tracks) t.removeEventListener?.('ended', onEnded);
     };
-    const md = navigator.mediaDevices;
+    const md = this.source ? undefined : navigator.mediaDevices;
     if (!this.deviceChangeHooked && typeof md?.addEventListener === 'function') {
       md.addEventListener('devicechange', this.onDeviceChange);
       this.deviceChangeHooked = true;
@@ -310,6 +331,7 @@ export class VisionSystem implements IVisionSystem {
     const switching = this.cameraReady && this.stream !== null && this._status === 'running';
     if (!this.loading && !switching) this._status = 'starting-camera';
     if (!switching) this._error = null;
+    if (this.source) return this.startSourceInner(this.source, token);
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       throw this.fail('Camera unavailable: this page must be served over HTTPS or from localhost.');
     }
@@ -346,6 +368,35 @@ export class VisionSystem implements IVisionSystem {
     this.stopStream();
     this.stream = stream;
     this.watchStream(stream);
+    return this.attachStream(stream, token);
+  }
+
+  /** startCameraInner for a CameraSource: no device list, no permission prompt. */
+  private async startSourceInner(source: CameraSource, token: number): Promise<void> {
+    let stream: MediaStream | null = null;
+    let opened: OpenedCamera;
+    try {
+      opened = await source.open(() => {
+        if (stream) this.cameraDisconnected(stream);
+      });
+    } catch (e) {
+      if (token !== this.cameraToken) return this.superseded(token);
+      throw this.fail(`${source.label} isn't available right now (${errMsg(e)}).`);
+    }
+    if (token !== this.cameraToken || this.disposed) {
+      opened.release();
+      return this.disposed ? undefined : this.superseded(token);
+    }
+    stream = opened.stream;
+    this.stopStream();
+    this.stream = stream;
+    this.releaseStream = opened.release;
+    this.watchStream(stream);
+    return this.attachStream(stream, token);
+  }
+
+  /** Shared tail of a camera start: play the stream and wait for the first decoded frame. */
+  private async attachStream(stream: MediaStream, token: number): Promise<void> {
     const video = this.ensureVideo();
     video.srcObject = stream;
     try {
@@ -514,6 +565,7 @@ export class VisionSystem implements IVisionSystem {
       if (this.inferenceMs > C.slowInferenceMs && now - this.lastInferenceAt < C.slowInferenceMinIntervalMs) {
         return this.lastFrame;
       }
+      if (now - this.lastInferenceAt < this.minInferenceIntervalMs) return this.lastFrame;
       this.framePending = false;
       this.lastPolledTime = video.currentTime;
       // Calibration, polling, and gestures share the application's performance clock.
@@ -549,7 +601,7 @@ export class VisionSystem implements IVisionSystem {
       }
       this.lastInferenceAt = now;
       // low-light detection via delivered camera fps
-      if (this.deliveredFps > 0 && this.deliveredFps < C.lowFpsThreshold) {
+      if (this.deliveredFps > 0 && this.deliveredFps < this.lowFpsThreshold) {
         if (this.lowFpsSince < 0) this.lowFpsSince = now;
         this.core.lowFps = now - this.lowFpsSince >= C.lowFpsHoldMs;
       } else {
@@ -603,6 +655,8 @@ export class VisionSystem implements IVisionSystem {
     this.detachTrackListeners = null;
     if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
     this.stream = null;
+    this.releaseStream?.();
+    this.releaseStream = null;
     this.cameraReady = false;
   }
 

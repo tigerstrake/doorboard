@@ -149,6 +149,15 @@ export class LeaderboardStore {
     this.persist();
   }
 
+  /** Drop entries (and their photos) dated before `cutoffMs` (epoch ms). Door retention, ADR-0049. */
+  retainSince(cutoffMs: number): void {
+    this.sync();
+    const kept = this.list.filter((e) => e.date >= cutoffMs);
+    if (kept.length === this.list.length) return;
+    this.list = kept;
+    this.persist();
+  }
+
   /** Re-read from storage (e.g. another tab changed it). Returns true when the list changed. */
   reload(): boolean {
     const before = this.list;
