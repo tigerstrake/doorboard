@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 
 export interface CrossfadeSwitchProps {
   /** Identifies which view is active; changing it triggers a crossfade. */
@@ -26,8 +26,11 @@ interface Layer {
 
 // Keeps the outgoing view mounted (opacity fading to 0) while the incoming view
 // fades in on top of it, so ambient<->visitor-mode swaps never show a bare/white
-// frame and never hard-cut mid-animation. Safe to interrupt: retargeting activeKey
-// again before a fade finishes just drops the stale layer and starts a fresh fade.
+// frame and never hard-cut mid-animation. The outgoing layer's node is frozen as it
+// was at the swap: a parent re-render mid-fade (the 1 s clock tick, a token fetch)
+// updates only the active layer and neither drops the fading one nor restarts its
+// clock. Safe to interrupt: retargeting activeKey again before a fade finishes
+// fades the interrupted layer out too and starts a fresh fade.
 export function CrossfadeSwitch({
   activeKey,
   children,
@@ -36,34 +39,33 @@ export function CrossfadeSwitch({
   variant = "fade",
 }: CrossfadeSwitchProps) {
   const [layers, setLayers] = useState<Layer[]>([{ key: activeKey, node: children, fadingOut: false }]);
-  const timeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   useEffect(() => {
     setLayers((prev) => {
-      const withoutStaleFades = prev.filter((layer) => layer.key === activeKey);
-      if (withoutStaleFades.length > 0) {
-        // Same key re-rendering with new children — update content in place, no fade.
-        return [{ key: activeKey, node: children, fadingOut: false }];
+      const active = prev.find((layer) => layer.key === activeKey);
+      if (active && !active.fadingOut) {
+        // Same key re-rendering with new children: update its content in place and
+        // leave any fade in flight exactly as it is.
+        return prev.map((layer) => (layer === active ? { ...layer, node: children } : layer));
       }
-      const fadingOutPrev = prev.map((layer) => ({ ...layer, fadingOut: true }));
-      return [...fadingOutPrev, { key: activeKey, node: children, fadingOut: false }];
+      // A new key (or one coming back mid-fade): everything else fades out, frozen.
+      return [
+        ...prev
+          .filter((layer) => layer.key !== activeKey)
+          .map((layer) => (layer.fadingOut ? layer : { ...layer, fadingOut: true })),
+        { key: activeKey, node: children, fadingOut: false },
+      ];
     });
   }, [activeKey, children]);
 
   useEffect(() => {
-    timeoutsRef.current.forEach(clearTimeout);
-    timeoutsRef.current = [];
-
-    const hasFadingOut = layers.some((layer) => layer.fadingOut);
-    if (!hasFadingOut) return;
-
+    // One removal timer per swap. Keyed on the swap, not on `layers`, so a re-render
+    // during the fade cannot re-arm it and keep the old view around past durationMs.
     const timeout = setTimeout(() => {
-      setLayers((prev) => prev.filter((layer) => !layer.fadingOut));
+      setLayers((prev) => (prev.some((layer) => layer.fadingOut) ? prev.filter((layer) => !layer.fadingOut) : prev));
     }, durationMs);
-    timeoutsRef.current.push(timeout);
-
     return () => clearTimeout(timeout);
-  }, [layers, durationMs]);
+  }, [activeKey, durationMs]);
 
   return (
     <div

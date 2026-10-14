@@ -226,6 +226,46 @@ describe("CrossfadeSwitch variants", () => {
     expect(screen.getByText("food focus")).toBeTruthy();
   });
 
+  it("keeps the outgoing layer frozen until durationMs even when the parent re-renders mid-fade", () => {
+    // The wallboard's App re-renders right after a takeover (setMyContent on the state
+    // change, the 1 s clock tick), and the old implementation dropped every fading layer
+    // on any children change — so the "never hard-cut" promise was never kept.
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(
+        <CrossfadeSwitch activeKey="ambient" durationMs={400}>
+          <p>ambient grid</p>
+        </CrossfadeSwitch>
+      );
+      rerender(
+        <CrossfadeSwitch activeKey="visitor" durationMs={400}>
+          <p>hello visitor</p>
+        </CrossfadeSwitch>
+      );
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
+      // Mid-fade, the parent re-renders the SAME key with new children.
+      rerender(
+        <CrossfadeSwitch activeKey="visitor" durationMs={400}>
+          <p>hello visitor, again</p>
+        </CrossfadeSwitch>
+      );
+      expect(screen.getByText("ambient grid")).toBeTruthy();
+      expect(screen.getByText("hello visitor, again")).toBeTruthy();
+      expect(document.querySelectorAll(".db-crossfade__layer--out")).toHaveLength(1);
+
+      // Not one moment longer than the fade, either: the re-render did not restart it.
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+      expect(screen.queryByText("ambient grid")).toBeNull();
+      expect(document.querySelectorAll(".db-crossfade__layer--out")).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("defaults to the plain fade, so existing callers are unchanged", () => {
     render(
       <CrossfadeSwitch activeKey="a">
