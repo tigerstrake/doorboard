@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/favicon.svg" />
+    <title>Vision sandbox — BODY SURFERS</title>
+    <style>
+      :root { color-scheme: dark; font: 13px/1.4 ui-monospace, Menlo, monospace; }
+      body { margin: 0; background: #111418; color: #dde3ea; display: flex; height: 100vh; overflow: hidden; }
+      #stage { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; background: #000; }
+      #view { max-width: 100%; max-height: 100%; }
+      #panel { width: 360px; padding: 10px 12px; overflow-y: auto; border-left: 1px solid #2a3038; box-sizing: border-box; }
+      h2 { font-size: 13px; margin: 12px 0 6px; color: #8fb4ff; text-transform: uppercase; letter-spacing: 0.05em; }
+      button { background: #24303d; color: #e6edf3; border: 1px solid #3b4a5a; border-radius: 4px; padding: 4px 8px; margin: 2px; cursor: pointer; font: inherit; }
+      button.on { background: #2f6fd6; border-color: #5c93ef; }
+      .row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+      .row label { width: 110px; }
+      .row input[type=range] { flex: 1; }
+      .row output { width: 40px; text-align: right; }
+      #status { padding: 6px; border-radius: 4px; background: #1b222b; white-space: pre-wrap; }
+      #status.error { background: #4a1d1d; }
+      .slot { background: #1b222b; border-radius: 4px; padding: 6px; margin: 4px 0; white-space: pre-wrap; }
+      #log { height: 160px; overflow-y: auto; background: #0b0e11; padding: 4px; white-space: pre; font-size: 12px; }
+      #selfie { width: 96px; height: 96px; background: #222; display: block; margin-top: 4px; }
+    </style>
+  </head>
+  <body>
+    <div id="stage"><canvas id="view" width="1280" height="720"></canvas></div>
+    <div id="panel">
+      <div id="status">idle</div>
+      <h2>Controls</h2>
+      <div>
+        <button id="start">Start camera</button>
+        <button id="p1" class="on">1P</button><button id="p2">2P</button>
+        <button id="lock">Lock</button>
+        <button id="calib">Calibrate</button>
+        <button id="reset">Reset calib</button>
+        <button id="selfieBtn">Selfie</button>
+        <button id="model">Model: lite</button>
+      </div>
+      <div class="row"><label>Camera</label><select id="cams"></select></div>
+      <h2>Slots</h2>
+      <div id="slots"></div>
+      <h2>Tuning</h2>
+      <div id="tuning"></div>
+      <h2>Events</h2>
+      <div id="log"></div>
+      <h2>Selfie</h2>
+      <img id="selfie" alt="" /><div id="selfieInfo"></div>
+    </div>
+    <script type="module" src="./vision.ts"></script>
+  </body>
+</html>

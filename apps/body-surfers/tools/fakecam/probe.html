@@ -1,0 +1,30 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>fakecam probe</title></head>
+<body style="margin:0;background:#000">
+<video id="v" autoplay muted playsinline style="width:100%;transform:scaleX(-1)"></video>
+<script type="module">
+// Minimal consumer used to smoke-test run.mjs: real getUserMedia → <video> → PoseLandmarker.
+import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
+const v = document.getElementById('v');
+const devices = await navigator.mediaDevices.enumerateDevices();
+console.log('devices', JSON.stringify(devices.filter((d) => d.kind === 'videoinput')));
+v.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } } });
+await v.play();
+const fs = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
+const lm = await PoseLandmarker.createFromOptions(fs, { baseOptions: { modelAssetPath: '/models/pose_landmarker_lite.task', delegate: 'CPU' }, runningMode: 'VIDEO', numPoses: 3 });
+const stats = (window.__probe = { frames: 0, hits: 0, byPhase: {} });
+let last = -1;
+const step = () => {
+  if (v.currentTime !== last && v.videoWidth) {
+    last = v.currentTime;
+    const r = lm.detectForVideo(v, performance.now());
+    const ph = window.__fakecam?.phase ?? '?';
+    const b = (stats.byPhase[ph] ??= { n: 0, hit: 0 });
+    stats.frames++; b.n++;
+    if (r.landmarks.length) { stats.hits++; b.hit++; }
+  }
+  requestAnimationFrame(step);
+};
+step();
+</script>
+</body></html>

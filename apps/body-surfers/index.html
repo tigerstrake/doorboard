@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Body Surfers</title>
+    <meta name="description" content="A Subway Surfers-style runner you play with your whole body through your webcam: step, jump and squat to dodge trains." />
+    <meta name="theme-color" content="#0b1020" />
+    <meta property="og:title" content="Body Surfers" />
+    <meta property="og:description" content="A Subway Surfers-style runner you play with your whole body through your webcam: step, jump and squat to dodge trains." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://body-surfers-steel.vercel.app/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1020; }
+      #app { position: fixed; inset: 0; }
+      #game-canvas { display: block; width: 100%; height: 100%; }
+      #ui-root { position: absolute; inset: 0; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game-canvas"></canvas>
+      <div id="ui-root"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

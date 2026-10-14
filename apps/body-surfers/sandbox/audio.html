@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Body Surfers — Audio + Keyboard sandbox</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; background: #14122b; color: #f1eefc; margin: 0; padding: 20px; }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .08em; color: #ffcf3f; margin: 18px 0 6px; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  button { background: #2d2860; color: #fff; border: 1px solid #4b44a0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit; }
+  button:hover { background: #4b44a0; }
+  button.on { background: #ff5d8f; border-color: #ff5d8f; }
+  label { display: inline-flex; gap: 6px; align-items: center; margin-right: 14px; }
+  #status { color: #8fe3a0; }
+  #log { font: 12px ui-monospace, monospace; background: #0b0a19; padding: 8px; height: 160px; overflow: auto; border-radius: 6px; white-space: pre; }
+</style>
+</head>
+<body>
+<h1>Audio + Keyboard sandbox</h1>
+<div id="status">locked — click "Unlock" (or any button)</div>
+<div class="row" style="margin-top:8px">
+  <button id="unlock">Unlock</button>
+  <label><input type="checkbox" id="mute" /> mute</label>
+  <label>players <select id="players"><option value="1">1P</option><option value="2">2P</option></select></label>
+  <label>pan as <select id="pid"><option value="0">P1</option><option value="1">P2</option></select></label>
+  <button id="all">Play everything</button>
+</div>
+<h2>Music</h2><div class="row" id="music"></div>
+<div class="row">
+  <label>music <input type="range" id="mvol" min="0" max="1" step="0.01" value="0.6" /></label>
+  <label>sfx <input type="range" id="svol" min="0" max="1" step="0.01" value="0.8" /></label>
+  <label>intensity <input type="range" id="intensity" min="0" max="1" step="0.01" value="0" /></label>
+  <label>charge <input type="range" id="charge" min="0" max="1" step="0.01" value="0" /></label>
+</div>
+<h2>Game events</h2><div class="row" id="events"></div>
+<h2>Coin combo</h2><div class="row" id="coins"></div>
+<h2>UI sounds</h2><div class="row" id="ui"></div>
+<h2>Keyboard tester (keys also trigger sounds)</h2>
+<div id="log"></div>
+<script type="module" src="./audio.ts"></script>
+</body>
+</html>

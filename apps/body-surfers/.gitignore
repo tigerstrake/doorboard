@@ -1,0 +1,8 @@
+node_modules/
+dist/
+shots/
+*.log
+.vite/
+test-media/
+# Copied from node_modules/@mediapipe/tasks-vision by scripts/copy-mediapipe.mjs on dev/build.
+public/mediapipe/

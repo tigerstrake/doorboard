@@ -1,4 +1,5 @@
 packages:
+  - "apps/body-surfers"
   - "apps/door-ui"
   - "apps/public-relay"
   - "packages/contracts"

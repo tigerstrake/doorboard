@@ -20,6 +20,13 @@ export default [
       // Agent worktrees are separate checkouts nested inside the repo; their
       // in-progress files are not part of this tree and must not fail its lint.
       "**/.claude/worktrees/**",
+      // Body Surfers: the MediaPipe runtime is copied from node_modules at build time
+      // (vendor JS, not authored here), and e2e/, tools/ and scripts/ are dev-only
+      // Node and browser harnesses that never ship to the door.
+      "apps/body-surfers/public/mediapipe/**",
+      "apps/body-surfers/e2e/**",
+      "apps/body-surfers/tools/**",
+      "apps/body-surfers/scripts/**",
     ],
   },
   js.configs.recommended,
