@@ -27,6 +27,8 @@ export default [
       "apps/body-surfers/e2e/**",
       "apps/body-surfers/tools/**",
       "apps/body-surfers/scripts/**",
+      // The built game, copied in by apps/door-ui/scripts/copy-games.mjs (gitignored).
+      "apps/door-ui/public/games/**",
     ],
   },
   js.configs.recommended,

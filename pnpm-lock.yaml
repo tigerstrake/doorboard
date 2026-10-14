@@ -103,6 +103,9 @@ importers:
         specifier: ^3.8.240
         version: 3.8.240(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
     devDependencies:
+      '@doorboard/body-surfers':
+        specifier: workspace:*
+        version: link:../body-surfers
       '@playwright/test':
         specifier: ^1.61.1
         version: 1.61.1

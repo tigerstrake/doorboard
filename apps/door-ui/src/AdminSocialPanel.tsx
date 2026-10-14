@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { socialApi, ApiError } from "./socialApi";
+import { FEATURE_BODY_SURFERS } from "./bodySurfers";
 import type {
   GuestbookEntry,
   Poll,
@@ -32,6 +33,8 @@ export function AdminSocialPanel() {
   const [polls, setPolls] = useState<Poll[]>([]);
   const [stat, setStat] = useState<MostFrequentVisitorStat | null>(null);
   const [log, setLog] = useState<ModerationLogEntry[]>([]);
+
+  const [bodySurfersStatus, setBodySurfersStatus] = useState<string | null>(null);
 
   const [newQuestion, setNewQuestion] = useState("");
   const [newOptions, setNewOptions] = useState(["", ""]);
@@ -94,6 +97,15 @@ export function AdminSocialPanel() {
         loadAll(token);
       })
       .catch((err) => setError(apiErrorMessage(err, "Couldn't create the poll.")));
+  };
+
+  const clearBodySurfers = () => {
+    if (!window.confirm("Clear the Body Surfers leaderboard and every crash photo on it?")) return;
+    setBodySurfersStatus(null);
+    socialApi.admin
+      .clearBodySurfersLeaderboard(token)
+      .then(() => setBodySurfersStatus("Sent to the wallboard. The board is empty once it has loaded the request."))
+      .catch((err) => setError(apiErrorMessage(err, "Couldn't clear the Body Surfers leaderboard.")));
   };
 
   const closePoll = (id: string) => {
@@ -200,6 +212,19 @@ export function AdminSocialPanel() {
         <p>{stat.label ?? "An enrolled visitor"} has checked in {stat.count} times!</p>
       ) : (
         <p className="placeholder-subtext">No enrolled check-ins yet.</p>
+      )}
+
+      {FEATURE_BODY_SURFERS && (
+        <>
+          <h3>Body Surfers leaderboard</h3>
+          <p className="placeholder-subtext">
+            Crash photos and scores, kept on the wallboard for 30 days.
+          </p>
+          <button className="phrase-btn" id="admin-body-surfers-clear" onClick={clearBodySurfers}>
+            Clear leaderboard
+          </button>
+          {bodySurfersStatus && <p className="placeholder-subtext">{bodySurfersStatus}</p>}
+        </>
       )}
 
       <h3>Moderation log</h3>

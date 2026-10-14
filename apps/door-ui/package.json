@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "node scripts/copy-games.mjs && vite",
+    "build": "pnpm --filter @doorboard/body-surfers build && node scripts/copy-games.mjs --required && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
@@ -23,6 +23,7 @@
     "react-simple-keyboard": "^3.8.240"
   },
   "devDependencies": {
+    "@doorboard/body-surfers": "workspace:*",
     "@playwright/test": "^1.61.1",
     "@testing-library/react": "^16.3.2",
     "@types/leaflet": "^1.9.12",

@@ -20,6 +20,16 @@ One Vite/React app, four surfaces (full specs in [docs/ui/](../../docs/ui/)):
 - **Input model:** DoorPad is large-buttons-only, no keyboard-heavy flows; hardware bell stays the primary ring path.
 - Shared components in `packages/ui-kit`; events via `packages/event-client`; types generated from contracts.
 
+## Body Surfers (ADR-0049)
+
+`pnpm build` also builds [`apps/body-surfers`](../body-surfers/) and copies it to `dist/games/body-surfers/` (`scripts/copy-games.mjs`; `pnpm dev` copies it if it is already built). The wallboard frames it from the other loopback name, so it runs in its own renderer process. Logic lives in `src/bodySurfers.ts` and `src/wallboard/BodySurfersFrame.tsx`.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VITE_FEATURE_BODY_SURFERS` | on | `false` removes the DoorPad tile, the wallboard frame and the admin clear |
+| `VITE_BODY_SURFERS_MEDIA_URL` | `http://127.0.0.1:8082/streams` | door-media's stream list, read by the game |
+| `VITE_BODY_SURFERS_URL` | the bundled game | full page URL, e.g. the game's own dev server; its query is kept, so `?webcam=1` tests door mode with a laptop camera |
+
 ## Kiosk deployment
 
 Two Chromium instances launched by systemd after door-api is healthy (deploy/pi-door). Screens map: HDMI-1 → `/wallboard`, HDMI-2 → `/doorpad`.

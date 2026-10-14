@@ -71,3 +71,6 @@ firmware/**/sdkconfig
 firmware/**/managed_components/
 .vercel
 .env*
+
+# Built games copied into the kiosk bundle by apps/door-ui/scripts/copy-games.mjs (ADR-0049)
+apps/door-ui/public/games/

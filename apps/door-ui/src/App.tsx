@@ -65,6 +65,16 @@ import {
   wallboardFocusRequestFromMessage,
 } from "./wallboardChannelModel";
 import type { WallboardFocusChannel, WallboardFocusRequest } from "./wallboardChannelModel";
+import {
+  BODY_SURFERS_DOORPAD_TIMEOUT_MS,
+  BODY_SURFERS_MAX_MS,
+  BODY_SURFERS_WS_TYPE,
+  FEATURE_BODY_SURFERS,
+  resolveBodySurfersUrls,
+  startRefusedMessage,
+  wallboardGameMessageFrom,
+} from "./bodySurfers";
+import { BodySurfersFrame, BodySurfersLeaderboardClear } from "./wallboard/BodySurfersFrame";
 
 // Import CSS
 import "@doorboard/ui-kit/index.css";
@@ -222,7 +232,8 @@ type DoorPadScreen =
   | "checkin"
   | "privacy"
   | "remote"
-  | "enroll";
+  | "enroll"
+  | "body-surfers";
 type VideoStep = "offer" | "countdown" | "recording" | "review" | "saved" | "qr";
 type EnrollState = "idle" | "minting" | "ready" | "closed" | "failed";
 interface EnrollInvite {
@@ -499,6 +510,15 @@ interface Recording {
 const WALLBOARD_TAKEOVER_STATES: SessionState[] = [...VISITOR_STATES, "SESSION_END"];
 
 
+/** Best-effort POST /wallboard/game; door-api fans it out to both kiosks (ADR-0049). */
+function postWallboardGame(action: "start" | "stop", reason: "doorpad" | "ended"): Promise<Response> {
+  return fetch(`${API_BASE}/wallboard/game`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, reason }),
+  });
+}
+
 export function App() {
   const [route, setRoute] = useState<string>(window.location.pathname);
   const [sessionState, setSessionState] = useState<SessionState>("IDLE");
@@ -515,6 +535,14 @@ export function App() {
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
   const [wallboardFocusRequest, setWallboardFocusRequest] = useState<WallboardFocusRequest | null>(null);
   const [wallboardLaunchStatus, setWallboardLaunchStatus] = useState<string>("Ambient grid");
+  // Body Surfers (ADR-0049). Both kiosks track whether a game is on: the wallboard
+  // renders it, the DoorPad shows "now playing". The requestId of the running game, or
+  // null; a leaderboard-clear requestId while the hidden clear frame is mounted.
+  const [bodySurfersGame, setBodySurfersGame] = useState<string | null>(null);
+  const [bodySurfersClear, setBodySurfersClear] = useState<string | null>(null);
+  const [bodySurfersNotice, setBodySurfersNotice] = useState<string | null>(null);
+  const sessionStateRef = useRef<SessionState>("IDLE");
+  const [bodySurfersUrls] = useState(() => resolveBodySurfersUrls());
   const [eventConnection, setEventConnection] = useState<"connecting" | "connected" | "disconnected">(
     "connecting"
   );
@@ -1116,6 +1144,30 @@ export function App() {
       }
     );
 
+    // Body Surfers start/stop/clear from door-api (POST /wallboard/game, ADR-0049). Also
+    // an ephemeral UI-control message, read off the raw payload like the focus above.
+    const unsubscribeWallboardGame = client.subscribe(BODY_SURFERS_WS_TYPE, (event: DoorboardEvent) => {
+      const message = wallboardGameMessageFrom(event as unknown);
+      if (!message || !FEATURE_BODY_SURFERS) return;
+      if (message.action === "start") {
+        // The bell always wins: a start that raced a press is dropped, not queued.
+        if (WALLBOARD_TAKEOVER_STATES.includes(sessionStateRef.current)) return;
+        setBodySurfersGame((current) => current ?? message.requestId);
+      } else if (message.action === "stop") {
+        setBodySurfersGame(null);
+      } else {
+        setBodySurfersClear(message.requestId);
+      }
+    });
+
+    // The game tracks bodies on the visitor camera, so privacy mode ends it here too,
+    // not only through door-api's stop (which a restarted door-api can miss).
+    const unsubscribePrivacy = client.subscribe("vision.privacy_mode_changed", (event: DoorboardEvent) => {
+      if (event.type === "vision.privacy_mode_changed" && event.payload.enabled) {
+        setBodySurfersGame(null);
+      }
+    });
+
     return () => {
       unsubscribeSession();
       unsubscribeVision();
@@ -1130,6 +1182,8 @@ export function App() {
       unsubscribeAcademic();
       unsubscribeScoreboard();
       unsubscribeWallboardFocus();
+      unsubscribeWallboardGame();
+      unsubscribePrivacy();
       client.close();
     };
   }, [applySessionSnapshot, showAmbientAlert]);
@@ -1279,6 +1333,66 @@ export function App() {
   const returnWallboardAmbient = () => {
     setWallboardChannel("ambient");
   };
+
+  // --- Body Surfers (ADR-0049) ---
+  // DoorPad Play: the screen answers at once; a refusal (privacy, a visit) shows there.
+  const startBodySurfers = async () => {
+    reportDoorpadActivity();
+    setBodySurfersNotice(null);
+    setDoorPadScreen("body-surfers");
+    try {
+      const res = await postWallboardGame("start", "doorpad");
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { detail?: unknown } | null;
+        setBodySurfersNotice(startRefusedMessage(body?.detail));
+      }
+    } catch {
+      setBodySurfersNotice(startRefusedMessage(null));
+    }
+  };
+
+  const stopBodySurfers = () => {
+    setBodySurfersGame(null);
+    setDoorPadScreen("home");
+    void postWallboardGame("stop", "doorpad").catch(() => {
+      /* best-effort: the game also ends itself once nobody is in view */
+    });
+  };
+
+  // Wallboard: the game handed the screen back (or hit the cap). door-api relays the
+  // stop so the DoorPad leaves its "now playing" screen.
+  const endBodySurfers = useCallback(() => {
+    setBodySurfersGame(null);
+    void postWallboardGame("stop", "ended").catch(() => {
+      /* best-effort */
+    });
+  }, []);
+
+  useEffect(() => {
+    sessionStateRef.current = sessionState;
+    // A visit ends the game for good; it does not come back when the visitor leaves.
+    if (WALLBOARD_TAKEOVER_STATES.includes(sessionState)) setBodySurfersGame(null);
+  }, [sessionState]);
+
+  // DoorPad: leave "now playing" once the game has run and then stopped (it exited on
+  // the wallboard, privacy mode, a Stop tap elsewhere). A refused start never ran, so
+  // its message stays up until Back.
+  const bodySurfersRanRef = useRef(false);
+  useEffect(() => {
+    if (route !== "/doorpad") return;
+    if (bodySurfersGame !== null) {
+      bodySurfersRanRef.current = true;
+      return;
+    }
+    if (bodySurfersRanRef.current && doorPadScreen === "body-surfers") setDoorPadScreen("home");
+    bodySurfersRanRef.current = false;
+  }, [route, bodySurfersGame, doorPadScreen]);
+
+  useEffect(() => {
+    if (route !== "/wallboard" || bodySurfersGame === null) return undefined;
+    const timer = window.setTimeout(endBodySurfers, BODY_SURFERS_MAX_MS);
+    return () => window.clearTimeout(timer);
+  }, [route, bodySurfersGame, endBodySurfers]);
 
 
   const fetchRecordings = useCallback(async (cursorVal = currentCursor) => {
@@ -1857,6 +1971,10 @@ export function App() {
   // --- WALLBOARD SURFACE ---
   const renderWallboard = () => {
     const isVisitorMode = WALLBOARD_TAKEOVER_STATES.includes(sessionState);
+    // Decided in the same render as the takeover, so a bell press unmounts the game in
+    // the very commit that shows visitor mode (and kills its renderer process).
+    const showBodySurfers =
+      FEATURE_BODY_SURFERS && bodySurfersGame !== null && !isVisitorMode && bodySurfersUrls !== null;
     const presenceEntries = Object.values(presenceState);
     const scoreboardRows = Object.values(scoreboardEntries).sort((left, right) => right.score - left.score);
     const visitorPresence = {
@@ -2173,7 +2291,7 @@ export function App() {
         profileId={activeProfile}
       />
       <CrossfadeSwitch
-        activeKey={isVisitorMode ? "visitor" : focusedChannel ?? "ambient"}
+        activeKey={isVisitorMode ? "visitor" : showBodySurfers ? "body-surfers" : focusedChannel ?? "ambient"}
         variant="zoom"
       >
         {isVisitorMode ? (
@@ -2188,6 +2306,10 @@ export function App() {
             visitorUrl={visitorQrUrl}
             onDone={endVisitorSession}
           />
+        ) : showBodySurfers ? (
+          // The game draws over this layer; an empty one means the ambient tiles (maps,
+          // globe) stop rendering underneath it for the length of the game.
+          <div className="wallboard-game-backdrop" />
         ) : focusedChannel ? (
           <WallboardFocusSplit
             channel={focusedChannel}
@@ -2265,6 +2387,22 @@ export function App() {
           </div>
         )}
       </CrossfadeSwitch>
+      {showBodySurfers && bodySurfersUrls && (
+        <BodySurfersFrame
+          key={bodySurfersGame}
+          src={bodySurfersUrls.game}
+          origin={bodySurfersUrls.origin}
+          onExit={endBodySurfers}
+        />
+      )}
+      {bodySurfersClear !== null && bodySurfersUrls && (
+        <BodySurfersLeaderboardClear
+          key={bodySurfersClear}
+          src={bodySurfersUrls.clear}
+          origin={bodySurfersUrls.origin}
+          onDone={() => setBodySurfersClear(null)}
+        />
+      )}
       </>
     );
   };
@@ -2982,6 +3120,17 @@ export function App() {
               Wallboard Control
             </BigButton>
 
+            {FEATURE_BODY_SURFERS && (
+              <BigButton
+                id="btn-body-surfers"
+                icon={<span aria-hidden="true">B</span>}
+                hint="Dodge trains with your whole body on the big screen"
+                onClick={() => void startBodySurfers()}
+              >
+                Body Surfers
+              </BigButton>
+            )}
+
             <BigButton
               id="btn-privacy"
               icon={<span aria-hidden="true">I</span>}
@@ -2998,7 +3147,9 @@ export function App() {
     return (
       <CountdownAutoReset
         onReset={
-          doorPadScreen === "message"
+          doorPadScreen === "body-surfers"
+            ? () => setDoorPadScreen("home")
+            : doorPadScreen === "message"
             ? videoStep === "qr"
               ? handleReset
               : discardVideoFlow
@@ -3006,7 +3157,11 @@ export function App() {
               ? discardPhotoFlow
               : handleReset
         }
-        timeoutMs={doorpadResetTimeoutMs(doorPadScreen, videoStep)}
+        timeoutMs={
+          doorPadScreen === "body-surfers" && bodySurfersGame !== null
+            ? BODY_SURFERS_DOORPAD_TIMEOUT_MS
+            : doorpadResetTimeoutMs(doorPadScreen, videoStep)
+        }
         paused={
           doorPadScreen === "ringing" ||
           (doorPadScreen === "message" && videoStep !== "offer" && videoStep !== "qr") ||
@@ -3347,6 +3502,44 @@ export function App() {
                 <BigButton variant="primary" onClick={() => setDoorPadScreen("home")}>
                   Done
                 </BigButton>
+              </div>
+            </div>
+          )}
+
+          {doorPadScreen === "body-surfers" && (
+            <div className="doorpad-sub-content doorpad-body-surfers" data-testid="doorpad-body-surfers">
+              <div className="doorpad-section-heading">
+                <div>
+                  <p className="surface-eyebrow">Body Surfers</p>
+                  <h2>
+                    {bodySurfersNotice
+                      ? "The game can't start right now"
+                      : "Look at the big screen"}
+                  </h2>
+                </div>
+              </div>
+              {bodySurfersNotice ? (
+                <p className="doorpad-body-surfers__notice" role="status">{bodySurfersNotice}</p>
+              ) : (
+                <>
+                  <ol className="doorpad-body-surfers__steps">
+                    <li>Stand about 2 m back, facing the big screen.</li>
+                    <li>Raise both hands to join. A friend can join too.</li>
+                    <li>Step left or right to switch lanes, jump over barriers, squat under bars.</li>
+                  </ol>
+                  <p className="doorpad-body-surfers__notice">
+                    The door camera tracks your body only while the game is on. When you crash,
+                    it takes a photo of your face for the big screen&apos;s leaderboard, which
+                    keeps it for 30 days.
+                  </p>
+                </>
+              )}
+              <div className="action-button-group">
+                {bodySurfersNotice ? (
+                  <BigButton variant="primary" onClick={() => setDoorPadScreen("home")}>Back</BigButton>
+                ) : (
+                  <BigButton id="btn-body-surfers-stop" onClick={stopBodySurfers}>Stop game</BigButton>
+                )}
               </div>
             </div>
           )}

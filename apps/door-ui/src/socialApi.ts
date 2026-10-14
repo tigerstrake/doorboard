@@ -292,6 +292,14 @@ export const socialApi = {
       await request(`/admin/checkins/${id}`, { method: "DELETE", adminToken });
     },
 
+    /**
+     * Wipe the Body Surfers leaderboard and its crash photos (ADR-0049). door-api only
+     * relays this; the board lives in the wallboard kiosk's browser storage.
+     */
+    async clearBodySurfersLeaderboard(adminToken: string): Promise<void> {
+      await request("/admin/wallboard/game/clear-leaderboard", { method: "POST", adminToken });
+    },
+
     async moderationLog(adminToken: string): Promise<ModerationLogEntry[]> {
       const data = await request<{ entries: ModerationLogEntry[] }>(
         "/admin/social/moderation-log?limit=50",
