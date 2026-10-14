@@ -60,7 +60,7 @@ Each service has a full spec in its directory README. Every service exposes `GET
 | [door-visiond](apps/door-visiond/) | Pi | Hailo device, recognition camera, identity cache, enrollment DB | Block button flow; wait on NUC; persist unknown embeddings; make access decisions |
 | [door-media](apps/door-media/) | Pi | MediaMTX, recording lifecycle, thumbnails, retention | Wait synchronously on NAS in the visitor path |
 | [door-api](apps/door-api/) | Pi | Visitor session state machine, button events, privacy mode, display broadcasts | Depend on control plane for session transitions |
-| [door-ui](apps/door-ui/) | Pi | `/wallboard` `/doorpad` `/visitor` `/admin` `/diagnostics` kiosk SPA | Show sensitive data on public routes; require non-local APIs |
+| [door-ui](apps/door-ui/) | Pi | `/wallboard` `/doorpad` `/visitor` `/admin` `/diagnostics` kiosk SPA; serves [Body Surfers](apps/body-surfers/) at `/games/body-surfers/` (ADR-0049) | Show sensitive data on public routes; require non-local APIs; let the game share the wallboard's renderer process |
 | [door-sync](apps/door-sync/) | Pi | Upload queue Pi→NUC/NAS, backoff, dedupe, checksum-verified cleanup | Delete local media before integrity verification |
 | [control-plane-api](apps/control-plane-api/) | NUC | Event history, HA bridge, statuses, social features, integrations, notifications, config distribution | Sit in the door critical path |
 | [wallboard-worker](apps/wallboard-worker/) | NUC | Scheduled jobs: satellite passes, aircraft polling, bird summaries, collages | Run on the door Pi |
@@ -140,6 +140,7 @@ Button press enters visitor mode immediately; generic feedback precedes any netw
 - Never log raw biometric data.
 - Face templates never leave the door Pi. Enrollment *photos* may cross the internet on the phone path, but only sealed to a door-held key that no intermediary has — and the relay never receives an enrollee's name (ADR-0016).
 - The public visitor surface carries only what a hallway wallboard already shows: ring state, the current poll, and the visitor's own note. Never identity, media, or diagnostics (ADR-0017 §2).
+- The single public-screen photo exception is the Body Surfers crash-photo leaderboard, an owner decision (ADR-0049 §6). It holds a face crop of a player who joined after being told about it. The photo stays in the wallboard kiosk's storage, is never uploaded or linked to recognition, is kept for 30 days, and the owner can clear it. Pose tracking runs only while a game is on, never in privacy mode, and the landmarks are never stored or logged.
 
 Any PR touching enrollment, embeddings, retention, or public display content requires `agent:claude` review before merge (ADR-0005, ADR-0008).
 

@@ -25,6 +25,12 @@ Every ambient tile shows an `as_of` staleness hint when data is old (NUC-outage 
 
 Greeting (generic, or profile-colored/personalized for enrolled visitors), broad availability state, ring/video-message instructions, QR code (tokenized `/visitor` link), poll prompt, celebratory visual effects.
 
+## Body Surfers (ADR-0049)
+
+Started from the DoorPad, the game covers the whole wallboard in a sandboxed iframe framed from the other loopback name (`127.0.0.1` ↔ `localhost`), so it runs in its own renderer process. Any visitor takeover state, privacy mode, the game's own exit (idle lobby, nobody in view, error) or the 15-minute cap removes the frame in the same render, and a game never resumes after a visit. The game is silent and needs no pointer: you join by raising both hands.
+
 ## Forbidden on this screen (privacy — enforced in review)
 
 Exact location, calendar contents, private notes, full visitor logs, diagnostics, private photos, unenrolled people's names, raw camera feed by default.
+
+The one exception is the Body Surfers crash-photo leaderboard (ADR-0049 §6): the photo is a face crop of a player who joined a run after being told about it, and it is shown only on the game's own screens. It is never shown on ambient tiles and is never uploaded. It is kept for 30 days, and the owner can clear it.

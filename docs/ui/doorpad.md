@@ -17,6 +17,7 @@ Public 7" touchscreen (~1024×600), the visitor's control surface. The hardware 
    reason as a sentence (`rate_limited`, `door_full`, `disabled`, privacy, locked volume) —
    a visitor deciding whether to knock is owed an explanation, not a stalled spinner.
 8. **Privacy** — camera notice, deletion request flow (`social.deletion_requested`).
+9. **Body Surfers** (ADR-0049) — starts the body-controlled runner on the wallboard (`POST /wallboard/game`). The "now playing" screen gives the moves and says, before anyone plays, that the camera tracks the player's body only while the game is on and that a crash photo of their face goes on the big screen's leaderboard for 30 days. It offers **Stop game**, explains a refusal (privacy mode, a visit in progress) as a sentence, and returns home when the game ends on the wallboard.
 
 ## Video message flow
 
