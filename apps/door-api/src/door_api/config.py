@@ -257,6 +257,9 @@ class SessionConfig:
 
     # Feature gate for the explicit photo-booth + private gallery flow.
     feature_photobooth: bool = False
+    # Feature gate for the Body Surfers wallboard game (ADR-0049). Off means
+    # /wallboard/game and its admin clear answer 404 and the kiosks hide it.
+    feature_body_surfers: bool = True
 
     # Short-lived visitor QR tokens.  If unset, a per-process boot secret is used.
     visitor_token_secret: str = ""
@@ -399,6 +402,7 @@ class SessionConfig:
             identity_sweep_interval_s=_env_float("DOOR_API_IDENTITY_SWEEP_INTERVAL_S", 2.0),
             ws_ping_interval_s=_env_float("DOOR_API_WS_PING_INTERVAL_S", 15.0),
             feature_photobooth=_env_bool("FEATURE_PHOTOBOOTH", False),
+            feature_body_surfers=_env_bool("FEATURE_BODY_SURFERS", True),
             visitor_token_secret=os.environ.get(
                 "DOOR_API_VISITOR_TOKEN_SECRET",
                 secrets.token_urlsafe(32),

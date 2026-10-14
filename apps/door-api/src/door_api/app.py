@@ -17,7 +17,7 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 import httpx
@@ -31,6 +31,7 @@ from doorboard_contracts.events import (
     DoorControllerHealthPayload,
     HealthPayload,
     HealthStatus,
+    SessionState,
     SocialDeletionRequestedEvent,
     SocialDeletionRequestedPayload,
     consent_covers_extended_personalisation,
@@ -180,6 +181,11 @@ class DoorApiState:
             idle_ttl_s=self.config.recognised_identity_idle_ttl_s,
             interaction_ttl_s=self.config.recognised_identity_interaction_ttl_s,
         )
+        # Last privacy mode door-visiond reported (vision.privacy_mode_changed). In
+        # memory only: door-visiond owns the switch, this copy exists so a Body Surfers
+        # start can be refused while the camera is meant to be off (ADR-0049). It starts
+        # False, so a door-api restart forgets it until the next privacy event.
+        self.privacy_mode_enabled = False
         self.esp32_transport: Esp32Transport | None = None
         self.effect_requests = 0
         self.effect_unavailable = 0
@@ -660,7 +666,14 @@ class DoorApiState:
                 self.identity.forget()
                 self.machine.forget_identity()
                 identity_cleared = True
+            was_enabled = self.privacy_mode_enabled
+            self.privacy_mode_enabled = payload.enabled
             self.broadcast.send_delta(event.model_dump(mode="json"))
+            # Body Surfers tracks bodies on the visitor camera, so privacy mode ends a
+            # running game too (ADR-0049). The wallboard also stops on the privacy delta
+            # above; this stop reaches the DoorPad, which does not watch privacy events.
+            if payload.enabled and not was_enabled and self.config.feature_body_surfers:
+                _broadcast_wallboard_game(self.broadcast, "stop", "privacy_mode")
         elif event.type == "door.contact_changed":
             payload = event.payload
             changed = self.machine.handle_contact_changed(state=payload.state)
@@ -1624,6 +1637,86 @@ WALLBOARD_FOCUS_CHANNELS = frozenset(
 # Matches WALLBOARD_FOCUS_TIMEOUT_MS in wallboardChannelModel.ts: a focus auto-
 # returns to ambient after 2 minutes (the wallboard keys off ``expiresAt``).
 WALLBOARD_FOCUS_TIMEOUT_MS = 120_000
+
+
+class WallboardGameBody(BaseModel):
+    # "start" from the DoorPad's Play button; "stop" from its Stop button
+    # (reason "doorpad") or from the wallboard when the game exits on its own
+    # (reason "ended": nobody in view, lobby timeout, camera lost).
+    action: Literal["start", "stop"]
+    reason: Literal["doorpad", "ended"] = "doorpad"
+
+
+# The states in which the wallboard shows the visitor takeover view. Mirrors
+# WALLBOARD_TAKEOVER_STATES in apps/door-ui/src/App.tsx (VISITOR_STATES plus
+# SESSION_END, for the thank-you screen). A game cannot start over a visit.
+_WALLBOARD_TAKEOVER_STATES = frozenset(
+    {
+        SessionState.BUTTON_PRESSED,
+        SessionState.VISITOR_MODE,
+        SessionState.RINGING,
+        SessionState.ANSWERED,
+        SessionState.UNANSWERED_TIMEOUT,
+        SessionState.VIDEO_MESSAGE_OFFERED,
+        SessionState.VIDEO_MESSAGE_RECORDING,
+        SessionState.VIDEO_MESSAGE_REVIEW,
+        SessionState.VIDEO_MESSAGE_SAVED,
+        SessionState.SESSION_END,
+    }
+)
+
+
+def _broadcast_wallboard_game(
+    broadcast: DisplayBroadcast, action: str, reason: str
+) -> dict[str, Any]:
+    """Fan one ``wallboard.game_changed`` UI-control message out on ``/ws``.
+
+    Ephemeral and never persisted, like ``wallboard.focus_changed``: the
+    wallboard's rendered state is the source of truth, and a lost message
+    degrades to "no game" rather than wedging either screen (ADR-0049).
+    """
+    message: dict[str, Any] = {
+        "type": "wallboard.game_changed",
+        "game": "body_surfers",
+        "action": action,
+        "reason": reason,
+        "requestId": str(uuid4()),
+        "requestedAt": int(time.time() * 1000),
+    }
+    broadcast.send_delta(message)
+    logger.info(
+        "wallboard_game_changed",
+        extra={
+            "game": "body_surfers",
+            "action": action,
+            "reason": reason,
+            "request_id": message["requestId"],
+        },
+    )
+    return message
+
+
+# A start asks door-visiond directly: the copy above only learns from events, so a
+# door-api restarted while privacy mode was on would otherwise think it was off.
+# Loopback and short; a start is a DoorPad tap, never on the bell path.
+_PRIVACY_PROBE_TIMEOUT_S = 0.5
+
+
+async def _visiond_privacy_enabled() -> bool | None:
+    """door-visiond's own privacy switch (``GET /health``), or None if it does not answer."""
+    try:
+        async with httpx.AsyncClient(timeout=_PRIVACY_PROBE_TIMEOUT_S) as client:
+            resp = await client.get(f"{state.config.visiond_base_url.rstrip('/')}/health")
+            resp.raise_for_status()
+            value = resp.json().get("privacy_enabled")
+    except (httpx.HTTPError, ValueError):
+        return None
+    return value if isinstance(value, bool) else None
+
+
+def _require_body_surfers() -> None:
+    if not state.config.feature_body_surfers:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="body_surfers_disabled")
 
 
 def _require_photobooth() -> None:
@@ -2666,6 +2759,47 @@ async def wallboard_focus(body: WallboardFocusBody) -> dict[str, Any]:
     }
     state.broadcast.send_delta(message)
     return {"ok": True, "focus": message}
+
+
+@app.post("/wallboard/game", dependencies=[Depends(_require_body_surfers)])
+async def wallboard_game(body: WallboardGameBody) -> dict[str, Any]:
+    """Start or stop Body Surfers on the physically-separate wallboard (ADR-0049).
+
+    Body Surfers runs on the wallboard, started from the DoorPad. Same transport
+    as ``/wallboard/focus``: the DoorPad POSTs here and door-api fans an
+    EPHEMERAL ``wallboard.game_changed`` UI-control message out to every ``/ws``
+    client. This is deliberately NOT a contract ``DoorboardEvent`` and is never
+    persisted. The wallboard is the source of truth for whether a game is
+    showing; it also stops by itself on any visitor state or privacy mode.
+
+    A start is refused while privacy mode is on (the game tracks bodies on the
+    visitor camera) or while a visitor session holds the wallboard (the bell
+    always wins). A stop is always accepted.
+    """
+    if body.action == "start":
+        live = await _visiond_privacy_enabled()
+        if live is not None:
+            state.privacy_mode_enabled = live
+        if state.privacy_mode_enabled:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="privacy_mode")
+        if state.machine.state in _WALLBOARD_TAKEOVER_STATES:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="visitor_session")
+    message = _broadcast_wallboard_game(state.broadcast, body.action, body.reason)
+    return {"ok": True, "game": message}
+
+
+@app.post(
+    "/admin/wallboard/game/clear-leaderboard",
+    dependencies=[Depends(_require_admin), Depends(_require_body_surfers)],
+)
+async def admin_clear_body_surfers_leaderboard() -> dict[str, Any]:
+    """Owner-only: wipe the Body Surfers leaderboard and its crash selfies (ADR-0049).
+
+    The leaderboard lives in the wallboard kiosk's browser storage, not here, so
+    this only broadcasts the request; the wallboard performs the clear.
+    """
+    message = _broadcast_wallboard_game(state.broadcast, "clear_leaderboard", "admin")
+    return {"ok": True, "game": message}
 
 
 async def _approved_wallboard_photos() -> dict[str, dict[str, Any]]:

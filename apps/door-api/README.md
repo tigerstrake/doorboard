@@ -14,6 +14,7 @@ The local brain of the visitor experience. Owns the visitor session state machin
 - **Tokenized visitor endpoints:** QR-code flows with short-lived signed tokens, rate-limited (api-conventions.md).
 - **Local fallback content:** wallboard data cache so ambient tiles show last-known data when the NUC is down.
 - **Photo booth coordination:** when `FEATURE_PHOTOBOOTH=true`, DoorPad explicit still-capture requests proxy to door-media, admin gallery actions proxy to door-sync, and `/wallboard/moments` returns only owner-approved gallery moments.
+- **Body Surfers control (ADR-0049):** `FEATURE_BODY_SURFERS` (default `true`). `POST /wallboard/game` (`start`/`stop`, from the DoorPad) and the admin-only `POST /admin/wallboard/game/clear-leaderboard` fan an ephemeral `wallboard.game_changed` message out on `/ws` for the wallboard. A start is refused (409) while privacy mode is on or a visitor session holds the wallboard, and switching privacy mode on broadcasts a stop. Nothing is persisted; with the flag off both routes answer 404.
 
 ## The visitor QR works off the house wifi (ADR-0017)
 
