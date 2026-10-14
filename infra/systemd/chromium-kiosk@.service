@@ -12,7 +12,10 @@ Environment=XAUTHORITY=/home/doorboard/.Xauthority
 EnvironmentFile=/etc/doorboard/kiosk-%i.env
 ExecStartPre=/opt/doorboard/.venv/bin/python /opt/doorboard/scripts/wait-http http://127.0.0.1:8080/health --deadline-s 60
 ExecStartPre=/opt/doorboard/.venv/bin/python /opt/doorboard/scripts/wait-http http://127.0.0.1:5173/healthz --deadline-s 60
-ExecStart=/usr/bin/chromium --kiosk --no-first-run --disable-session-crashed-bubble --disable-infobars --user-data-dir=/var/lib/doorboard/kiosk-%i ${KIOSK_URL}
+# --site-per-process: the wallboard frames Body Surfers from the other loopback name so the
+# game gets its own renderer process and can never stall the bell path (ADR-0049). It is the
+# desktop default; stating it keeps that guarantee from resting on a heuristic.
+ExecStart=/usr/bin/chromium --kiosk --site-per-process --no-first-run --disable-session-crashed-bubble --disable-infobars --user-data-dir=/var/lib/doorboard/kiosk-%i ${KIOSK_URL}
 Restart=on-failure
 RestartSec=3s
 NoNewPrivileges=yes

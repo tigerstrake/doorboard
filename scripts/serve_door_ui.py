@@ -9,8 +9,21 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+# Static games embedded in the wallboard (ADR-0049). The wallboard frames them from the
+# *other* loopback name (127.0.0.1 <-> localhost) so Chromium runs the game in its own
+# renderer process, which means they are the only paths here allowed inside a frame.
+GAMES_PREFIX = "/games/"
+
+
+def _is_game_path(path: str) -> bool:
+    return path.startswith(GAMES_PREFIX)
+
 
 class SpaHandler(SimpleHTTPRequestHandler):
+    # Python's mimetypes reads the host's /etc/mime.types, which does not list .wasm on
+    # every distro; without application/wasm the browser refuses streaming compilation.
+    extensions_map = {**SimpleHTTPRequestHandler.extensions_map, ".wasm": "application/wasm"}
+
     def do_GET(self) -> None:  # noqa: N802
         if urlsplit(self.path).path == "/healthz":
             body = b"ok\n"
@@ -21,21 +34,43 @@ class SpaHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        requested = Path(self.translate_path(urlsplit(self.path).path))
-        if not requested.exists() and "text/html" in self.headers.get("Accept", "text/html"):
-            self.path = "/index.html"
+        path = urlsplit(self.path).path
+        requested = Path(self.translate_path(path))
+        if not requested.exists():
+            # A missing game asset is a 404, not the kiosk shell: index.html served as
+            # a script or a .wasm only fails later and far less legibly.
+            if _is_game_path(path):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if "text/html" in self.headers.get("Accept", "text/html"):
+                self.path = "/index.html"
         super().do_GET()
 
     def end_headers(self) -> None:
         # The shell and the health probe must never be served from a cache: a stale
         # index.html pins the kiosk to old asset hashes after a deploy, and a cached
         # /healthz would tell doorboard-health-agent the server is up when it is not.
-        if urlsplit(self.path).path in ("/", "/index.html", "/healthz"):
+        path = urlsplit(self.path).path
+        is_game = _is_game_path(path)
+        # A game's own HTML shell (or its directory, which serves index.html) pins its
+        # hashed assets the same way.
+        game_shell = is_game and (path.endswith(".html") or path.endswith("/"))
+        if path in ("/", "/index.html", "/healthz") or game_shell:
             self.send_header("Cache-Control", "no-store")
         else:
             self.send_header("Cache-Control", "public, max-age=3600")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
+        address = self.server.server_address
+        if is_game and isinstance(address, tuple):
+            # Framable only by this server's own two loopback origins (the wallboard);
+            # every other path stays unframable.
+            port = address[1]
+            self.send_header(
+                "Content-Security-Policy",
+                f"frame-ancestors http://127.0.0.1:{port} http://localhost:{port}",
+            )
+        else:
+            self.send_header("X-Frame-Options", "DENY")
         super().end_headers()
 
     def log_message(self, format: str, *args: object) -> None:
