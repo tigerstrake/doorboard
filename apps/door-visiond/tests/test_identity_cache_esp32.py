@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+from typing import cast
 
 from door_visiond.clock import FakeClock
 from door_visiond.embedder import MockEmbedder
 from door_visiond.enrollment import ProfileSpec
+from door_visiond.events import EventEmitter
 from door_visiond.service import VisiondService
 from door_visiond.settings import Settings
-from doorboard_contracts.events import DoorboardEvent
-from doorboard_esp32_link import Esp32TransportStatus, WireMessage
+from doorboard_contracts.events import DoorControllerHealthEvent, DoorboardEvent
+from doorboard_esp32_link import Esp32Transport, Esp32TransportStatus, WireMessage
 from doorboard_simulator.clock import SimClock
 from doorboard_simulator.esp32 import FakeEsp32Transport
 from doorboard_simulator.events import EventFactory
@@ -53,7 +55,12 @@ def _enroll_and_stabilize(
     emitter: _CollectingEmitter,
     seed: bytes = b"alex-photo-bytes",
 ) -> tuple[VisiondService, str]:
-    svc = VisiondService(settings, clock=clock, emitter=emitter, esp32_transport=esp32)
+    svc = VisiondService(
+        settings,
+        clock=clock,
+        emitter=cast(EventEmitter, emitter),
+        esp32_transport=cast(Esp32Transport, esp32),
+    )
     svc.startup()
     result = svc.enroll(
         display_name="Alex",
@@ -134,7 +141,7 @@ def test_unenroll_propagates_admin_clear_and_heartbeat_null(ssd_settings: Settin
 
     out = svc.unenroll(person_id)
     heartbeat = asyncio.run(esp32.heartbeat_from_esp32())
-    health_event = esp32.to_contract_event(heartbeat)
+    health_event = cast(DoorControllerHealthEvent, esp32.to_contract_event(heartbeat))
 
     assert out == {"deleted": True, "archive_purge": "queued"}
     assert esp32.side_effects[-1] == "profile_clear:admin"

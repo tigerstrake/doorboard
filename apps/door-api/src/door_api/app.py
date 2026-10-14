@@ -20,9 +20,13 @@ from uuid import UUID, uuid4
 
 import httpx
 from doorboard_contracts.events import (
+    DoorButtonPressedEvent,
+    DoorContactChangedEvent,
     DoorboardEvent,
     SocialDeletionRequestedEvent,
     SocialDeletionRequestedPayload,
+    VisionIdentityExpiredEvent,
+    VisionIdentityStableEvent,
 )
 from doorboard_esp32_link import Esp32Transport, WireMessage
 from doorboard_esp32_link.esp32 import uuid7_now
@@ -102,13 +106,13 @@ class DoorApiState:
     def handle_contract_event(self, event: DoorboardEvent) -> bool:
         payload = event.payload
         changed = False
-        if event.type == "door.button_pressed":
+        if isinstance(event, DoorButtonPressedEvent):
             changed = self.machine.handle_button_pressed(
                 trace_id=event.trace_id,
                 had_cached_profile=payload.had_cached_profile,
                 profile_id=payload.profile_id,
             )
-        elif event.type == "vision.identity_stable":
+        elif isinstance(event, VisionIdentityStableEvent):
             changed = self.machine.handle_identity_stable(
                 person_id=payload.person_id,
                 display_name=payload.display_name,
@@ -116,12 +120,12 @@ class DoorApiState:
                 trace_id=event.trace_id,
             )
             self.broadcast.send_delta(event.model_dump(mode="json"))
-        elif event.type == "vision.identity_expired":
+        elif isinstance(event, VisionIdentityExpiredEvent):
             changed = self.machine.handle_identity_expired(person_id=payload.person_id)
             self.broadcast.send_delta(event.model_dump(mode="json"))
-        elif event.type == "door.contact_changed":
+        elif isinstance(event, DoorContactChangedEvent):
             changed = self.machine.handle_contact_changed(state=payload.state)
-        if changed or event.type.startswith("vision."):
+        if changed or str(event.type).startswith("vision."):
             self.broadcast.update_snapshot(self.machine.snapshot().to_dict())
         return changed
 
