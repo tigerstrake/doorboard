@@ -12,11 +12,13 @@ import importlib
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
 from click.testing import CliRunner
 from food_recommendation.provider import MockFoodRecommendationProvider
+from food_recommendation.stanford.meal import LA_TZ, detect_meal, meal_candidates
 from food_recommendation.stanford.models import DiningHallMenu, MenuItem
 from food_recommendation.stanford.provider import (
     StanfordDiningConfig,
@@ -131,6 +133,15 @@ def test_deterministic_recommendation_with_no_items() -> None:
 
 # Monday 2026-05-11 12:00 America/Los_Angeles (PDT) -> Lunch, date 5/11/2026.
 FIXED_NOW = datetime(2026, 5, 11, 19, 0, tzinfo=UTC)
+# Saturday 2026-05-16 12:00 PDT; the fixture's day dropdown offers 5/16/2026.
+SATURDAY_NOON = datetime(2026, 5, 16, 19, 0, tzinfo=UTC)
+
+# A menu page with the hall selector but no items: what the site returns for a
+# meal it has not published (e.g. "Brunch", which is empty on every date).
+EMPTY_MENU_PAGE = (
+    "<html><body><select id='MainContent_lstLocations'>"
+    "<option value='Wilbur'>Wilbur Dining</option></select></body></html>"
+)
 
 
 def _menu_transport(html: str) -> httpx.MockTransport:
@@ -138,6 +149,44 @@ def _menu_transport(html: str) -> httpx.MockTransport:
         return httpx.Response(200, text=html)
 
     return httpx.MockTransport(handler)
+
+
+def _meal_transport(html: str, stocked: set[str], posted: list[str]) -> httpx.MockTransport:
+    """GET returns the page; a menu POST has items only for meals in ``stocked``."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            form = parse_qs(request.read().decode())
+            meal = form["ctl00$MainContent$lstMealType"][0]
+            posted.append(meal)
+            if meal not in stocked:
+                return httpx.Response(200, text=EMPTY_MENU_PAGE)
+        return httpx.Response(200, text=html)
+
+    return httpx.MockTransport(handler)
+
+
+# ---------------- meal detection ----------------
+
+
+def test_detect_meal_weekends_use_lunch_never_brunch() -> None:
+    for day in (16, 17):  # Sat, Sun
+        assert detect_meal(datetime(2026, 5, day, 8, tzinfo=LA_TZ)) == "Lunch"
+        assert detect_meal(datetime(2026, 5, day, 14, tzinfo=LA_TZ)) == "Lunch"
+        assert detect_meal(datetime(2026, 5, day, 18, tzinfo=LA_TZ)) == "Dinner"
+
+
+def test_detect_meal_weekdays_unchanged() -> None:
+    assert detect_meal(datetime(2026, 5, 11, 8, tzinfo=LA_TZ)) == "Breakfast"
+    assert detect_meal(datetime(2026, 5, 11, 12, tzinfo=LA_TZ)) == "Lunch"
+    assert detect_meal(datetime(2026, 5, 11, 18, tzinfo=LA_TZ)) == "Dinner"
+
+
+def test_meal_candidates_fall_back_only_for_auto() -> None:
+    saturday = SATURDAY_NOON.astimezone(LA_TZ)
+    assert meal_candidates(None, saturday) == ["Lunch", "Brunch"]
+    assert meal_candidates("auto", saturday) == ["Lunch", "Brunch"]
+    assert meal_candidates("Brunch", saturday) == ["Brunch"]
 
 
 def _openai_transport(content: dict[str, object]) -> httpx.MockTransport:
@@ -164,17 +213,50 @@ def test_provider_maps_to_public_recommendation(wilbur_html: str) -> None:
 
 
 def test_provider_raises_when_no_menu_items() -> None:
-    empty_page = (
-        "<html><body><select id='MainContent_lstLocations'>"
-        "<option value='Wilbur'>Wilbur Dining</option></select></body></html>"
-    )
     provider = StanfordDiningProvider(
         StanfordDiningConfig(request_delay_s=0.0, hall_ids=["Wilbur"]),
         now=lambda: FIXED_NOW,
-        http_transport=_menu_transport(empty_page),
+        http_transport=_menu_transport(EMPTY_MENU_PAGE),
     )
     with pytest.raises(RuntimeError):
         provider.get_daily_recommendation()
+
+
+def test_provider_weekend_scrapes_lunch(wilbur_html: str) -> None:
+    posted: list[str] = []
+    provider = StanfordDiningProvider(
+        StanfordDiningConfig(request_delay_s=0.0, hall_ids=["Wilbur"]),
+        now=lambda: SATURDAY_NOON,
+        http_transport=_meal_transport(wilbur_html, {"Lunch"}, posted),
+    )
+    rec = provider.get_daily_recommendation()
+    assert rec.date == date(2026, 5, 16)
+    assert " — Lunch" in rec.title
+    assert posted == ["Lunch"]
+
+
+def test_provider_auto_falls_back_when_detected_meal_is_empty(wilbur_html: str) -> None:
+    posted: list[str] = []
+    provider = StanfordDiningProvider(
+        StanfordDiningConfig(request_delay_s=0.0, hall_ids=["Wilbur"]),
+        now=lambda: SATURDAY_NOON,
+        http_transport=_meal_transport(wilbur_html, {"Brunch"}, posted),
+    )
+    rec = provider.get_daily_recommendation()
+    assert " — Brunch" in rec.title
+    assert posted == ["Lunch", "Brunch"]
+
+
+def test_provider_never_swaps_an_explicit_meal(wilbur_html: str) -> None:
+    posted: list[str] = []
+    provider = StanfordDiningProvider(
+        StanfordDiningConfig(request_delay_s=0.0, hall_ids=["Wilbur"], meal_override="Brunch"),
+        now=lambda: SATURDAY_NOON,
+        http_transport=_meal_transport(wilbur_html, {"Lunch"}, posted),
+    )
+    with pytest.raises(RuntimeError, match="Brunch"):
+        provider.get_daily_recommendation()
+    assert posted == ["Brunch"]
 
 
 def test_provider_uses_ai_when_configured(wilbur_html: str) -> None:
