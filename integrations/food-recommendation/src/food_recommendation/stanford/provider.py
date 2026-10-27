@@ -9,6 +9,7 @@ the wallboard-worker job falls back to yesterday's cached pick.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 
@@ -16,12 +17,14 @@ import httpx
 from pydantic import BaseModel, Field
 
 from ..provider import FoodRecommendationProvider, Recommendation
-from .meal import LA_TZ, page_date, resolve_meal
-from .models import DiningRecommendation
+from .meal import LA_TZ, meal_candidates, page_date
+from .models import DiningHallMenu, DiningRecommendation
 from .preferences import load_preferences
 from .recommender import get_recommendation
 from .scorer import score_all_halls
 from .scraper import StanfordMenuScraper
+
+logger = logging.getLogger(__name__)
 
 
 class StanfordDiningConfig(BaseModel):
@@ -57,7 +60,7 @@ class StanfordDiningProvider(FoodRecommendationProvider):
     def get_daily_recommendation(self) -> Recommendation:
         now_la = self._now().astimezone(LA_TZ)
         target_date = now_la.date()
-        meal = resolve_meal(self.config.meal_override, now_la)
+        candidates = meal_candidates(self.config.meal_override, now_la)
 
         scraper = StanfordMenuScraper(
             timeout_s=self.config.timeout_s,
@@ -65,16 +68,7 @@ class StanfordDiningProvider(FoodRecommendationProvider):
             max_response_bytes=self.config.max_response_bytes,
             transport=self._http_transport,
         )
-        halls = scraper.scrape_all(
-            date_str=page_date(target_date),
-            meal=meal,
-            hall_ids=self.config.hall_ids or None,
-        )
-        if not any(h.items for h in halls):
-            raise RuntimeError(
-                f"no menu items scraped for {target_date.isoformat()} / {meal} "
-                "(menu may not be posted yet)"
-            )
+        meal, halls = self._scrape_first_stocked(scraper, target_date, candidates)
 
         prefs = load_preferences(self.config.preferences_path)
         scored = score_all_halls(halls, prefs)
@@ -92,6 +86,30 @@ class StanfordDiningProvider(FoodRecommendationProvider):
             transport=self._openai_transport,
         )
         return self._to_public(internal, target_date)
+
+    def _scrape_first_stocked(
+        self, scraper: StanfordMenuScraper, day: date, candidates: list[str]
+    ) -> tuple[str, list[DiningHallMenu]]:
+        """Scrape each candidate meal in order; return the first with any items."""
+        for meal in candidates:
+            halls = scraper.scrape_all(
+                date_str=page_date(day),
+                meal=meal,
+                hall_ids=self.config.hall_ids or None,
+            )
+            if any(h.items for h in halls):
+                if meal != candidates[0]:
+                    logger.warning(
+                        "No %s menu for %s; using %s instead",
+                        candidates[0],
+                        day.isoformat(),
+                        meal,
+                    )
+                return meal, halls
+        raise RuntimeError(
+            f"no menu items scraped for {day.isoformat()} / {'/'.join(candidates)} "
+            "(menu may not be posted yet)"
+        )
 
     @staticmethod
     def _to_public(internal: DiningRecommendation, day: date) -> Recommendation:
